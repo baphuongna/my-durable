@@ -71,3 +71,22 @@ test("TranscriptView reuses components for unchanged items and renders a recorde
   assert.match(text, /bash/);
   for (const line of view.render(60)) assert.ok(visibleWidth(line) <= 60);
 });
+
+test("P1-11: the recorded nested/compaction fixture renders at 40/80/200 with a nested result row", () => {
+  const nested = JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../../dpi-sdk/tests/fixtures/agent-nested-turn.json"), "utf8"),
+  ) as { frames: Frame[] };
+  const model = new AgentModel();
+  const view = new TranscriptView();
+  for (const frame of nested.frames) {
+    model.apply(frame);
+    view.update(model.state.items);
+  }
+  // The nested call is rendered, with its returned value, exactly once.
+  const text = view.render(120).join("\n");
+  assert.match(text, /bash/);
+  assert.match(text, /nested-result/);
+  for (const width of [40, 80, 200])
+    for (const line of view.render(width))
+      assert.ok(visibleWidth(line) <= width, `fixture line is ${visibleWidth(line)} > ${width}`);
+});

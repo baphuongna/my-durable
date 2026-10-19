@@ -13,8 +13,10 @@ import type {
   WireAgentState,
   WireAssistantBlock,
   WireAssistantMessage,
+  WireCompactionFailure,
   WireEntry,
   WireMessageChange,
+  WireNestedToolResult,
   WireSnapshotEvent,
   WireUsageState,
 } from "./api.js";
@@ -48,6 +50,8 @@ export interface AgentViewState {
   usage: WireUsageState;
   retry?: { at: number; error: string };
   compactions: number[];
+  /** The newest compaction failure (`pi.live.compactionFailure`); cleared by a compaction that produces a summary. */
+  compactionFailure?: WireCompactionFailure;
   notices: string[];
   docs: Record<string, unknown>;
   /** Set once the first snapshot arrives. */
@@ -162,11 +166,25 @@ export class AgentModel extends Emitter {
         { name: slot.name, status: slot.status, output: slot.output ?? "" },
       ]),
     );
+    // Nested calls of running tools: they have no assistant entry, so the snapshot is the only source on attach.
+    for (const slot of snapshot.nestedTools) {
+      const existing = this.tools.get(slot.callId);
+      this.tools.set(slot.callId, {
+        name: slot.name,
+        status: slot.status,
+        output: slot.output ?? "",
+        args: slot.arguments,
+        nested: { parentCallId: slot.parentCallId, parentTaskId: slot.parentTaskId, taskId: slot.taskId },
+        ...(slot.summary ? { summary: slot.summary } : {}),
+        ...(existing ?? {}),
+      });
+    }
     this.state.running = !!snapshot.run;
     this.state.agent = snapshot.agent;
     this.state.usage = snapshot.usage;
     this.state.retry = snapshot.generation?.retry;
     this.state.compactions = snapshot.compactions.map((c) => c.taskId);
+    this.state.compactionFailure = snapshot.compactionFailure;
     this.state.ready = true;
   }
 
@@ -218,6 +236,10 @@ export class AgentModel extends Emitter {
           status: "running",
           output: "",
           args: event.args,
+          // A nested call names the call that made it; a model-issued call has no parent.
+          ...(event.parentToolCallId !== undefined && event.parentTaskId !== undefined && event.taskId !== undefined
+            ? { nested: { parentCallId: event.parentToolCallId, parentTaskId: event.parentTaskId, taskId: event.taskId } }
+            : {}),
         });
         return;
       case "tool_execution_update": {
@@ -234,8 +256,23 @@ export class AgentModel extends Emitter {
         return;
       }
       case "tool_execution_end":
+        if (event.entry) {
+          // A model-issued call renders from its result entry; drop the live slot so it is never duplicated.
+          this.tools.delete(event.toolCallId);
+          this.entries.set(event.entry.id, event.entry);
+          return;
+        }
+        if (event.result) {
+          // A nested call has no entry: keep the slot so its result still renders, exactly once.
+          const tool = this.tools.get(event.toolCallId) ?? { name: event.toolName, status: "done" as const, output: "" };
+          tool.status = "done";
+          tool.result = { text: nestedResultText(event.result), isError: event.result.isError };
+          tool.summary = { isError: event.result.isError, durationMs: event.result.durationMs };
+          this.tools.set(event.toolCallId, tool);
+          return;
+        }
+        // Faulted, orphaned, or an unfinished slot: no entry and no result. Drop it without inventing a result.
         this.tools.delete(event.toolCallId);
-        if (event.entry) this.entries.set(event.entry.id, event.entry);
         return;
       case "agent_changed":
         this.state.agent = event.agent;
@@ -254,6 +291,10 @@ export class AgentModel extends Emitter {
         return;
       case "compaction_end":
         this.state.compactions = this.state.compactions.filter((id) => id !== event.taskId);
+        // `error` marks a failure, fault or orphaning; its absence means a summary was produced.
+        this.state.compactionFailure = event.error
+          ? { taskId: event.taskId, reason: event.reason, error: event.error }
+          : undefined;
         return;
       case "task_failed":
         this.state.notices = [...this.state.notices.slice(-9), `${event.kind} failed: ${event.message}`];
@@ -420,4 +461,12 @@ export class NetworkModel extends Emitter {
   tree() {
     return networkTree(this.devices);
   }
+}
+
+/** Display text for a nested call's returned value: its structured output, or nothing when absent. */
+function nestedResultText(result: WireNestedToolResult): string {
+  const value = result.structuredOutput;
+  if (value === undefined || value === null) return "";
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
 }

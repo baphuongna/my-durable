@@ -2,13 +2,27 @@
 // device (tree + activity), session (agents, tasks, usage) and agent (pi-durable agent events).
 // Streams are viewers only: closing one never aborts work or closes a harness.
 import type { Request, Response } from "express";
-import { watchEvents, type Conversation, type Harness } from "@earendil-works/pi-durable";
+import { watchEvents, type Conversation, type Harness, type WatchEnd } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Activity, DeviceTree, Frame, StreamScope } from "../../dpi-sdk/src/api.js";
 import { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, type SessionRow, type Store } from "./store.js";
 import { invalid } from "./errors.js";
 
 const MAX_BUFFER = 2_000_000;
+
+/**
+ * pi-durable 1.2+ ends a Session (and every watch on it) with `session_failed` when a Storage call fails, without
+ * waiting for the next agent event. Tell a viewer that is still open and end its response; a viewer that already
+ * closed, or any other end reason, needs nothing. Never writes to an ended response.
+ */
+export function onWatchEnd(sse: Sse, res: Response, end: WatchEnd): void {
+  if (end.reason !== "session_failed" || sse.closed) return;
+  sse.send({
+    type: "fault",
+    error: { code: "unavailable", message: "The session failed and was closed; reconnect after it is reopened" },
+  });
+  res.end();
+}
 
 export interface Sse {
   send(frame: Frame): void;
@@ -179,11 +193,14 @@ export async function sessionStream(store: Store, row: SessionRow, res: Response
   const off = h.subscribeCommits(() => push());
   // Agent names live in the device catalog, not the harness: a rename only fires the store's change feed.
   const offCatalog = store.subscribe(() => push());
+  // pi-durable 1.2+: a failed Storage call ends the Session (and every watch) with `session_failed`, without
+  // waiting for the next event. See onWatchEnd for the viewer-facing behavior.
+  void watch.closed.then((end) => onWatchEnd(sse, res, end)).catch(() => {});
   sse.onClose(() => {
     off();
     offCatalog();
     push.cancel();
-    void watch.stop();
+    void watch.stop().catch(() => {});
   });
 }
 
@@ -216,9 +233,11 @@ export async function agentStream(
       sse.send({ type: "inbox", items: await store.inbox(h, c) });
   });
   const offDocs = docs.length ? h.subscribeCommits(() => pushDocs()) : () => {};
+  // A failed Storage call ends the session and this watch with `session_failed`; an open viewer learns at once.
+  void stream.closed.then((end) => onWatchEnd(sse, res, end)).catch(() => {});
   sse.onClose(() => {
     offDocs();
     pushDocs.cancel();
-    void stream.stop();
+    void stream.stop().catch(() => {});
   });
 }

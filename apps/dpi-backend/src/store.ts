@@ -36,6 +36,7 @@ import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir, hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
@@ -62,7 +63,15 @@ import { createJobs, JobRuns, JOB_DEFS, jobDef, resolveJobInput, type Jobs } fro
 import { ADDON_INFO, createAddons, PROMPTS, PromptChecklist, type Addons } from "./addons.js";
 import { JOB_RUNS_DOC } from "../../dpi-sdk/src/jobs.js";
 
-export const DURABLE_VERSION = "1.0.3";
+// The Durable version this device runs, read from the installed artifact so an upgrade cannot leave a stale
+// literal here. `/v1/device` reports it; the hub's monitor compares apiVersion separately.
+export const DURABLE_VERSION = (() => {
+  try {
+    return (createRequire(import.meta.url)("@earendil-works/pi-durable/package.json") as { version: string }).version;
+  } catch {
+    return "unknown";
+  }
+})();
 
 /** Tools that create, update or delete: shell, files, App State, job runs, sessions, pages and subagents. */
 export const WRITE_TOOLS = new Set([
@@ -128,6 +137,16 @@ export function lockFile(path: string) {
 
 type Opened = { harness: Harness; unlock: () => void; unsubscribe: () => void; jobs: Jobs; addons: Addons };
 type Resolved = { row: SessionRow; h: Harness; c: Conversation };
+
+/**
+ * Bounded, secret-free description of the error that failed a Session. It names the error class only: never the
+ * cause message, so no SQL values, tokens or transcript can reach a REST error message. The library reports the
+ * full cause through the Harness `onReport` (server-side) for diagnostics.
+ */
+function sessionFailureMessage(error: unknown): string {
+  const kind = (error instanceof Error && error.name ? error.name : "unknown").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40);
+  return `Session failed and is unavailable (${kind || "unknown"}); reconnect after it is reopened`;
+}
 
 const encodeCursor = (cursor: unknown) =>
   cursor === undefined ? undefined : Buffer.from(JSON.stringify(cursor)).toString("base64url");
@@ -391,6 +410,25 @@ export class Store {
     return h;
   }
 
+  /**
+   * A Session that failed its own Storage call is closed by pi-durable. Drop its handles and record a bounded,
+   * secret-free reason so every later call answers `unavailable` instead of touching a closed Session.
+   */
+  private failSession(id: string, error: unknown) {
+    const opened = this.opened.get(id);
+    if (!opened) return; // already cleaned up (normal close in removeSession, or an earlier failure)
+    this.opened.delete(id);
+    try {
+      opened.unsubscribe();
+    } catch {}
+    try {
+      opened.unlock();
+    } catch {}
+    this.errors.set(id, sessionFailureMessage(error));
+    this.taskLabels.clear();
+    this.notify();
+  }
+
   /** `spawnKey` records which tool call created the session, in the same transaction as the session row. */
   async create(body: CreateSessionBody, spawnKey?: string): Promise<SessionSummary> {
     if (typeof body?.name !== "string") throw invalid("name is required");
@@ -556,6 +594,14 @@ export class Store {
       const unsubscribe = harness.subscribeCommits(() => this.notify());
       this.opened.set(row.id, { harness, unlock, unsubscribe, jobs, addons });
       this.errors.delete(row.id);
+      // pi-durable 1.2+: any failed Storage call closes the Session, without waiting for the next event.
+      // Surface it as unavailable and clean up the handle/listener/lock; never auto-reopen in a loop —
+      // a later request reopens it once from committed storage (see openAgent), and fails cleanly if it still fails.
+      void harness.closed
+        .then((end) => {
+          if (end.reason === "failed") this.failSession(row.id, end.error);
+        })
+        .catch(() => {});
       if (create) harness.resume();
       return harness;
     } catch (e) {
@@ -1058,8 +1104,10 @@ export class Store {
     }
     if (node.kind !== "pi.tool") return undefined;
     const task = await h.getTask(node.id as TaskId, ctx);
-    const input = task?.input as { assistant?: number; callId?: string } | undefined;
-    if (!input?.callId || input.assistant === undefined) return undefined;
+    // pi-durable 1.2+ tagged union: only a model-issued call reads its assistant entry. A nested call
+    // (kind "nested") carries no assistant/callId, so it gets no label rather than a fabricated one.
+    const input = task?.input as { kind?: string; assistant?: number; callId?: string } | undefined;
+    if (input?.kind !== "model" || input.callId === undefined || input.assistant === undefined) return undefined;
     const entry = await h.commit((tx) => tx.entry(input.assistant as EntryId), ctx);
     for (const m of (entry?.model ?? []) as unknown as { role: string; content?: { type: string; id?: string; name?: string }[] }[])
       for (const b of m.role === "assistant" ? (m.content ?? []) : [])

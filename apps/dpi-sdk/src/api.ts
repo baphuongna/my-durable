@@ -354,7 +354,51 @@ export interface WireToolSlot {
   droppedBytes?: number;
   droppedLines?: number;
   details?: unknown;
+  diagnostics?: readonly unknown[];
   entry?: number;
+}
+
+/** How a nested call ended: error flag, execution time, spend, and bounded error text. */
+export interface WireNestedToolSummary {
+  isError: boolean;
+  durationMs?: number;
+  usage?: unknown;
+  error?: string;
+}
+
+/** A nested call a running tool made through `executeTool()`; shown in `pi.live.nestedTools`. */
+export interface WireNestedToolSlot {
+  callId: string;
+  name: string;
+  status: "pending" | "running" | "done";
+  output?: string;
+  droppedBytes?: number;
+  droppedLines?: number;
+  details?: unknown;
+  diagnostics?: readonly unknown[];
+  parentCallId: string;
+  parentTaskId: number;
+  taskId: number;
+  arguments: Readonly<Record<string, unknown>>;
+  summary?: WireNestedToolSummary;
+}
+
+/** The newest compaction failure since a compaction last produced a summary (`pi.live.compactionFailure`). */
+export interface WireCompactionFailure {
+  taskId: number;
+  reason: string;
+  error: string;
+}
+
+/** What a nested call returns to its caller; carried by `tool_execution_end.result`, not the transcript. */
+export interface WireNestedToolResult {
+  taskId: number;
+  structuredOutput?: unknown;
+  isError: boolean;
+  details?: unknown;
+  diagnostics: readonly unknown[];
+  usage?: unknown;
+  durationMs?: number;
 }
 
 export interface WireCompaction {
@@ -411,11 +455,23 @@ export interface WireSnapshotEvent {
     deferred?: { pollAt: number };
   };
   tools: readonly WireToolSlot[];
+  /** Nested calls of running tool calls (`pi.live.nestedTools`); required, always an array. */
+  nestedTools: readonly WireNestedToolSlot[];
   compactions: readonly WireCompaction[];
+  /** The newest compaction failure since a compaction last produced a summary; cleared by a later success. */
+  compactionFailure?: WireCompactionFailure;
   inbox: readonly WireQueued[];
   agent: WireAgentState;
   usage: WireUsageState;
 }
+
+export type WireToolCallMeta = {
+  /** The call's tool task; absent for a call that never got one. */
+  taskId?: number;
+  /** Set for a nested call: the call that made it, by call ID and by tool task. */
+  parentToolCallId?: string;
+  parentTaskId?: number;
+};
 
 export type WireAgentEvent =
   | WireSnapshotEvent
@@ -424,16 +480,18 @@ export type WireAgentEvent =
   | { type: "message_start"; message: WireMessage }
   | { type: "message_update"; usage: WireUsage; changes: readonly WireMessageChange[] }
   | { type: "message_end"; entry: WireEntry }
-  | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
-  | {
+  | ({ type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown } & WireToolCallMeta)
+  | ({
       type: "tool_execution_update";
       toolCallId: string;
       toolName: string;
       output?: { trimStart?: number; append?: string } | { set: string };
       details?: unknown;
       diagnostics?: readonly unknown[];
-    }
-  | { type: "tool_execution_end"; toolCallId: string; toolName: string; entry?: WireEntry }
+    } & WireToolCallMeta)
+  // A model-issued call ends with its result `entry`, a nested call with its `result`. Both are absent when the
+  // task faulted or was orphaned, or when the slot left `pi.live` unfinished — hence both optional.
+  | ({ type: "tool_execution_end"; toolCallId: string; toolName: string; entry?: WireEntry; result?: WireNestedToolResult } & WireToolCallMeta)
   | { type: "inbox_update"; items: readonly WireQueued[] }
   | { type: "submission"; record: { id: number; status: string } }
   | { type: "auto_retry_start"; attempt: number; at: number; errorMessage: string }
@@ -444,7 +502,8 @@ export type WireAgentEvent =
   | { type: "usage_changed"; usage: WireUsageState }
   | { type: "task_failed"; taskId: number; kind: string; message: string }
   | { type: "compaction_start"; taskId: number; reason: string; blocking: boolean }
-  | { type: "compaction_end"; taskId: number; reason: string };
+  // `error` is set when the compaction failed, faulted or was orphaned.
+  | { type: "compaction_end"; taskId: number; reason: string; error?: string };
 
 /** A queued submission with its content, read from the conversation's `pi.inbox` document. */
 export interface InboxItem {

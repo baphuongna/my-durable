@@ -28,5 +28,9 @@ __pycache__/
 # local artifacts
 test-results/
 tmp/
+/artifacts/
 *.log
 .DS_Store
+
+# compile-negative scratch (scripts/check-contract.mjs)
+**/.contract-negative/

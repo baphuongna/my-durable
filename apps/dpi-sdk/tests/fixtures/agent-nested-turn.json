@@ -1,0 +1,1152 @@
+{
+  "provenance": {
+    "note": "Recorded from a real pi-durable Harness (MemoryStorage, fixture extension, scripted faux model). Not hand-authored.",
+    "piDurable": "1.3.0",
+    "node": "v22.23.1",
+    "recordedAt": "2026-10-19T14:48:41.553Z",
+    "generator": "apps/dpi-backend/scripts/record-nested-fixture.mts",
+    "profile": {
+      "provider": "faux",
+      "model": "echo",
+      "turns": 1,
+      "nested": 1,
+      "compactions": 2
+    },
+    "outcomes": {
+      "submission": 8,
+      "failedCompaction": {
+        "taskId": 18,
+        "status": "terminal"
+      },
+      "okCompaction": {
+        "taskId": 19,
+        "status": "terminal"
+      }
+    }
+  },
+  "frames": [
+    {
+      "type": "snapshot",
+      "snapshot": {
+        "type": "snapshot",
+        "entries": [],
+        "tools": [],
+        "nestedTools": [],
+        "compactions": [],
+        "inbox": [],
+        "agent": {
+          "model": {
+            "provider": "faux",
+            "modelId": "echo"
+          },
+          "thinkingLevel": "low",
+          "cwd": "/tmp/dpi-record-nested-No85SX"
+        },
+        "usage": {
+          "models": {},
+          "tools": {}
+        }
+      },
+      "inbox": []
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "message_start",
+          "message": {
+            "role": "user",
+            "content": "nested: echo nested-result",
+            "timestamp": 1792421320963
+          }
+        },
+        {
+          "type": "message_end",
+          "entry": {
+            "model": [
+              {
+                "role": "user",
+                "content": "nested: echo nested-result",
+                "timestamp": 1792421320963
+              }
+            ],
+            "kind": "pi.user",
+            "id": 7,
+            "conversationId": 1
+          }
+        },
+        {
+          "type": "submission",
+          "record": {
+            "conversationId": 1,
+            "requestId": "fixture-nested-1",
+            "type": "input",
+            "status": "placed",
+            "entry": 7,
+            "id": 8
+          }
+        },
+        {
+          "type": "run_start",
+          "inputs": [
+            8
+          ]
+        },
+        {
+          "type": "turn_start"
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "message_start",
+          "message": {
+            "role": "system",
+            "content": "",
+            "toolsAdded": [
+              {
+                "name": "read",
+                "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+                "parameters": {
+                  "type": "object",
+                  "required": [
+                    "path"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "Path to the file to read (relative or absolute)"
+                    },
+                    "offset": {
+                      "type": "number",
+                      "description": "Line number to start reading from (1-indexed)"
+                    },
+                    "limit": {
+                      "type": "number",
+                      "description": "Maximum number of lines to read"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "write",
+                "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+                "parameters": {
+                  "type": "object",
+                  "required": [
+                    "path",
+                    "content"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "Path to the file to write (relative or absolute)"
+                    },
+                    "content": {
+                      "type": "string",
+                      "description": "Content to write to the file"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "edit",
+                "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+                "parameters": {
+                  "type": "object",
+                  "required": [
+                    "path",
+                    "edits"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "Path to the file to edit (relative or absolute)"
+                    },
+                    "edits": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "oldText",
+                          "newText"
+                        ],
+                        "properties": {
+                          "oldText": {
+                            "type": "string",
+                            "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+                          },
+                          "newText": {
+                            "type": "string",
+                            "description": "Replacement text for this targeted edit."
+                          }
+                        }
+                      },
+                      "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+                    }
+                  }
+                }
+              },
+              {
+                "name": "bash",
+                "description": "Execute a bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+                "parameters": {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "description": "Bash command to execute"
+                    },
+                    "timeout": {
+                      "type": "number",
+                      "description": "Timeout in seconds (optional, no default timeout)"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "outer",
+                "description": "Runs a nested tool call and reports what it returned.",
+                "parameters": {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ],
+            "timestamp": 1792421320974
+          }
+        },
+        {
+          "type": "message_end",
+          "entry": {
+            "model": [
+              {
+                "role": "system",
+                "content": "",
+                "toolsAdded": [
+                  {
+                    "name": "read",
+                    "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "path"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Path to the file to read (relative or absolute)"
+                        },
+                        "offset": {
+                          "type": "number",
+                          "description": "Line number to start reading from (1-indexed)"
+                        },
+                        "limit": {
+                          "type": "number",
+                          "description": "Maximum number of lines to read"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "write",
+                    "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "path",
+                        "content"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Path to the file to write (relative or absolute)"
+                        },
+                        "content": {
+                          "type": "string",
+                          "description": "Content to write to the file"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "edit",
+                    "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "path",
+                        "edits"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Path to the file to edit (relative or absolute)"
+                        },
+                        "edits": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "oldText",
+                              "newText"
+                            ],
+                            "properties": {
+                              "oldText": {
+                                "type": "string",
+                                "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+                              },
+                              "newText": {
+                                "type": "string",
+                                "description": "Replacement text for this targeted edit."
+                              }
+                            }
+                          },
+                          "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "bash",
+                    "description": "Execute a bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "command"
+                      ],
+                      "properties": {
+                        "command": {
+                          "type": "string",
+                          "description": "Bash command to execute"
+                        },
+                        "timeout": {
+                          "type": "number",
+                          "description": "Timeout in seconds (optional, no default timeout)"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "outer",
+                    "description": "Runs a nested tool call and reports what it returned.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "command"
+                      ],
+                      "properties": {
+                        "command": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "timestamp": 1792421320974
+              }
+            ],
+            "kind": "pi.system",
+            "id": 10,
+            "conversationId": 1,
+            "byTaskId": 9
+          }
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "message_start",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Running the nested tool."
+              },
+              {
+                "type": "toolCall",
+                "id": "tool:1792421320947:t3a99tfi0n",
+                "name": "outer",
+                "arguments": {
+                  "command": "sleep 0.4; echo nested-result"
+                }
+              }
+            ],
+            "api": "faux:1792421320947:xru6y5j935a",
+            "provider": "faux",
+            "model": "echo",
+            "usage": {
+              "input": 743,
+              "output": 19,
+              "cacheRead": 0,
+              "cacheWrite": 743,
+              "totalTokens": 1505,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "toolUse",
+            "timestamp": 1792421320947
+          }
+        },
+        {
+          "type": "message_end",
+          "entry": {
+            "model": [
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Running the nested tool."
+                  },
+                  {
+                    "type": "toolCall",
+                    "id": "tool:1792421320947:t3a99tfi0n",
+                    "name": "outer",
+                    "arguments": {
+                      "command": "sleep 0.4; echo nested-result"
+                    }
+                  }
+                ],
+                "api": "faux:1792421320947:xru6y5j935a",
+                "provider": "faux",
+                "model": "echo",
+                "usage": {
+                  "input": 743,
+                  "output": 19,
+                  "cacheRead": 0,
+                  "cacheWrite": 743,
+                  "totalTokens": 1505,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "toolUse",
+                "timestamp": 1792421320947
+              }
+            ],
+            "kind": "pi.assistant",
+            "id": 11,
+            "conversationId": 1,
+            "byTaskId": 9
+          }
+        },
+        {
+          "type": "usage_changed",
+          "usage": {
+            "models": {
+              "faux/echo": {
+                "input": 743,
+                "output": 19,
+                "cacheRead": 0,
+                "cacheWrite": 743,
+                "totalTokens": 1505,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              }
+            },
+            "tools": {}
+          }
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "tool_execution_start",
+          "toolCallId": "tool:1792421320947:t3a99tfi0n",
+          "toolName": "outer",
+          "taskId": 12,
+          "args": {
+            "command": "sleep 0.4; echo nested-result"
+          }
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "tool_execution_start",
+          "toolCallId": "tool:1792421320947:t3a99tfi0n/1",
+          "toolName": "bash",
+          "taskId": 14,
+          "parentToolCallId": "tool:1792421320947:t3a99tfi0n",
+          "parentTaskId": 12,
+          "args": {
+            "command": "sleep 0.4; echo nested-result"
+          }
+        }
+      ]
+    },
+    {
+      "type": "snapshot",
+      "snapshot": {
+        "type": "snapshot",
+        "entries": [
+          {
+            "model": [
+              {
+                "role": "user",
+                "content": "nested: echo nested-result",
+                "timestamp": 1792421320963
+              }
+            ],
+            "kind": "pi.user",
+            "id": 7,
+            "conversationId": 1
+          },
+          {
+            "model": [
+              {
+                "role": "system",
+                "content": "",
+                "toolsAdded": [
+                  {
+                    "name": "read",
+                    "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "path"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Path to the file to read (relative or absolute)"
+                        },
+                        "offset": {
+                          "type": "number",
+                          "description": "Line number to start reading from (1-indexed)"
+                        },
+                        "limit": {
+                          "type": "number",
+                          "description": "Maximum number of lines to read"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "write",
+                    "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "path",
+                        "content"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Path to the file to write (relative or absolute)"
+                        },
+                        "content": {
+                          "type": "string",
+                          "description": "Content to write to the file"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "edit",
+                    "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "path",
+                        "edits"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Path to the file to edit (relative or absolute)"
+                        },
+                        "edits": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "oldText",
+                              "newText"
+                            ],
+                            "properties": {
+                              "oldText": {
+                                "type": "string",
+                                "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+                              },
+                              "newText": {
+                                "type": "string",
+                                "description": "Replacement text for this targeted edit."
+                              }
+                            }
+                          },
+                          "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "bash",
+                    "description": "Execute a bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "command"
+                      ],
+                      "properties": {
+                        "command": {
+                          "type": "string",
+                          "description": "Bash command to execute"
+                        },
+                        "timeout": {
+                          "type": "number",
+                          "description": "Timeout in seconds (optional, no default timeout)"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "outer",
+                    "description": "Runs a nested tool call and reports what it returned.",
+                    "parameters": {
+                      "type": "object",
+                      "required": [
+                        "command"
+                      ],
+                      "properties": {
+                        "command": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "timestamp": 1792421320974
+              }
+            ],
+            "kind": "pi.system",
+            "id": 10,
+            "conversationId": 1,
+            "byTaskId": 9
+          },
+          {
+            "model": [
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Running the nested tool."
+                  },
+                  {
+                    "type": "toolCall",
+                    "id": "tool:1792421320947:t3a99tfi0n",
+                    "name": "outer",
+                    "arguments": {
+                      "command": "sleep 0.4; echo nested-result"
+                    }
+                  }
+                ],
+                "api": "faux:1792421320947:xru6y5j935a",
+                "provider": "faux",
+                "model": "echo",
+                "usage": {
+                  "input": 743,
+                  "output": 19,
+                  "cacheRead": 0,
+                  "cacheWrite": 743,
+                  "totalTokens": 1505,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "toolUse",
+                "timestamp": 1792421320947
+              }
+            ],
+            "kind": "pi.assistant",
+            "id": 11,
+            "conversationId": 1,
+            "byTaskId": 9
+          }
+        ],
+        "run": {
+          "inputs": [
+            8
+          ]
+        },
+        "tools": [
+          {
+            "callId": "tool:1792421320947:t3a99tfi0n",
+            "name": "outer",
+            "taskId": 12,
+            "status": "running"
+          }
+        ],
+        "nestedTools": [
+          {
+            "callId": "tool:1792421320947:t3a99tfi0n/1",
+            "parentCallId": "tool:1792421320947:t3a99tfi0n",
+            "parentTaskId": 12,
+            "name": "bash",
+            "taskId": 14,
+            "arguments": {
+              "command": "sleep 0.4; echo nested-result"
+            },
+            "status": "running"
+          }
+        ],
+        "compactions": [],
+        "inbox": [],
+        "agent": {
+          "model": {
+            "provider": "faux",
+            "modelId": "echo"
+          },
+          "thinkingLevel": "low",
+          "cwd": "/tmp/dpi-record-nested-No85SX"
+        },
+        "usage": {
+          "models": {
+            "faux/echo": {
+              "input": 743,
+              "output": 19,
+              "cacheRead": 0,
+              "cacheWrite": 743,
+              "totalTokens": 1505,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            }
+          },
+          "tools": {}
+        }
+      },
+      "inbox": []
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "tool_execution_update",
+          "toolCallId": "tool:1792421320947:t3a99tfi0n/1",
+          "toolName": "bash",
+          "taskId": 14,
+          "parentToolCallId": "tool:1792421320947:t3a99tfi0n",
+          "parentTaskId": 12,
+          "output": {
+            "set": "nested-result\n"
+          }
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "tool_execution_end",
+          "toolCallId": "tool:1792421320947:t3a99tfi0n/1",
+          "toolName": "bash",
+          "taskId": 14,
+          "parentToolCallId": "tool:1792421320947:t3a99tfi0n",
+          "parentTaskId": 12,
+          "result": {
+            "taskId": 14,
+            "structuredOutput": {
+              "output": "nested-result\n",
+              "truncated": false,
+              "exitCode": 0
+            },
+            "isError": false,
+            "diagnostics": [],
+            "durationMs": 426
+          }
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "tool_execution_end",
+          "toolCallId": "tool:1792421320947:t3a99tfi0n",
+          "toolName": "outer",
+          "taskId": 12,
+          "entry": {
+            "model": [
+              {
+                "role": "toolResult",
+                "toolCallId": "tool:1792421320947:t3a99tfi0n",
+                "toolName": "outer",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "outer saw: {\"output\":\"nested-result\\n\",\"truncated\":false,\"exitCode\":0}"
+                  }
+                ],
+                "isError": false,
+                "durationMs": 444,
+                "timestamp": 1792421321482
+              }
+            ],
+            "data": {
+              "diagnostics": []
+            },
+            "kind": "pi.tool-result",
+            "id": 15,
+            "conversationId": 1,
+            "byTaskId": 12
+          }
+        },
+        {
+          "type": "message_start",
+          "message": {
+            "role": "toolResult",
+            "toolCallId": "tool:1792421320947:t3a99tfi0n",
+            "toolName": "outer",
+            "content": [
+              {
+                "type": "text",
+                "text": "outer saw: {\"output\":\"nested-result\\n\",\"truncated\":false,\"exitCode\":0}"
+              }
+            ],
+            "isError": false,
+            "durationMs": 444,
+            "timestamp": 1792421321482
+          }
+        },
+        {
+          "type": "message_end",
+          "entry": {
+            "model": [
+              {
+                "role": "toolResult",
+                "toolCallId": "tool:1792421320947:t3a99tfi0n",
+                "toolName": "outer",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "outer saw: {\"output\":\"nested-result\\n\",\"truncated\":false,\"exitCode\":0}"
+                  }
+                ],
+                "isError": false,
+                "durationMs": 444,
+                "timestamp": 1792421321482
+              }
+            ],
+            "data": {
+              "diagnostics": []
+            },
+            "kind": "pi.tool-result",
+            "id": 15,
+            "conversationId": 1,
+            "byTaskId": 12
+          }
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "turn_end"
+        },
+        {
+          "type": "turn_start"
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "message_start",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "The nested call returned nested-result."
+              }
+            ],
+            "api": "faux:1792421320947:xru6y5j935a",
+            "provider": "faux",
+            "model": "echo",
+            "usage": {
+              "input": 44,
+              "output": 10,
+              "cacheRead": 743,
+              "cacheWrite": 44,
+              "totalTokens": 841,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 1792421320947
+          }
+        },
+        {
+          "type": "message_end",
+          "entry": {
+            "model": [
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "The nested call returned nested-result."
+                  }
+                ],
+                "api": "faux:1792421320947:xru6y5j935a",
+                "provider": "faux",
+                "model": "echo",
+                "usage": {
+                  "input": 44,
+                  "output": 10,
+                  "cacheRead": 743,
+                  "cacheWrite": 44,
+                  "totalTokens": 841,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "stop",
+                "timestamp": 1792421320947
+              }
+            ],
+            "kind": "pi.assistant",
+            "id": 17,
+            "conversationId": 1,
+            "byTaskId": 16
+          }
+        },
+        {
+          "type": "turn_end"
+        },
+        {
+          "type": "run_end",
+          "inputs": [
+            8
+          ]
+        },
+        {
+          "type": "submission",
+          "record": {
+            "conversationId": 1,
+            "requestId": "fixture-nested-1",
+            "type": "input",
+            "status": "done",
+            "entry": 7,
+            "id": 8,
+            "answer": 17
+          }
+        },
+        {
+          "type": "usage_changed",
+          "usage": {
+            "models": {
+              "faux/echo": {
+                "input": 787,
+                "output": 29,
+                "cacheRead": 743,
+                "cacheWrite": 787,
+                "totalTokens": 2346,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              }
+            },
+            "tools": {}
+          }
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "compaction_start",
+          "taskId": 18,
+          "reason": "manual",
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "compaction_end",
+          "taskId": 18,
+          "reason": "manual",
+          "error": "Summarization failed: scripted compaction failure"
+        },
+        {
+          "type": "usage_changed",
+          "usage": {
+            "models": {
+              "faux/echo": {
+                "input": 1183,
+                "output": 29,
+                "cacheRead": 743,
+                "cacheWrite": 787,
+                "totalTokens": 2742,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              }
+            },
+            "tools": {}
+          }
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "compaction_start",
+          "taskId": 19,
+          "reason": "manual",
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "type": "batch",
+      "events": [
+        {
+          "type": "message_start",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "The conversation history before this point was compacted into the following summary:\n\n<summary>\nSummary of the fixture conversation.\n</summary>"
+              }
+            ],
+            "timestamp": 1792421321551
+          }
+        },
+        {
+          "type": "message_end",
+          "entry": {
+            "kind": "pi.compaction",
+            "model": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "The conversation history before this point was compacted into the following summary:\n\n<summary>\nSummary of the fixture conversation.\n</summary>"
+                  }
+                ],
+                "timestamp": 1792421321551
+              }
+            ],
+            "data": {
+              "reason": "manual"
+            },
+            "id": 20,
+            "conversationId": 1,
+            "head": 17,
+            "byTaskId": 19
+          }
+        },
+        {
+          "type": "compaction_end",
+          "taskId": 19,
+          "reason": "manual"
+        },
+        {
+          "type": "submission",
+          "record": {
+            "conversationId": 1,
+            "requestId": "compaction:19",
+            "type": "write",
+            "status": "done",
+            "entry": 20,
+            "id": 21
+          }
+        },
+        {
+          "type": "usage_changed",
+          "usage": {
+            "models": {
+              "faux/echo": {
+                "input": 1579,
+                "output": 38,
+                "cacheRead": 743,
+                "cacheWrite": 787,
+                "totalTokens": 3147,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              }
+            },
+            "tools": {}
+          }
+        }
+      ]
+    }
+  ]
+}

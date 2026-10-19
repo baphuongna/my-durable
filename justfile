@@ -18,9 +18,6 @@ mod tui 'just/tui'
 # Unit, UI, device and e2e suites
 mod test 'just/test'
 
-# Proactive DPI demo: just proactive <command>
-mod proactive 'just/proactive'
-
 # List command groups
 default:
     @just --list

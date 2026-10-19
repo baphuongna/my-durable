@@ -20,9 +20,13 @@ export interface ToolCallView {
   status: ToolStatus;
   /** Live output while running. */
   output?: string;
-  /** Result text once the result entry exists. */
+  /** Result text once the result entry exists, or once a nested call returns its result. */
   result?: string;
   resultEntryId?: number;
+  /** Nested call metadata: the parent call that made it, and the call's own task. */
+  nested?: { parentCallId: string; parentTaskId: number; taskId: number };
+  /** One-line summary of how a nested call ended (duration, spend, error). */
+  summary?: string;
 }
 
 export type AssistantBlockView =
@@ -49,6 +53,12 @@ export interface LiveTool {
   status: "pending" | "running" | "done";
   output: string;
   args?: unknown;
+  /** Set for a nested call (one a running tool made through `executeTool()`). */
+  nested?: { parentCallId: string; parentTaskId: number; taskId: number };
+  /** A nested result kept for display when no transcript entry holds it. */
+  result?: { text: string; isError: boolean };
+  /** How a nested call ended, for a status line (`NestedToolSummary`). */
+  summary?: { isError: boolean; durationMs?: number; usage?: unknown; error?: string };
 }
 
 const isAssistant = (m: WireMessage): m is WireAssistantMessage => m.role === "assistant";
@@ -98,6 +108,7 @@ export function toTranscript(
   const toolView = (id: string, name: string, args: unknown): ToolCallView => {
     const result = results.get(id);
     const running = tools.get(id);
+    const nested = running?.nested;
     if (result)
       return {
         callId: id,
@@ -106,13 +117,27 @@ export function toTranscript(
         status: result.message.isError ? "error" : "done",
         result: messageText(result.message),
         resultEntryId: result.entryId,
+        ...(nested ? { nested } : {}),
+      };
+    // A nested call's result lives in its caller's document, not the transcript: render it from the live slot.
+    if (running?.result)
+      return {
+        callId: id,
+        name,
+        args,
+        status: running.result.isError ? "error" : "done",
+        result: running.result.text,
+        ...(nested ? { nested } : {}),
+        ...(running.summary ? { summary: summaryLine(running.summary) } : {}),
       };
     return {
       callId: id,
       name,
       args,
-      status: running?.status === "running" ? "running" : "pending",
+      status: running?.status ?? "pending",
       output: running?.output || undefined,
+      ...(nested ? { nested } : {}),
+      ...(running?.summary ? { summary: summaryLine(running.summary) } : {}),
     };
   };
 
@@ -174,9 +199,19 @@ export function toTranscript(
       model: live.model,
     });
   for (const [callId, tool] of tools)
-    if (tool.status !== "done" && !callIds.has(callId))
+    // A nested call is presentation of the running tool round: render it even once done (its result is not in the
+    // transcript). A model-issued call renders from its result entry instead, so its stale slot is dropped.
+    if ((tool.status !== "done" || tool.result || tool.nested) && !callIds.has(callId))
       items.push({ kind: "tool", id: callId, call: toolView(callId, tool.name, tool.args) });
   return items;
+}
+
+/** "1.2s · error text" style one-liner from a nested call's summary. */
+function summaryLine(summary: { isError: boolean; durationMs?: number; error?: string }): string {
+  const parts: string[] = [];
+  if (summary.durationMs !== undefined) parts.push(`${(summary.durationMs / 1000).toFixed(1)}s`);
+  if (summary.error) parts.push(summary.error);
+  return parts.join(" · ");
 }
 
 export function toMarkdown(items: readonly TranscriptItem[]): string {

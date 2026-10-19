@@ -38,6 +38,7 @@ const snapshot = (entries: WireEntry[], extra: Partial<WireSnapshotEvent> = {}):
   type: "snapshot",
   entries,
   tools: [],
+  nestedTools: [],
   compactions: [],
   inbox: [],
   agent: { model: { provider: "openrouter", modelId: "m" } },

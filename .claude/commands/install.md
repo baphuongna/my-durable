@@ -1,5 +1,5 @@
 ---
-description: Install Durable Pi: prerequisites, .env, app dependencies, the web UI build, this machine's device config and the optional proactive demo
+description: Install Durable Pi: prerequisites, .env, app dependencies, the web UI build and this machine's device config
 ---
 
 # Install Durable Pi (Durable Agent Network)
@@ -19,14 +19,13 @@ APPS: `apps/dpi-sdk`, `apps/dpi-backend`, `apps/dpi-playground`, `apps/dpi-tui`
 ## Codebase Structure
 
 ```text
-justfile                 # groups: net, backend, hub, tui, test, proactive (just/<group>/mod.just)
+justfile                 # groups: net, backend, hub, tui, test (just/<group>/mod.just)
 dpi-network.example.yaml # template: defaults + the local device, commented ssh and exe-dev examples
-.env.example             # OPENROUTER_API_KEY (copied into each device's backend.env), optional TypeSafe and ElevenLabs settings
+.env.example             # OPENROUTER_API_KEY (copied into each device's backend.env), optional TypeSafe settings
 apps/dpi-sdk/            # contract, client, models, registry, ops drivers (scripts/net.ts)
 apps/dpi-backend/        # the device server (port 4780)
 apps/dpi-playground/     # hub + Vue web UI (port 4781)
 apps/dpi-tui/            # terminal client
-apps/proactive-dpi-demo/ # the hook: proactive incident agent (just proactive install, reset, build)
 ```
 
 ## Instructions
@@ -63,12 +62,10 @@ Optional, so report them and continue:
 1. If `.env` is missing, copy the template: `cp .env.example .env`, then ask the user to paste their OpenRouter key into `.env` (https://openrouter.ai/keys). Do not ask for the key in chat.
 2. Confirm the key is set without printing it: `grep -Eq '^OPENROUTER_API_KEY=sk-' .env && echo set || ([ -n "$OPENROUTER_API_KEY" ] && echo "set in environment") || echo missing`.
 3. If it is missing and the user wants to continue without a key, tell them the backend can run with the free deterministic model: `DPI_PROVIDER=faux just backend run`.
-4. Optional, for the proactive demo's voice line: `grep -Eq '^ELEVENLABS_API_KEY=.+' .env && echo set || echo "not set (the demo runs, the voice line is skipped)"`. The line plays through `afplay` on macOS and in the browser elsewhere; `ELEVENLABS_VOICE_ID` picks another voice from the user's ElevenLabs account.
 
 ### Step 3 — Install Dependencies
 
 1. `just install`: `npm install` in the four network apps.
-2. Ask whether to also set up the proactive demo, the video's hook: a watcher sends every log row to Jev, and a durable agent fixes the incident and waits for deploy approval. If yes, run `just proactive install`, `just proactive reset` (builds the mock checkout-api git repo with the bug) and `just proactive build`. It uses `OPENROUTER_API_KEY` for Sonnet 5.5 and Jev, and serves `http://localhost:4790` on loopback only (`--host 0.0.0.0` opts in to the LAN; the UI has no login).
 
 ### Step 4 — Verify Configuration
 
@@ -80,13 +77,13 @@ Optional, so report them and continue:
 
 ### Step 5 — Verify Readiness
 
-1. `just --list`: shows the groups net, backend, hub, tui, test and proactive.
+1. `just --list`: shows the groups net, backend, hub, tui and test.
 2. `just check`: type checks and unit tests for every app. They use the faux model, so they need no network and cost nothing (under a minute).
 3. Optional, if Chrome is installed: `just test ui`, the 28-check web UI suite against two faux devices (under a minute).
 
 ### Step 6 — Report
 
-Print a table with one row per check: each required prerequisite (node, npm, just, zsh, git), the `.env` key, `just install`, `just net ids`, `just net up local`, `just hub build`, `just check` and the optional items (including the proactive demo setup and the ElevenLabs key). Mark each `pass`, `fail` or `skipped`, then give a ready count (for example `11 of 11 required checks pass`).
+Print a table with one row per check: each required prerequisite (node, npm, just, zsh, git), the `.env` key, `just install`, `just net ids`, `just net up local`, `just hub build`, `just check` and the optional items (including the optional TypeSafe key). Mark each `pass`, `fail` or `skipped`, then give a ready count (for example `11 of 11 required checks pass`).
 
 Next steps, in order (each in its own terminal):
 
@@ -96,5 +93,4 @@ just hub start                # web UI: http://localhost:4781
 just tui attach local         # terminal client on the same device
 just net status               # probe every device in dpi-network.yaml
 just net up <id>              # after uncommenting an ssh or exe-dev example in dpi-network.yaml
-just proactive take           # the proactive demo: prints the URL; the agent asks to deploy within about 30s
 ```

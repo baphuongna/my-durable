@@ -1,5 +1,5 @@
 import type { ErrorRequestHandler } from "express";
-import { ConversationBusy } from "@earendil-works/pi-durable";
+import { ConversationBusy, SessionFailed } from "@earendil-works/pi-durable";
 import type { ErrorCode } from "../../dpi-sdk/src/api.js";
 
 const STATUS: Record<ErrorCode, number> = {
@@ -31,6 +31,8 @@ export const notFound = (message: string) => new ApiFault("not_found", message);
 export const errorMiddleware: ErrorRequestHandler = (err, req, res, _next) => {
   let fault: ApiFault;
   if (err instanceof ApiFault) fault = err;
+  else if (err instanceof SessionFailed)
+    fault = new ApiFault("unavailable", "The session failed and is closed; it is unavailable until reopened");
   else if (err instanceof ConversationBusy) fault = new ApiFault("busy", "The agent is busy and the input asked to be rejected while busy");
   else if (err?.type === "entity.parse.failed") fault = invalid("Body must be valid JSON");
   else if (err?.type === "entity.too.large") fault = invalid("Body too large");
