@@ -2,13 +2,14 @@
   "name": "dpi-sdk",
   "private": true,
   "type": "module",
-  "description": "Durable Agent Network contract, client, models and device registry. Zero runtime deps in src/; src/node needs yaml.",
+  "description": "Durable Agent Network contract, client, models and device registry. Browser-safe core; src/node needs yaml; src/protocol needs @sinclair/typebox (browser-safe, no Node builtins).",
   "scripts": {
     "check": "tsc --noEmit -p .",
     "test": "tsx --test tests/*.test.ts",
     "net": "tsx scripts/net.ts"
   },
   "dependencies": {
+    "@sinclair/typebox": "0.34.52",
     "yaml": "^2.8.0"
   },
   "devDependencies": {

@@ -7,6 +7,31 @@
 
 import type { JobDef } from "./jobs.js";
 
+// P2 protocol contracts (pairing + tunnel). TYPE-ONLY re-exports: erased at
+// compile time, so the browser bundle never pulls @sinclair/typebox or any
+// Node builtin. Runtime validators are imported from ./protocol/*.js directly
+// by Node-side consumers (backend, hub connector).
+export type {
+  PairRequest,
+  PairChallenge,
+  PairResponse,
+  PairPending,
+  TokenIssue,
+  PairApproval,
+  RevokeNotice,
+  PairError,
+  PairCodeIssue,
+  PairCodeState,
+} from "./protocol/pairing.js";
+export type {
+  TunnelFrame,
+  TunnelChunk,
+  TunnelWireMessage,
+  TunnelAuthError,
+  Direction,
+  TunnelPhase,
+} from "./protocol/tunnel.js";
+
 export const API_VERSION = 1 as const;
 
 export type DeviceKind = "local" | "ssh" | "exe-dev" | "url";
