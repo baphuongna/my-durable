@@ -2,6 +2,7 @@
 // Status machine: checking → online | offline | unauthorized | mismatch | incompatible, retrying
 // with backoff (offline: 1s → 30s; states only a human can fix: 30s or an explicit check()).
 import { DpiClient } from "../../../../dpi-sdk/src/client.js";
+import { transportFor, type TunnelServer } from "./transport.js";
 import { DpiError } from "../../../../dpi-sdk/src/errors.js";
 import type {
   DeviceInfo,
@@ -34,7 +35,10 @@ export class DeviceMonitor {
   private persistedAt = new Map<string, number>();
   private emitTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(private readonly registry: NetworkRegistry) {}
+  constructor(
+    private readonly registry: NetworkRegistry,
+    private readonly tunnels?: TunnelServer, // SPIKE P2-01: absent in production until P2-08/P2-15
+  ) {}
 
   start() {
     for (const device of this.registry.list()) this.watch(device.id);
@@ -142,22 +146,24 @@ export class DeviceMonitor {
       const device = this.registry.get(id);
       if (!device) return;
       let wait = backoff;
-      if (!device.token) {
+      // SPIKE P2-01: the probe client comes from the transport seam. A tunnel row has no stored
+      // token; its availability is a live authenticated connection (RV04).
+      const client = this.tunnels ? transportFor(device, this.tunnels) : new LanShim(device);
+      if (!client.available()) {
         this.update(id, {
           status: "unauthorized",
-          error: `No token for ${id}. Run: just net register ${id}`,
+          error: `No credential for ${id}. Run: just net register ${id}`,
         });
         await sleep(30_000, signal);
         continue;
       }
       if (this.live.get(id)?.status !== "online") this.update(id, { status: "checking" });
-      const client = new DpiClient(device.url, device.token);
       try {
         const info = await client.device({ timeoutMs: 6000, signal });
         if (info.apiVersion !== 1) {
           this.update(id, {
             status: "incompatible",
-            error: `${device.url} speaks API v${info.apiVersion}; this hub speaks v1`,
+            error: `${device.url ?? "tunnel"} speaks API v${info.apiVersion}; this hub speaks v1`,
           });
           await sleep(30_000, signal);
           continue;
@@ -210,5 +216,29 @@ export class DeviceMonitor {
       await sleep(wait, signal);
       backoff = Math.min(backoff * 2, 30_000);
     }
+  }
+}
+
+// SPIKE P2-01: local shim so monitor keeps compiling when no TunnelServer is passed.
+import type { DeviceTransport } from "./transport.js";
+class LanShim implements DeviceTransport {
+  readonly deviceId: string;
+  private readonly client: DpiClient;
+  constructor(row: import("../../../../dpi-sdk/src/node/registry.js").DeviceRow) {
+    this.deviceId = row.id;
+    this.client = new DpiClient(row.url, row.token ?? "");
+  }
+  available() {
+    return !!this.client;
+  }
+  device(opts?: { timeoutMs?: number; signal?: AbortSignal }) {
+    return this.client.device(opts);
+  }
+  stream(path: string, signal: AbortSignal) {
+    return this.client.stream(path, signal);
+  }
+  async request(path: string, init: { method: string; headers?: Record<string, string>; body?: string }) {
+    const upstream = await fetch(path, { method: init.method, headers: init.headers, body: init.body });
+    return { status: upstream.status, contentType: upstream.headers.get("content-type") ?? "application/json", text: await upstream.text() };
   }
 }

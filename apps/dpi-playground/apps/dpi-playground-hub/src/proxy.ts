@@ -3,16 +3,19 @@
 import type { RequestHandler } from "express";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { DeviceMonitor } from "./monitor.js";
+import { transportFor, type TunnelServer } from "./transport.js";
 
 const err = (code: string, message: string) => ({ error: { code, message } });
 
-export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor): RequestHandler {
+export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor, tunnels?: TunnelServer): RequestHandler {
   return async (req, res) => {
     const id = String(req.params.id);
     const device = registry.get(id);
     if (!device) return void res.status(404).json(err("not_found", `No device ${id}`));
     const live = monitor.state(id);
-    if (live?.status !== "online" || !device.token)
+    const transport = tunnels ? transportFor(device, tunnels) : undefined;
+    const usable = transport ? live?.status === "online" && transport.available() : live?.status === "online" && !!device.token;
+    if (!usable)
       return void res
         .status(503)
         .json(
@@ -31,22 +34,30 @@ export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor): Reques
     const closed = new AbortController();
     res.on("close", () => closed.abort());
     try {
-      const upstream = await fetch(device.url + path, {
-        method: req.method,
-        headers: {
-          authorization: `Bearer ${device.token}`,
-          "x-dpi-token": device.token,
-          ...(hasBody ? { "content-type": "application/json" } : {}),
-          ...(req.get("idempotency-key") ? { "idempotency-key": req.get("idempotency-key")! } : {}),
-        },
-        body: hasBody ? JSON.stringify(req.body ?? {}) : undefined,
-        signal: AbortSignal.any([closed.signal, AbortSignal.timeout(330_000)]),
-      });
-      const text = await upstream.text();
-      res
-        .status(upstream.status)
-        .type(upstream.headers.get("content-type") ?? "application/json")
-        .send(text);
+      const result = transport
+        ? await transport.request(path, {
+            method: req.method,
+            headers: {
+              ...(hasBody ? { "content-type": "application/json" } : {}),
+              ...(req.get("idempotency-key") ? { "idempotency-key": req.get("idempotency-key")! } : {}),
+            },
+            body: hasBody ? JSON.stringify(req.body ?? {}) : undefined,
+          })
+        : await (async () => {
+            const upstream = await fetch(device.url + path, {
+              method: req.method,
+              headers: {
+                authorization: `Bearer ${device.token ?? ""}`,
+                "x-dpi-token": device.token ?? "",
+                ...(hasBody ? { "content-type": "application/json" } : {}),
+                ...(req.get("idempotency-key") ? { "idempotency-key": req.get("idempotency-key")! } : {}),
+              },
+              body: hasBody ? JSON.stringify(req.body ?? {}) : undefined,
+              signal: AbortSignal.any([closed.signal, AbortSignal.timeout(330_000)]),
+            });
+            return { status: upstream.status, contentType: upstream.headers.get("content-type") ?? "application/json", text: await upstream.text() };
+          })();
+      res.status(result.status).type(result.contentType).send(result.text);
     } catch (e) {
       if (closed.signal.aborted) return;
       monitor.check(id);
