@@ -18,6 +18,7 @@ import { TunnelServer } from "./tunnel.js";
 import { TunnelDispatcher, TunnelTransport } from "./tunnel-transport.js";
 import { RotationService } from "./rotation.js";
 import { seedFromConfig } from "./seed.js";
+import { assertLimitsConfig, API_RATE_LIMITS } from "../../../../dpi-sdk/src/protocol/limits.js";
 
 const args = process.argv.slice(2);
 const option = (key: string, fallback: string) => {
@@ -77,8 +78,31 @@ const safe =
 const app = express();
 app.get("/healthz", (_req, res) => res.json({ ok: true, pid: process.pid, uptime: process.uptime() }));
 app.disable("x-powered-by");
+// All CANON limits must be sane or the hub refuses to start (P2-22: fail startup, not per-request).
+assertLimitsConfig();
 const audit = new Audit(registry);
-app.use("/api", denialLogging(audit), guard(allowedHosts), express.json({ limit: "256kb" }));
+
+/** Per-IP admin-REST token bucket (API_RATE_LIMITS policy; never request-overridable). */
+const apiTokens = new Map<string, { tokens: number; last: number }>();
+const apiRate = ((req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+  const ip = req.ip ?? req.socket.remoteAddress ?? "?";
+  const now = Date.now();
+  const b = apiTokens.get(ip) ?? { tokens: API_RATE_LIMITS.capacity, last: now };
+  b.tokens = Math.min(API_RATE_LIMITS.capacity, b.tokens + ((now - b.last) / 60_000) * API_RATE_LIMITS.perMinute);
+  b.last = now;
+  if (b.tokens < 1) {
+    apiTokens.set(ip, b);
+    res.set("Retry-After", "1");
+    return void res.status(429).json({ error: { code: "rate_limited", message: "Too many requests; slow down" } });
+  }
+  b.tokens -= 1;
+  apiTokens.set(ip, b);
+  if (apiTokens.size > 4_096) apiTokens.clear(); // bounded map: belt-and-braces against IP churn
+  next();
+}) as import("express").RequestHandler;
+// /healthz exempt (uptime probes must survive floods); one SSE open = one request;
+// stream frames are responses and never hit this middleware.
+app.use("/api", denialLogging(audit), guard(allowedHosts), apiRate, express.json({ limit: "256kb" }));
 
 // Pairing endpoints (03 §4). Admin authentication + authz matrix land in P2-21;
 // until then the hub is loopback/TLS-proxied and these routes are the same-origin
@@ -217,6 +241,7 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(port, host, () => {
+  assertLimitsConfig();
   console.log(`Durable Pi hub: http://${host === "0.0.0.0" ? "localhost" : host}:${port}`);
   console.log(
     `registry: ${registry.path}${configFile ? `  config: ${configFile}` : "  (no dpi-network.yaml)"}`,

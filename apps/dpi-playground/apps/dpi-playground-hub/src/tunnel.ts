@@ -175,6 +175,11 @@ export class TunnelServer {
     return this.connections.size;
   }
 
+  /** Sockets between 101 and a valid handshake (diagnostics/tests: release on failure). */
+  pendingHandshakeCount(): number {
+    return this.pendingHandshakes;
+  }
+
   /** True when the device has an open, handshake-complete tunnel connection. */
   hasConnection(deviceId: string): boolean {
     return this.connections.get(deviceId)?.phase === "open";

@@ -95,6 +95,9 @@ export const PAIR_HTTP_MAX_RETRIES = 3;
 /** Approved-code polling cadence. 1 s. */
 export const PAIR_POLL_MS = 1_000;
 
+/** Hub admin REST rate limit (per real IP): refill 60/min, burst capacity 120. */
+export const API_RATE_LIMITS = { perMinute: 60, capacity: 120 } as const;
+
 /** Routine credential rotation interval. 90 days. */
 export const ROTATION_INTERVAL_DAYS = 90;
 
@@ -107,24 +110,70 @@ export const REST_PATH_PREFIX = "/v1/";
  */
 export const REST_PATH_DENYLIST = ["/v1/events", "/v1/pairing", "/v1/tunnel"];
 
-export function assertLimitsConfig(): void {
-  // Structural consistency guards — fail startup, not per-request.
-  if (MAX_CHUNKS_PER_MESSAGE * CHUNK_RAW_BYTES < LOGICAL_MESSAGE_MAX_BYTES) {
+/** Canonical snapshot of every startup-validated number (testability: callers may pass mutated copies to validateLimits). */
+export interface LimitsSnapshot {
+  wsMaxMessageBytes: number;
+  chunkRawBytes: number;
+  maxChunksPerMessage: number;
+  logicalMessageMaxBytes: number;
+  connectionBufferBudgetBytes: number;
+  hubBufferBudgetBytes: number;
+  readersPerDevice: number;
+  readersPerHub: number;
+  restPendingPerDevice: number;
+  restPendingPerHub: number;
+  connectorBackoffFirstS: number;
+  pairVerifyFailsPerWindow: number;
+  pairVerifyFailWindowMinutes: number;
+  apiPerMinute: number;
+  apiCapacity: number;
+}
+
+/** CANON snapshot — the single source validated at startup. */
+const CANON_SNAPSHOT: LimitsSnapshot = {
+  wsMaxMessageBytes: WS_MAX_MESSAGE_BYTES,
+  chunkRawBytes: CHUNK_RAW_BYTES,
+  maxChunksPerMessage: MAX_CHUNKS_PER_MESSAGE,
+  logicalMessageMaxBytes: LOGICAL_MESSAGE_MAX_BYTES,
+  connectionBufferBudgetBytes: CONNECTION_BUFFER_BUDGET_BYTES,
+  hubBufferBudgetBytes: HUB_BUFFER_BUDGET_BYTES,
+  readersPerDevice: READERS_PER_DEVICE,
+  readersPerHub: READERS_PER_HUB,
+  restPendingPerDevice: REST_PENDING_PER_DEVICE,
+  restPendingPerHub: REST_PENDING_PER_HUB,
+  connectorBackoffFirstS: CONNECTOR_BACKOFF_S[0],
+  pairVerifyFailsPerWindow: PAIR_RATE_LIMITS.verifyFails.perWindow,
+  pairVerifyFailWindowMinutes: PAIR_RATE_LIMITS.verifyFails.windowMinutes,
+  apiPerMinute: API_RATE_LIMITS.perMinute,
+  apiCapacity: API_RATE_LIMITS.capacity,
+};
+
+/**
+ * Pure validation over a snapshot: every number must be a positive safe
+ * integer within sane bounds, and structural relations must hold. Exported
+ * for compile-negative tests; production calls assertLimitsConfig() (CANON).
+ */
+export function validateLimits(l: LimitsSnapshot): void {
+  const fields = Object.entries(l) as Array<[keyof LimitsSnapshot, number]>;
+  for (const [name, v] of fields) {
+    if (!Number.isSafeInteger(v) || v <= 0) throw new Error(`limits: ${name} must be a positive safe integer (got ${v})`);
+  }
+  if (l.maxChunksPerMessage > 65_536 || l.wsMaxMessageBytes > 64 * 1_048_576 || l.hubBufferBudgetBytes > (1 << 30))
+    throw new Error("limits: value out of sane range");
+  if (l.maxChunksPerMessage * l.chunkRawBytes < l.logicalMessageMaxBytes)
     throw new Error("limits: chunk count cannot cover logical message budget");
-  }
-  if (CONNECTION_BUFFER_BUDGET_BYTES >= HUB_BUFFER_BUDGET_BYTES) {
-    throw new Error("limits: connection budget must be smaller than hub budget");
-  }
-  if (CHUNK_RAW_BYTES * 2 > WS_MAX_MESSAGE_BYTES) {
+  if (l.chunkRawBytes * 2 > l.wsMaxMessageBytes)
     throw new Error("limits: single chunk + envelope must fit one WS message");
-  }
-  if (READERS_PER_DEVICE > READERS_PER_HUB) {
+  if (l.connectionBufferBudgetBytes >= l.hubBufferBudgetBytes)
+    throw new Error("limits: connection budget must be smaller than hub budget");
+  if (l.readersPerDevice > l.readersPerHub)
     throw new Error("limits: per-device reader cap exceeds hub cap");
-  }
-  if (REST_PENDING_PER_DEVICE > REST_PENDING_PER_HUB) {
+  if (l.restPendingPerDevice > l.restPendingPerHub)
     throw new Error("limits: per-device pending cap exceeds hub cap");
-  }
-  if (CONNECTOR_BACKOFF_S[0] < 1) {
-    throw new Error("limits: backoff must start >= 1s");
-  }
+  if (l.apiCapacity < l.apiPerMinute)
+    throw new Error("limits: API burst capacity must be >= per-minute refill");
+}
+
+export function assertLimitsConfig(): void {
+  validateLimits(CANON_SNAPSHOT);
 }

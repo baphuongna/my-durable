@@ -1,5 +1,6 @@
 // dpi-backend: one device of the Durable Agent Network.
 import express from "express";
+import { assertLimitsConfig } from "../../dpi-sdk/src/protocol/limits.js";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { loadConfig } from "./config.js";
@@ -9,6 +10,8 @@ import { errorMiddleware } from "./errors.js";
 import { v1 } from "./routes.js";
 import { DevicePairing } from "./pairing.js";
 import { DeviceConnector, readCaPem } from "./tunnel.js";
+
+assertLimitsConfig();
 
 const config = loadConfig();
 const store = await Store.open({

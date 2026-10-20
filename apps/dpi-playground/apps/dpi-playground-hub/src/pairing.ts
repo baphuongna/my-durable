@@ -131,6 +131,19 @@ export class PairingService {
   private createLimiter = new RateLimiter(PAIR_RATE_LIMITS.codeCreate.capacity, PAIR_RATE_LIMITS.codeCreate.perMinute);
   private startLimiter = new RateLimiter(PAIR_RATE_LIMITS.start.capacity, PAIR_RATE_LIMITS.start.perMinute);
   private verifyLimiter = new RateLimiter(PAIR_RATE_LIMITS.verifyTotal.capacity, PAIR_RATE_LIMITS.verifyTotal.perMinute);
+  /** Sliding-window failure counter, keyed by IP ONLY (changing code/UID must not reset it). */
+  private failWindows = new RateLimiter(0, 0);
+  private static readonly FAIL_WINDOW_MS = PAIR_RATE_LIMITS.verifyFails.windowMinutes * 60_000;
+
+  /** Recorded on auth failures only; a valid poll never counts. */
+  private noteFailure(ip: string, now: number): void {
+    this.failWindows.recordWindow(`ip:${ip}`, now);
+  }
+
+  /** S-1: >= perWindow failures inside the window → fail closed for that IP. */
+  private failureBlocked(ip: string, now: number): boolean {
+    return this.failWindows.countWindow(`ip:${ip}`, now, PairingService.FAIL_WINDOW_MS) >= PAIR_RATE_LIMITS.verifyFails.perWindow;
+  }
   private readonly now: () => number;
 
   constructor(private readonly deps: PairingDeps) {
@@ -179,14 +192,24 @@ export class PairingService {
   /** POST /api/pair/start — issue a challenge bound to one immutable tuple. */
   start(body: unknown, ip: string): { ok: true; value: PairChallengeOut } | PairingFailure {
     const now = this.now();
+    if (this.failureBlocked(ip, now))
+      return this.fail(429, "rate_limited", "Too many pairing failures; slow down", 60_000);
     if (!this.startLimiter.take(`ip:${ip}`, now))
       return this.fail(429, "rate_limited", "Too many pairing starts; slow down", 60_000);
-    if (!checkPairingDto(PairRequestSchema, body))
+    if (!checkPairingDto(PairRequestSchema, body)) {
+      this.noteFailure(ip, now);
       return this.fail(400, "invalid", "pair.request body failed schema validation");
+    }
     const req = body as { requestId: string; code: string; deviceUid: string; deviceName: string; publicKey: string; keyFingerprint: string; clientTime: number };
     const live = this.liveCode(req.code, now);
-    if (live === "invalid") return this.fail(404, "code_invalid", "Unknown pairing code");
-    if (live === "expired") return this.fail(410, "code_expired", "Pairing code expired");
+    if (live === "invalid") {
+      this.noteFailure(ip, now); // code guessing
+      return this.fail(404, "code_invalid", "Unknown pairing code");
+    }
+    if (live === "expired") {
+      this.noteFailure(ip, now);
+      return this.fail(410, "code_expired", "Pairing code expired");
+    }
     if (live === "cancelled") return this.fail(410, "enrollment_cancelled", "Pairing code cancelled");
 
     // Same requestId + same tuple → same live challenge (idempotent retry).
@@ -211,14 +234,20 @@ export class PairingService {
     let fingerprint: string;
     try {
       const key = createPublicKey(req.publicKey);
-      if (key.asymmetricKeyType !== "ed25519") return this.fail(400, "invalid", "publicKey must be Ed25519");
+      if (key.asymmetricKeyType !== "ed25519") {
+        this.noteFailure(ip, now);
+        return this.fail(400, "invalid", "publicKey must be Ed25519");
+      }
       const der = key.export({ format: "der", type: "spki" }) as Buffer;
       fingerprint = `sha256:${createHash("sha256").update(der).digest("hex")}`;
     } catch {
+      this.noteFailure(ip, now);
       return this.fail(400, "invalid", "publicKey is not a parseable SPKI PEM");
     }
-    if (fingerprint !== req.keyFingerprint)
+    if (fingerprint !== req.keyFingerprint) {
+      this.noteFailure(ip, now);
       return this.fail(409, "fingerprint_mismatch", "Declared fingerprint does not match the submitted public key");
+    }
 
     if (this.enrollments.size >= PAIR_RAM_CAPS.enrollments)
       return this.fail(429, "rate_limited", "Enrollment capacity reached; retry later", 60_000);
@@ -251,13 +280,20 @@ export class PairingService {
   /** POST /api/pair/verify — proof, poll, and (post-approval) issuance. */
   async verify(body: unknown, ip: string): Promise<{ ok: true; value: PairPendingOut | TokenIssue; status: number } | PairingFailure> {
     const now = this.now();
+    if (this.failureBlocked(ip, now))
+      return this.fail(429, "rate_limited", "Too many pairing failures; slow down", 60_000);
     if (!this.verifyLimiter.take(`ip:${ip}`, now))
       return this.fail(429, "rate_limited", "Too many verify requests; slow down", 60_000);
-    if (!checkPairingDto(PairResponseSchema, body))
+    if (!checkPairingDto(PairResponseSchema, body)) {
+      this.noteFailure(ip, now);
       return this.fail(400, "invalid", "pair.response body failed schema validation");
+    }
     const req = body as { enrollmentId: string; nonce: string; signature: string };
     const enrollment = this.enrollments.get(req.enrollmentId);
-    if (!enrollment) return this.fail(410, "enrollment_lost", "Enrollment not found (hub restart or new code required)");
+    if (!enrollment) {
+      this.noteFailure(ip, now);
+      return this.fail(410, "enrollment_lost", "Enrollment not found (hub restart or new code required)");
+    }
     if (enrollment.cancelled) return this.fail(410, "enrollment_cancelled", "Enrollment cancelled");
     const code = this.codes.get(enrollment.codeId)!;
 
@@ -300,9 +336,18 @@ export class PairingService {
     }
 
     // First proof: nonce must be live; consume atomically (sync section).
-    if (enrollment.nonceConsumed) return this.fail(410, "challenge_expired", "Nonce already consumed");
-    if (req.nonce !== enrollment.nonce) return this.fail(400, "invalid", "Nonce mismatch");
-    if (now - enrollment.nonceIssuedAt > NONCE_TTL_MS) return this.fail(410, "challenge_expired", "Challenge expired; request a new code");
+    if (enrollment.nonceConsumed) {
+      this.noteFailure(ip, now);
+      return this.fail(410, "challenge_expired", "Nonce already consumed");
+    }
+    if (req.nonce !== enrollment.nonce) {
+      this.noteFailure(ip, now);
+      return this.fail(400, "invalid", "Nonce mismatch");
+    }
+    if (now - enrollment.nonceIssuedAt > NONCE_TTL_MS) {
+      this.noteFailure(ip, now);
+      return this.fail(410, "challenge_expired", "Challenge expired; request a new code");
+    }
     if (now >= code.expiresAt) return this.fail(410, "code_expired", "Pairing code expired");
 
     const payload = pairingSigningPayload({
@@ -322,6 +367,7 @@ export class PairingService {
     }
     if (!valid) {
       enrollment.badSignatures += 1;
+      this.noteFailure(ip, now); // sliding-window IP counter (S-1): code/UID change does not reset
       this.deps.audit.denied("auth.denied", ip, { stage: "pair.verify", enrollmentId: enrollment.enrollmentId });
       if (enrollment.badSignatures >= PAIR_SIGNATURE_FAIL_LIMIT) {
         enrollment.cancelled = true;
