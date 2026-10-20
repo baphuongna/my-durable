@@ -11,6 +11,7 @@ import { DeviceMonitor } from "./monitor.js";
 import { StreamMux } from "./mux.js";
 import { proxy } from "./proxy.js";
 import { guard } from "./guard.js";
+import { Audit, denialLogging } from "./audit.js";
 import { seedFromConfig } from "./seed.js";
 
 const args = process.argv.slice(2);
@@ -71,7 +72,8 @@ const safe =
 const app = express();
 app.get("/healthz", (_req, res) => res.json({ ok: true, pid: process.pid, uptime: process.uptime() }));
 app.disable("x-powered-by");
-app.use("/api", guard(allowedHosts), express.json({ limit: "256kb" }));
+const audit = new Audit(registry);
+app.use("/api", denialLogging(audit), guard(allowedHosts), express.json({ limit: "256kb" }));
 
 app.get("/api/network", (_req, res) => res.json({ configFile, devices: monitor.network() }));
 // Devices are configured in dpi-network.yaml and `just net register`; the hub only reads them.
