@@ -63,10 +63,12 @@ watch(deviceId, (id) => {
   if (!id) return;
   watcher.value = watch(
     () => network.devices.value.find((d) => d.id === id)?.status,
-    (status, _, stop) => {
+    (status) => {
       if (status === "online") {
         notify("Device paired and online.");
-        stop();
+        // F12: the STOP HANDLE is what watch() RETURNS — the callback's third
+        // argument is the onCleanup REGISTRAR (needs a function argument).
+        watcher.value?.();
         watcher.value = undefined;
       }
     },
