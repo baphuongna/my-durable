@@ -24,12 +24,14 @@ const int = (value: unknown, name: string) => {
   return n;
 };
 
-export function v1(store: Store, pairing?: DevicePairing) {
+export function v1(store: Store, pairing?: DevicePairing, connector?: { status(): unknown }) {
   const r = Router();
   const create = idempotent(store);
 
   // Local pairing control point (03 §7): the TUI never touches crypto or the
   // pairing files directly — everything flows through these token-authed routes.
+  // Tunnel connector status (no secrets) for the TUI (P2-13).
+  if (connector) r.get("/tunnel", (_req, res) => res.json(connector.status()));
   if (pairing) {
     // Pairing errors carry {code, status}; map them without going through the
     // generic middleware so codes like hub_required/busy survive to the TUI.

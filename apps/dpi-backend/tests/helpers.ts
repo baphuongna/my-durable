@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Store } from "../src/store.js";
 
 export const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-export async function until(fn: () => Promise<boolean>, timeout = 15000, what = "condition") {
+export async function until(fn: () => boolean | Promise<boolean>, timeout = 15000, what = "condition") {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
     if (await fn()) return;

@@ -8,6 +8,7 @@ import { bearerAuth } from "./auth.js";
 import { errorMiddleware } from "./errors.js";
 import { v1 } from "./routes.js";
 import { DevicePairing } from "./pairing.js";
+import { DeviceConnector, readCaPem } from "./tunnel.js";
 
 const config = loadConfig();
 const store = await Store.open({
@@ -21,7 +22,11 @@ const app = express();
 app.disable("x-powered-by");
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 const pairing = new DevicePairing(store, config.home, config.name, process.env.DPI_HUB_URL);
-app.use("/v1", bearerAuth(config.token), express.json({ limit: "256kb" }), v1(store, pairing));
+// One connector per daemon, from the persisted pairing file (P2-13). DPI_HUB_CA
+// narrows TLS trust for the reference profile; verification is never disabled.
+const connector = new DeviceConnector(config.home, readCaPem(process.env.DPI_HUB_CA));
+connector.start();
+app.use("/v1", bearerAuth(config.token), express.json({ limit: "256kb" }), v1(store, pairing, connector));
 app.use((_req, res) => res.status(404).json({ error: { code: "not_found", message: "Route not found" } }));
 app.use(errorMiddleware);
 
@@ -40,6 +45,7 @@ let closing = false;
 const shutdown = async () => {
   if (closing) return;
   closing = true;
+  connector.stop("backend shutdown"); // readers/pending ops before storage closes
   server.close();
   server.closeAllConnections();
   await store.close();
