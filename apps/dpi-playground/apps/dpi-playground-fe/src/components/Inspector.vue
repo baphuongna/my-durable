@@ -16,6 +16,8 @@ import {
 import { THINKING_LEVELS, type ThinkingLevel } from "@sdk/api";
 import type { StateChange } from "@sdk/app-state";
 import StateEditor from "./StateEditor.vue";
+import TunnelStatusBar from "./TunnelStatusBar.vue";
+import TokenManager from "./TokenManager.vue";
 import TasksPanel from "./TasksPanel.vue";
 import ExtensionsPanel from "./ExtensionsPanel.vue";
 import ContextBar from "./ContextBar.vue";
@@ -238,8 +240,10 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
                 ><i />{{ busy ? "Working" : "Idle" }}</span
               ><span v-if="background" class="background-pill">{{ background }} background</span
               ><span class="saved"><Server :size="18" />{{ device?.id }}</span>
+              <TunnelStatusBar v-if="device" :device="device" />
             </div>
           </section>
+          <TokenManager v-if="device" :device="device" />
           <section class="model-section">
             <div class="section-label">
               <span>AGENT</span>

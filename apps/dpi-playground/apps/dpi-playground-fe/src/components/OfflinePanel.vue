@@ -20,6 +20,14 @@ const fix = computed(() => {
         text: "Probing the device. This view fills in as soon as it answers.",
       };
     case "unauthorized":
+      if (d.transport === "tunnel") {
+        // The hub never parks tunnel devices on unauthorized; if it happens,
+        // point at pairing, not at a token the browser does not hold.
+        return {
+          title: `${d.id} tunnel credentials are not valid`,
+          text: "Pair the device again — the hub will mint a fresh credential.",
+        };
+      }
       return {
         title: d.hasToken ? `${d.id} rejected its token` : `No token for ${d.id}`,
         text: d.hasToken
@@ -92,7 +100,10 @@ async function copy(text: string) {
         :size="30"
       />
       <WifiOff v-else :size="30" />
-      <span class="eyebrow">{{ device.kind.toUpperCase() }} · {{ device.url }}</span>
+      <span class="eyebrow"
+        >{{ device.kind.toUpperCase() }} ·
+        {{ device.url ?? (device.transport === "tunnel" ? "tunnel" : "no endpoint") }}</span
+      >
       <h2>{{ fix.title }}</h2>
       <p>{{ fix.text }}</p>
       <p v-if="device.error" class="hint offline-error">{{ device.error }}</p>
