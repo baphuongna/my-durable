@@ -2,7 +2,7 @@
 // Status machine: checking → online | offline | unauthorized | mismatch | incompatible, retrying
 // with backoff (offline: 1s → 30s; states only a human can fix: 30s or an explicit check()).
 import { DpiError } from "../../../../dpi-sdk/src/errors.js";
-import { transportFor } from "./transport.js";
+import { transportFor, type DeviceTransport } from "./transport.js";
 import type {
   DeviceInfo,
   DeviceStatus,
@@ -26,6 +26,12 @@ const sleep = (ms: number, signal: AbortSignal) =>
     signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
   });
 
+export interface TunnelTransportSource {
+  dispatcherFor(row: { id: string; transport: string }): DeviceTransport;
+  /** True when the device currently has an authenticated tunnel connection. */
+  hasLiveConnection(deviceId: string): boolean;
+}
+
 export class DeviceMonitor {
   private live = new Map<string, LiveState>();
   private loops = new Map<string, AbortController>();
@@ -33,6 +39,8 @@ export class DeviceMonitor {
   private listeners = new Set<() => void>();
   private persistedAt = new Map<string, number>();
   private emitTimer?: ReturnType<typeof setTimeout>;
+
+  private tunnel?: TunnelTransportSource;
 
   constructor(private readonly registry: NetworkRegistry) {}
 
@@ -72,6 +80,12 @@ export class DeviceMonitor {
 
   network(): NetworkDevice[] {
     return this.registry.list().map((row) => toPublic(row, this.live.get(row.id)));
+  }
+
+  /** Wire the tunnel dispatcher source (main.ts, after construction). */
+  setTunnelSource(source: TunnelTransportSource): void {
+    this.tunnel = source;
+    for (const device of this.registry.list()) if (device.transport === "tunnel") this.watch(device.id);
   }
 
   onChange(fn: () => void) {
@@ -142,10 +156,27 @@ export class DeviceMonitor {
       const device = this.registry.get(id);
       if (!device) return;
       let wait = backoff;
-      if (device.transport === "tunnel") {
-        // Tunnel devices have no URL/token at the hub; probing happens through
-        // the tunnel connection (P2-08). Until a tunnel is live this is the
-        // honest status — NOT "unauthorized" (hasToken is LAN-only).
+      if (device.transport === "tunnel" && this.tunnel) {
+        // Park offline (never unauthorized) while no tunnel connection is
+        // live, but wake within 5s of one appearing — the 30s backoff cap
+        // below belongs to probe failures, not to connection arrival.
+        if (!this.tunnel.hasLiveConnection(id)) {
+          this.update(id, {
+            status: "offline",
+            error: "paired over tunnel; no tunnel connection is live",
+          });
+          let appeared = false;
+          for (let i = 0; i < 6 && !signal.aborted; i++) {
+            await sleep(5_000, signal);
+            if (this.tunnel.hasLiveConnection(id)) {
+              appeared = true;
+              break;
+            }
+          }
+          if (!appeared && !this.tunnel.hasLiveConnection(id)) continue;
+        }
+      } else if (device.transport === "tunnel") {
+        // No dispatcher wired (unit contexts only): honest offline, never LAN.
         this.update(id, {
           status: "offline",
           error: "paired over tunnel; no tunnel connection is live",
@@ -153,7 +184,7 @@ export class DeviceMonitor {
         await sleep(30_000, signal);
         continue;
       }
-      if (!device.url || !device.token) {
+      if (device.transport !== "tunnel" && (!device.url || !device.token)) {
         this.update(id, {
           status: "unauthorized",
           error: `No token for ${id}. Run: just net register ${id}`,
@@ -162,8 +193,8 @@ export class DeviceMonitor {
         continue;
       }
       if (this.live.get(id)?.status !== "online") this.update(id, { status: "checking" });
-      const transport = transportFor(device);
-      if (!transport || !transport.available) {
+      const transport = transportFor(device, this.tunnel);
+      if (!transport || (device.transport === "lan" && !transport.available)) {
         this.update(id, {
           status: "unauthorized",
           error: `No token for ${id}. Run: just net register ${id}`,

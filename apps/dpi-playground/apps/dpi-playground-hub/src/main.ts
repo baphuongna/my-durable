@@ -15,6 +15,7 @@ import { Audit, denialLogging } from "./audit.js";
 import { PairingService } from "./pairing.js";
 import { CredentialService } from "./credentials.js";
 import { TunnelServer } from "./tunnel.js";
+import { TunnelDispatcher, TunnelTransport } from "./tunnel-transport.js";
 import { seedFromConfig } from "./seed.js";
 
 const args = process.argv.slice(2);
@@ -167,6 +168,11 @@ if (args.includes("--dev")) {
 // auth. In --dev mode Vite owns its own HMR upgrade path, so only the exact
 // tunnel path is claimed here and other upgrades are left alone.
 const tunnel = new TunnelServer(registry, audit, hubId);
+const dispatcher = new TunnelDispatcher(tunnel);
+monitor.setTunnelSource({
+  dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
+  hasLiveConnection: (id) => tunnel.hasConnection(id),
+});
 server.on("upgrade", (req, socket, head) => {
   let path = "/";
   try {
@@ -201,6 +207,7 @@ let closing = false;
 const shutdown = async () => {
   if (closing) return;
   closing = true;
+  dispatcher.close();
   tunnel.close();
   monitor.stop();
   server.close();

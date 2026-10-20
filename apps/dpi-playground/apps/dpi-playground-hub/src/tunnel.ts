@@ -164,7 +164,7 @@ export class TunnelServer {
   }
 
   private readonly policy: TunnelPolicy;
-  private readonly handlers: TunnelHandlers;
+  private handlers: TunnelHandlers;
   private readonly now: () => number;
 
   /** Authenticated connection count (diagnostics/tests). */
@@ -175,6 +175,21 @@ export class TunnelServer {
   /** True when the device has an open, handshake-complete tunnel connection. */
   hasConnection(deviceId: string): boolean {
     return this.connections.get(deviceId)?.phase === "open";
+  }
+
+  /** Current authenticated connectionId, or undefined when offline. */
+  connectionIdOf(deviceId: string): string | undefined {
+    const c = this.connections.get(deviceId);
+    return c && c.phase === "open" ? c.connectionId : undefined;
+  }
+
+  /**
+   * Replace the handlers (the dispatcher installs itself after construction).
+   * Per-connection frame validation (schema/direction/phase) has already run
+   * by the time onMessage fires.
+   */
+  setHandlers(handlers: TunnelHandlers): void {
+    this.handlers = handlers;
   }
 
   /** Send a frame to the device's current connection (no-op when offline). */

@@ -24,7 +24,12 @@ app.get("/healthz", (_req, res) => res.json({ ok: true }));
 const pairing = new DevicePairing(store, config.home, config.name, process.env.DPI_HUB_URL);
 // One connector per daemon, from the persisted pairing file (P2-13). DPI_HUB_CA
 // narrows TLS trust for the reference profile; verification is never disabled.
-const connector = new DeviceConnector(config.home, readCaPem(process.env.DPI_HUB_CA));
+const connector = new DeviceConnector(
+  config.home,
+  readCaPem(process.env.DPI_HUB_CA),
+  {},
+  { baseUrl: `http://${config.host === "0.0.0.0" ? "127.0.0.1" : config.host}:${config.port}`, token: config.token },
+);
 connector.start();
 app.use("/v1", bearerAuth(config.token), express.json({ limit: "256kb" }), v1(store, pairing, connector));
 app.use((_req, res) => res.status(404).json({ error: { code: "not_found", message: "Route not found" } }));

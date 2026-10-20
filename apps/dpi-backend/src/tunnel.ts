@@ -20,7 +20,9 @@ import { readFileSync, rmSync } from "node:fs";
 import { Agent as HttpsAgent } from "node:https";
 import WebSocket from "ws";
 import {
+  assertDirection,
   checkTunnelMessage,
+  validateRestRequest,
   type TunnelFrame,
 } from "../../dpi-sdk/src/protocol/tunnel.js";
 import {
@@ -38,6 +40,8 @@ const RETRY_AFTER_MAX_MS = 60_000;
 /** TCP/TLS+upgrade completion timeout (not a CANON protocol number). */
 const HANDSHAKE_TCP_TIMEOUT_MS = 10_000;
 const AUTH_BODY_MAX_BYTES = 4_096;
+/** Loopback REST deadline on the device (matches hub REST_TIMEOUT budget). */
+const REST_LOCAL_TIMEOUT_MS = 320_000;
 
 export type ConnectorState =
   | "stopped" // not started / stopped by operator or shutdown
@@ -93,10 +97,13 @@ export class DeviceConnector {
   private lastByte = 0;
   private readonly agent: HttpsAgent | undefined;
 
+  private readonly readers = new Map<string, AbortController>();
+
   constructor(
     private readonly home: string,
     caPem?: string,
     private readonly hooks: ConnectorHooks = {},
+    private readonly localApi?: { baseUrl: string; token: string },
   ) {
     // rejectUnauthorized stays true; a CA bundle narrows trust, it never
     // disables verification.
@@ -290,6 +297,7 @@ export class DeviceConnector {
           finish({ kind: "error", message: (e as Error).message });
           return;
         }
+        let helloDone = false;
         const helloTimer = setTimeout(() => finish({ kind: "hello-timeout" }), this.helloMs);
         this.idleTimer = helloTimer as NodeJS.Timeout;
         ws.on("message", (data: Buffer) => {
@@ -298,29 +306,47 @@ export class DeviceConnector {
           try {
             msg = JSON.parse(data.toString("utf8"));
           } catch {
-            finish({ kind: "error", message: "hello: malformed JSON" });
+            finish({ kind: "error", message: helloDone ? "frame: malformed JSON" : "hello: malformed JSON" });
             return;
           }
-          if (!checkTunnelMessage(msg) || (msg as { type: string }).type !== "hello") {
-            finish({ kind: "error", message: "hello: schema violation" });
+          if (!checkTunnelMessage(msg)) {
+            finish({ kind: "error", message: helloDone ? "frame: schema violation" : "hello: schema violation" });
             return;
           }
-          const hello = msg as Extract<TunnelFrame, { type: "hello" }>;
-          if (hello.hubId !== file.hubId) {
-            finish({ kind: "hub-id-mismatch", sawHubId: hello.hubId });
+          const frame = msg as TunnelFrame;
+          if (!helloDone) {
+            if (frame.type !== "hello") {
+              finish({ kind: "error", message: "hello: expected hello first" });
+              return;
+            }
+            if (frame.hubId !== file.hubId) {
+              finish({ kind: "hub-id-mismatch", sawHubId: frame.hubId });
+              return;
+            }
+            // Connected: heartbeat + idle safety net from here (04 §5).
+            helloDone = true;
+            clearTimeout(helloTimer);
+            this.hellos++;
+            this.backoffIdx = 0;
+            this.lastConnectedAt = this.now();
+            this.setState("connected", `connectionId ${frame.connectionId}`);
+            this.lastByte = this.now();
+            this.startHeartbeat(ws, generation);
+            ws.on("close", (code, reason) => finish({ kind: "closed", code, reason: Buffer.from(reason).toString("utf8") }));
             return;
           }
-          // Connected: heartbeat + idle safety net from here (04 §5).
-          clearTimeout(helloTimer);
-          this.hellos++;
-          this.backoffIdx = 0;
-          this.lastConnectedAt = this.now();
-          this.setState("connected", `connectionId ${hello.connectionId}`);
-          this.lastByte = this.now();
-          this.startHeartbeat(ws, generation);
-          // Subsequent frames flow to consumers via P2-14/16 seams; the
-          // connector itself only tracks liveness here.
-          ws.on("close", (code, reason) => finish({ kind: "closed", code, reason: Buffer.from(reason).toString("utf8") }));
+          // Open phase: only hub→device frames; dispatch to REST/SSE readers.
+          try {
+            assertDirection(frame, "hub->device");
+          } catch (e) {
+            this.setState("connecting", `protocol violation: ${(e as Error).message}`);
+            try {
+              ws.close(1008, "direction violation");
+            } catch {}
+            finish({ kind: "error", message: (e as Error).message });
+            return;
+          }
+          this.dispatch(ws, generation, frame);
         });
         ws.on("pong", () => {
           this.lastByte = this.now();
@@ -328,6 +354,112 @@ export class DeviceConnector {
         });
       });
     });
+  }
+
+  /**
+   * Hub→device dispatch: rest-request → loopback API; control:subscribe →
+   * loopback SSE reader tagged with the hub's subscriptionId. The connector
+   * injects the LOCAL device token; the hub's caller identity never reaches
+   * the device API (P2-16 hardens ownership/caps).
+   */
+  private dispatch(ws: WebSocket, generation: number, frame: TunnelFrame): void {
+    const send = (payload: TunnelFrame) => {
+      if (this.wsGeneration !== generation || ws.readyState !== ws.OPEN) return false;
+      try {
+        ws.send(JSON.stringify(payload));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const api = this.localApi;
+    if (!api) return; // no local API wired (unit contexts)
+    if (frame.type === "rest-request") {
+      void (async () => {
+        const check = validateRestRequest({ method: frame.method, path: frame.path });
+        if (!check.ok) {
+          send({ type: "rest-response", reqId: frame.reqId, status: 404, body: { error: { code: "invalid", message: check.error } } });
+          return;
+        }
+        try {
+          const hasBody = !["GET", "HEAD", "DELETE"].includes(frame.method);
+          const res = await fetch(api.baseUrl + frame.path, {
+            method: frame.method,
+            headers: {
+              authorization: `Bearer ${api.token}`,
+              "x-dpi-token": api.token,
+              ...(hasBody && frame.body !== undefined ? { "content-type": "application/json" } : {}),
+              ...(frame.idempotencyKey ? { "idempotency-key": frame.idempotencyKey } : {}),
+            },
+            body: hasBody && frame.body !== undefined ? JSON.stringify(frame.body) : undefined,
+            signal: AbortSignal.timeout(REST_LOCAL_TIMEOUT_MS),
+          });
+          const text = await res.text();
+          send({
+            type: "rest-response",
+            reqId: frame.reqId,
+            status: res.status,
+            contentType: res.headers.get("content-type") ?? undefined,
+            body: text,
+          });
+        } catch (e) {
+          send({ type: "rest-response", reqId: frame.reqId, status: 502, body: { error: { code: "offline", message: (e as Error).message } } });
+        }
+      })();
+      return;
+    }
+    if (frame.type === "control" && frame.action === "subscribe") {
+      const existing = this.readers.get(frame.subscriptionId);
+      if (existing) return; // idempotent repeat
+      const ctl = new AbortController();
+      this.readers.set(frame.subscriptionId, ctl);
+      void (async () => {
+        try {
+          const res = await fetch(api.baseUrl + "/v1/events", {
+            headers: { authorization: `Bearer ${api.token}`, "x-dpi-token": api.token, accept: "text/event-stream" },
+            signal: ctl.signal,
+          });
+          if (!res.ok || !res.body) throw new Error(`/v1/events answered ${res.status}`);
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            this.lastByte = this.now();
+            buffer += decoder.decode(value, { stream: true });
+            let idx: number;
+            while ((idx = buffer.indexOf("\n\n")) >= 0) {
+              const block = buffer.slice(0, idx);
+              buffer = buffer.slice(idx + 2);
+              for (const line of block.split("\n")) {
+                if (!line.startsWith("data:")) continue;
+                const data = line.slice(5).trimStart();
+                if (!data) continue;
+                let parsed: unknown;
+                try {
+                  parsed = JSON.parse(data);
+                } catch {
+                  continue;
+                }
+                if (!send({ type: "tunnel-data", frame: parsed as never, subscriptionId: frame.subscriptionId, sub: frame.sub })) return;
+              }
+            }
+          }
+        } catch {
+          /* aborted or connection lost: the hub will resubscribe on the new connection */
+        } finally {
+          this.readers.delete(frame.subscriptionId);
+        }
+      })();
+      return;
+    }
+    if (frame.type === "control" && frame.action === "unsubscribe") {
+      this.readers.get(frame.subscriptionId)?.abort();
+      this.readers.delete(frame.subscriptionId);
+      return;
+    }
+    // revoked/token-rotate/unpair control frames land in P2-19/P2-20.
   }
 
   private startHeartbeat(ws: WebSocket, generation: number): void {
@@ -414,6 +546,8 @@ export class DeviceConnector {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.pingTimer = null;
     this.idleTimer = null;
+    for (const ctl of this.readers.values()) ctl.abort();
+    this.readers.clear();
   }
 
   private dropSocket(reason: string): void {

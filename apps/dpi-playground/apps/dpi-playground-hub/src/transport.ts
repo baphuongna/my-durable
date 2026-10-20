@@ -86,11 +86,11 @@ export class LanTransport implements DeviceTransport {
 }
 
 /**
- * Explicit transport selection from the registry row. Tunnel rows return
- * undefined until TunnelTransport exists (P2-12) — callers report "no tunnel
- * connection", they do NOT fall back to LAN.
+ * Explicit transport selection from the registry row. Tunnel rows need the
+ * hub's live-connection dispatcher (P2-15); without one callers report "no
+ * tunnel connection" — they NEVER fall back to the LAN URL.
  */
-export function transportFor(row: DeviceRow): DeviceTransport | undefined {
-  if (row.transport === "tunnel") return undefined;
+export function transportFor(row: DeviceRow, tunnel?: { dispatcherFor(row: DeviceRow): DeviceTransport }): DeviceTransport | undefined {
+  if (row.transport === "tunnel") return tunnel ? tunnel.dispatcherFor(row) : undefined;
   return new LanTransport(row);
 }
