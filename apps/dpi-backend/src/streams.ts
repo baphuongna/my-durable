@@ -1,6 +1,7 @@
 // Server-Sent Event streams. Three scopes share one frame envelope (see dpi-sdk/src/api.ts):
 // device (tree + activity), session (agents, tasks, usage) and agent (pi-durable agent events).
 // Streams are viewers only: closing one never aborts work or closes a harness.
+import { PACE_WRITE_BYTES } from "../../dpi-sdk/src/protocol/limits.js";
 import type { Request, Response } from "express";
 import { watchEvents, type Conversation, type Harness, type WatchEnd } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -45,7 +46,7 @@ export function openSse(res: Response, scope: StreamScope): Sse {
   const cleanups: Array<() => void> = [];
   const last = new Map<string, string>();
   const ping = setInterval(() => {
-    if (!closed) res.write(": ping\n\n");
+    if (!closed) res.write(": ping\n\n"); // complete comment lines only
   }, 15_000);
   const close = () => {
     if (closed) return;
@@ -58,15 +59,45 @@ export function openSse(res: Response, scope: StreamScope): Sse {
     }
   };
   res.on("close", close);
+  // Paced writer (04 §10): complete events split into ≤64 KiB segments with
+  // drain waits, serialized so the ping interval can never split an event.
+  // A slow viewer is cut at the 2 MB backend cap and simply reconnects to a
+  // fresh snapshot; the harness/session behind this viewer is NOT aborted.
+  let chain: Promise<void> = Promise.resolve();
+  const waitDrain = () =>
+    new Promise<void>((resolve) => {
+      const onDrain = () => {
+        res.off("close", onClose);
+        resolve();
+      };
+      const onClose = () => {
+        res.off("drain", onDrain);
+        resolve();
+      };
+      res.once("drain", onDrain);
+      res.once("close", onClose);
+    });
   const send = (frame: Frame) => {
     if (closed) return;
     if (res.writableLength > MAX_BUFFER) {
-      // A slow viewer reconnects to a fresh snapshot instead of buffering without bound.
       res.end();
       close();
       return;
     }
-    res.write(`id: ${++seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+    const event = `id: ${++seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`;
+    if (seq === 1) {
+      // The hello is tiny and is the first bytes on the wire: write it
+      // synchronously (also keeps "viewer attached" semantics testable).
+      res.write(event);
+      return;
+    }
+    chain = chain.then(async () => {
+      for (let i = 0; i < event.length && !closed; i += PACE_WRITE_BYTES) {
+        const ok = res.write(event.slice(i, i + PACE_WRITE_BYTES));
+        if (!ok) await waitDrain();
+      }
+    });
+    chain = chain.catch(() => {});
   };
   send({ type: "hello", apiVersion: 1, serverTime: Date.now(), scope });
   return {

@@ -450,7 +450,12 @@ export class DeviceConnector {
                 } catch {
                   continue;
                 }
-                if (!send({ type: "tunnel-data", frame: parsed as never, subscriptionId: frame.subscriptionId, sub: frame.sub })) return;
+                const dataFrame = { type: "tunnel-data", frame: parsed as never, subscriptionId: frame.subscriptionId, sub: frame.sub } as TunnelFrame;
+                const wire = JSON.stringify(dataFrame);
+                if (Buffer.byteLength(wire, "utf8") > 512 * 1024) {
+                  // One WS message ≤1 MiB: large frames (big trees) chunk.
+                    if (!sendChunked(parsed, { kind: "tunnel-data", subscriptionId: frame.subscriptionId, sub: frame.sub }, (chunk) => send(chunk as unknown as TunnelFrame))) return;
+                } else if (!send(dataFrame)) return;
               }
             }
           }

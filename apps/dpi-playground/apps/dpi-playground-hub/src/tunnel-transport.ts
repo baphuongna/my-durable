@@ -135,29 +135,52 @@ export class TunnelDispatcher {
     }
     if (type === "tunnel-chunk") {
       const chunk = frame as unknown as TunnelChunk;
-      if (chunk.kind !== "rest-response") return; // request-chunks are device→device legs only
-      const correlation: ChunkCorrelation = { kind: "rest-response", reqId: chunk.reqId };
       const re = this.reassemblerFor(conn);
-      const out = re.feed(chunk, (c) => {
-        if (c.kind !== "rest-response") return false;
-        const p = this.pending.get(c.reqId);
-        return !!p && p.connectionId === conn.connectionId;
-      });
-      if (!out.ok) {
-        const p = this.settle(chunk.reqId);
-        p?.resolve({ status: 502, body: { error: { code: "response_too_large", message: out.error } } });
+      if (chunk.kind === "rest-response") {
+        const correlation: ChunkCorrelation = { kind: "rest-response", reqId: chunk.reqId };
+        const out = re.feed(chunk, (c) => {
+          if (c.kind !== "rest-response") return false;
+          const p = this.pending.get(c.reqId);
+          return !!p && p.connectionId === conn.connectionId;
+        });
+        if (!out.ok) {
+          const p = this.settle(chunk.reqId);
+          p?.resolve({ status: 502, body: { error: { code: "response_too_large", message: out.error } } });
+          return;
+        }
+        if (out.done) {
+          const p = this.settle(chunk.reqId);
+          // The chunked logical message IS the rest-response envelope.
+          const env = out.value as { status?: number; contentType?: string; body?: unknown } | undefined;
+          p?.resolve({
+            status: typeof env?.status === "number" ? env.status : 200,
+            contentType: env?.contentType,
+            body: env?.body,
+            rawBytes: out.rawBytes,
+          });
+        }
         return;
       }
-      if (out.done) {
-        const p = this.settle(chunk.reqId);
-        // The chunked logical message IS the rest-response envelope.
-        const env = out.value as { status?: number; contentType?: string; body?: unknown } | undefined;
-        p?.resolve({
-          status: typeof env?.status === "number" ? env.status : 200,
-          contentType: env?.contentType,
-          body: env?.body,
-          rawBytes: out.rawBytes,
+      if (chunk.kind === "tunnel-data") {
+        // Large reader frames (big trees) arrive chunked; reassemble BEFORE
+        // routing so consumers never see chunk plumbing. An oversize/invalid
+        // assembly faults THIS reader only — the tunnel stays up.
+        const correlation: ChunkCorrelation = { kind: "tunnel-data", subscriptionId: chunk.subscriptionId, sub: chunk.sub };
+        const out = re.feed(chunk, (c) => {
+          if (c.kind !== "tunnel-data") return false;
+          const s = this.subs.get(c.subscriptionId);
+          return !!s && s.connectionId === conn.connectionId;
         });
+        const sub = this.subs.get(chunk.subscriptionId);
+        if (!sub || sub.connectionId !== conn.connectionId) return;
+        if (!out.ok) {
+          // Clear reader-level fault (bad chunk math/metadata/cap); the
+          // tunnel stays up and the device may start a fresh assembly.
+          sub.push({ type: "fault", error: { code: "invalid", message: out.error ?? "chunk assembly failed" } } as unknown as Frame);
+          return;
+        }
+        if (out.done) sub.push(out.value as Frame);
+        return;
       }
       return;
     }

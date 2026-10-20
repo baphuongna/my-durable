@@ -11,11 +11,66 @@ import { transportFor } from "./transport.js";
 import type { MuxFrame } from "../../../../dpi-sdk/src/api.js";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { DeviceMonitor, TunnelTransportSource } from "./monitor.js";
-import { READERS_PER_DEVICE, READERS_PER_HUB } from "../../../../dpi-sdk/src/protocol/limits.js";
+import {
+  PACE_WRITE_BYTES,
+  READERS_PER_DEVICE,
+  READERS_PER_HUB,
+  SSE_HUB_VIEWER_BYTES,
+} from "../../../../dpi-sdk/src/protocol/limits.js";
 
 interface BrowserStream {
   send(frame: MuxFrame): void;
   upstreams: Map<string, AbortController>;
+}
+
+/**
+ * Serialized paced writer (04 §10): complete SSE events only, split into
+ * ≤64 KiB segments, waiting for drain between segments. The chain guarantees
+ * a `: ping` can never land inside a half-written event, and a slow viewer is
+ * cut at the CANON hub cap instead of buffering without bound.
+ */
+function pacedSseWriter(res: Response): { write: (event: string) => void; close: () => void; overCap: () => boolean } {
+  let chain: Promise<void> = Promise.resolve();
+  let closed = false;
+  const waitDrain = () =>
+    new Promise<void>((resolve) => {
+      const onDrain = () => {
+        res.off("drain", onDrain);
+        res.off("close", onClose);
+        resolve();
+      };
+      const onClose = () => {
+        res.off("drain", onDrain);
+        res.off("close", onClose);
+        resolve();
+      };
+      res.once("drain", onDrain);
+      res.once("close", onClose);
+    });
+  return {
+    overCap: () => res.writableLength > SSE_HUB_VIEWER_BYTES,
+    close: () => {
+      closed = true;
+    },
+    write: (event) => {
+      if (closed) return;
+      if (res.writableLength > SSE_HUB_VIEWER_BYTES) {
+        // Slow browser: cut THIS viewer; producers keep running.
+        closed = true;
+        res.end();
+        return;
+      }
+      chain = chain.then(async () => {
+        for (let i = 0; i < event.length && !closed; i += PACE_WRITE_BYTES) {
+          const ok = res.write(event.slice(i, i + PACE_WRITE_BYTES));
+          if (!ok) await waitDrain();
+        }
+      });
+      chain = chain.catch(() => {
+        /* response torn down mid-event: the close handler cleaned up */
+      });
+    },
+  };
 }
 
 const KEY =
@@ -89,13 +144,10 @@ export class StreamMux {
     });
     res.flushHeaders();
     let closed = false;
+    const writer = pacedSseWriter(res);
     const stream: BrowserStream = {
       upstreams: new Map(),
-      send: (frame) => {
-        if (closed) return;
-        if (res.writableLength > 4_000_000) return void res.end();
-        res.write(`data: ${JSON.stringify(frame)}\n\n`);
-      },
+      send: (frame) => writer.write(`data: ${JSON.stringify(frame)}\n\n`),
     };
     this.streams.set(streamId, stream);
     stream.send({ sub: "hello", frame: { type: "stream", streamId } });
@@ -103,9 +155,12 @@ export class StreamMux {
       stream.send({ sub: "network", frame: { type: "network", devices: this.monitor.network() } });
     pushNetwork();
     const off = this.monitor.onChange(pushNetwork);
-    const ping = setInterval(() => !closed && res.write(": ping\n\n"), 15_000);
+    // Ping rides the SAME chain as events: it can only land between complete
+    // events, never inside a half-written one.
+    const ping = setInterval(() => !closed && writer.write(": ping\n\n"), 15_000);
     res.on("close", () => {
       closed = true;
+      writer.close();
       clearInterval(ping);
       off();
       for (const [key, ctl] of stream.upstreams) {

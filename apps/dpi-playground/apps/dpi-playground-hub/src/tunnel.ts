@@ -36,6 +36,7 @@ import {
   IDLE_TIMEOUT_MS,
   PING_INTERVAL_MS,
   PING_MISS_LIMIT,
+  WS_BACKPRESSURE_BYTES,
   WS_MAX_MESSAGE_BYTES,
 } from "../../../../dpi-sdk/src/protocol/limits.js";
 import { Audit } from "./audit.js";
@@ -202,6 +203,12 @@ export class TunnelServer {
   send(deviceId: string, frame: TunnelFrame): boolean {
     const c = this.connections.get(deviceId);
     if (!c || c.phase !== "open" || c.ws.readyState !== c.ws.OPEN) return false;
+    // Slow-consumer isolation (04 §10): a device that stops reading fills the
+    // kernel+ws buffer; past the CANON cap we cut THIS connection only.
+    if (c.ws.bufferedAmount > WS_BACKPRESSURE_BYTES) {
+      this.teardown(c, 1011, "slow consumer: outbound buffer over cap");
+      return false;
+    }
     try {
       c.ws.send(JSON.stringify(frame));
       return true;
