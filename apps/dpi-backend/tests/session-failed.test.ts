@@ -198,13 +198,12 @@ test("P1-06: onWatchEnd faults an open viewer on session_failed, and only then",
       get ended() {
         return ended;
       },
-      sse: { send: (f: unknown) => sent.push(f), closed, onClose: () => {}, sendIfChanged: () => {} } as never,
-      res: { end: () => void ended++ } as never,
+      sse: { send: (f: unknown) => sent.push(f), closed, onClose: () => {}, sendIfChanged: () => {}, end: () => void ended++ } as never,
     };
   };
 
   const failed = make();
-  onWatchEnd(failed.sse, failed.res, { reason: "session_failed", error: new Error("disk I/O error") });
+  onWatchEnd(failed.sse, { reason: "session_failed", error: new Error("disk I/O error") });
   assert.equal(failed.sent.length, 1, "one fault frame");
   assert.equal((failed.sent[0] as { type: string; error: { code: string } }).type, "fault");
   assert.equal((failed.sent[0] as { error: { code: string } }).error.code, "unavailable");
@@ -213,12 +212,12 @@ test("P1-06: onWatchEnd faults an open viewer on session_failed, and only then",
   // Every other end reason, and an already-closed viewer, must write nothing.
   for (const end of [{ reason: "stopped" } as const, { reason: "cancelled" } as const, { reason: "session_closed" } as const, { reason: "retired" } as const, { reason: "listener_error", error: new Error("x") } as const]) {
     const quiet = make();
-    onWatchEnd(quiet.sse, quiet.res, end);
+    onWatchEnd(quiet.sse, end);
     assert.deepEqual(quiet.sent, [], `no write for ${end.reason}`);
     assert.equal(quiet.ended, 0, `no end for ${end.reason}`);
   }
   const gone = make(true);
-  onWatchEnd(gone.sse, gone.res, { reason: "session_failed", error: new Error("x") });
+  onWatchEnd(gone.sse, { reason: "session_failed", error: new Error("x") });
   assert.deepEqual(gone.sent, [], "never writes to an ended response");
   assert.equal(gone.ended, 0, "an already-ended response is left alone");
 });
