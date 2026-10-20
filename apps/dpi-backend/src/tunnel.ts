@@ -36,6 +36,11 @@ import { loadJson, pairingPath, keypairPath, writeAtomic, type PairingFile, type
 import { sendChunked } from "../../dpi-sdk/src/node/chunk.js";
 import { REST_BODY_MAX_BYTES as LOCAL_BODY_CAP } from "../../dpi-sdk/src/protocol/limits.js";
 
+/** F07: the ONLY loopback endpoints a tunnel subscription may read (the
+ * three SSE scopes). Anything else the hub asks for is refused silently. */
+const SUBSCRIBE_PATH_OK =
+  /^\/v1\/(?:events|sessions\/[^/?#]{1,128}\/events|sessions\/[^/?#]{1,128}\/agents\/[^/?#]{1,128}\/events)(?:\?[^\s?]{0,256})?$/;
+
 /** Bounded clamp for server-advised 429 delays (04 §6: never trust raw body). */
 const RETRY_AFTER_MIN_MS = 1_000;
 const RETRY_AFTER_MAX_MS = 60_000;
@@ -90,6 +95,8 @@ export class DeviceConnector {
   private lastConnectedAt: number | null = null;
   private stopped = true;
   private loopRunning = false;
+  /** Resolves when the connect loop fully exits (reload chains start() on it). */
+  private loopIdle: Promise<void> = Promise.resolve();
   private backoffIdx = 0;
   private ws: WebSocket | null = null;
   private wsGeneration = 0;
@@ -163,6 +170,37 @@ export class DeviceConnector {
     void this.loop();
   }
 
+  /**
+   * Re-pair transition (F05): adopt a pairing file that changed on disk.
+   * A running connector must NOT keep the old credential/epoch in RAM — the
+   * old loop is stopped to completion, then a fresh loop starts from disk.
+   */
+  reload(reason = "pairing file changed"): void {
+    if (this.stopped) {
+      this.start();
+      return;
+    }
+    const onDisk = loadJson<PairingFile>(pairingPath(this.home));
+    if (!onDisk) {
+      this.stop(reason);
+      return;
+    }
+    const sameTuple =
+      this.file &&
+      onDisk.pairingEpoch === this.file.pairingEpoch &&
+      onDisk.credentialId === this.file.credentialId &&
+      onDisk.generation === this.file.generation;
+    if (sameTuple) {
+      this.file = onDisk; // same credential, newer timestamp — nothing to swap
+      return;
+    }
+    const idle = this.loopIdle;
+    this.stop(`${reason}: swapping pairing`);
+    // The stopped loop settles its in-flight attempt (F06) and exits; only
+    // then may a new loop own the socket/timers. Never two live loops.
+    void idle.then(() => this.start());
+  }
+
   /** Operator/shutdown stop: clear every timer, drop the socket, no retries. */
   stop(reason = "stopped"): void {
     this.stopped = true;
@@ -186,35 +224,41 @@ export class DeviceConnector {
   private async loop(): Promise<void> {
     if (this.loopRunning) return;
     this.loopRunning = true;
-    while (!this.stopped) {
-      const file = this.file;
-      if (!file) {
-        this.setState("file-error", "pairing.json vanished; run pairing again");
-        break;
+    let releaseIdle: () => void;
+    this.loopIdle = new Promise<void>((r) => (releaseIdle = r));
+    try {
+      while (!this.stopped) {
+        const file = this.file;
+        if (!file) {
+          this.setState("file-error", "pairing.json vanished; run pairing again");
+          break;
+        }
+        this.attempts++;
+        const attemptTuple = { credentialId: file.credentialId, pairingEpoch: file.pairingEpoch };
+        const outcome = await this.attemptOnce(file);
+        if (this.stopped) break;
+        const verdict = this.classify(outcome, attemptTuple);
+        if (verdict.kind === "stopped") break;
+        if (verdict.kind === "revoked-terminal") {
+          this.stopped = true;
+          this.setState("revoked", verdict.detail);
+          break;
+        }
+        if (verdict.kind === "hub-mismatch") {
+          this.stopped = true;
+          this.setState("hub-mismatch", verdict.detail);
+          break;
+        }
+        if (verdict.kind === "reauth") this.setState("reauth", verdict.detail);
+        else this.setState("connecting", verdict.detail);
+        const delay = verdict.delayMs ?? this.backoffMs();
+        if (verdict.kind === "retry" && verdict.delayMs === undefined) this.backoffIdx = Math.min(this.backoffIdx + 1, CONNECTOR_BACKOFF_S.length - 1);
+        await this.sleep(delay);
       }
-      this.attempts++;
-      const attemptTuple = { credentialId: file.credentialId, pairingEpoch: file.pairingEpoch };
-      const outcome = await this.attemptOnce(file);
-      if (this.stopped) break;
-      const verdict = this.classify(outcome, attemptTuple);
-      if (verdict.kind === "stopped") break;
-      if (verdict.kind === "revoked-terminal") {
-        this.stopped = true;
-        this.setState("revoked", verdict.detail);
-        break;
-      }
-      if (verdict.kind === "hub-mismatch") {
-        this.stopped = true;
-        this.setState("hub-mismatch", verdict.detail);
-        break;
-      }
-      if (verdict.kind === "reauth") this.setState("reauth", verdict.detail);
-      else this.setState("connecting", verdict.detail);
-      const delay = verdict.delayMs ?? this.backoffMs();
-      if (verdict.kind === "retry" && verdict.delayMs === undefined) this.backoffIdx = Math.min(this.backoffIdx + 1, CONNECTOR_BACKOFF_S.length - 1);
-      await this.sleep(delay);
+    } finally {
+      this.loopRunning = false;
+      releaseIdle!();
     }
-    this.loopRunning = false;
   }
 
   private backoffMs(): number {
@@ -232,8 +276,12 @@ export class DeviceConnector {
     return new Promise((resolve) => {
       const generation = ++this.wsGeneration;
       let settled = false;
+      // F06: settle on ANY terminal event, including cancellation. The old
+      // generation gate left the promise pending forever after dropSocket(),
+      // pinning loopRunning and making the connector un-restartable. Stale
+      // events after settle are already blocked by `settled`.
       const finish = (v: Parameters<typeof resolve>[0]) => {
-        if (settled || this.wsGeneration !== generation) return;
+        if (settled) return;
         settled = true;
         this.clearTimers();
         resolve(v);
@@ -419,15 +467,19 @@ export class DeviceConnector {
     if (frame.type === "control" && frame.action === "subscribe") {
       const existing = this.readers.get(frame.subscriptionId);
       if (existing) return; // idempotent repeat
+      // F07: the hub names the STREAM PATH; scope must reach the device API.
+      // Allow-list the three SSE endpoints — a hub can never aim the reader
+      // at REST-only or pairing routes.
+      if (!SUBSCRIBE_PATH_OK.test(frame.sub)) return;
       const ctl = new AbortController();
       this.readers.set(frame.subscriptionId, ctl);
       void (async () => {
         try {
-          const res = await fetch(api.baseUrl + "/v1/events", {
+          const res = await fetch(api.baseUrl + frame.sub, {
             headers: { authorization: `Bearer ${api.token}`, "x-dpi-token": api.token, accept: "text/event-stream" },
             signal: ctl.signal,
           });
-          if (!res.ok || !res.body) throw new Error(`/v1/events answered ${res.status}`);
+          if (!res.ok || !res.body) throw new Error(`${frame.sub} answered ${res.status}`);
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
@@ -516,6 +568,15 @@ export class DeviceConnector {
       // stale notice for a superseded pairing must not touch the new one.
       const file = this.file;
       if (!file || frame.notice.pairingEpoch !== file.pairingEpoch) return;
+      // F05 disk-truth: the RAM tuple may be stale — a re-pair may already
+      // have replaced the file. Only delete what the notice is actually for.
+      const onDisk = loadJson<PairingFile>(pairingPath(this.home));
+      if (!onDisk || onDisk.pairingEpoch !== frame.notice.pairingEpoch) {
+        // A NEWER pairing is on disk: adopt it and keep serving, never die on
+        // a stale-epoch notice and never delete the newer file.
+        this.reload("re-pair raced a revoke notice");
+        return;
+      }
       this.stopped = true;
       this.clearTimers();
       this.dropSocket("revoked");
@@ -589,6 +650,13 @@ export class DeviceConnector {
       // Terminal ONLY when this attempt's tuple still matches the CURRENT file.
       const current = this.file;
       if (current && current.credentialId === attemptTuple.credentialId && current.pairingEpoch === attemptTuple.pairingEpoch) {
+        // F05 disk-truth: a re-pair may have replaced the file mid-flight.
+        const onDisk = loadJson<PairingFile>(pairingPath(this.home));
+        if (onDisk && (onDisk.credentialId !== attemptTuple.credentialId || onDisk.pairingEpoch !== attemptTuple.pairingEpoch)) {
+          this.file = onDisk; // adopt the newer pairing and keep going
+          this.backoffIdx = 0;
+          return { kind: "retry", delayMs: 0, detail: "revoked for an old credential; a newer pairing file is on disk" };
+        }
         this.removePairingFile();
         return { kind: "revoked-terminal", detail: "hub revoked this credential; pairing removed — re-pair to continue" };
       }

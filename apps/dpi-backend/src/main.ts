@@ -28,9 +28,10 @@ const pairing = new DevicePairing(store, config.home, config.name, process.env.D
   // Forced hub change (P-5): the OLD connector must die before the new
   // pairing is written — never two live tunnels for one device.
   stopOldConnector: () => connector.stop("re-pairing: hub changed"),
-  // Pairing success (P2-15/20 glue): start (or restart) the connector from
-  // the freshly persisted pairing file in the same daemon.
-  onPaired: () => connector.start(),
+  // Pairing success (P2-15/20 glue, F05): adopt the freshly persisted pairing
+  // file — reload() swaps the RUNNING connector onto the new epoch instead of
+  // no-op'ing with stale RAM credential/tuple.
+  onPaired: () => connector.reload("re-paired"),
 });
 // One connector per daemon, from the persisted pairing file (P2-13). DPI_HUB_CA
 // narrows TLS trust for the reference profile; verification is never disabled.
