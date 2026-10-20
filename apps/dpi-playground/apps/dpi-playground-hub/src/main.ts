@@ -14,6 +14,7 @@ import { guard } from "./guard.js";
 import { Audit, denialLogging } from "./audit.js";
 import { PairingService } from "./pairing.js";
 import { CredentialService } from "./credentials.js";
+import { TunnelServer } from "./tunnel.js";
 import { seedFromConfig } from "./seed.js";
 
 const args = process.argv.slice(2);
@@ -162,6 +163,21 @@ if (args.includes("--dev")) {
   );
 }
 
+// Tunnel endpoint (04 §4): /api/tunnel upgrades after hash-first credential
+// auth. In --dev mode Vite owns its own HMR upgrade path, so only the exact
+// tunnel path is claimed here and other upgrades are left alone.
+const tunnel = new TunnelServer(registry, audit, hubId);
+server.on("upgrade", (req, socket, head) => {
+  let path = "/";
+  try {
+    path = new URL(req.url ?? "/", "http://hub.local").pathname;
+  } catch {
+    /* reject below */
+  }
+  if (path === "/api/tunnel") tunnel.handleUpgrade(req, socket, head);
+  else if (!vite) socket.destroy();
+});
+
 server.listen(port, host, () => {
   console.log(`Durable Pi hub: http://${host === "0.0.0.0" ? "localhost" : host}:${port}`);
   console.log(
@@ -185,6 +201,7 @@ let closing = false;
 const shutdown = async () => {
   if (closing) return;
   closing = true;
+  tunnel.close();
   monitor.stop();
   server.close();
   server.closeAllConnections();

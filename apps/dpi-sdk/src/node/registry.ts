@@ -313,6 +313,17 @@ export class NetworkRegistry {
     this.db.prepare("DELETE FROM tunnel_state").run();
   }
 
+  /**
+   * Remove a device's tunnel-state diagnostics row, but ONLY if it still
+   * belongs to `connectionId`. A stale socket's close handler must never
+   * delete the row of the connection that superseded it (04 §4 swap rule).
+   */
+  clearTunnelStateFor(deviceId: string, connectionId: string) {
+    this.db
+      .prepare("DELETE FROM tunnel_state WHERE device_id=? AND connection_id=?")
+      .run(deviceId, connectionId);
+  }
+
   /** Throttled diagnostics snapshot (caller throttles; source of truth is RAM). */
   recordTunnelState(deviceId: string, patch: { connectionId: string; connectedAt?: number; lastSeenAt?: number; readerCount?: number }) {
     this.db
