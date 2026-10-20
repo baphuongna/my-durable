@@ -6,8 +6,8 @@
 //   <device>/agent/<sessionId>/<agentId>[?docs=a,b]
 import { randomUUID } from "node:crypto";
 import type { Request, Response } from "express";
-import { DpiClient } from "../../../../dpi-sdk/src/client.js";
 import { DpiError } from "../../../../dpi-sdk/src/errors.js";
+import { transportFor } from "./transport.js";
 import type { MuxFrame } from "../../../../dpi-sdk/src/api.js";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { DeviceMonitor } from "./monitor.js";
@@ -126,10 +126,11 @@ export class StreamMux {
       await this.monitor.whenOnline(sub.deviceId, signal);
       if (signal.aborted) return;
       const device = this.registry.get(sub.deviceId);
-      if (!device?.url || !device.token) return;
+      const transport = device ? transportFor(device) : undefined;
+      if (!transport?.available) return;
       try {
-        for await (const frame of new DpiClient(device.url, device.token).stream(
-          sub.path,
+        for await (const frame of transport.watch(
+          { path: sub.path, consumerId: `mux:${sub.key}` },
           signal,
         )) {
           stream.send({ sub: sub.key, frame });
