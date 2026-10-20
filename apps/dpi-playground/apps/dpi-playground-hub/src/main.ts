@@ -121,7 +121,26 @@ app.post("/api/pair/codes/:codeId/cancel", (req, res) => {
 });
 app.post("/api/devices/:id/rotate", (req, res) => {
   const r = rotation.startRotation(String(req.params.id), `admin:${req.ip ?? "unknown"}`);
-  return res.status(r.ok ? 202 : 400).json(r.ok ? r : { error: { code: "invalid", message: r.error } });
+  return res.status(r.ok ? 202 : 400).json(r.ok ? r : { error: { code: "invalid", message: r.error } } as never);
+});
+app.post("/api/devices/:id/revoke", express.json({ limit: "4kb" }), (req, res) => {
+  const id = String(req.params.id);
+  const pairingRow = registry.db.prepare("SELECT pairing_epoch FROM pairings WHERE device_id=? AND status='paired'").get(id) as { pairing_epoch: string } | undefined;
+  try {
+    credentials.revoke(id, req.body?.reason === "compromise" ? "compromise" : "user", `admin:${req.ip ?? "unknown"}`);
+  } catch (e) {
+    return res.status((e as { status?: number }).status ?? 400).json({ error: { code: "invalid", message: (e as Error).message } });
+  }
+  // Durable revoke committed: notice the live transport for ITS epoch and cut
+  // it immediately (<1 s). Authorization never waits for a notice ACK.
+  if (pairingRow)
+    tunnel.send(id, {
+      type: "control",
+      action: "revoked",
+      notice: { type: "pair.revoke", v: 1, deviceId: id, pairingEpoch: pairingRow.pairing_epoch, reason: req.body?.reason === "compromise" ? "compromise" : "user", revokedAt: Date.now() },
+    });
+  tunnel.closeConnection(id, 1000, "pairing revoked");
+  res.status(202).json({ ok: true });
 });
 
 app.get("/api/network", (_req, res) => res.json({ configFile, devices: monitor.network() }));

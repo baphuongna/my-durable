@@ -76,7 +76,7 @@ export class DevicePairing {
     private readonly home: string,
     private readonly deviceName: string,
     private readonly envHubUrl: string | undefined,
-    private readonly hooks: { now?: () => number; fetchImpl?: typeof fetch; stopOldConnector?: (origin: string) => void; pollMs?: number } = {},
+    private readonly hooks: { now?: () => number; fetchImpl?: typeof fetch; stopOldConnector?: (origin: string) => void; onPaired?: () => void; pollMs?: number } = {},
   ) {
     ensurePrivateDir(home);
     this.loadKeypair();
@@ -306,7 +306,12 @@ export class DevicePairing {
     this.pending = undefined;
     this.lastFailure = undefined;
     this.revokedNotice = false;
-    // Connector start hook lands in P2-15; the credential file is durable now.
+    // Credential file is durable: the same-daemon connector may start now.
+    try {
+      this.hooks.onPaired?.();
+    } catch {
+      /* hook errors never fail the pairing commit */
+    }
   }
 
   /** POST /v1/pairing/cancel — local abort only; never claims a remote cancel. */

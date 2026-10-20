@@ -511,7 +511,24 @@ export class DeviceConnector {
       });
       return;
     }
-    // revoked/unpair control frames land in P2-20.
+    if (frame.type === "control" && frame.action === "revoked") {
+      // Terminal ONLY when the notice matches the CURRENT pairing epoch; a
+      // stale notice for a superseded pairing must not touch the new one.
+      const file = this.file;
+      if (!file || frame.notice.pairingEpoch !== file.pairingEpoch) return;
+      this.stopped = true;
+      this.clearTimers();
+      this.dropSocket("revoked");
+      try {
+        rmSync(pairingPath(this.home), { force: true }); // matching epoch: drop, keep keypair
+      } catch {
+        /* best effort */
+      }
+      this.setState("revoked", "hub revoked this pairing; pairing removed — re-pair to continue");
+      // The in-flight attempt settles via the socket close that dropSocket caused.
+      return;
+    }
+    // unpair control frames land with the forced-hub-change flow (P2-21).
   }
 
   private startHeartbeat(ws: WebSocket, generation: number): void {

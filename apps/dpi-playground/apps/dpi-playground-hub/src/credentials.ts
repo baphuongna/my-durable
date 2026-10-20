@@ -162,6 +162,40 @@ export class CredentialService {
   }
 
   /**
+   * Durable revoke (03 §8.3, P2-20): pairing paired→revoked, EVERY credential
+   * hash (current/previous/retired) → revoked with tombstones retained, one
+   * audit row, all in ONE transaction. The caller is responsible for cutting
+   * the live transport right after commit — authorization is already dead:
+   * the upgrade path consults these rows directly, so a revoked bearer is
+   * 401 within the same tick, notice ACK or not.
+   */
+  revoke(deviceId: string, reason: "user" | "compromise" | "hub_migrated", actor: string): void {
+    const now = Date.now();
+    const pairing = this.registry.db
+      .prepare("SELECT pairing_epoch, status FROM pairings WHERE device_id=?")
+      .get(deviceId) as { pairing_epoch: string; status: string } | undefined;
+    if (!pairing || pairing.status !== "paired")
+      throw Object.assign(new Error(`No active pairing for ${deviceId}`), { status: 404 });
+    this.audit.withTransaction(() => {
+      this.registry.db
+        .prepare("UPDATE pairings SET status='revoked', updated_at=? WHERE device_id=?")
+        .run(now, deviceId);
+      this.registry.db
+        .prepare(
+          "UPDATE tunnel_credentials SET status='revoked', revoked_at=? WHERE device_id=? AND status IN ('current','previous','retired')",
+        )
+        .run(now, deviceId);
+      this.registry.db.prepare("DELETE FROM tunnel_state WHERE device_id=?").run(deviceId);
+      this.audit.append({
+        actor,
+        action: "pair.revoke",
+        outcome: "ok",
+        detail: { deviceId, pairingEpoch: pairing.pairing_epoch, reason },
+      });
+    });
+  }
+
+  /**
    * A cached TokenIssue may only be replayed while its credential is still
    * current/previous AND its epoch is the active pairing. Never return a
    * revoked or superseded secret just because the receipt TTL is still open.
