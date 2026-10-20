@@ -18,6 +18,7 @@ import AgentView from "./components/AgentView.vue";
 import Inspector from "./components/Inspector.vue";
 import OfflinePanel from "./components/OfflinePanel.vue";
 import NewSessionDialog from "./components/NewSessionDialog.vue";
+import PairDeviceWizard from "./components/PairDeviceWizard.vue";
 import PromptDialog from "./components/PromptDialog.vue";
 import ModelPicker from "./components/ModelPicker.vue";
 import {
@@ -202,6 +203,7 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
+    <PairDeviceWizard v-if="ui.dialog?.kind === 'pair'" @close="ui.dialog = undefined" />
     <NewSessionDialog
       v-if="ui.dialog?.kind === 'new-session'"
       :device-id="ui.dialog.deviceId"

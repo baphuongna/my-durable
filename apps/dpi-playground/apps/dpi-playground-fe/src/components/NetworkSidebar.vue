@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
-import { Network, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
+import { Link2, Network, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
 import DeviceIcon from "./DeviceIcon.vue";
 import type { TreeNode } from "@sdk/models";
 import TreeRow from "./TreeRow.vue";
@@ -155,6 +155,14 @@ function keydown(e: KeyboardEvent) {
     <template v-if="layout.tree || ui.drawer">
       <header class="tree-head">
         <span><Network :size="16" />NETWORK</span>
+        <button
+          class="icon-button"
+          aria-label="Pair a device"
+          title="Pair a device"
+          @click="ui.dialog = { kind: 'pair' }"
+        >
+          <Link2 :size="15" />
+        </button>
         <button
           class="icon-button panel-toggle"
           aria-label="Collapse network"
