@@ -16,6 +16,7 @@ import { PairingService } from "./pairing.js";
 import { CredentialService } from "./credentials.js";
 import { TunnelServer } from "./tunnel.js";
 import { TunnelDispatcher, TunnelTransport } from "./tunnel-transport.js";
+import { RotationService } from "./rotation.js";
 import { seedFromConfig } from "./seed.js";
 
 const args = process.argv.slice(2);
@@ -118,6 +119,10 @@ app.post("/api/pair/codes/:codeId/cancel", (req, res) => {
   const r = pairing.cancel(req.params.codeId);
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
+app.post("/api/devices/:id/rotate", (req, res) => {
+  const r = rotation.startRotation(String(req.params.id), `admin:${req.ip ?? "unknown"}`);
+  return res.status(r.ok ? 202 : 400).json(r.ok ? r : { error: { code: "invalid", message: r.error } });
+});
 
 app.get("/api/network", (_req, res) => res.json({ configFile, devices: monitor.network() }));
 // Devices are configured in dpi-network.yaml and `just net register`; the hub only reads them.
@@ -172,6 +177,7 @@ if (args.includes("--dev")) {
 // tunnel path is claimed here and other upgrades are left alone.
 const tunnel = new TunnelServer(registry, audit, hubId);
 const dispatcher = new TunnelDispatcher(tunnel);
+const rotation = new RotationService(registry, audit, tunnel);
 mux.setTunnelSource({
   dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
   hasLiveConnection: (id) => tunnel.hasConnection(id),

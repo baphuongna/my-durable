@@ -143,6 +143,8 @@ class Buckets {
 
 export class TunnelServer {
   private readonly wss: WebSocketServer;
+  private readonly openListeners: Array<(conn: TunnelConnection) => void> = [];
+  private readonly frameListeners: Array<(conn: TunnelConnection, frame: TunnelWireMessage) => void> = [];
   private readonly connections = new Map<string, Conn>(); // deviceId → authenticated
   private readonly ipBuckets: Buckets;
   private readonly globalBuckets: Buckets;
@@ -197,6 +199,16 @@ export class TunnelServer {
    */
   setHandlers(handlers: TunnelHandlers): void {
     this.handlers = handlers;
+  }
+
+  /** Additional post-handshake listeners (rotation recovery, implicit ack). */
+  addOpenListener(fn: (conn: TunnelConnection) => void): void {
+    this.openListeners.push(fn);
+  }
+
+  /** Additional validated open-phase device→hub frame listeners. */
+  addDeviceFrameListener(fn: (conn: TunnelConnection, frame: TunnelWireMessage) => void): void {
+    this.frameListeners.push(fn);
   }
 
   /** Send a frame to the device's current connection (no-op when offline). */
@@ -395,6 +407,8 @@ export class TunnelServer {
       return;
     }
     this.handlers.onMessage?.(this.asConnection(conn), frame);
+    const asConn2 = this.asConnection(conn);
+    for (const fn of this.frameListeners) fn(asConn2, frame);
   }
 
   private completeHandshake(
@@ -469,6 +483,8 @@ export class TunnelServer {
       } satisfies TunnelFrame),
     );
     this.handlers.onOpen?.(this.asConnection(conn));
+    const asConn = this.asConnection(conn);
+    for (const fn of this.openListeners) fn(asConn);
   }
 
   /** Handshake-phase failure: fault + close(1008), nothing registered. */

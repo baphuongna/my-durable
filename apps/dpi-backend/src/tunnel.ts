@@ -32,7 +32,7 @@ import {
   PING_MISS_LIMIT,
   WS_MAX_MESSAGE_BYTES,
 } from "../../dpi-sdk/src/protocol/limits.js";
-import { loadJson, pairingPath, keypairPath, type PairingFile, type DeviceKeypair } from "./pairing-files.js";
+import { loadJson, pairingPath, keypairPath, writeAtomic, type PairingFile, type DeviceKeypair } from "./pairing-files.js";
 import { sendChunked } from "../../dpi-sdk/src/node/chunk.js";
 import { REST_BODY_MAX_BYTES as LOCAL_BODY_CAP } from "../../dpi-sdk/src/protocol/limits.js";
 
@@ -472,7 +472,46 @@ export class DeviceConnector {
       this.readers.delete(frame.subscriptionId);
       return;
     }
-    // revoked/token-rotate/unpair control frames land in P2-19/P2-20.
+    if (frame.type === "control" && frame.action === "token-rotate") {
+      // Rotation (03 §8.2): accept only a STRICTLY NEWER generation of the
+      // active pairing (after a hub cache-loss recovery the jump can be >1);
+      // persist atomically (fsync chain) BEFORE acking, then live-swap.
+      const file = this.file;
+      if (
+        !file ||
+        frame.pairingEpoch !== file.pairingEpoch ||
+        frame.generation <= file.generation
+      ) {
+        // Stale/duplicate/foreign rotation: ignore entirely — no ack, no write.
+        return;
+      }
+      const next: PairingFile = {
+        ...file,
+        credentialId: frame.credentialId,
+        generation: frame.generation,
+        tunnelToken: frame.tunnelToken,
+        updatedAt: this.now(),
+      };
+      try {
+        writeAtomic(pairingPath(this.home), JSON.stringify(next, null, 2));
+      } catch {
+        // Persist failed: keep using the old credential; the hub will resend
+        // or regenerate on the next reconnect (previous stays previous).
+        return;
+      }
+      this.file = next;
+      this.backoffIdx = 0;
+      send({
+        type: "control",
+        action: "token-rotate-ack",
+        rotationId: frame.rotationId,
+        credentialId: frame.credentialId,
+        generation: frame.generation,
+        pairingEpoch: frame.pairingEpoch,
+      });
+      return;
+    }
+    // revoked/unpair control frames land in P2-20.
   }
 
   private startHeartbeat(ws: WebSocket, generation: number): void {
