@@ -29,6 +29,7 @@ const host = option("--host", process.env.DPI_HUB_HOST ?? "127.0.0.1");
 const publicHost = option("--public-host", process.env.DPI_HUB_PUBLIC_HOST ?? "");
 
 const registry = new NetworkRegistry();
+registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect from DB
 const configFile = seedFromConfig(registry, appDir);
 const monitor = new DeviceMonitor(registry);
 monitor.start();

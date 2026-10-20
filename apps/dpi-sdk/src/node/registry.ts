@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { migrateRegistryFile } from "./registry-migration.js";
-import type { DeviceInfo, DeviceKind, DeviceStatus, DeviceTree, NetworkDevice } from "../api.js";
+import type { DeviceInfo, DeviceKind, DeviceStatus, DeviceTree, NetworkDevice, PublicPairingMetadata, TunnelDiagnostics } from "../api.js";
 
 export const dpiHome = () => process.env.DPI_HOME ?? join(homedir(), ".dpi");
 export const DEVICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -15,7 +15,9 @@ export interface DeviceRow {
   id: string;
   name: string;
   kind: DeviceKind;
-  url: string;
+  transport: "lan" | "tunnel";
+  /** null when transport="tunnel". */
+  url: string | null;
   token: string | null;
   source: "config" | "ui";
   position: number;
@@ -43,7 +45,8 @@ type RawRow = {
   id: string;
   name: string;
   kind: DeviceKind;
-  url: string;
+  transport: "lan" | "tunnel";
+  url: string | null;
   token: string | null;
   source: "config" | "ui";
   position: number;
@@ -104,6 +107,7 @@ export class NetworkRegistry {
       id: raw.id,
       name: raw.name,
       kind: raw.kind,
+      transport: raw.transport,
       url: raw.url,
       token: raw.token,
       source: raw.source,
@@ -129,7 +133,12 @@ export class NetworkRegistry {
     return this.row(this.db.prepare("SELECT * FROM devices WHERE id=?").get(id) as RawRow | undefined);
   }
 
-  /** Insert or update a device. `token: undefined` keeps the stored token; `null` clears it. */
+  /**
+   * Insert or update a device. `token: undefined` keeps the stored token; `null` clears it.
+   * Writer policy: a row already on transport="tunnel" keeps its identity — the
+   * generic register/seed path may only sync display metadata (name/position);
+   * it must not restore URL/token, flip transport, or delete the pairing.
+   */
   upsert(input: DeviceInput): DeviceRow {
     if (!DEVICE_ID.test(input.id)) throw Error(`Device id must match ${DEVICE_ID} (got "${input.id}")`);
     const kind = input.kind ?? "url";
@@ -140,6 +149,13 @@ export class NetworkRegistry {
     const current = this.get(input.id);
     if (current && current.source === "config" && input.source === "ui")
       throw Error(`${input.id} comes from dpi-network.yaml; edit it there`);
+    if (current?.transport === "tunnel") {
+      // Allowed display-metadata sync only; endpoint/token inputs are ignored.
+      this.db
+        .prepare("UPDATE devices SET name=?, position=?, updated_at=? WHERE id=?")
+        .run(input.name?.trim() || current.name, input.position ?? current.position, now, input.id);
+      return this.get(input.id)!;
+    }
     const position = input.position ?? current?.position ?? this.list().length;
     const token = input.token === undefined ? (current?.token ?? null) : input.token;
     const urlChanged = current && current.url !== url;
@@ -173,24 +189,84 @@ export class NetworkRegistry {
 
   setToken(id: string, token: string | null) {
     if (token) validateToken(token);
+    const row = this.get(id);
+    if (!row) throw Error(`Unknown device: ${id}`);
+    if (row.transport === "tunnel")
+      throw Error(`${id} is paired over the tunnel; full LAN tokens are not stored for tunnel devices`);
     const result = this.db
       .prepare("UPDATE devices SET token=?, updated_at=? WHERE id=?")
       .run(token, Date.now(), id);
     if (!result.changes) throw Error(`Unknown device: ${id}`);
   }
 
+  /**
+   * Remove a device. Rows with pairing or credential history are never
+   * hard-deleted — the tombstones must survive (07 §5.2). Revoke instead.
+   */
   remove(id: string) {
+    const hasHistory =
+      this.db.prepare("SELECT 1 FROM pairings WHERE device_id=?").get(id) ||
+      this.db.prepare("SELECT 1 FROM tunnel_credentials WHERE device_id=?").get(id);
+    if (hasHistory)
+      throw Error(`${id} has pairing/credential history; revoke it instead of deleting (tombstones are retained)`);
     return this.db.prepare("DELETE FROM devices WHERE id=?").run(id).changes > 0;
   }
 
-  /** Drop config devices that are no longer in the YAML. */
+  /** Drop config LAN devices that are no longer in the YAML. Tunnel rows keep their identity. */
   pruneConfig(keep: readonly string[]) {
     for (const row of this.list())
-      if (row.source === "config" && !keep.includes(row.id)) this.remove(row.id);
+      if (row.source === "config" && row.transport === "lan" && !keep.includes(row.id)) {
+        try {
+          this.remove(row.id);
+        } catch {
+          /* history rows stay; config drift is reported by the seed layer */
+        }
+      }
   }
 
-  learnUid(id: string, uid: string) {
+  /** Switch a LAN row to tunnel identity inside the caller's issuance transaction. */
+  setTransportTunnel(id: string): DeviceRow {
+    const result = this.db
+      .prepare("UPDATE devices SET transport='tunnel', url=NULL, token=NULL, updated_at=? WHERE id=? AND transport='lan'")
+      .run(Date.now(), id);
+    if (!result.changes) {
+      const row = this.get(id);
+      if (!row) throw Error(`Unknown device: ${id}`);
+      throw Error(`${id} is already on transport="${row.transport}"`);
+    }
+    return this.get(id)!;
+  }
+
+  /** Explicit switch back to LAN: caller must have revoked tunnel credentials first. */
+  setTransportLan(id: string, url: string, token: string | null): DeviceRow {
+    const row = this.get(id);
+    if (!row) throw Error(`Unknown device: ${id}`);
+    if (row.transport !== "tunnel") throw Error(`${id} is not a tunnel device`);
+    const normalized = normalizeUrl(url);
+    if (token) validateToken(token);
+    const stillActive = this.db
+      .prepare("SELECT 1 FROM tunnel_credentials WHERE device_id=? AND status IN ('current','previous')")
+      .get(id);
+    if (stillActive) throw Error(`${id} still has active tunnel credentials; revoke them first`);
+    this.db
+      .prepare("UPDATE devices SET transport='lan', url=?, token=?, updated_at=? WHERE id=?")
+      .run(normalized, token, Date.now(), id);
+    return this.get(id)!;
+  }
+
+  /**
+   * Learn the daemon UID for a LAN row. Enforces a unique mapping: if the UID
+   * already belongs to another row, report the conflict instead of stealing it.
+   */
+  learnUid(id: string, uid: string): { ok: true } | { ok: false; conflict: string | null } {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(uid))
+      return { ok: false, conflict: null };
+    const owner = this.db
+      .prepare("SELECT id FROM devices WHERE device_uid=? AND id<>?")
+      .get(uid, id) as { id: string } | undefined;
+    if (owner) return { ok: false, conflict: owner.id };
     this.db.prepare("UPDATE devices SET device_uid=? WHERE id=? AND device_uid IS NULL").run(uid, id);
+    return { ok: true };
   }
 
   forgetUid(id: string) {
@@ -232,6 +308,29 @@ export class NetworkRegistry {
       .run(key, json, Date.now());
   }
 
+  /** Hub boot: live tunnel state is RAM-only; never resurrect consumers from DB. */
+  clearTunnelState() {
+    this.db.prepare("DELETE FROM tunnel_state").run();
+  }
+
+  /** Throttled diagnostics snapshot (caller throttles; source of truth is RAM). */
+  recordTunnelState(deviceId: string, patch: { connectionId: string; connectedAt?: number; lastSeenAt?: number; readerCount?: number }) {
+    this.db
+      .prepare(
+        `INSERT INTO tunnel_state(device_id, connection_id, connected_at, last_seen_at, reader_count)
+         VALUES(?,?,?,?,?)
+         ON CONFLICT(device_id) DO UPDATE SET connection_id=excluded.connection_id,
+           last_seen_at=excluded.last_seen_at, reader_count=excluded.reader_count`,
+      )
+      .run(
+        deviceId,
+        patch.connectionId,
+        patch.connectedAt ?? Date.now(),
+        patch.lastSeenAt ?? Date.now(),
+        patch.readerCount ?? 0,
+      );
+  }
+
   close() {
     this.db.close();
   }
@@ -241,14 +340,19 @@ export class NetworkRegistry {
 export function toPublic(
   row: DeviceRow,
   live?: { status: DeviceStatus; error?: string; info?: DeviceInfo; tree?: DeviceTree; lastSeenAt?: number },
+  meta?: { pairing?: PublicPairingMetadata; tunnel?: TunnelDiagnostics },
 ): NetworkDevice {
   return {
     id: row.id,
     name: row.name,
     kind: row.kind,
-    url: row.url,
+    transport: row.transport,
+    url: row.transport === "tunnel" ? null : row.url,
     source: row.source,
-    hasToken: !!row.token,
+    hasToken: row.transport === "lan" && !!row.token,
+    deviceUid: row.deviceUid,
+    ...(meta?.pairing ? { pairing: meta.pairing } : {}),
+    ...(meta?.tunnel ? { tunnel: meta.tunnel } : {}),
     status: live?.status ?? row.lastStatus,
     error: (live ? live.error : row.lastError) ?? undefined,
     lastSeenAt: live?.lastSeenAt ?? row.lastSeenAt ?? undefined,

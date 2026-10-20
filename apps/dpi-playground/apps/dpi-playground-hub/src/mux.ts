@@ -126,7 +126,7 @@ export class StreamMux {
       await this.monitor.whenOnline(sub.deviceId, signal);
       if (signal.aborted) return;
       const device = this.registry.get(sub.deviceId);
-      if (!device?.token) return;
+      if (!device?.url || !device.token) return;
       try {
         for await (const frame of new DpiClient(device.url, device.token).stream(
           sub.path,

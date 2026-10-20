@@ -26,11 +26,11 @@ test("registry CRUD, validation, token privacy, uid learning and UI state", asyn
     assert.equal(pub.hasToken, true);
     assert.equal("token" in pub, false);
     assert.equal(JSON.stringify(pub).includes(token), false);
-    reg.learnUid("box", "uid-1");
-    reg.learnUid("box", "uid-2");
-    assert.equal(reg.get("box")!.deviceUid, "uid-1");
+    reg.learnUid("box", "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0");
+    reg.learnUid("box", "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f1");
+    assert.equal(reg.get("box")!.deviceUid, "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0");
     // changing the URL forgets identity and caches
-    reg.recordStatus("box", { status: "online", tree: { uid: "uid-1", name: "box", sessions: [], at: 1 }, seenAt: 5 });
+    reg.recordStatus("box", { status: "online", tree: { uid: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", name: "box", sessions: [], at: 1 }, seenAt: 5 });
     reg.upsert({ id: "box", kind: "ssh", url: "http://box2.local:4780", source: "config" });
     assert.equal(reg.get("box")!.deviceUid, null);
     assert.equal(reg.get("box")!.lastTree, null);

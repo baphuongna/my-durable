@@ -142,7 +142,18 @@ export class DeviceMonitor {
       const device = this.registry.get(id);
       if (!device) return;
       let wait = backoff;
-      if (!device.token) {
+      if (device.transport === "tunnel") {
+        // Tunnel devices have no URL/token at the hub; probing happens through
+        // the tunnel connection (P2-08). Until a tunnel is live this is the
+        // honest status — NOT "unauthorized" (hasToken is LAN-only).
+        this.update(id, {
+          status: "offline",
+          error: "paired over tunnel; no tunnel connection is live",
+        });
+        await sleep(30_000, signal);
+        continue;
+      }
+      if (!device.url || !device.token) {
         this.update(id, {
           status: "unauthorized",
           error: `No token for ${id}. Run: just net register ${id}`,
@@ -170,7 +181,17 @@ export class DeviceMonitor {
           await sleep(30_000, signal);
           continue;
         }
-        this.registry.learnUid(id, info.uid);
+        const learned = this.registry.learnUid(id, info.uid);
+        if (!learned.ok) {
+          this.update(id, {
+            status: learned.conflict ? "mismatch" : "offline",
+            error: learned.conflict
+              ? `uid ${info.uid.slice(0, 8)}… already belongs to device "${learned.conflict}" (identity conflict — resolve manually)`
+              : `device answered with a non-canonical uid`,
+          });
+          await sleep(30_000, signal);
+          continue;
+        }
         this.update(id, { status: "online", error: undefined, info, lastSeenAt: Date.now() });
         backoff = 1_000;
         for await (const frame of client.stream("/v1/events", signal)) {

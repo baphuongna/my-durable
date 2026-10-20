@@ -558,14 +558,35 @@ export interface UsageTotals {
   tools: Record<string, WireUsage>;
 }
 
+/** Pairing metadata safe for the browser: no token hash, no public key material. */
+export interface PublicPairingMetadata {
+  status: "paired" | "revoked";
+  keyFingerprint: string;
+  pairedAt: number;
+  credentialGeneration: number;
+  rotationPending: boolean;
+}
+
+export interface TunnelDiagnostics {
+  state: "connected" | "disconnected";
+  lastSeenAt?: number;
+  readerCount: number;
+}
+
 /** The public view of a registry device (the token never leaves the hub or TUI process). */
 export interface NetworkDevice {
   id: string;
   name: string;
   kind: DeviceKind;
-  url: string;
+  transport: "lan" | "tunnel";
+  /** null when transport="tunnel" — consumers must not build links or URLs from it. */
+  url: string | null;
   source: "config" | "ui";
+  /** LAN-only flag; hasToken=false is NOT unauthorized for tunnel devices. */
   hasToken: boolean;
+  deviceUid?: string | null;
+  pairing?: PublicPairingMetadata;
+  tunnel?: TunnelDiagnostics;
   status: DeviceStatus;
   error?: string;
   lastSeenAt?: number;

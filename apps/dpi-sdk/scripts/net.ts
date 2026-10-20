@@ -43,9 +43,10 @@ async function main() {
   syncConfigToRegistry(config, registry);
   if (verb === "ls" || verb === "status") {
     const rows = registry.list().filter((d) => !id || d.id === id);
-    const results = await Promise.all(rows.map((d) => probe(d.url, d.token)));
+    const lanRows = rows.filter((d) => d.transport === "lan" && d.url);
+    const results = await Promise.all(lanRows.map((d) => probe(d.url!, d.token)));
     const width = Math.max(4, ...rows.map((d) => d.id.length));
-    for (const [i, d] of rows.entries()) {
+    for (const [i, d] of lanRows.entries()) {
       const r = results[i];
       registry.recordStatus(d.id, { status: r.status as "online", error: r.status === "online" ? null : r.detail, ...(r.status === "online" ? { seenAt: Date.now() } : {}) });
       console.log(`${d.id.padEnd(width)}  ${d.kind.padEnd(7)}  ${r.status.padEnd(12)}  ${d.url}  ${r.detail}`);

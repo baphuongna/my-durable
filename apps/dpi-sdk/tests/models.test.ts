@@ -187,6 +187,7 @@ test("session lineage and network tree nest forks and subagents", () => {
     id: "box",
     name: "Box",
     kind: "ssh",
+    transport: "lan",
     url: "http://box:4780",
     source: "config",
     hasToken: true,

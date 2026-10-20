@@ -7,7 +7,7 @@ import type { NetworkDevice } from "@sdk/api";
 const props = withDefaults(defineProps<{ device?: NetworkDevice; size?: number }>(), { size: 16 });
 const kind = computed(() => {
   const d = props.device;
-  if (d?.kind === "exe-dev" || d?.url.includes(".exe.xyz")) return "exe";
+  if (d?.kind === "exe-dev" || d?.url?.includes(".exe.xyz")) return "exe";
   if (d?.info?.platform.startsWith("darwin")) return "apple";
   return d?.kind === "local" ? "laptop" : "server";
 });
