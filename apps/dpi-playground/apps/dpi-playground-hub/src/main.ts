@@ -76,6 +76,11 @@ const safe =
   };
 
 const app = express();
+// F10: behind the reference TLS proxy (same-host Caddy) the socket address
+// is always loopback — trust ONLY loopback proxies so req.ip reflects the
+// real client via the proxy-overwritten X-Forwarded-For. Forged XFF from a
+// non-loopback direct connection is ignored (proxy-addr semantics).
+app.set("trust proxy", "loopback");
 app.get("/healthz", (_req, res) => res.json({ ok: true, pid: process.pid, uptime: process.uptime() }));
 app.disable("x-powered-by");
 // All CANON limits must be sane or the hub refuses to start (P2-22: fail startup, not per-request).
@@ -102,11 +107,7 @@ const apiRate = ((req: import("express").Request, res: import("express").Respons
 }) as import("express").RequestHandler;
 // /healthz exempt (uptime probes must survive floods); one SSE open = one request;
 // stream frames are responses and never hit this middleware.
-app.use("/api", denialLogging(audit), guard(allowedHosts), apiRate, express.json({ limit: "256kb" }));
 
-// Pairing endpoints (03 §4). Admin authentication + authz matrix land in P2-21;
-// until then the hub is loopback/TLS-proxied and these routes are the same-origin
-// guarded surface as every other /api route. Body cap for pairing is 16 KiB.
 const hubId = (registry.db.prepare("SELECT value FROM hub_meta WHERE key='hub_id'").get() as { value: string }).value;
 const hubOrigin = process.env.DPI_HUB_ORIGIN ?? `https://${hostname().toLowerCase()}`;
 const credentials = new CredentialService(registry, audit, hubOrigin, hubId);
@@ -122,31 +123,42 @@ const pairSweeper = setInterval(() => pairing.sweep(), 60_000);
 pairSweeper.unref();
 const pairErr = (r: { error: { status: number; code: string; message: string; retryAfterMs?: number } }, res: express.Response) =>
   res.status(r.error.status).json({ error: { code: r.error.code, message: r.error.message, ...(r.error.retryAfterMs ? { retryAfterMs: r.error.retryAfterMs } : {}) } });
-app.post("/api/pair/code", express.json({ limit: "16kb" }), (req, res) => {
+
+// Public pairing ingress (03 §4) — registered BEFORE the admin /api chain so
+// that (a) the pairing 16 KiB body parsers are the FIRST parsers to touch
+// these bodies (F20: the global 256 KiB parser must not pre-read them), and
+// (b) the admin token bucket never meters the public pairing surface (F10):
+// PairingService enforces its own per-IP code/verify buckets + fail-window
+// here. Host-allowlist + denial logging still apply.
+const pairGuard = [denialLogging(audit), guard(allowedHosts)] as const;
+app.post("/api/pair/code", ...pairGuard, express.json({ limit: "16kb" }), (req, res) => {
   const r = pairing.createCode(req.ip ?? "unknown");
   return r.ok ? res.status(201).json(r.value) : pairErr(r, res);
 });
-app.post("/api/pair/start", express.json({ limit: "16kb" }), (req, res) => {
+app.post("/api/pair/start", ...pairGuard, express.json({ limit: "16kb" }), (req, res) => {
   const r = pairing.start(req.body, req.ip ?? "unknown");
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
-app.post("/api/pair/verify", express.json({ limit: "16kb" }), async (req, res) => {
+app.post("/api/pair/verify", ...pairGuard, express.json({ limit: "16kb" }), async (req, res) => {
   const r = await pairing.verify(req.body, req.ip ?? "unknown");
   if (r.ok) return res.status(r.status).json(r.value);
   pairErr(r, res);
 });
-app.get("/api/pair/codes/:codeId", (req, res) => {
-  const r = pairing.status(req.params.codeId);
+app.get("/api/pair/codes/:codeId", ...pairGuard, (req, res) => {
+  const r = pairing.status(String(req.params.codeId));
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
-app.post("/api/pair/codes/:codeId/approve", express.json({ limit: "16kb" }), (req, res) => {
-  const r = pairing.approve(req.params.codeId, req.body);
+app.post("/api/pair/codes/:codeId/approve", ...pairGuard, express.json({ limit: "16kb" }), (req, res) => {
+  const r = pairing.approve(String(req.params.codeId), req.body);
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
-app.post("/api/pair/codes/:codeId/cancel", (req, res) => {
-  const r = pairing.cancel(req.params.codeId);
+app.post("/api/pair/codes/:codeId/cancel", ...pairGuard, (req, res) => {
+  const r = pairing.cancel(String(req.params.codeId));
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
+
+// Admin /api surface: guarded, rate-bucketed per real client IP, 256 KiB JSON.
+app.use("/api", denialLogging(audit), guard(allowedHosts), apiRate, express.json({ limit: "256kb" }));
 app.post("/api/devices/:id/rotate", (req, res) => {
   const r = rotation.startRotation(String(req.params.id), `admin:${req.ip ?? "unknown"}`);
   return res.status(r.ok ? 202 : 400).json(r.ok ? r : { error: { code: "invalid", message: r.error } } as never);

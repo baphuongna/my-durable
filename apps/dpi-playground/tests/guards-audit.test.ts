@@ -254,6 +254,9 @@ test("WS counters release: bad-token flood never allocates; close and handshake-
     // never handshake…
     await until(() => fx.tunnel.activeCount() === 0, 8_000, "handshake deadline reaps abandoned socket");
     ws2.terminate();
+    // F13: the reservation frees when the dead socket is torn down — wait for
+    // the close event to land before reading the counter.
+    await until(() => fx.tunnel.pendingHandshakeCount() === 0, 3_000, "pending reservation released on socket death");
     assert.equal(fx.tunnel.pendingHandshakeCount(), 0);
   } finally { await fx.cleanup(); }
 });
