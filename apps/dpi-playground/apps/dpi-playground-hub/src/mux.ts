@@ -29,9 +29,10 @@ interface BrowserStream {
  * a `: ping` can never land inside a half-written event, and a slow viewer is
  * cut at the CANON hub cap instead of buffering without bound.
  */
-function pacedSseWriter(res: Response): { write: (event: string) => void; close: () => void; overCap: () => boolean } {
+export function pacedSseWriter(res: Response): { write: (event: string) => void; close: () => void; overCap: () => boolean } {
   let chain: Promise<void> = Promise.resolve();
   let closed = false;
+  let queuedBytes = 0;
   const waitDrain = () =>
     new Promise<void>((resolve) => {
       const onDrain = () => {
@@ -48,22 +49,30 @@ function pacedSseWriter(res: Response): { write: (event: string) => void; close:
       res.once("close", onClose);
     });
   return {
-    overCap: () => res.writableLength > SSE_HUB_VIEWER_BYTES,
+    // F11: the cap counts queued chain bytes, not just the kernel buffer.
+    overCap: () => res.writableLength + queuedBytes > SSE_HUB_VIEWER_BYTES,
     close: () => {
       closed = true;
     },
     write: (event) => {
       if (closed) return;
-      if (res.writableLength > SSE_HUB_VIEWER_BYTES) {
+      // F16: segment by UTF-8 bytes — a 4-byte codepoint can never be split.
+      const buf = Buffer.from(event, "utf8");
+      if (res.writableLength + queuedBytes + buf.length > SSE_HUB_VIEWER_BYTES) {
         // Slow browser: cut THIS viewer; producers keep running.
         closed = true;
         res.end();
         return;
       }
+      queuedBytes += buf.length;
       chain = chain.then(async () => {
-        for (let i = 0; i < event.length && !closed; i += PACE_WRITE_BYTES) {
-          const ok = res.write(event.slice(i, i + PACE_WRITE_BYTES));
-          if (!ok) await waitDrain();
+        try {
+          for (let i = 0; i < buf.length && !closed; i += PACE_WRITE_BYTES) {
+            const ok = res.write(buf.subarray(i, i + PACE_WRITE_BYTES));
+            if (!ok) await waitDrain();
+          }
+        } finally {
+          queuedBytes -= buf.length;
         }
       });
       chain = chain.catch(() => {

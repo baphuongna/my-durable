@@ -135,8 +135,8 @@ test("openSse ends a slow viewer instead of buffering without bound", () => {
     on(event: string, fn: () => void) {
       handlers[event] = fn;
     },
-    write(chunk: string) {
-      writes.push(chunk);
+    write(chunk: Buffer) {
+      writes.push(chunk.toString("utf8"));
       return true;
     },
     end() {

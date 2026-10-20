@@ -16,23 +16,31 @@ const MAX_BUFFER = 2_000_000;
  * waiting for the next agent event. Tell a viewer that is still open and end its response; a viewer that already
  * closed, or any other end reason, needs nothing. Never writes to an ended response.
  */
-export function onWatchEnd(sse: Sse, res: Response, end: WatchEnd): void {
+export function onWatchEnd(sse: Sse, end: WatchEnd): void {
   if (end.reason !== "session_failed" || sse.closed) return;
   sse.send({
     type: "fault",
     error: { code: "unavailable", message: "The session failed and was closed; reconnect after it is reopened" },
   });
-  res.end();
+  // F17: the fault is queued by the paced writer — end ONLY after it has
+  // actually been written, never while it is still sitting in the chain.
+  sse.end();
 }
 
 export interface Sse {
   send(frame: Frame): void;
+  /** Flush every queued frame, then end the response (F17). */
+  end(): void;
   readonly closed: boolean;
   onClose(fn: () => void): void;
   sendIfChanged(key: string, frame: Frame): void;
 }
 
-export function openSse(res: Response, scope: StreamScope): Sse {
+/**
+ * `pingMs` is deployment/test policy (default 15 s) — constructor-injected,
+ * never request-overridable.
+ */
+export function openSse(res: Response, scope: StreamScope, opts: { pingMs?: number } = {}): Sse {
   res.status(200).set({
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -46,8 +54,15 @@ export function openSse(res: Response, scope: StreamScope): Sse {
   const cleanups: Array<() => void> = [];
   const last = new Map<string, string>();
   const ping = setInterval(() => {
-    if (!closed) res.write(": ping\n\n"); // complete comment lines only
-  }, 15_000);
+    // F19: the heartbeat goes THROUGH the serialized chain — a ping can never
+    // interleave a half-written large event, and the chain serializes it
+    // behind any event that is mid-flight.
+    if (closed) return;
+    chain = chain.then(() => {
+      if (!closed) res.write(": ping\n\n");
+    });
+    chain = chain.catch(() => {});
+  }, opts.pingMs ?? 15_000);
   const close = () => {
     if (closed) return;
     closed = true;
@@ -63,7 +78,11 @@ export function openSse(res: Response, scope: StreamScope): Sse {
   // drain waits, serialized so the ping interval can never split an event.
   // A slow viewer is cut at the 2 MB backend cap and simply reconnects to a
   // fresh snapshot; the harness/session behind this viewer is NOT aborted.
+  // F11: the cap counts QUEUED chain bytes too, not just the kernel buffer —
+  // a viewer that drains slowly can never grow the queue without bound.
+  // F16: segments are UTF-8 BYTES (Buffer.subarray), never UTF-16 code units.
   let chain: Promise<void> = Promise.resolve();
+  let queuedBytes = 0;
   const waitDrain = () =>
     new Promise<void>((resolve) => {
       const onDrain = () => {
@@ -79,29 +98,42 @@ export function openSse(res: Response, scope: StreamScope): Sse {
     });
   const send = (frame: Frame) => {
     if (closed) return;
-    if (res.writableLength > MAX_BUFFER) {
+    const event = `id: ${++seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`;
+    const buf = Buffer.from(event, "utf8");
+    if (seq === 1) {
+      // The hello is tiny and is the first bytes on the wire: write it
+      // synchronously (also keeps "viewer attached" semantics testable).
+      res.write(buf);
+      return;
+    }
+    if (res.writableLength + queuedBytes + buf.length > MAX_BUFFER) {
       res.end();
       close();
       return;
     }
-    const event = `id: ${++seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`;
-    if (seq === 1) {
-      // The hello is tiny and is the first bytes on the wire: write it
-      // synchronously (also keeps "viewer attached" semantics testable).
-      res.write(event);
-      return;
-    }
+    queuedBytes += buf.length;
     chain = chain.then(async () => {
-      for (let i = 0; i < event.length && !closed; i += PACE_WRITE_BYTES) {
-        const ok = res.write(event.slice(i, i + PACE_WRITE_BYTES));
-        if (!ok) await waitDrain();
+      try {
+        for (let i = 0; i < buf.length && !closed; i += PACE_WRITE_BYTES) {
+          const ok = res.write(buf.subarray(i, i + PACE_WRITE_BYTES));
+          if (!ok) await waitDrain();
+        }
+      } finally {
+        queuedBytes -= buf.length;
       }
+    });
+    chain = chain.catch(() => {});
+  };
+  const end = () => {
+    chain = chain.then(() => {
+      if (!closed) res.end();
     });
     chain = chain.catch(() => {});
   };
   send({ type: "hello", apiVersion: 1, serverTime: Date.now(), scope });
   return {
     send,
+    end,
     get closed() {
       return closed;
     },
@@ -226,7 +258,7 @@ export async function sessionStream(store: Store, row: SessionRow, res: Response
   const offCatalog = store.subscribe(() => push());
   // pi-durable 1.2+: a failed Storage call ends the Session (and every watch) with `session_failed`, without
   // waiting for the next event. See onWatchEnd for the viewer-facing behavior.
-  void watch.closed.then((end) => onWatchEnd(sse, res, end)).catch(() => {});
+  void watch.closed.then((end) => onWatchEnd(sse, end)).catch(() => {});
   sse.onClose(() => {
     off();
     offCatalog();
@@ -265,7 +297,7 @@ export async function agentStream(
   });
   const offDocs = docs.length ? h.subscribeCommits(() => pushDocs()) : () => {};
   // A failed Storage call ends the session and this watch with `session_failed`; an open viewer learns at once.
-  void stream.closed.then((end) => onWatchEnd(sse, res, end)).catch(() => {});
+  void stream.closed.then((end) => onWatchEnd(sse, end)).catch(() => {});
   sse.onClose(() => {
     offDocs();
     pushDocs.cancel();
