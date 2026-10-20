@@ -116,6 +116,10 @@ const pairing = new PairingService({
   receiptValidator: (t) =>
     credentials.receiptStillValid(t) ? true : { code: credentials.receiptFailure(t) },
 });
+// F15: housekeeping — past expiry+grace the entry goes, issued receipts
+// included (they hold a plaintext token); the RAM maps never grow unbounded.
+const pairSweeper = setInterval(() => pairing.sweep(), 60_000);
+pairSweeper.unref();
 const pairErr = (r: { error: { status: number; code: string; message: string; retryAfterMs?: number } }, res: express.Response) =>
   res.status(r.error.status).json({ error: { code: r.error.code, message: r.error.message, ...(r.error.retryAfterMs ? { retryAfterMs: r.error.retryAfterMs } : {}) } });
 app.post("/api/pair/code", express.json({ limit: "16kb" }), (req, res) => {

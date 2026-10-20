@@ -60,7 +60,12 @@ async function deviceEnroll(base: string, code: string, hubOrigin: string) {
     signature: edSign(null, Buffer.from(payload), kp.privateKey).toString("base64url"),
   });
   assert.equal(verified.status, 202, JSON.stringify(verified.body));
-  return { uid, kp, fp, enrollmentId: started.body.enrollmentId as string };
+  // The device's poll body (spec 03 §4.3): receipt retries present the SAME proof.
+  const pollBody = {
+    type: "pair.response", v: 1, enrollmentId: started.body.enrollmentId as string, nonce: started.body.nonce as string,
+    signature: edSign(null, Buffer.from(payload), kp.privateKey).toString("base64url"),
+  };
+  return { uid, kp, fp, enrollmentId: started.body.enrollmentId as string, pollBody };
 }
 
 test("admin pairing flow: typed state → fingerprint approval → issued; no secret in any admin response", async () => {
@@ -86,10 +91,18 @@ test("admin pairing flow: typed state → fingerprint approval → issued; no se
     });
     assert.equal(approved.phase, "approved");
 
-    // Device polls again → the ONLY place a credential exists (device's own TLS response).
-    const issue = await fetch(`${hub.base}/api/pair/verify`, {
+    // F02 regression: a poll without the device's proof is rejected — the
+    // enrollmentId alone must never fetch a credential.
+    const stolen = await fetch(`${hub.base}/api/pair/verify`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ type: "pair.response", v: 1, enrollmentId: dev.enrollmentId, nonce: "n".repeat(43), signature: "A".repeat(86) }),
+    });
+    assert.equal(stolen.status, 401);
+
+    // Device polls again with the SAME proof → the ONLY place a credential exists (device's own TLS response).
+    const issue = await fetch(`${hub.base}/api/pair/verify`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(dev.pollBody),
     });
     const issueBody = (await issue.json()) as { type?: string; tunnelToken?: string };
     assert.equal(issue.status, 200);

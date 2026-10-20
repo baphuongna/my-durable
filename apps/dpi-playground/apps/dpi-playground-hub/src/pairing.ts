@@ -57,8 +57,12 @@ interface Enrollment {
   verifiedAt?: number;
   badSignatures: number;
   cancelled: boolean;
+  /** Terminal: issued credential later invalidated (revoke/re-pair). NEVER re-issue this enrollment. */
+  invalidated?: boolean;
   approval?: { fingerprint: string; replaceKey: boolean; at: number };
   issued?: { tokenIssue: TokenIssue; at: number };
+  /** In-flight issuance (F03): concurrent polls share ONE promise and ONE credential. */
+  issuing?: Promise<TokenIssue>;
 }
 
 interface CodeEntry {
@@ -299,6 +303,19 @@ export class PairingService {
 
     // Verified receipt: pre-approval poll → 202; post-approval → (cached) TokenIssue.
     if (enrollment.proofVerified) {
+      // F02: EVERY poll re-presents the original proof. The enrollmentId is
+      // never a bearer credential — the caller must hold the device private
+      // key (spec 03 §4.3: poll bằng cùng body, retry đúng proof).
+      if (req.nonce !== enrollment.nonce || !this.signatureOk(enrollment, req.signature)) {
+        this.noteFailure(ip, now);
+        this.deps.audit.denied("auth.denied", ip, { stage: "pair.verify", enrollmentId: enrollment.enrollmentId, reason: "receipt_proof_mismatch" });
+        return this.fail(401, "signature_invalid", "Proof does not match the verified enrollment");
+      }
+      // F01: invalidation is TERMINAL. A revoked/re-paired credential never
+      // leads to a re-issue of this enrollment; a NEW enrollment with a NEW
+      // operator approval is required.
+      if (enrollment.invalidated)
+        return this.fail(410, "reauth_required", "Issued credential is no longer active; re-pair required");
       if (enrollment.issued) {
         if (now > code.expiresAt + RECEIPT_GRACE_MS) return this.fail(410, "code_expired", "Receipt grace window passed");
         // Re-validate before returning the cached secret: revoked/re-paired
@@ -306,7 +323,8 @@ export class PairingService {
         if (this.deps.receiptValidator) {
           const verdict = this.deps.receiptValidator(enrollment.issued.tokenIssue);
           if (verdict !== true) {
-            enrollment.issued = undefined; // invalidate the cached secret
+            enrollment.issued = undefined; // drop the cached secret
+            enrollment.invalidated = true; // …and end this enrollment (F01)
             return this.fail(410, verdict.code, "Issued credential is no longer active; re-pair required");
           }
         }
@@ -315,10 +333,13 @@ export class PairingService {
       if (now >= code.expiresAt) return this.fail(410, "code_expired", "Pairing code expired before approval");
       if (!enrollment.approval)
         return { ok: true, value: { type: "pair.pending", v: 1, enrollmentId: enrollment.enrollmentId, state: "awaiting_approval", expiresAt: code.expiresAt, pollAfterMs: PAIR_POLL_MS }, status: 202 };
-      // Approved + not yet issued: issuance happens once; retry returns the same response.
+      // Approved + not yet issued. F03: issuance is serialized per enrollment
+      // — concurrent polls share ONE in-flight promise and get the SAME
+      // credential (no await between the check and the assignment).
       if (!this.deps.issue) return this.fail(500, "invalid", "Issuance service unavailable");
-      try {
-        const tokenIssue = await this.deps.issue({
+      const inflight =
+        enrollment.issuing ??
+        this.deps.issue({
           enrollmentId: enrollment.enrollmentId,
           codeId: enrollment.codeId,
           deviceUid: enrollment.deviceUid,
@@ -326,12 +347,19 @@ export class PairingService {
           publicKeyPem: enrollment.publicKeyPem,
           keyFingerprint: enrollment.computedFingerprint,
           replaceKey: enrollment.approval.replaceKey,
+        }).then((tokenIssue) => {
+          // pair.success is audited INSIDE the issuance transaction (P2-10).
+          enrollment.issued = { tokenIssue, at: this.now() };
+          return tokenIssue;
         });
-        // pair.success is audited INSIDE the issuance transaction (P2-10).
-        enrollment.issued = { tokenIssue, at: now };
+      enrollment.issuing = inflight;
+      try {
+        const tokenIssue = await inflight;
         return { ok: true, value: tokenIssue, status: 200 };
       } catch (e) {
         return this.fail(500, "internal", `Issuance failed: ${(e as Error).message}`);
+      } finally {
+        if (enrollment.issuing === inflight) enrollment.issuing = undefined;
       }
     }
 
@@ -383,6 +411,24 @@ export class PairingService {
     return { ok: true, value: { type: "pair.pending", v: 1, enrollmentId: enrollment.enrollmentId, state: "awaiting_approval", expiresAt: code.expiresAt, pollAfterMs: PAIR_POLL_MS }, status: 202 };
   }
 
+  /** Proof check shared by first-verify and every receipt poll (F02). */
+  private signatureOk(enrollment: Enrollment, signature: string): boolean {
+    const payload = pairingSigningPayload({
+      hubOrigin: this.deps.hubOrigin,
+      hubId: this.deps.hubId,
+      enrollmentId: enrollment.enrollmentId,
+      nonce: enrollment.nonce,
+      issuedAt: enrollment.nonceIssuedAt,
+      deviceUid: enrollment.deviceUid,
+      keyFingerprint: enrollment.computedFingerprint,
+    });
+    try {
+      return cryptoVerify(null, Buffer.from(payload, "utf8"), createPublicKey(enrollment.publicKeyPem), Buffer.from(signature, "base64url"));
+    } catch {
+      return false;
+    }
+  }
+
   /** POST /api/pair/codes/:codeId/approve (admin) — the ONLY issuance gate. */
   approve(codeId: string, body: unknown): { ok: true; value: PairCodeState } | PairingFailure {
     if (!checkPairingDto(PairApprovalSchema, body))
@@ -416,8 +462,11 @@ export class PairingService {
     if (approval.replaceKey && !keyChanged)
       return this.fail(409, "invalid", "replaceKey set but the key has not changed");
 
-    enrollment.approval = { fingerprint: enrollment.computedFingerprint, replaceKey: keyChanged, at: now };
+    // F04: the audit row commits FIRST. A failed append throws here with the
+    // enrollment still un-approved — fail-closed means a storage outage can
+    // never leave a silently-live approval behind.
     this.deps.audit.append({ actor: "admin", action: "pair.approved", outcome: "ok", detail: { codeId, enrollmentId: enrollment.enrollmentId, keyFingerprint: enrollment.computedFingerprint, replaceKey: keyChanged } });
+    enrollment.approval = { fingerprint: enrollment.computedFingerprint, replaceKey: keyChanged, at: now };
     const s = this.status(codeId);
     return s.ok ? this.ok(s.value) : s;
   }
@@ -432,6 +481,7 @@ export class PairingService {
     if (enrollment) {
       enrollment.cancelled = true;
       enrollment.nonceConsumed = true;
+      enrollment.invalidated = true;
     }
     this.deps.audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok", detail: { codeId } });
     const s = this.status(codeId);
@@ -474,7 +524,13 @@ export class PairingService {
               deviceName: enrollment.deviceName,
               keyFingerprint: enrollment.computedFingerprint,
               proofVerified: enrollment.proofVerified,
-              keyChanged: !!enrollment.approval?.replaceKey,
+              // F14: key change is computed from the CURRENT enrollment key
+              // vs the stored pairing key — available BEFORE approval, so the
+              // wizard can offer the replace-key confirmation in time.
+              keyChanged: (() => {
+                const stored = this.findPairingByUid(enrollment.deviceUid);
+                return !!stored && stored.public_key !== enrollment.publicKeyPem;
+              })(),
             },
           }
         : {}),
@@ -493,12 +549,13 @@ export class PairingService {
     return row[0];
   }
 
-  /** Drop expired entries (hub housekeeping). */
+  /** Drop expired entries (hub housekeeping). F15: past expiry+grace the
+   * entry goes REGARDLESS of issued — receipts hold a plaintext token and
+   * grace is exactly how long the device may re-read it. */
   sweep(): void {
     const now = this.now();
     for (const [codeId, code] of this.codes) {
-      const issued = code.enrollmentId ? this.enrollments.get(code.enrollmentId)?.issued : undefined;
-      if (now > code.expiresAt + RECEIPT_GRACE_MS && !issued) {
+      if (now > code.expiresAt + RECEIPT_GRACE_MS) {
         this.byCode.delete(code.code);
         this.codes.delete(codeId);
         if (code.enrollmentId) this.enrollments.delete(code.enrollmentId);
