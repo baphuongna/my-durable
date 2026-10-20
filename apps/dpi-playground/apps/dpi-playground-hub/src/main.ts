@@ -13,6 +13,7 @@ import { proxy } from "./proxy.js";
 import { guard } from "./guard.js";
 import { Audit, denialLogging } from "./audit.js";
 import { PairingService } from "./pairing.js";
+import { CredentialService } from "./credentials.js";
 import { seedFromConfig } from "./seed.js";
 
 const args = process.argv.slice(2);
@@ -81,7 +82,13 @@ app.use("/api", denialLogging(audit), guard(allowedHosts), express.json({ limit:
 // guarded surface as every other /api route. Body cap for pairing is 16 KiB.
 const hubId = (registry.db.prepare("SELECT value FROM hub_meta WHERE key='hub_id'").get() as { value: string }).value;
 const hubOrigin = process.env.DPI_HUB_ORIGIN ?? `https://${hostname().toLowerCase()}`;
-const pairing = new PairingService({ registry, audit, hubOrigin, hubId });
+const credentials = new CredentialService(registry, audit, hubOrigin, hubId);
+const pairing = new PairingService({
+  registry, audit, hubOrigin, hubId,
+  issue: (e) => credentials.issue(e),
+  receiptValidator: (t) =>
+    credentials.receiptStillValid(t) ? true : { code: credentials.receiptFailure(t) },
+});
 const pairErr = (r: { error: { status: number; code: string; message: string; retryAfterMs?: number } }, res: express.Response) =>
   res.status(r.error.status).json({ error: { code: r.error.code, message: r.error.message, ...(r.error.retryAfterMs ? { retryAfterMs: r.error.retryAfterMs } : {}) } });
 app.post("/api/pair/code", express.json({ limit: "16kb" }), (req, res) => {

@@ -108,7 +108,7 @@ export interface PairingDeps {
   audit: Audit;
   hubOrigin: string;
   hubId: string;
-  /** Issuance boundary (P2-10). Returns the committed TokenIssue. */
+  /** Issuance boundary (P2-10 CredentialService). Returns the committed TokenIssue. */
   issue?: (enrollment: {
     enrollmentId: string;
     codeId: string;
@@ -118,6 +118,8 @@ export interface PairingDeps {
     keyFingerprint: string;
     replaceKey: boolean;
   }) => Promise<TokenIssue>;
+  /** Cached-receipt validation (P2-10): replay only while the credential is live. */
+  receiptValidator?: (tokenIssue: TokenIssue) => true | { code: string };
   /** Test-harness clock (P2-04 policy: constructor injection, never HTTP). */
   now?: () => number;
 }
@@ -263,7 +265,15 @@ export class PairingService {
     if (enrollment.proofVerified) {
       if (enrollment.issued) {
         if (now > code.expiresAt + RECEIPT_GRACE_MS) return this.fail(410, "code_expired", "Receipt grace window passed");
-        // Re-validate before returning the cached secret: credential must still be live (P2-10 refines).
+        // Re-validate before returning the cached secret: revoked/re-paired
+        // credentials must never be replayed just because the TTL is open.
+        if (this.deps.receiptValidator) {
+          const verdict = this.deps.receiptValidator(enrollment.issued.tokenIssue);
+          if (verdict !== true) {
+            enrollment.issued = undefined; // invalidate the cached secret
+            return this.fail(410, verdict.code, "Issued credential is no longer active; re-pair required");
+          }
+        }
         return { ok: true, value: enrollment.issued.tokenIssue, status: 200 };
       }
       if (now >= code.expiresAt) return this.fail(410, "code_expired", "Pairing code expired before approval");
@@ -281,8 +291,8 @@ export class PairingService {
           keyFingerprint: enrollment.computedFingerprint,
           replaceKey: enrollment.approval.replaceKey,
         });
+        // pair.success is audited INSIDE the issuance transaction (P2-10).
         enrollment.issued = { tokenIssue, at: now };
-        this.deps.audit.append({ actor: "admin", action: "pair.success", outcome: "ok", detail: { enrollmentId: enrollment.enrollmentId, codeId: enrollment.codeId, keyFingerprint: enrollment.computedFingerprint } });
         return { ok: true, value: tokenIssue, status: 200 };
       } catch (e) {
         return this.fail(500, "internal", `Issuance failed: ${(e as Error).message}`);
