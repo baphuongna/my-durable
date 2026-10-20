@@ -172,6 +172,10 @@ if (args.includes("--dev")) {
 // tunnel path is claimed here and other upgrades are left alone.
 const tunnel = new TunnelServer(registry, audit, hubId);
 const dispatcher = new TunnelDispatcher(tunnel);
+mux.setTunnelSource({
+  dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
+  hasLiveConnection: (id) => tunnel.hasConnection(id),
+});
 monitor.setTunnelSource({
   dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
   hasLiveConnection: (id) => tunnel.hasConnection(id),

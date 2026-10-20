@@ -10,7 +10,8 @@ import { DpiError } from "../../../../dpi-sdk/src/errors.js";
 import { transportFor } from "./transport.js";
 import type { MuxFrame } from "../../../../dpi-sdk/src/api.js";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
-import type { DeviceMonitor } from "./monitor.js";
+import type { DeviceMonitor, TunnelTransportSource } from "./monitor.js";
+import { READERS_PER_DEVICE, READERS_PER_HUB } from "../../../../dpi-sdk/src/protocol/limits.js";
 
 interface BrowserStream {
   send(frame: MuxFrame): void;
@@ -47,14 +48,35 @@ const sleep = (ms: number, signal: AbortSignal) =>
 
 export class StreamMux {
   private streams = new Map<string, BrowserStream>();
+  private tunnel?: TunnelTransportSource;
+  /** Live reader count per deviceId across all tabs (monitor adds its own). */
+  private readersByDevice = new Map<string, number>();
 
   constructor(
     private readonly registry: NetworkRegistry,
     private readonly monitor: DeviceMonitor,
   ) {}
 
+  private readerCount(deviceId: string): number {
+    const mux = this.readersByDevice.get(deviceId) ?? 0;
+    // The monitor owns one reader per tunnel device (P2-15).
+    const monitorReader = this.tunnel?.hasLiveConnection(deviceId) ? 1 : 0;
+    return mux + monitorReader;
+  }
+
+  private hubReaderCount(): number {
+    let total = 0;
+    for (const n of this.readersByDevice.values()) total += n;
+    return total;
+  }
+
   get size() {
     return this.streams.size;
+  }
+
+  /** Wire the tunnel dispatcher source (main.ts, after construction). */
+  setTunnelSource(source: TunnelTransportSource): void {
+    this.tunnel = source;
   }
 
   open(_req: Request, res: Response) {
@@ -86,7 +108,11 @@ export class StreamMux {
       closed = true;
       clearInterval(ping);
       off();
-      for (const ctl of stream.upstreams.values()) ctl.abort();
+      for (const [key, ctl] of stream.upstreams) {
+        ctl.abort();
+        this.releaseReader(key);
+      }
+      stream.upstreams.clear();
       this.streams.delete(streamId);
     });
   }
@@ -104,16 +130,42 @@ export class StreamMux {
       if (!wanted.has(key)) {
         ctl.abort();
         stream.upstreams.delete(key);
+        this.releaseReader(key);
       }
     for (const [key, sub] of wanted)
       if (!stream.upstreams.has(key)) {
         if (!this.registry.get(sub.deviceId))
           throw Object.assign(Error(`No device ${sub.deviceId}`), { status: 404 });
+        // Reader caps (04 §8): 128/device incl. the monitor's reader, 1024
+        // hub-wide. A rejected NEW reader must not disturb existing readers.
+        if (this.readerCount(sub.deviceId) >= READERS_PER_DEVICE || this.hubReaderCount() >= READERS_PER_HUB) {
+          stream.send({
+            sub: key,
+            frame: { type: "fault", error: { code: "unavailable", message: `Reader cap reached for ${sub.deviceId}; close other tabs or retry` } },
+          });
+          continue;
+        }
+        this.acquireReader(sub.deviceId);
         const ctl = new AbortController();
         stream.upstreams.set(key, ctl);
         void this.follow(stream, sub, ctl.signal);
       }
     return { subs: ["network", ...wanted.keys()] };
+  }
+
+  private acquireReader(deviceId: string): void {
+    this.readersByDevice.set(deviceId, (this.readersByDevice.get(deviceId) ?? 0) + 1);
+  }
+
+  private releaseReader(key: string): void {
+    try {
+      const sub = parseSubKey(key);
+      const n = this.readersByDevice.get(sub.deviceId) ?? 0;
+      if (n <= 1) this.readersByDevice.delete(sub.deviceId);
+      else this.readersByDevice.set(sub.deviceId, n - 1);
+    } catch {
+      /* non-parsable key never acquired a reader */
+    }
   }
 
   private async follow(
@@ -126,7 +178,7 @@ export class StreamMux {
       await this.monitor.whenOnline(sub.deviceId, signal);
       if (signal.aborted) return;
       const device = this.registry.get(sub.deviceId);
-      const transport = device ? transportFor(device) : undefined;
+      const transport = device ? transportFor(device, this.tunnel) : undefined;
       if (!transport?.available) return;
       try {
         for await (const frame of transport.watch(
