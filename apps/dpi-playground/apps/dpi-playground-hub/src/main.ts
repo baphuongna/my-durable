@@ -12,6 +12,7 @@ import { StreamMux } from "./mux.js";
 import { proxy } from "./proxy.js";
 import { guard } from "./guard.js";
 import { Audit, denialLogging } from "./audit.js";
+import { PairingService } from "./pairing.js";
 import { seedFromConfig } from "./seed.js";
 
 const args = process.argv.slice(2);
@@ -74,6 +75,40 @@ app.get("/healthz", (_req, res) => res.json({ ok: true, pid: process.pid, uptime
 app.disable("x-powered-by");
 const audit = new Audit(registry);
 app.use("/api", denialLogging(audit), guard(allowedHosts), express.json({ limit: "256kb" }));
+
+// Pairing endpoints (03 §4). Admin authentication + authz matrix land in P2-21;
+// until then the hub is loopback/TLS-proxied and these routes are the same-origin
+// guarded surface as every other /api route. Body cap for pairing is 16 KiB.
+const hubId = (registry.db.prepare("SELECT value FROM hub_meta WHERE key='hub_id'").get() as { value: string }).value;
+const hubOrigin = process.env.DPI_HUB_ORIGIN ?? `https://${hostname().toLowerCase()}`;
+const pairing = new PairingService({ registry, audit, hubOrigin, hubId });
+const pairErr = (r: { error: { status: number; code: string; message: string; retryAfterMs?: number } }, res: express.Response) =>
+  res.status(r.error.status).json({ error: { code: r.error.code, message: r.error.message, ...(r.error.retryAfterMs ? { retryAfterMs: r.error.retryAfterMs } : {}) } });
+app.post("/api/pair/code", express.json({ limit: "16kb" }), (req, res) => {
+  const r = pairing.createCode(req.ip ?? "unknown");
+  return r.ok ? res.status(201).json(r.value) : pairErr(r, res);
+});
+app.post("/api/pair/start", express.json({ limit: "16kb" }), (req, res) => {
+  const r = pairing.start(req.body, req.ip ?? "unknown");
+  return r.ok ? res.json(r.value) : pairErr(r, res);
+});
+app.post("/api/pair/verify", express.json({ limit: "16kb" }), async (req, res) => {
+  const r = await pairing.verify(req.body, req.ip ?? "unknown");
+  if (r.ok) return res.status(r.status).json(r.value);
+  pairErr(r, res);
+});
+app.get("/api/pair/codes/:codeId", (req, res) => {
+  const r = pairing.status(req.params.codeId);
+  return r.ok ? res.json(r.value) : pairErr(r, res);
+});
+app.post("/api/pair/codes/:codeId/approve", express.json({ limit: "16kb" }), (req, res) => {
+  const r = pairing.approve(req.params.codeId, req.body);
+  return r.ok ? res.json(r.value) : pairErr(r, res);
+});
+app.post("/api/pair/codes/:codeId/cancel", (req, res) => {
+  const r = pairing.cancel(req.params.codeId);
+  return r.ok ? res.json(r.value) : pairErr(r, res);
+});
 
 app.get("/api/network", (_req, res) => res.json({ configFile, devices: monitor.network() }));
 // Devices are configured in dpi-network.yaml and `just net register`; the hub only reads them.
