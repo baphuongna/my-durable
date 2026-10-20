@@ -1,9 +1,10 @@
 // The client-side device registry: ~/.dpi/network.sqlite. Shared by the playground hub,
 // dpi-tui and scripts/net.ts on this machine. Holds tokens (mode 0600), live status and UI state.
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { migrateRegistryFile } from "./registry-migration.js";
 import type { DeviceInfo, DeviceKind, DeviceStatus, DeviceTree, NetworkDevice } from "../api.js";
 
 export const dpiHome = () => process.env.DPI_HOME ?? join(homedir(), ".dpi");
@@ -90,27 +91,11 @@ export class NetworkRegistry {
   constructor(path = join(dpiHome(), "network.sqlite")) {
     this.path = path;
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const fresh = !existsSync(path);
+    // Bring the file to schema v1 first (WAL-safe backup + one-transaction
+    // migration). Any failure throws — the hub/TUI must not boot on it.
+    migrateRegistryFile(path);
     this.db = new DatabaseSync(path);
-    if (fresh) chmodSync(path, 0o600);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;
-      CREATE TABLE IF NOT EXISTS devices(
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('local','ssh','exe-dev','url')),
-        url TEXT NOT NULL,
-        token TEXT,
-        source TEXT NOT NULL DEFAULT 'ui' CHECK(source IN ('config','ui')),
-        position INTEGER NOT NULL DEFAULT 0,
-        device_uid TEXT,
-        last_status TEXT NOT NULL DEFAULT 'checking',
-        last_error TEXT,
-        last_seen_at INTEGER,
-        last_info_json TEXT,
-        last_tree_json TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS ui_state(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
+    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000; PRAGMA foreign_keys=ON;");
   }
 
   private row(raw: RawRow | undefined): DeviceRow | undefined {
