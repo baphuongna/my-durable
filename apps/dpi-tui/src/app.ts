@@ -136,11 +136,12 @@ export class App {
   async switchDevice(id: string) {
     const row = this.registry?.get(id);
     if (!row?.token) return this.flash(`No token for ${id}. Run: just net register ${id}`, true);
+    if (!row.url) return this.flash(`${id} is tunnel-only (no LAN URL) — use the hub web UI.`, true);
     const client = new DpiClient(row.url, row.token);
     await this.run(async () => {
       this.info = await client.device({ timeoutMs: 8000 });
       this.streams?.abort();
-      this.device = { id: row.id, name: row.name, url: row.url, token: row.token! };
+      this.device = { id: row.id, name: row.name, url: row.url!, token: row.token! };
       this.client = client;
       this.sessionId = undefined;
       this.agentId = undefined;

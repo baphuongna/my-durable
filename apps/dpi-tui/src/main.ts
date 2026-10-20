@@ -17,6 +17,9 @@ const USAGE = `usage: dpi-tui <device>[:<session>[:<agent>]] [options]
   --new <name>          create a session on the device and attach
   --cwd <dir>           working directory on the device for --new (absolute, or relative to its first start dir)
   --model <id>          model for --new (default: the device's default)
+  --pair <CODE|URL>     pair THIS device's local backend with a hub before the UI opens
+  --hub <origin>        hub origin for --pair (else the code's pair URL)
+  --force               with --pair: switch hubs even if already paired
   --url, --token        connect to any dpi-backend directly (also DPI_URL, DPI_TOKEN)
   --save <id>           store a --url device in ~/.dpi/network.sqlite under <id>`;
 
@@ -36,6 +39,9 @@ const { values, positionals } = parseArgs({
     new: { type: "string" },
     cwd: { type: "string" },
     model: { type: "string" },
+    pair: { type: "string" },
+    hub: { type: "string" },
+    force: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -64,6 +70,8 @@ if (url) {
   const row = registry.get(deviceRef);
   if (!row) fail(`Unknown device "${deviceRef}". Known: ${known.join(", ") || "none (add one to dpi-network.yaml)"}`);
   if (!row.token) fail(`No token for ${row.id}. Run: just net register ${row.id}`);
+  if (!row.url)
+    fail(`Device ${row.id} is paired over the tunnel — it has no LAN URL. Attach through the hub web UI, or pair this machine directly.`);
   device = { id: row.id, name: row.name, url: row.url, token: row.token };
 }
 
@@ -92,4 +100,23 @@ if (values.new) {
 }
 
 const app = new App(device, client, info, registry);
-await app.open(session, agentRef);
+
+// Bootstrap local pairing (--pair CODE --hub ORIGIN [--force]): runs the same
+// controller as /pair, against the LOCAL backend, before the UI opens. A bare
+// --pair without a value points at the slash command instead of guessing.
+if (values.pair !== undefined || values.hub !== undefined) {
+  const { runPairing, parsePairArgs, LocalPairing } = await import("./pairing.ts");
+  if (!values.pair) {
+    process.stdout.write("--pair needs the code from the hub wizard (or its pair URL).\nInside dpi-tui, run: /pair <CODE> --hub <origin>\n");
+    process.exit(1);
+  }
+  try {
+    LocalPairing.fromEnv();
+  } catch (e) {
+    fail((e as Error).message);
+  }
+  await app.open(session, agentRef);
+  await runPairing(app, parsePairArgs([values.pair, ...(values.hub ? ["--hub", values.hub] : []), ...(values.force ? ["--force"] : [])].join(" ")));
+} else {
+  await app.open(session, agentRef);
+}

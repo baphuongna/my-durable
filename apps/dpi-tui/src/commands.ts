@@ -3,6 +3,7 @@ import type { SlashCommand } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import type { App } from "./app.ts";
 import { Panel, pickAgent, pickDevice, pickModel, pickSession } from "./pickers.ts";
+import { parsePairArgs, runPairing } from "./pairing.ts";
 import { c } from "./theme.ts";
 
 export const COMMANDS: SlashCommand[] = [
@@ -23,6 +24,7 @@ export const COMMANDS: SlashCommand[] = [
   { name: "reset", description: "start a fresh context", argumentHint: "[handoff note]" },
   { name: "name", description: "rename this agent", argumentHint: "<name>" },
   { name: "tasks", description: "live tasks in this session" },
+  { name: "pair", description: "pair THIS device with a hub", argumentHint: "<CODE|PAIR_URL> [--hub ORIGIN] [--force]" },
   { name: "help", description: "keys and commands" },
   { name: "quit", description: "exit (the agent keeps running)" },
 ];
@@ -105,6 +107,9 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
         await handle!.rename(arg);
         app.flash(`Agent renamed to ${arg}`);
       });
+      break;
+    case "pair":
+      await runPairing(app, parsePairArgs(arg));
       break;
     case "tasks":
       app.overlay(
