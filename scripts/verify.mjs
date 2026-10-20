@@ -60,6 +60,17 @@ function preflight() {
 
 // ---------------------------------------------------------------- suites
 
+/** Build/type gates (review 2026-10-20 item 5): a green test runner must
+ * never again coexist with a broken Web build or a dead compile-negative
+ * fixture. These run FIRST so failures fail fast. */
+const GATES = {
+  "check:sdk": { cwd: "apps/dpi-sdk", cmd: ["npm", "run", "check"], title: "dpi-sdk type-check" },
+  "check:backend": { cwd: "apps/dpi-backend", cmd: ["npm", "run", "check"], title: "dpi-backend type-check" },
+  "contract:backend": { cwd: "apps/dpi-backend", cmd: ["npm", "run", "check:contract"], title: "compile-negative wire-contract fixture (control + 5 mutations)" },
+  "build:playground": { cwd: "apps/dpi-playground", cmd: ["npm", "run", "build"], title: "vue-tsc FE + hub tsc + vite build (Web UI must ship)" },
+  "check:tui": { cwd: "apps/dpi-tui", cmd: ["npm", "run", "check"], title: "dpi-tui type-check" },
+};
+
 const SUITES = {
   sdk: {
     cwd: "apps/dpi-sdk",
@@ -84,6 +95,7 @@ const SUITES = {
   },
 };
 
+const PHASE_GATES = ["check:sdk", "check:backend", "contract:backend", "build:playground", "check:tui"];
 const PHASE_SUITES = {
   P0: ["sdk"],
   P1: ["sdk", "playground"],
@@ -128,6 +140,11 @@ info("case families NOT measured here (by design):");
 info("  D-4 NAT drill — belongs to P3; this runner never claims it");
 info("  browser pixel acceptance — headless matrix runs in the playground suite where present");
 const results = [];
+for (const name of PHASE_GATES) results.push(run(name, GATES[name]));
+if (results.some((r) => !r.ok)) {
+  bad("build/type gates failed — skipping test suites (fail fast)");
+  process.exit(1);
+}
 for (const name of list) results.push(run(name, SUITES[name]));
 const failed = results.filter((r) => !r.ok);
 process.stdout.write(`\n== summary ==\n`);

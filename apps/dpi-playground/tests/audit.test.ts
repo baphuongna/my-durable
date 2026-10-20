@@ -25,17 +25,17 @@ async function tempAudit(hooks?: { failAppend?: boolean }) {
 const rows = (registry: NetworkRegistry) =>
   registry.db.prepare("SELECT * FROM events ORDER BY id").all() as Record<string, unknown>[];
 
-test("append: all 12 required actions round-trip with correlation fields", async () => {
+test("append: all 14 required actions round-trip with correlation fields", async () => {
   const { registry, audit, cleanup } = await tempAudit();
   try {
     for (const action of AUDIT_ACTIONS) {
       audit.append({ actor: "admin", action, outcome: action === "auth.denied" ? "denied" : "ok", requestId: "req-1", connectionId: "conn-1", detail: { x: 1 } });
     }
-    assert.equal(AUDIT_ACTIONS.length, 12);
+    assert.equal(AUDIT_ACTIONS.length, 14);
     const all = rows(registry);
-    assert.equal(all.length, 12);
+    assert.equal(all.length, 14);
     assert.equal(all[0].action, "pair.code_created");
-    assert.equal(all[11].action, "rate_limited");
+    assert.equal(all[13].action, "rotation.stale_cleared");
     assert.equal(all[0].request_id, "req-1");
     // append-only: UPDATE/DELETE raise (S-6)
     assert.throws(() => registry.db.prepare("UPDATE events SET actor='x' WHERE id=1").run());

@@ -8,7 +8,7 @@
 // `npm run check` already runs the positive checks (src/contract-check.ts is in tsconfig include).
 // This script proves those checks earn their keep. It never mutates the real source tree.
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const backend = resolve(import.meta.dirname, "..");
@@ -76,6 +76,22 @@ function prepare(directory, api) {
   writeFileSync(join(directory, "apps/dpi-sdk/src/api.ts"), api);
   writeFileSync(join(directory, "apps/dpi-backend/src/contract-check.ts"), checkerSource);
   writeFileSync(join(directory, "tsconfig.json"), JSON.stringify(tsconfig, null, 2));
+  // F18: the P2 protocol modules import @sinclair/typebox (dpi-sdk's
+  // dependency) — the scratch layout must resolve the SAME packages as the
+  // real tree or every case degrades into a missing-module error instead of
+  // a completeness diagnostic. The scratch node_modules composes the
+  // packages the copied sources actually resolve against.
+  mkdirSync(join(directory, "node_modules"));
+  const links = [
+    [join(repo, "apps/dpi-sdk/node_modules"), "@sinclair"],
+    [join(backend, "node_modules"), "@types"],
+  ];
+  for (const [from, name] of links)
+    try {
+      symlinkSync(join(from, name), join(directory, "node_modules", name), "dir");
+    } catch {
+      /* absent in this checkout: tsc will say so honestly */
+    }
 }
 
 function compile(directory) {
