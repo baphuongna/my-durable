@@ -106,6 +106,8 @@ interface Conn {
   idleTimer?: NodeJS.Timeout;
   pongMisses: number;
   lastByte: number;
+  /** F13: frees the pending-handshake reservation exactly once. */
+  releasePending?: () => void;
 }
 
 /** Bounded token bucket (per key) with continuous refill. */
@@ -315,8 +317,17 @@ export class TunnelServer {
 
     this.pendingHandshakes++;
     this.wss.handleUpgrade(req, socket, head, (ws) => {
-      this.pendingHandshakes--;
-      this.onConnection(ws, row, device.device_uid as string, pairing.key_fingerprint, ip);
+      // F13: the reservation is held until the APPLICATION handshake
+      // completes (or the socket dies) — not until the HTTP 101. Sockets
+      // sitting between upgrade and handshake must keep consuming the cap.
+      let released = false;
+      const releasePending = () => {
+        if (!released) {
+          released = true;
+          this.pendingHandshakes--;
+        }
+      };
+      this.onConnection(ws, row, device.device_uid as string, pairing.key_fingerprint, ip, releasePending);
     });
   }
 
@@ -355,6 +366,7 @@ export class TunnelServer {
     deviceUid: string,
     keyFingerprint: string,
     ip: string,
+    releasePending: () => void,
   ): void {
     const conn: Conn = {
       ws,
@@ -364,6 +376,7 @@ export class TunnelServer {
       phase: "awaiting-handshake",
       pongMisses: 0,
       lastByte: this.now(),
+      releasePending,
     };
     // 5 s to produce a valid handshake (04 §4).
     conn.handshakeTimer = setTimeout(() => {
@@ -413,7 +426,19 @@ export class TunnelServer {
     }
     this.handlers.onMessage?.(this.asConnection(conn), frame);
     const asConn2 = this.asConnection(conn);
-    for (const fn of this.frameListeners) fn(asConn2, frame);
+    for (const fn of this.frameListeners) {
+      try {
+        fn(asConn2, frame);
+      } catch (e) {
+        this.audit.append({
+          actor: "hub",
+          action: "tunnel.listener_error",
+          outcome: "denied",
+          connectionId: conn.connectionId,
+          detail: { stage: "frame", error: String((e as Error).message).slice(0, 200) },
+        });
+      }
+    }
   }
 
   private completeHandshake(
@@ -449,6 +474,8 @@ export class TunnelServer {
     clearTimeout(conn.handshakeTimer);
     conn.handshakeTimer = undefined;
     conn.phase = "open";
+    conn.releasePending?.(); // F13: handshake done — the authed connection now counts under maxAuthenticated
+    conn.releasePending = undefined;
     this.connections.set(conn.auth.device_id, conn);
     this.registry.recordTunnelState(conn.auth.device_id, { connectionId: conn.connectionId, connectedAt: this.now() });
     this.audit.append({
@@ -489,7 +516,21 @@ export class TunnelServer {
     );
     this.handlers.onOpen?.(this.asConnection(conn));
     const asConn = this.asConnection(conn);
-    for (const fn of this.openListeners) fn(asConn);
+    // F08: a listener throwing must never take the hub down; the exception
+    // is audited and the connection stays up.
+    for (const fn of this.openListeners) {
+      try {
+        fn(asConn);
+      } catch (e) {
+        this.audit.append({
+          actor: "hub",
+          action: "tunnel.listener_error",
+          outcome: "denied",
+          connectionId: conn.connectionId,
+          detail: { stage: "open", error: String((e as Error).message).slice(0, 200) },
+        });
+      }
+    }
   }
 
   /** Handshake-phase failure: fault + close(1008), nothing registered. */
@@ -518,6 +559,7 @@ export class TunnelServer {
   }
 
   private teardown(conn: Conn, code: number, reason: string): void {
+    conn.releasePending?.(); // F13: free the handshake reservation on ANY exit
     if (conn.phase === "closed") return;
     conn.phase = "closed";
     if (conn.handshakeTimer) clearTimeout(conn.handshakeTimer);

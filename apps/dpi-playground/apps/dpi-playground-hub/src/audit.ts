@@ -20,6 +20,7 @@ export const AUDIT_ACTIONS = [
   "pair.code_created", "pair.approved", "pair.cancelled", "pair.success", "pair.revoke",
   "token.rotate_started", "token.rotate_completed", "token.rotate_regenerated",
   "tunnel.connect", "tunnel.disconnect", "auth.denied", "rate_limited",
+  "tunnel.listener_error", "rotation.stale_cleared",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

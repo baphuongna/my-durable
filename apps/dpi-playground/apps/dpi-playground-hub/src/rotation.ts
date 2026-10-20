@@ -196,6 +196,32 @@ export class RotationService {
       | undefined;
     if (!pairing) return;
 
+    // F08: a re-pair must end any rotation intent left over from the OLD
+    // epoch. If the recorded target credential is not from the live pairing,
+    // the intent is stale: clear it (a UNIQUE crash lurks in its recovery —
+    // recoverFromCacheLoss would mint a second 'current') and start clean.
+    if (pairing.rotation_id && pairing.rotation_target_credential_id) {
+      const target = this.registry.db
+        .prepare("SELECT pairing_epoch FROM tunnel_credentials WHERE credential_id=?")
+        .get(pairing.rotation_target_credential_id) as { pairing_epoch: string } | undefined;
+      if (!target || target.pairing_epoch !== pairing.pairing_epoch) {
+        this.registry.db
+          .prepare(
+            "UPDATE pairings SET rotation_id=NULL, rotation_target_credential_id=NULL, rotation_started_at=NULL, updated_at=? WHERE device_id=?",
+          )
+          .run(this.now(), conn.deviceId);
+        this.audit.append({
+          actor: "hub",
+          action: "rotation.stale_cleared",
+          outcome: "ok",
+          detail: { deviceId: conn.deviceId, reason: "rotation target predates the current pairing epoch" },
+        });
+        pairing.rotation_id = null;
+        pairing.rotation_target_credential_id = null;
+        pairing.rotation_started_at = null;
+      }
+    }
+
     // Explicit rotation due (admin request recorded while offline, or the
     // routine 90-day interval): start it now that a connection is live.
     const due =

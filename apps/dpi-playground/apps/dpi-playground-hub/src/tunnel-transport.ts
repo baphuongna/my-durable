@@ -143,6 +143,24 @@ export class TunnelDispatcher {
           const p = this.pending.get(c.reqId);
           return !!p && p.connectionId === conn.connectionId;
         });
+        // F09: ownership is re-checked before EVERY settle — a chunk whose
+        // reqId belongs to ANOTHER connection can never resolve (or 502) the
+        // victim's request. The sender is denied, audited and cut instead.
+        const ownsReqId = (() => {
+          const p = this.pending.get(chunk.reqId);
+          return !!p && p.connectionId === conn.connectionId;
+        })();
+        if (!ownsReqId) {
+          this.audit?.append({
+            actor: `device:${conn.deviceId}`,
+            action: "auth.denied",
+            outcome: "denied",
+            connectionId: conn.connectionId,
+            detail: { endpoint: "tunnel.rest", code: "foreign_chunk", reqId: chunk.reqId },
+          });
+          this.server.closeConnection(conn.deviceId, 1008, "tunnel-chunk for a foreign reqId");
+          return;
+        }
         if (!out.ok) {
           const p = this.settle(chunk.reqId);
           p?.resolve({ status: 502, body: { error: { code: "response_too_large", message: out.error } } });

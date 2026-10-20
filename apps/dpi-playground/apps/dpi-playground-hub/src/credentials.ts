@@ -114,7 +114,8 @@ export class CredentialService {
            VALUES(?,?,?,?,'paired',1,?,?,?)
            ON CONFLICT(device_id) DO UPDATE SET pairing_epoch=excluded.pairing_epoch,
              public_key=excluded.public_key, key_fingerprint=excluded.key_fingerprint,
-             status='paired', credential_generation=1, paired_at=excluded.paired_at, updated_at=excluded.updated_at`,
+             status='paired', credential_generation=1, paired_at=excluded.paired_at, updated_at=excluded.updated_at,
+             rotation_id=NULL, rotation_target_credential_id=NULL, rotation_started_at=NULL, rotation_requested_at=NULL`,
         )
         .run(deviceId, pairingEpoch, input.publicKeyPem, input.keyFingerprint, now, now, now);
       this.registry.db
