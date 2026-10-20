@@ -6,6 +6,7 @@ import { DEVICE_DOC_KINDS, type SessionRow, type Store } from "./store.js";
 import { agentStream, deviceStream, sessionStream } from "./streams.js";
 import { idempotent } from "./idempotency.js";
 import { invalid } from "./errors.js";
+import type { DevicePairing } from "./pairing.js";
 
 type Async = (req: Request, res: Response) => Promise<unknown>;
 const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
@@ -23,9 +24,41 @@ const int = (value: unknown, name: string) => {
   return n;
 };
 
-export function v1(store: Store) {
+export function v1(store: Store, pairing?: DevicePairing) {
   const r = Router();
   const create = idempotent(store);
+
+  // Local pairing control point (03 §7): the TUI never touches crypto or the
+  // pairing files directly — everything flows through these token-authed routes.
+  if (pairing) {
+    // Pairing errors carry {code, status}; map them without going through the
+    // generic middleware so codes like hub_required/busy survive to the TUI.
+    const fail = (e: unknown, res: Response) =>
+      res.status((e as { status?: number }).status ?? 400).json({
+        error: { code: (e as { code?: string }).code ?? "invalid", message: (e as Error).message },
+      });
+    r.get("/pairing", (_req, res) => res.json(pairing.status()));
+    r.post("/pairing/start", (req, res) => {
+      void (async () => {
+        try {
+          const input = req.body as { code?: string; hub?: string; pairUrl?: string; force?: boolean };
+          if (!input || typeof input.code !== "string" || (input.hub !== undefined && typeof input.hub !== "string") || (input.pairUrl !== undefined && typeof input.pairUrl !== "string"))
+            throw invalid("body: { code: string, hub?: string, pairUrl?: string, force?: boolean }");
+          await pairing.start({ code: input.code, hub: input.hub, pairUrl: input.pairUrl, force: input.force });
+          res.json(pairing.status());
+        } catch (e) {
+          fail(e, res);
+        }
+      })();
+    });
+    r.post("/pairing/cancel", (_req, res) => {
+      try {
+        res.json(pairing.cancel());
+      } catch (e) {
+        fail(e, res);
+      }
+    });
+  }
 
   // Resolve :s and :a once per request.
   r.param("s", (req, res, next, value: string) => {
