@@ -33,6 +33,8 @@ import {
   WS_MAX_MESSAGE_BYTES,
 } from "../../dpi-sdk/src/protocol/limits.js";
 import { loadJson, pairingPath, keypairPath, type PairingFile, type DeviceKeypair } from "./pairing-files.js";
+import { sendChunked } from "../../dpi-sdk/src/node/chunk.js";
+import { REST_BODY_MAX_BYTES as LOCAL_BODY_CAP } from "../../dpi-sdk/src/protocol/limits.js";
 
 /** Bounded clamp for server-advised 429 delays (04 §6: never trust raw body). */
 const RETRY_AFTER_MIN_MS = 1_000;
@@ -381,6 +383,11 @@ export class DeviceConnector {
           send({ type: "rest-response", reqId: frame.reqId, status: 404, body: { error: { code: "invalid", message: check.error } } });
           return;
         }
+        const bodyBytes = frame.body === undefined ? 0 : Buffer.byteLength(JSON.stringify(frame.body), "utf8");
+        if (bodyBytes > LOCAL_BODY_CAP) {
+          send({ type: "rest-response", reqId: frame.reqId, status: 413, body: { error: { code: "invalid", message: `Request body exceeds ${LOCAL_BODY_CAP} bytes` } } });
+          return;
+        }
         try {
           const hasBody = !["GET", "HEAD", "DELETE"].includes(frame.method);
           const res = await fetch(api.baseUrl + frame.path, {
@@ -395,13 +402,14 @@ export class DeviceConnector {
             signal: AbortSignal.timeout(REST_LOCAL_TIMEOUT_MS),
           });
           const text = await res.text();
-          send({
-            type: "rest-response",
-            reqId: frame.reqId,
-            status: res.status,
-            contentType: res.headers.get("content-type") ?? undefined,
-            body: text,
-          });
+          // Small responses ride one frame; large ones chunk (hub reassembles).
+          const envelope = { type: "rest-response", reqId: frame.reqId, status: res.status, contentType: res.headers.get("content-type") ?? undefined, body: text } as const;
+          const serialized = JSON.stringify(envelope);
+          if (Buffer.byteLength(serialized, "utf8") > 512 * 1024) {
+            sendChunked(envelope, { kind: "rest-response", reqId: frame.reqId }, (chunk) => send(chunk as unknown as TunnelFrame));
+          } else {
+            send(envelope as unknown as TunnelFrame);
+          }
         } catch (e) {
           send({ type: "rest-response", reqId: frame.reqId, status: 502, body: { error: { code: "offline", message: (e as Error).message } } });
         }

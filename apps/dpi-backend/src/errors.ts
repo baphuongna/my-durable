@@ -12,6 +12,8 @@ const STATUS: Record<ErrorCode, number> = {
   unavailable: 503,
   internal: 500,
   offline: 503,
+  rate_limited: 429,
+  timeout: 504,
 };
 
 export class ApiFault extends Error {

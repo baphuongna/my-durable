@@ -183,6 +183,12 @@ export class TunnelServer {
     return c && c.phase === "open" ? c.connectionId : undefined;
   }
 
+  /** Protocol-violation close of the device's current connection. */
+  closeConnection(deviceId: string, code: number, reason: string): void {
+    const c = this.connections.get(deviceId);
+    if (c) this.teardown(c, code, reason);
+  }
+
   /**
    * Replace the handlers (the dispatcher installs itself after construction).
    * Per-connection frame validation (schema/direction/phase) has already run

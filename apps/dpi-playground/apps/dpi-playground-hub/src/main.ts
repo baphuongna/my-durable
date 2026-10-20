@@ -145,7 +145,10 @@ app.put(
   "/api/stream/:streamId",
   safe((req, res) => res.json(mux.subscribe(String(req.params.streamId), req.body?.subs))),
 );
-app.all("/api/devices/:id/v1/{*rest}", proxy(registry, monitor));
+app.all("/api/devices/:id/v1/{*rest}", proxy(registry, monitor, {
+  dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
+  hasLiveConnection: (id) => tunnel.hasConnection(id),
+}));
 app.use("/api", (_req, res) => res.status(404).json(err("not_found", "API route not found")));
 
 const server = createServer(app);

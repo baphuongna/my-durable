@@ -51,7 +51,9 @@ export type ErrorCode =
   | "ambiguous"
   | "unavailable"
   | "internal"
-  | "offline";
+  | "offline"
+  | "rate_limited"
+  | "timeout";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "off",

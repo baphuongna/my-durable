@@ -100,8 +100,12 @@ export const ROTATION_INTERVAL_DAYS = 90;
 
 /** Tunnel REST path allowlist. */
 export const REST_PATH_PREFIX = "/v1/";
-/** Paths under /v1 that must never be tunneled (SSE endpoints). */
-export const REST_PATH_DENYLIST = ["/v1/events"];
+/**
+ * Paths under /v1 that must never be tunneled: SSE endpoints (streams are
+ * subscription-based) and the device-LOCAL control surface (pairing/tunnel
+ * status) which belongs to the device operator, not to remote hub callers.
+ */
+export const REST_PATH_DENYLIST = ["/v1/events", "/v1/pairing", "/v1/tunnel"];
 
 export function assertLimitsConfig(): void {
   // Structural consistency guards — fail startup, not per-request.

@@ -4,16 +4,18 @@ import type { RequestHandler } from "express";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { DeviceMonitor } from "./monitor.js";
 import { transportFor } from "./transport.js";
+import type { TunnelTransportSource } from "./monitor.js";
+import { DpiError } from "../../../../dpi-sdk/src/errors.js";
 
 const err = (code: string, message: string) => ({ error: { code, message } });
 
-export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor): RequestHandler {
+export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor, tunnel?: TunnelTransportSource): RequestHandler {
   return async (req, res) => {
     const id = String(req.params.id);
     const device = registry.get(id);
     if (!device) return void res.status(404).json(err("not_found", `No device ${id}`));
     const live = monitor.state(id);
-    const transport = transportFor(device);
+    const transport = transportFor(device, tunnel);
     if (live?.status !== "online" || !transport?.available)
       return void res
         .status(503)
@@ -47,10 +49,22 @@ export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor): Reques
         .send(typeof upstream.body === "string" ? upstream.body : JSON.stringify(upstream.body ?? {}));
     } catch (e) {
       if (closed.signal.aborted) return;
-      monitor.check(id);
+      // Status-carrying tunnel outcomes keep their semantics: 413 too-large,
+      // 429 pending-full, 504 deadline, 503 offline/unknown-outcome (a
+      // mutation is NEVER auto-retried with a fresh reqId here — the client
+      // sees the failure and decides). Everything else is a bad gateway.
+      const dpi = e instanceof DpiError ? e : undefined;
+      const status = dpi?.status && dpi.status >= 400 && dpi.status <= 599 ? dpi.status : dpi?.code === "invalid" ? 400 : 502;
+      const code =
+        dpi?.code === "rate_limited" ? "rate_limited"
+        : dpi?.code === "timeout" || status === 504 ? "timeout"
+        : status === 503 ? "unavailable"
+        : dpi?.code === "invalid" ? "invalid"
+        : "offline";
+      if (!dpi || dpi.code === "offline") monitor.check(id);
       res
-        .status(502)
-        .json(err("offline", `${device.name} did not answer: ${(e as Error).message}`));
+        .status(status)
+        .json(err(code, `${device.name}: ${(e as Error).message}`));
     }
   };
 }

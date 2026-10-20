@@ -96,6 +96,10 @@ test("W-2: REST path/method allowlist — traversal, absolute, SSE, encoded bypa
   assert.deepEqual(validateRestRequest({ method: "POST", path: "/v1/sessions" }), { ok: true });
   assert.equal(validateRestRequest({ method: "GET", path: "/v1/events" }).ok, false);
   assert.equal(validateRestRequest({ method: "GET", path: "/v1/events?scope=x" }).ok, false);
+  // Device-local control surface must stay local (04 §9 / P2-16).
+  assert.equal(validateRestRequest({ method: "GET", path: "/v1/pairing" }).ok, false);
+  assert.equal(validateRestRequest({ method: "POST", path: "/v1/pairing/start" }).ok, false);
+  assert.equal(validateRestRequest({ method: "GET", path: "/v1/tunnel" }).ok, false);
   assert.equal(validateRestRequest({ method: "GET", path: "/api/other" }).ok, false);
   assert.equal(validateRestRequest({ method: "GET", path: "/V1/device" }).ok, false);
   assert.equal(validateRestRequest({ method: "GET", path: "http://127.0.0.1:9/v1" }).ok, false);

@@ -23,6 +23,8 @@ export interface TransportResponse {
   contentType?: string;
   /** Raw text for proxy passthrough, parsed JSON where the caller knows the shape. */
   body?: unknown;
+  /** Diagnostics: assembled byte count for chunked responses. */
+  rawBytes?: number;
 }
 
 export interface DeviceTransport {
