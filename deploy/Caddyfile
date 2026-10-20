@@ -1,0 +1,103 @@
+# Reference Caddy deployment — Durable Agent Network (P2-21, spec 05 §4).
+#
+# Placeholders (Caddy {$ENV} substitution, set by the operator environment):
+#   DPI_PUBLIC_HOST  host:port Caddy listens on (the public origin)
+#   DPI_TLS_CERT     full-chain PEM
+#   DPI_TLS_KEY      private key (0600, managed outside the repo)
+#   DPI_HUB_ADDR     loopback address of the hub process (e.g. 127.0.0.1:4781)
+#   DPI_ADMIN_HASH   bcrypt hash for the single admin user (caddy hash-password;
+#                    the PLAINTEXT never lives in this repo or in env logs)
+#
+# Auth matrix (05):
+#   exempt (exact path/method): GET /healthz · POST /api/pair/start ·
+#   POST /api/pair/verify · GET /api/tunnel (WS) — everything else requires
+#   HTTP Basic auth, and the Authorization header is STRIPPED before the hub
+#   so device tokens and admin credentials can never mix. Client-supplied
+#   XFF/XFP are overwritten from the real connection.
+{
+	admin off
+	auto_https off
+	servers {
+		protocols h1 h2
+	}
+}
+
+https://{$DPI_PUBLIC_HOST} {
+	tls {$DPI_TLS_CERT} {$DPI_TLS_KEY}
+
+	header {
+		Strict-Transport-Security "max-age=15552000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+		-X-Powered-By
+	}
+
+	# Admin surface = everything except the four exact exemptions below.
+	@admin {
+		not path /api/tunnel /api/pair/start /api/pair/verify /healthz
+	}
+	@tunnel path /api/tunnel
+	@pairstart {
+		method POST
+		path /api/pair/start
+	}
+	@pairverify {
+		method POST
+		path /api/pair/verify
+	}
+	@healthz {
+		method GET
+		path /healthz
+	}
+
+	# 1. Tunnel WebSocket: exempt from basic auth, Bearer preserved.
+	handle @tunnel {
+		reverse_proxy {$DPI_HUB_ADDR} {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+			flush_interval -1
+		}
+	}
+
+	# 2-4. Exempt pairing entry points — strip any caller Authorization so
+	# credentials never mix (04 §9).
+	handle @pairstart {
+		reverse_proxy {$DPI_HUB_ADDR} {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up -Authorization
+			flush_interval -1
+		}
+	}
+
+	handle @pairverify {
+		reverse_proxy {$DPI_HUB_ADDR} {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up -Authorization
+			flush_interval -1
+		}
+	}
+
+	handle @healthz {
+		reverse_proxy {$DPI_HUB_ADDR} {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up -Authorization
+		}
+	}
+
+	# Everything else: basic auth, then STRIP Authorization before the hub.
+	handle @admin {
+		basic_auth {
+			admin {$DPI_ADMIN_HASH}
+		}
+		reverse_proxy {$DPI_HUB_ADDR} {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up -Authorization
+			flush_interval -1
+		}
+	}
+}

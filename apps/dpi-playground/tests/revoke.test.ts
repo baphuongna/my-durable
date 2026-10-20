@@ -167,11 +167,14 @@ test("revoke: durable tx kills every hash + pairing; notice delivered for the ep
     assert.equal(await f.upgradeStatus(f.g1Token), 401);
     // RE-PAIR: fresh epoch + credential; tombstones retained
     const newToken = f.repair();
-    const rows2 = f.registry.db
-      .prepare("SELECT generation, status FROM tunnel_credentials WHERE device_id=? ORDER BY generation")
-      .all(DEVICE_ID) as { generation: number; status: string }[];
-    assert.equal(rows2[0].status, "revoked", "old tombstone retained");
-    assert.equal(rows2[1].status, "current");
+    const oldEpochCred = f.registry.db
+      .prepare("SELECT status FROM tunnel_credentials WHERE device_id=? AND pairing_epoch=?")
+      .get(DEVICE_ID, f.epoch) as { status: string };
+    assert.equal(oldEpochCred.status, "revoked", "old tombstone retained");
+    const newEpochCred = f.registry.db
+      .prepare("SELECT status FROM tunnel_credentials WHERE device_id=? AND pairing_epoch<>?")
+      .get(DEVICE_ID, f.epoch) as { status: string };
+    assert.equal(newEpochCred.status, "current");
     // old token STILL revoked after re-pair
     assert.equal(await f.upgradeStatus(f.g1Token), 401);
     // new token works
