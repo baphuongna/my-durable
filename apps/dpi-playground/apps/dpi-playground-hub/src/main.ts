@@ -23,6 +23,10 @@ const option = (key: string, fallback: string) => {
 const appDir = fileURLToPath(new URL("../../../", import.meta.url));
 const port = Number(option("--port", process.env.DPI_HUB_PORT ?? "4781"));
 const host = option("--host", process.env.DPI_HUB_HOST ?? "127.0.0.1");
+// When running behind a TLS reverse proxy (reference profile: Caddy), the
+// browser-facing host:port differs from this process's own port. The proxy
+// forwards the original Host header, so it must be allow-listed explicitly.
+const publicHost = option("--public-host", process.env.DPI_HUB_PUBLIC_HOST ?? "");
 
 const registry = new NetworkRegistry();
 const configFile = seedFromConfig(registry, appDir);
@@ -44,6 +48,10 @@ if (host !== "127.0.0.1" && host !== "localhost") {
 }
 
 const err = (code: string, message: string) => ({ error: { code, message } });
+// Unauthenticated liveness probe for process supervisors and the test
+// harness. No registry data, no tokens — safe behind the loopback bind and
+// the TLS reverse proxy.
+if (publicHost) allowedHosts.add(publicHost.toLowerCase());
 type Handler = (req: express.Request, res: express.Response) => unknown;
 const safe =
   (fn: Handler): express.RequestHandler =>
@@ -60,6 +68,7 @@ const safe =
   };
 
 const app = express();
+app.get("/healthz", (_req, res) => res.json({ ok: true, pid: process.pid, uptime: process.uptime() }));
 app.disable("x-powered-by");
 app.use("/api", guard(allowedHosts), express.json({ limit: "256kb" }));
 

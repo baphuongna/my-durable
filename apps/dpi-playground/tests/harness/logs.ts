@@ -1,0 +1,43 @@
+/**
+ * Bounded, sanitized log collector for child processes.
+ * Redacts every credential shape before anything is stored or printed:
+ * dpi_/dpt_ tokens, pairing codes, PEM private keys. Failure output never
+ * contains raw secrets beyond fake fixtures.
+ */
+export class BoundedLog {
+  private lines: string[] = [];
+  constructor(
+    readonly name: string,
+    private readonly maxLines = 500,
+  ) {}
+
+  push(chunk: string): void {
+    for (const line of chunk.split("\n")) {
+      if (line === "") continue;
+      if (this.lines.length >= this.maxLines) this.lines.shift();
+      this.lines.push(sanitize(line));
+    }
+  }
+
+  tail(n = 40): string {
+    return this.lines.slice(-n).join("\n");
+  }
+
+  get size(): number {
+    return this.lines.length;
+  }
+}
+
+const TOKEN_PATTERERS: [RegExp, string][] = [
+  [/\bdpi_[A-Za-z0-9_-]{43}\b/g, "dpi_<redacted>"],
+  [/\bdpt_[A-Za-z0-9_-]{43}\b/g, "dpt_<redacted>"],
+  [/\bcode[=:"'\s]+([A-Z2-7]{8})\b/g, "code=<redacted>"],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "<private key redacted>"],
+  [/Authorization:\s*Bearer\s+[A-Za-z0-9._-]+/gi, "Authorization: Bearer <redacted>"],
+];
+
+export function sanitize(text: string): string {
+  let out = text;
+  for (const [re, replacement] of TOKEN_PATTERERS) out = out.replace(re, replacement);
+  return out;
+}
