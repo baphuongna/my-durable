@@ -9,7 +9,7 @@
   background: #241819;
 }
 .ext-card.on {
-  border-left-color: #6fcf97;
+  border-left-color: var(--ok);
 }
 .ext-head {
   display: flex;
@@ -27,7 +27,7 @@
   font-size: 16px;
 }
 .ext-head code {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 16px;
   color: var(--secondary);
 }
@@ -59,7 +59,7 @@
   cursor: pointer;
 }
 .ext-prompts code {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 16px;
 }
 .ext-prompts li > span {
@@ -97,7 +97,7 @@
 .tool-row summary .tag.tool-disabled {
   margin-left: 2px;
   margin-right: auto;
-  color: #f2c94c;
+  color: var(--warn);
   border-color: #6b5a24;
 }
 .tool-row summary .tag.tool-disabled + .tag {

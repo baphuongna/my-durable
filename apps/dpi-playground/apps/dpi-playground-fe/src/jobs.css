@@ -10,13 +10,13 @@
   background: linear-gradient(180deg, #2a1b1d, #221617);
   border-radius: 9px;
   padding: 16px 18px 14px;
-  color: #f2eeee;
+  color: var(--fg);
 }
 .job-run.is-completed {
-  border-left-color: #6fcf97;
+  border-left-color: var(--ok);
 }
 .job-run.is-waiting {
-  border-left-color: #f2c94c;
+  border-left-color: var(--warn);
 }
 .job-run.is-failed,
 .job-run.is-declined,
@@ -62,7 +62,7 @@
   align-items: center;
   gap: 5px;
   letter-spacing: 0;
-  color: #f2eeee;
+  color: var(--fg);
 }
 .job-run-status {
   display: inline-flex;
@@ -87,10 +87,10 @@
   animation: pulse 1.5s infinite;
 }
 .job-run-status.waiting {
-  color: #f2c94c;
+  color: var(--warn);
 }
 .job-run-status.completed {
-  color: #6fcf97;
+  color: var(--ok);
 }
 .job-run-about {
   margin: 12px 0 8px;
@@ -101,16 +101,16 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 16px;
   color: var(--secondary);
 }
 .job-run-input,
 .job-run-resumed {
-  color: #f2eeee;
+  color: var(--fg);
 }
 .job-run-resumed {
-  color: #f2c94c;
+  color: var(--warn);
 }
 
 /* The phase stepper wraps onto new lines instead of scrolling. */
@@ -149,7 +149,7 @@
   height: 24px;
   border-radius: 50%;
   background: #3a2a2c;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 15px;
 }
 .ph-done .job-chip {
@@ -168,12 +168,12 @@
   color: var(--accent);
 }
 .ph-waiting .job-chip {
-  border-color: #f2c94c;
+  border-color: var(--warn);
   box-shadow: 0 0 0 3px #f2c94c22;
 }
 .ph-waiting .job-step-dot {
   background: #574719;
-  color: #f2c94c;
+  color: var(--warn);
 }
 .ph-failed .job-chip,
 .ph-aborted .job-chip {
@@ -183,7 +183,7 @@
   opacity: 0.55;
 }
 .job-step-progress {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--secondary);
 }
 
@@ -221,7 +221,7 @@
   display: none;
 }
 .job-phase-n {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--secondary);
 }
 .job-phase-summary {
@@ -231,7 +231,7 @@
 }
 .job-phase-time {
   margin-left: auto;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--secondary);
 }
 .job-phase-about,
@@ -277,7 +277,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 16px;
   background: #2c1e20;
   border-radius: 4px;
@@ -296,14 +296,14 @@
 }
 .job-step-text {
   min-width: 0;
-  color: #f2eeee;
+  color: var(--fg);
 }
 .job-step-args {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--secondary);
 }
 .job-step-state {
@@ -311,17 +311,17 @@
   align-items: center;
   gap: 5px;
   flex: none;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--secondary);
 }
 .job-steps .st-done .job-step-state svg {
-  color: #6fcf97;
+  color: var(--ok);
 }
 .job-steps .st-error .job-step-state svg {
   color: #ff8997;
 }
 .job-steps .st-waiting .job-step-state svg {
-  color: #f2c94c;
+  color: var(--warn);
 }
 .job-steps pre {
   margin: 4px 0 2px 25px;
@@ -349,7 +349,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #f2c94c;
+  color: var(--warn);
 }
 .job-approval p {
   margin: 6px 0 10px;
@@ -428,7 +428,7 @@
   height: 20px;
   border-radius: 50%;
   background: #3a2a2c;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 14px;
 }
 .job-chain li:not(:last-child)::after {
@@ -442,7 +442,7 @@
   gap: 6px;
 }
 .job-def-meta code {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 16px;
   color: var(--secondary);
   overflow-wrap: anywhere;
@@ -486,11 +486,11 @@
   border-left-color: var(--accent);
 }
 .task-row[data-task-kind^="demo.job."] {
-  border-left-color: #f2c94c;
+  border-left-color: var(--warn);
 }
 .task-row small {
   width: 100%;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 16px;
   color: var(--secondary);
 }
@@ -498,7 +498,7 @@
   margin-top: 0;
 }
 .task-phase {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--secondary);
 }
 
@@ -519,7 +519,7 @@
   font-size: 22px;
 }
 .context-pct {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--secondary);
 }
 .context-compacting {
@@ -527,7 +527,7 @@
   align-items: center;
   gap: 6px;
   margin-left: auto;
-  color: #f2c94c;
+  color: var(--warn);
 }
 .context-compacting i {
   width: 7px;
@@ -556,7 +556,7 @@
   transition: width 0.3s;
 }
 .context-fill.hot {
-  background: linear-gradient(90deg, #8a3a45, #f2c94c);
+  background: linear-gradient(90deg, #8a3a45, var(--warn));
 }
 .context-reserve {
   position: absolute;
@@ -575,7 +575,7 @@
   padding: 0;
   margin-left: -2px;
   border-radius: 2px;
-  background: #f2c94c;
+  background: var(--warn);
   cursor: ew-resize;
   touch-action: none;
 }
@@ -585,7 +585,7 @@
   inset: -4px -10px;
 }
 .context-marker.wait {
-  background: #f2eeee;
+  background: var(--fg);
 }
 .context-marker-label {
   position: absolute;
@@ -593,8 +593,8 @@
   transform: translateX(-50%);
   white-space: nowrap;
   font-size: 16px;
-  font-family: "IBM Plex Mono", monospace;
-  color: #f2c94c;
+  font-family: var(--font-mono);
+  color: var(--warn);
   pointer-events: none;
 }
 .context-marker.auto .context-marker-label {
@@ -602,7 +602,7 @@
 }
 .context-marker.wait .context-marker-label {
   top: calc(100% + 4px);
-  color: #f2eeee;
+  color: var(--fg);
 }
 /* Labels near either end grow inward so they stay inside the panel. */
 .context-marker.label-start .context-marker-label {
@@ -622,7 +622,7 @@
   align-items: center;
   gap: 4px;
   padding: 0;
-  color: #f2c94c;
+  color: var(--warn);
   font-size: 16px;
   letter-spacing: 0;
 }
