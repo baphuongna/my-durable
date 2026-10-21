@@ -100,6 +100,7 @@ export class DeviceConnector {
   private backoffIdx = 0;
   private ws: WebSocket | null = null;
   private wsGeneration = 0;
+  private cancelAttempt: (() => void) | undefined;
   private pingTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private pongMisses = 0;
@@ -153,6 +154,13 @@ export class DeviceConnector {
    */
   start(): void {
     if (!this.stopped) return;
+    if (this.loopRunning) {
+      const generation = this.wsGeneration;
+      void this.loopIdle.then(() => {
+        if (this.wsGeneration === generation) this.start();
+      });
+      return;
+    }
     const pairing = loadJson<PairingFile>(pairingPath(this.home));
     const keypair = loadJson<DeviceKeypair>(keypairPath(this.home));
     if (!pairing?.tunnelToken || !pairing?.hubUrl || !pairing?.deviceUid || !pairing?.deviceId || !pairing?.pairingEpoch || !pairing?.credentialId || typeof pairing?.generation !== "number") {
@@ -194,16 +202,14 @@ export class DeviceConnector {
       this.file = onDisk; // same credential, newer timestamp — nothing to swap
       return;
     }
-    const idle = this.loopIdle;
     this.stop(`${reason}: swapping pairing`);
-    // The stopped loop settles its in-flight attempt (F06) and exits; only
-    // then may a new loop own the socket/timers. Never two live loops.
-    void idle.then(() => this.start());
+    this.start(); // waits for the cancelled loop to exit before taking ownership
   }
 
   /** Operator/shutdown stop: clear every timer, drop the socket, no retries. */
   stop(reason = "stopped"): void {
     this.stopped = true;
+    this.cancelAttempt?.();
     this.clearTimers();
     this.dropSocket("stop");
     this.setState("stopped", reason);
@@ -272,6 +278,7 @@ export class DeviceConnector {
     | { kind: "hello"; serverTime: number }
     | { kind: "hub-id-mismatch"; sawHubId: string }
     | { kind: "hello-timeout" }
+    | { kind: "stopped" }
   > {
     return new Promise((resolve) => {
       const generation = ++this.wsGeneration;
@@ -283,9 +290,14 @@ export class DeviceConnector {
       const finish = (v: Parameters<typeof resolve>[0]) => {
         if (settled) return;
         settled = true;
-        this.clearTimers();
+        if (this.cancelAttempt === cancel) {
+          this.cancelAttempt = undefined;
+          this.clearTimers();
+        }
         resolve(v);
       };
+      const cancel = () => finish({ kind: "stopped" });
+      this.cancelAttempt = cancel;
       let ws: WebSocket;
       try {
         ws = new WebSocket(file.hubUrl, {
@@ -325,8 +337,10 @@ export class DeviceConnector {
       });
 
       ws.on("error", (e) => finish({ kind: "error", message: e.message }));
+      ws.on("close", (code, reason) => finish({ kind: "closed", code, reason: Buffer.from(reason).toString("utf8") }));
 
       ws.on("open", () => {
+        if (settled || this.wsGeneration !== generation) return;
         // Identity handshake with the SAVED tuple; retry counter resets only
         // after a schema-valid hello below.
         const hs: TunnelFrame = {
@@ -351,6 +365,7 @@ export class DeviceConnector {
         const helloTimer = setTimeout(() => finish({ kind: "hello-timeout" }), this.helloMs);
         this.idleTimer = helloTimer as NodeJS.Timeout;
         ws.on("message", (data: Buffer) => {
+          if (settled || this.wsGeneration !== generation) return;
           this.lastByte = this.now();
           let msg: unknown;
           try {
@@ -382,7 +397,6 @@ export class DeviceConnector {
             this.setState("connected", `connectionId ${frame.connectionId}`);
             this.lastByte = this.now();
             this.startHeartbeat(ws, generation);
-            ws.on("close", (code, reason) => finish({ kind: "closed", code, reason: Buffer.from(reason).toString("utf8") }));
             return;
           }
           // Open phase: only hub→device frames; dispatch to REST/SSE readers.
@@ -399,6 +413,7 @@ export class DeviceConnector {
           this.dispatch(ws, generation, frame);
         });
         ws.on("pong", () => {
+          if (settled || this.wsGeneration !== generation) return;
           this.lastByte = this.now();
           this.pongMisses = 0;
         });
@@ -578,6 +593,7 @@ export class DeviceConnector {
         return;
       }
       this.stopped = true;
+      this.cancelAttempt?.();
       this.clearTimers();
       this.dropSocket("revoked");
       try {
@@ -586,7 +602,7 @@ export class DeviceConnector {
         /* best effort */
       }
       this.setState("revoked", "hub revoked this pairing; pairing removed — re-pair to continue");
-      // The in-flight attempt settles via the socket close that dropSocket caused.
+      // Cancellation settles immediately, even if the peer never completes close.
       return;
     }
     // unpair control frames land with the forced-hub-change flow (P2-21).
@@ -625,6 +641,7 @@ export class DeviceConnector {
     outcome: Awaited<ReturnType<DeviceConnector["attemptOnce"]>>,
     attemptTuple: { credentialId: string; pairingEpoch: string },
   ): Classified {
+    if (outcome.kind === "stopped") return { kind: "stopped", detail: "attempt cancelled" };
     if (outcome.kind === "hello") return { kind: "retry", delayMs: 0, detail: "hello" };
     if (outcome.kind === "closed") {
       // 1000 "superseded" is the hub's connection swap: reconnect normally.

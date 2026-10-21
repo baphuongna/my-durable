@@ -1,7 +1,9 @@
 // Server-Sent Event streams. Three scopes share one frame envelope (see dpi-sdk/src/api.ts):
 // device (tree + activity), session (agents, tasks, usage) and agent (pi-durable agent events).
 // Streams are viewers only: closing one never aborts work or closes a harness.
-import { PACE_WRITE_BYTES } from "../../dpi-sdk/src/protocol/limits.js";
+import { BACKEND_SSE_VIEWER_BYTES, CONNECTION_BUFFER_BUDGET_BYTES, LOGICAL_MESSAGE_MAX_BYTES } from "../../dpi-sdk/src/protocol/limits.js";
+import { ByteBudget } from "../../dpi-sdk/src/node/chunk.js";
+import { createPacedSseWriter } from "../../dpi-sdk/src/node/sse-writer.js";
 import type { Request, Response } from "express";
 import { watchEvents, type Conversation, type Harness, type WatchEnd } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -9,7 +11,7 @@ import type { Activity, DeviceTree, Frame, StreamScope } from "../../dpi-sdk/src
 import { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, type SessionRow, type Store } from "./store.js";
 import { invalid } from "./errors.js";
 
-const MAX_BUFFER = 2_000_000;
+const sseBudget = new ByteBudget("backend-sse", CONNECTION_BUFFER_BUDGET_BYTES);
 
 /**
  * pi-durable 1.2+ ends a Session (and every watch on it) with `session_failed` when a Storage call fails, without
@@ -40,7 +42,7 @@ export interface Sse {
  * `pingMs` is deployment/test policy (default 15 s) — constructor-injected,
  * never request-overridable.
  */
-export function openSse(res: Response, scope: StreamScope, opts: { pingMs?: number } = {}): Sse {
+export function openSse(res: Response, scope: StreamScope, opts: { pingMs?: number; budget?: ByteBudget } = {}): Sse {
   res.status(200).set({
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -50,95 +52,43 @@ export function openSse(res: Response, scope: StreamScope, opts: { pingMs?: numb
   res.flushHeaders();
   res.socket?.setNoDelay(true);
   let seq = 0;
-  let closed = false;
   const cleanups: Array<() => void> = [];
   const last = new Map<string, string>();
-  const ping = setInterval(() => {
-    // F19: the heartbeat goes THROUGH the serialized chain — a ping can never
-    // interleave a half-written large event, and the chain serializes it
-    // behind any event that is mid-flight.
-    if (closed) return;
-    chain = chain.then(() => {
-      if (!closed) res.write(": ping\n\n");
-    });
-    chain = chain.catch(() => {});
-  }, opts.pingMs ?? 15_000);
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    clearInterval(ping);
-    for (const fn of cleanups.splice(0)) {
-      try {
-        fn();
-      } catch {}
-    }
-  };
-  res.on("close", close);
-  // Paced writer (04 §10): complete events split into ≤64 KiB segments with
-  // drain waits, serialized so the ping interval can never split an event.
-  // A slow viewer is cut at the 2 MB backend cap and simply reconnects to a
-  // fresh snapshot; the harness/session behind this viewer is NOT aborted.
-  // F11: the cap counts QUEUED chain bytes too, not just the kernel buffer —
-  // a viewer that drains slowly can never grow the queue without bound.
-  // F16: segments are UTF-8 BYTES (Buffer.subarray), never UTF-16 code units.
-  let chain: Promise<void> = Promise.resolve();
-  let queuedBytes = 0;
-  const waitDrain = () =>
-    new Promise<void>((resolve) => {
-      const onDrain = () => {
-        res.off("close", onClose);
-        resolve();
-      };
-      const onClose = () => {
-        res.off("drain", onDrain);
-        resolve();
-      };
-      res.once("drain", onDrain);
-      res.once("close", onClose);
-    });
-  const send = (frame: Frame) => {
-    if (closed) return;
-    const event = `id: ${++seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`;
-    const buf = Buffer.from(event, "utf8");
-    if (seq === 1) {
-      // The hello is tiny and is the first bytes on the wire: write it
-      // synchronously (also keeps "viewer attached" semantics testable).
-      res.write(buf);
-      return;
-    }
-    if (res.writableLength + queuedBytes + buf.length > MAX_BUFFER) {
-      res.end();
-      close();
-      return;
-    }
-    queuedBytes += buf.length;
-    chain = chain.then(async () => {
-      try {
-        for (let i = 0; i < buf.length && !closed; i += PACE_WRITE_BYTES) {
-          const ok = res.write(buf.subarray(i, i + PACE_WRITE_BYTES));
-          if (!ok) await waitDrain();
-        }
-      } finally {
-        queuedBytes -= buf.length;
+  let ping: NodeJS.Timeout | undefined;
+  const writer = createPacedSseWriter(res, {
+    maxBufferedBytes: BACKEND_SSE_VIEWER_BYTES,
+    budget: opts.budget ?? sseBudget,
+    onClose: () => {
+      clearInterval(ping);
+      last.clear();
+      for (const fn of cleanups.splice(0)) {
+        try {
+          fn();
+        } catch {}
       }
-    });
-    chain = chain.catch(() => {});
-  };
-  const end = () => {
-    chain = chain.then(() => {
-      if (!closed) res.end();
-    });
-    chain = chain.catch(() => {});
+    },
+  });
+  // Heartbeats use the same queue; they never split an event mid-JSON.
+  ping = setInterval(() => writer.write(": ping\n\n"), opts.pingMs ?? 15_000);
+  const send = (frame: Frame) => {
+    if (writer.closed) return;
+    const event = `id: ${++seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`;
+    if (writer.write(event) === "too-large") {
+      send({
+        type: "fault",
+        error: { code: "invalid", message: `Stream event exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes; reduce the scope or payload` },
+      });
+    }
   };
   send({ type: "hello", apiVersion: 1, serverTime: Date.now(), scope });
   return {
     send,
-    end,
+    end: writer.end,
     get closed() {
-      return closed;
+      return writer.closed;
     },
     onClose(fn) {
-      if (closed) fn();
+      if (writer.closed) fn();
       else cleanups.push(fn);
     },
     sendIfChanged(key, frame) {

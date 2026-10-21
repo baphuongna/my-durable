@@ -6,9 +6,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
+import express from "express";
 import { openSse, onWatchEnd, type Sse } from "../src/streams.js";
 import type { Frame } from "../../dpi-sdk/src/api.js";
-import { PACE_WRITE_BYTES } from "../../dpi-sdk/src/protocol/limits.js";
+import { BACKEND_SSE_VIEWER_BYTES, LOGICAL_MESSAGE_MAX_BYTES, PACE_WRITE_BYTES } from "../../dpi-sdk/src/protocol/limits.js";
+import { ByteBudget } from "../../dpi-sdk/src/node/chunk.js";
 
 class FakeRes extends EventEmitter {
   writableLength = 0;
@@ -44,6 +47,34 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 const settleN = (n: number) => Array.from({ length: n }, () => settle()).reduce((a, b) => a.then(() => b), Promise.resolve());
 const allBytes = (res: FakeRes) => Buffer.concat(res.chunks);
 
+test("F11 follow-up: a fast HTTP reader receives large SSE events up to the logical cap intact", { timeout: 20_000 }, async () => {
+  let payload = "";
+  const app = express();
+  app.get("/", (_req, res) => {
+    const sse = openSse(res, { kind: "device" });
+    sse.send({ type: "doc", kind: "large-test", value: payload });
+    sse.end();
+  });
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    for (const bytes of [3_000_000, LOGICAL_MESSAGE_MAX_BYTES - 512]) {
+      payload = "x".repeat(bytes - 7) + "𝄞漢";
+      const response = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(5000) });
+      const text = await response.text();
+      const frames = text.split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6))) as Frame[];
+      const doc = frames.find((frame) => frame.type === "doc");
+      assert.ok(doc?.type === "doc", `the ${bytes}-byte event must be delivered, not mistaken for socket backpressure`);
+      assert.ok(doc.value === payload, "the complete UTF-8 payload is byte-exact");
+      assert.equal(frames.some((frame) => frame.type === "fault"), false);
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("F16 regression: a 4-byte codepoint at a segment boundary survives (UTF-8 byte slicing)", async () => {
   const res = new FakeRes();
   const sse = openSse(res as never, { kind: "device" });
@@ -69,11 +100,12 @@ test("F16 regression: a 4-byte codepoint at a segment boundary survives (UTF-8 b
 
 test("F11 regression: queued-but-unwritten bytes count against the cap — a never-draining viewer is cut", async () => {
   const res = new FakeRes();
-  const sse = openSse(res as never, { kind: "device" });
+  const budget = new ByteBudget("queued-sse-test", BACKEND_SSE_VIEWER_BYTES);
+  const sse = openSse(res as never, { kind: "device" }, { budget });
   // A viewer whose writes BLOCK (never drains): each event parks after its
   // first segment, so bytes pile up in the chain. The OLD cap looked only at
-  // writableLength (0 here) and never cut; the queued budget must enforce
-  // the 2 MB cap.
+  // writableLength (0 here) and never cut. The injected serialized-byte
+  // budget (2 MB here) is separate from the socket's buffered-output cap.
   res.block = true;
   const blob = "x".repeat(200_000);
   let sent = 0;

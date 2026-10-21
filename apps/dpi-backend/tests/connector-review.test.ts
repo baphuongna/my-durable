@@ -55,7 +55,7 @@ interface ScriptedHub {
   close: () => Promise<void>;
 }
 
-async function scriptedHub(): Promise<ScriptedHub> {
+async function scriptedHub(hello = () => true): Promise<ScriptedHub> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1_048_576 });
   const handshakes: any[] = [];
   let live: WebSocket | null = null;
@@ -67,7 +67,8 @@ async function scriptedHub(): Promise<ScriptedHub> {
         const msg = JSON.parse(d.toString());
         if (msg.type === "pair-handshake") {
           handshakes.push(msg);
-          ws.send(JSON.stringify({ type: "hello", apiVersion: 1, tunnelProto: 1, hubId: HUB_ID, connectionId: "00000000-1111-2222-3333-444444444444", serverTime: Date.now() }));
+          if (hello())
+            ws.send(JSON.stringify({ type: "hello", apiVersion: 1, tunnelProto: 1, hubId: HUB_ID, connectionId: "00000000-1111-2222-3333-444444444444", serverTime: Date.now() }));
         }
       });
       ws.on("close", () => {
@@ -156,6 +157,38 @@ test("F06 regression: stop() during an in-flight attempt settles; start() reconn
     c?.stop("cleanup");
     await hub.close();
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("F06 follow-up: cancellation before hello permits immediate restart or re-pair", async (t) => {
+  for (const transition of ["restart", "re-pair"] as const) {
+    await t.test(transition, async () => {
+      const home = await mkdtemp(join(tmpdir(), "dpi-f06-hello-"));
+      let answerHello = false;
+      const hub = await scriptedHub(() => answerHello);
+      const c = new DeviceConnector(home, undefined, fastHooks());
+      try {
+        await writeFiles(home, hub.url);
+        c.start();
+        await until(() => hub.handshakes.length === 1, 3000, "handshake awaiting hello");
+        answerHello = true;
+        if (transition === "restart") {
+          c.stop("cancel before hello");
+          c.start(); // same tick: the cancelled loop still has to unwind
+        } else {
+          await writeFiles(home, hub.url, { pairingEpoch: EPOCH2, credentialId: CRED2 });
+          c.reload("re-pair before hello");
+        }
+        await until(() => c.status().state === "connected", 3000, "fresh handshake after cancellation");
+        assert.equal(hub.handshakes.length, 2);
+        assert.equal(hub.handshakes[1].pairingEpoch, transition === "restart" ? EPOCH : EPOCH2);
+        assert.equal(c.status().hellos, 1, "only the replacement attempt received hello");
+      } finally {
+        c.stop("cleanup");
+        await hub.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    });
   }
 });
 
