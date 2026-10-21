@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// TopBar: herdr's top strip bound to the real client store — device/session/agent counts,
+// TopBar: the top strip, bound to the real client store — device/session/agent counts,
 // stream state, and the panel/new-session actions. Presentation only; all data comes
 // from client/store.ts.
 import { computed, ref } from "vue";

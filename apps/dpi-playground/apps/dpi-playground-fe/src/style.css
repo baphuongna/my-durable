@@ -5,8 +5,8 @@
   background: var(--bg);
   font-synthesis: none;
   font-size: 16px;
-  /* herdr 0.4.0 design tokens (presentation-layer port; see NOTICE-herdr.md).
-     Real values from bench/herdr-0.4.0-ref/src/styles.css:2-27 — NEVER self-referential
+  /* Brand design tokens (presentation layer).
+     Palette per the UI brand spec — NEVER self-referential
      (a token defined in terms of itself is a cycle that collapses to unset;
      guarded by fe-shell-empty.test.ts).
      Additive: existing --secondary/--muted/--line/--accent/--surface/--font-title stay. */
@@ -26,8 +26,8 @@
   --warn: #f2c94c;
   --err: #ff6b6b;
   --offline: #5a4a4b;
-  /* Fonts: same three families herdr uses, via the Google Fonts @import above with
-     system fallbacks. herdr's bundled woff2 files are NOT ported (OFL license pending). */
+  /* Fonts: the three brand families, via the Google Fonts @import above with
+     system fallbacks. Webfont files are not bundled locally. */
   --font-body: "DM Sans", "Segoe UI", sans-serif;
   --font-display: "Manrope", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
@@ -2794,12 +2794,11 @@ textarea::placeholder {
   }
 }
 
-/* ------------------------------------------------------------------ herdr presentation layer
-   Adapted from the herdr 0.4.0 interface study (layout/theme only — no client logic).
-   See NOTICE-herdr.md. Fonts stay on the Google Fonts @import with system fallbacks;
-   herdr's bundled woff2 files are intentionally not shipped (license pending owner). */
+/* ------------------------------------------------------------------ brand presentation layer
+   Layout/theme only — no client logic. Fonts stay on the Google Fonts @import
+   with system fallbacks. */
 
-/* Slim scrollbars in herdr's line color. */
+/* Slim scrollbars in the brand line color. */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -2818,7 +2817,7 @@ textarea::placeholder {
   background-clip: padding-box;
 }
 
-/* herdr eyebrow label: display face, tracked uppercase. */
+/* eyebrow label: display face, tracked uppercase. */
 .label {
   font-family: var(--font-display);
   font-size: 14px;
@@ -2828,7 +2827,7 @@ textarea::placeholder {
   color: var(--faint);
 }
 
-/* TopBar stats row: real numbers from the client store, herdr daemon-strip look. */
+/* TopBar stats row: real numbers from the client store, daemon-strip look. */
 .topbar-sep {
   width: 1px;
   height: 22px;
@@ -2867,7 +2866,7 @@ textarea::placeholder {
   box-shadow: none;
 }
 
-/* herdr chip: pill status. */
+/* chip: pill status. */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -2897,7 +2896,7 @@ textarea::placeholder {
   box-shadow: none;
 }
 
-/* herdr button refinements on the existing FE button classes. */
+/* button refinements on the existing FE button classes. */
 .secondary {
   border: 1px solid var(--line);
   background: var(--card);
@@ -2909,7 +2908,7 @@ textarea::placeholder {
   border-color: var(--faint);
 }
 
-/* herdr scrim + dialog (HelpDialog). */
+/* scrim + dialog (HelpDialog). */
 .scrim {
   position: fixed;
   inset: 0;
@@ -3007,7 +3006,7 @@ textarea::placeholder {
   gap: 8px;
 }
 
-/* herdr mobile nav: one of three views visible at phone width. Hidden otherwise. */
+/* mobile nav: one of three views visible at phone width. Hidden otherwise. */
 .mnav {
   display: none;
 }
@@ -3058,11 +3057,11 @@ textarea::placeholder {
   }
 }
 
-/* ------------------------------------------------------------------ herdr component restyle
+/* ------------------------------------------------------------------ component restyle
    Visual language only (colors, pills, focus rings, radius); every component keeps its
    existing classes, script logic and client-store bindings. */
 
-/* Composer: herdr's focus-within ring. */
+/* Composer: focus-within ring. */
 .composer:focus-within {
   border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 10%, transparent);
@@ -3073,7 +3072,7 @@ textarea::placeholder {
   transition: background 120ms var(--ease);
 }
 
-/* Chat entries: user turns become herdr's right-aligned card bubble. */
+/* Chat entries: user turns become right-aligned card bubble. */
 .pi-user {
   border-bottom: 0;
   padding-bottom: 12px;
@@ -3090,7 +3089,7 @@ textarea::placeholder {
   max-width: 78%;
 }
 
-/* Inspector tabs: herdr's five-slot icon+label strip. */
+/* Inspector tabs: five-slot icon+label strip. */
 .inspector-tabs {
   background: var(--tree);
 }
@@ -3118,7 +3117,7 @@ textarea::placeholder {
   background: var(--on-primary);
 }
 
-/* Tool call / result cards: herdr's card-on-panel separation. */
+/* Tool call / result cards: card-on-panel separation. */
 .tool-call {
   background: var(--card);
   border-color: var(--line);
@@ -3131,7 +3130,7 @@ textarea::placeholder {
   border-color: color-mix(in oklab, var(--err) 45%, var(--line));
 }
 
-/* Inspector blocks: herdr's bordered stat grid look for the session metrics. */
+/* Inspector blocks: bordered stat-grid look for the session metrics. */
 .metrics {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -3148,7 +3147,7 @@ textarea::placeholder {
   font-weight: 500;
 }
 
-/* Model button: herdr field card. */
+/* Model button: field card. */
 .model-button {
   background: var(--chat);
   border: 1px solid var(--line);
@@ -3158,7 +3157,7 @@ textarea::placeholder {
   border-color: var(--faint);
 }
 
-/* Inputs: herdr radius + focus accent. */
+/* Inputs: brand radius + focus accent. */
 input,
 textarea,
 select {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Toast: herdr's bottom-center pill, bound to the existing ui.toast / notify() timer in the store.
+// Toast: bottom-center pill, bound to the existing ui.toast / notify() timer in the store.
 import { Check } from "lucide-vue-next";
 import { ui } from "../client/store";
 </script>

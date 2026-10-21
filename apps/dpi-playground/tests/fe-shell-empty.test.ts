@@ -2,7 +2,7 @@
 // H05 evidence: no view assumes data exists; boot() is never called under SSR.
 // Level: integration (vite SSR, real module graph, no hub/browser). No new deps.
 // Design: P2-UI1 (probe validated by the test-engineer recon step); assertions pin
-// the empty-state contract via stable data-testids added with the herdr restyle.
+// the empty-state contract via stable data-testids added with the UI restyle.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "vite";
@@ -63,7 +63,7 @@ await test("H05: empty states render, no assumptions of existing data", () => {
 
 await test("style tokens: no self-referential custom property definitions", async () => {
   // Review MAJOR (P2-UI1): `--x: var(--x)` cycles collapse every dependent usage
-  // to unset — the whole herdr theme silently disappears. Guard the source.
+  // to unset — the whole theme silently disappears. Guard the source.
   const { readFile } = await import("node:fs/promises");
   const css = await readFile(
     new URL("../apps/dpi-playground-fe/src/style.css", import.meta.url),
@@ -71,7 +71,7 @@ await test("style tokens: no self-referential custom property definitions", asyn
   );
   const cycles = [...css.matchAll(/--([\w-]+)\s*:\s*var\(--\1\b/g)].map((m) => `--${m[1]}`);
   assert.deepEqual(cycles, [], `cyclic token definitions: ${cycles.join(", ")}`);
-  // And the core herdr palette must resolve to real colors (not var() indirection).
+  // And the core brand palette must resolve to real colors (not var() indirection).
   for (const token of ["--bg", "--fg", "--primary", "--ok", "--warn", "--err", "--offline"]) {
     assert.match(css, new RegExp(`${token}\\s*:\\s*#[0-9a-fA-F]{3,8}`), `${token} has a literal value`);
   }

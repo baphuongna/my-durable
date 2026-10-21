@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// HelpDialog: herdr's scrim + dialog presentation around durable-pi's own operating-model steps.
+// HelpDialog: scrim + dialog presentation around the operating-model steps.
 // Closes through the shared ui.dialog state; no local state to clone or lose.
 import { Info, X } from "lucide-vue-next";
 import { ui } from "../client/store";

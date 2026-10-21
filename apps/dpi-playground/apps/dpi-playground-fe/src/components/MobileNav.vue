@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// MobileNav: herdr's three-view phone nav (chat | details | network) mapped onto the existing
+// MobileNav: three-view phone nav (chat | details | network) mapped onto the existing
 // store state instead of a new mview field — net = the tree drawer, details = the inspector
 // overlay, chat = neither. client/store.ts is untouched.
 import { MessageSquare, PanelRight, Waypoints } from "lucide-vue-next";
