@@ -45,9 +45,7 @@ async function newAgent() {
   }
 }
 
-function openNewSession() {
-  ui.dialog = { kind: "new-session", deviceId: selected.value?.deviceId };
-}
+const emit = defineEmits<{ newSession: [] }>();
 </script>
 
 <template>
@@ -93,7 +91,7 @@ function openNewSession() {
       >
         <Plus :size="18" />New agent
       </button>
-      <button class="primary small" @click="openNewSession">
+      <button class="primary small" @click="emit('newSession')">
         <Plus :size="18" />New session
       </button>
       <button

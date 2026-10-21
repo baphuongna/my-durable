@@ -83,7 +83,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="shell" data-testid="app-shell">
-    <TopBar />
+    <TopBar @new-session="openNewSession" />
     <div v-if="ui.error" class="error-banner" role="alert">
       <Info :size="18" /><span>{{ ui.error }}</span
       ><button class="icon-button" aria-label="Dismiss error" @click="ui.error = ''">×</button>

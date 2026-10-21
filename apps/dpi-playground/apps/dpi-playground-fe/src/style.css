@@ -6,23 +6,26 @@
   font-synthesis: none;
   font-size: 16px;
   /* herdr 0.4.0 design tokens (presentation-layer port; see NOTICE-herdr.md).
+     Real values from bench/herdr-0.4.0-ref/src/styles.css:2-27 — NEVER self-referential
+     (a token defined in terms of itself is a cycle that collapses to unset;
+     guarded by fe-shell-empty.test.ts).
      Additive: existing --secondary/--muted/--line/--accent/--surface/--font-title stay. */
-  --bg: var(--bg);
-  --tree: var(--tree);
-  --chat: var(--chat);
-  --panel: var(--panel);
-  --card: var(--card);
-  --line-soft: var(--line-soft);
-  --fg: var(--fg);
-  --faint: var(--faint);
-  --primary: var(--primary);
-  --primary-line: var(--primary-line);
-  --primary-hover: var(--primary-hover);
+  --bg: #151010;
+  --tree: #181213;
+  --chat: #161011;
+  --panel: #1c1516;
+  --card: #251a1b;
+  --line-soft: #2a2021;
+  --fg: #f2eeee;
+  --faint: #8d7778;
+  --primary: #b9283c;
+  --primary-line: #df5363;
+  --primary-hover: #cf354a;
   --on-primary: #ffffff;
-  --ok: var(--ok);
-  --warn: var(--warn);
-  --err: var(--err);
-  --offline: var(--offline);
+  --ok: #6fcf97;
+  --warn: #f2c94c;
+  --err: #ff6b6b;
+  --offline: #5a4a4b;
   /* Fonts: same three families herdr uses, via the Google Fonts @import above with
      system fallbacks. herdr's bundled woff2 files are NOT ported (OFL license pending). */
   --font-body: "DM Sans", "Segoe UI", sans-serif;
