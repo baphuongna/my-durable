@@ -454,7 +454,7 @@ svg {
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   padding: 0 16px;
-  background: #191213;
+  background: var(--tree);
 }
 .inspector-tabs button {
   color: var(--fg);
@@ -479,7 +479,7 @@ svg {
   overflow: auto;
   padding: 23px 26px 32px;
   scrollbar-width: thin;
-  scrollbar-color: #4b3c3d transparent;
+  scrollbar-color: var(--line) transparent;
 }
 .panel-heading {
   display: flex;
@@ -926,7 +926,7 @@ svg {
   overflow: auto;
   padding: 32px clamp(24px, 5vw, 88px) 20px;
   scrollbar-width: thin;
-  scrollbar-color: #473537 transparent;
+  scrollbar-color: var(--line) transparent;
   scroll-behavior: smooth;
 }
 .chat-empty {
@@ -997,7 +997,7 @@ svg {
   padding: 18px;
   border: 1px solid #3c2c2d;
   border-radius: 8px;
-  background: #221718;
+  background: var(--tree);
   gap: 6px;
 }
 .starter-grid button > svg:first-child {
@@ -1483,7 +1483,7 @@ svg {
   border-radius: 50%;
 }
 .switch.on {
-  background: #966267;
+  background: var(--primary);
   justify-content: flex-end;
 }
 .tool-row {
@@ -1577,7 +1577,7 @@ svg {
   width: 326px;
   max-width: 90vw;
   height: 100%;
-  background: #23191a;
+  background: var(--card);
   border-right: 1px solid #513d3f;
   box-shadow: 20px 0 70px #0004;
   display: flex;
@@ -2553,7 +2553,7 @@ textarea::placeholder {
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: thin;
-  scrollbar-color: #67464c transparent;
+  scrollbar-color: var(--line) transparent;
 }
 .lineage-crumb {
   flex-shrink: 0;
@@ -3053,4 +3053,131 @@ textarea::placeholder {
     font-size: 11px;
     line-height: 16px;
   }
+}
+
+/* ------------------------------------------------------------------ herdr component restyle
+   Visual language only (colors, pills, focus rings, radius); every component keeps its
+   existing classes, script logic and client-store bindings. */
+
+/* Composer: herdr's focus-within ring. */
+.composer:focus-within {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 10%, transparent);
+}
+.send {
+  border: 1px solid var(--primary-line);
+  border-radius: 8px;
+  transition: background 120ms var(--ease);
+}
+
+/* Chat entries: user turns become herdr's right-aligned card bubble. */
+.pi-user {
+  border-bottom: 0;
+  padding-bottom: 12px;
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pi-user .user-message {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  max-width: 78%;
+}
+
+/* Inspector tabs: herdr's five-slot icon+label strip. */
+.inspector-tabs {
+  background: var(--tree);
+}
+.inspector-tabs button {
+  color: var(--muted);
+}
+.inspector-tabs button:hover {
+  color: var(--fg);
+}
+.inspector-tabs button.active {
+  color: var(--accent);
+}
+.insp-tab-active-line {
+  border-bottom: 2px solid var(--accent);
+}
+
+/* Switch: on-state in the primary brand red. */
+.switch {
+  background: var(--offline);
+}
+.switch.on {
+  background: var(--primary);
+}
+.switch.on > span {
+  background: var(--on-primary);
+}
+
+/* Tool call / result cards: herdr's card-on-panel separation. */
+.tool-call {
+  background: var(--card);
+  border-color: var(--line);
+}
+.tool-result {
+  background: var(--chat);
+}
+.tool-result.failed,
+.tool-call.failed {
+  border-color: color-mix(in oklab, var(--err) 45%, var(--line));
+}
+
+/* Inspector blocks: herdr's bordered stat grid look for the session metrics. */
+.metrics {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--line);
+  gap: 1px;
+}
+.metrics > div {
+  background: var(--chat);
+  padding: 9px 12px;
+}
+.metrics span {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+/* Model button: herdr field card. */
+.model-button {
+  background: var(--chat);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.model-button:hover {
+  border-color: var(--faint);
+}
+
+/* Inputs: herdr radius + focus accent. */
+input,
+textarea,
+select {
+  border-radius: var(--radius-sm);
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 10%, transparent);
+}
+
+/* Chat panel + inspector: token-driven panel surfaces. */
+.chat-panel {
+  background: var(--chat);
+}
+.chat-header {
+  background: var(--panel);
+}
+.inspector {
+  background: var(--panel);
+}
+.network-sidebar {
+  background: var(--tree);
 }
