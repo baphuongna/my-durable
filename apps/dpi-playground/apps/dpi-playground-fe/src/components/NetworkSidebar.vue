@@ -194,7 +194,7 @@ function keydown(e: KeyboardEvent) {
           @activate="activate(row.node)"
           @action="action(row.node, $event)"
         />
-        <p v-if="!rows.length" class="hint tree-empty">
+        <p v-if="!rows.length" class="hint tree-empty" data-testid="tree-empty">
           No devices yet. Declare them in <code>dpi-network.yaml</code> (start from
           <code>dpi-network.example.yaml</code>), then run <code>just net up &lt;id&gt;</code>.
         </p>
