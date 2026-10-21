@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { hostname, networkInterfaces } from "node:os";
 import { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
+import { ByteBudget } from "../../../../dpi-sdk/src/node/chunk.js";
 import { DeviceMonitor } from "./monitor.js";
 import { StreamMux } from "./mux.js";
 import { proxy } from "./proxy.js";
 import { guard } from "./guard.js";
+import { isTrustedProxy } from "./client-ip.js";
 import { Audit, denialLogging } from "./audit.js";
 import { PairingService } from "./pairing.js";
 import { CredentialService } from "./credentials.js";
@@ -18,7 +20,7 @@ import { TunnelServer } from "./tunnel.js";
 import { TunnelDispatcher, TunnelTransport } from "./tunnel-transport.js";
 import { RotationService } from "./rotation.js";
 import { seedFromConfig } from "./seed.js";
-import { assertLimitsConfig, API_RATE_LIMITS } from "../../../../dpi-sdk/src/protocol/limits.js";
+import { assertLimitsConfig, API_RATE_LIMITS, HUB_BUFFER_BUDGET_BYTES } from "../../../../dpi-sdk/src/protocol/limits.js";
 
 const args = process.argv.slice(2);
 const option = (key: string, fallback: string) => {
@@ -40,7 +42,8 @@ registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect f
 const configFile = seedFromConfig(registry, appDir);
 const monitor = new DeviceMonitor(registry);
 monitor.start();
-const mux = new StreamMux(registry, monitor);
+const bufferBudget = new ByteBudget("hub", HUB_BUFFER_BUDGET_BYTES);
+const mux = new StreamMux(registry, monitor, { budget: bufferBudget });
 
 const allowedHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
 if (host !== "127.0.0.1" && host !== "localhost") {
@@ -80,7 +83,7 @@ const app = express();
 // is always loopback — trust ONLY loopback proxies so req.ip reflects the
 // real client via the proxy-overwritten X-Forwarded-For. Forged XFF from a
 // non-loopback direct connection is ignored (proxy-addr semantics).
-app.set("trust proxy", "loopback");
+app.set("trust proxy", isTrustedProxy);
 app.get("/healthz", (_req, res) => res.json({ ok: true, pid: process.pid, uptime: process.uptime() }));
 app.disable("x-powered-by");
 // All CANON limits must be sane or the hub refuses to start (P2-22: fail startup, not per-request).
@@ -235,7 +238,7 @@ if (args.includes("--dev")) {
 // auth. In --dev mode Vite owns its own HMR upgrade path, so only the exact
 // tunnel path is claimed here and other upgrades are left alone.
 const tunnel = new TunnelServer(registry, audit, hubId);
-const dispatcher = new TunnelDispatcher(tunnel);
+const dispatcher = new TunnelDispatcher(tunnel, { audit, budget: bufferBudget });
 const rotation = new RotationService(registry, audit, tunnel);
 mux.setTunnelSource({
   dispatcherFor: (row) => new TunnelTransport(row, dispatcher),

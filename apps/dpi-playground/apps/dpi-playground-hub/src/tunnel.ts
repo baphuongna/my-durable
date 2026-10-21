@@ -40,6 +40,7 @@ import {
   WS_MAX_MESSAGE_BYTES,
 } from "../../../../dpi-sdk/src/protocol/limits.js";
 import { Audit } from "./audit.js";
+import { clientIp } from "./client-ip.js";
 
 export interface TunnelPolicy {
   /** Upgrade attempts per client IP per minute (token bucket). */
@@ -248,7 +249,7 @@ export class TunnelServer {
       this.httpJson(socket, 404, { type: "tunnel.auth-error", v: 1, code: "token_unknown", message: "tunnel: wrong endpoint" });
       return;
     }
-    const ip = req.socket.remoteAddress ?? "unknown";
+    const ip = clientIp(req);
     const ipCheck = this.ipBuckets.take(ip);
     const globalCheck = this.globalBuckets.take("*");
     const check = ipCheck.ok ? globalCheck : ipCheck;
@@ -316,19 +317,30 @@ export class TunnelServer {
     }
 
     this.pendingHandshakes++;
-    this.wss.handleUpgrade(req, socket, head, (ws) => {
-      // F13: the reservation is held until the APPLICATION handshake
-      // completes (or the socket dies) — not until the HTTP 101. Sockets
-      // sitting between upgrade and handshake must keep consuming the cap.
-      let released = false;
-      const releasePending = () => {
-        if (!released) {
-          released = true;
-          this.pendingHandshakes--;
-        }
-      };
-      this.onConnection(ws, row, device.device_uid as string, pairing.key_fingerprint, ip, releasePending);
-    });
+    let released = false;
+    const releasePending = () => {
+      if (released) return;
+      released = true;
+      this.pendingHandshakes--;
+      socket.off("close", releasePending);
+      socket.off("error", releasePending);
+    };
+    socket.once("close", releasePending);
+    socket.once("error", releasePending);
+    let upgraded = false;
+    try {
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        upgraded = true;
+        // Transfer the reservation to the APPLICATION handshake, not the 101.
+        this.onConnection(ws, row, device.device_uid as string, pairing.key_fingerprint, ip, releasePending);
+      });
+    } catch {
+      releasePending();
+      socket.destroy();
+    } finally {
+      // No async verifyClient hook is configured: rejection never calls back.
+      if (!upgraded) releasePending();
+    }
   }
 
   /** Stop everything (hub shutdown). */

@@ -11,8 +11,11 @@ import { transportFor } from "./transport.js";
 import type { MuxFrame } from "../../../../dpi-sdk/src/api.js";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { DeviceMonitor, TunnelTransportSource } from "./monitor.js";
+import { ByteBudget } from "../../../../dpi-sdk/src/node/chunk.js";
+import { createPacedSseWriter, type PacedSseWriter } from "../../../../dpi-sdk/src/node/sse-writer.js";
 import {
-  PACE_WRITE_BYTES,
+  HUB_BUFFER_BUDGET_BYTES,
+  LOGICAL_MESSAGE_MAX_BYTES,
   READERS_PER_DEVICE,
   READERS_PER_HUB,
   SSE_HUB_VIEWER_BYTES,
@@ -23,63 +26,20 @@ interface BrowserStream {
   upstreams: Map<string, AbortController>;
 }
 
+const sseBudget = new ByteBudget("hub-sse", HUB_BUFFER_BUDGET_BYTES);
+
 /**
  * Serialized paced writer (04 §10): complete SSE events only, split into
  * ≤64 KiB segments, waiting for drain between segments. The chain guarantees
  * a `: ping` can never land inside a half-written event, and a slow viewer is
  * cut at the CANON hub cap instead of buffering without bound.
  */
-export function pacedSseWriter(res: Response): { write: (event: string) => void; close: () => void; overCap: () => boolean } {
-  let chain: Promise<void> = Promise.resolve();
-  let closed = false;
-  let queuedBytes = 0;
-  const waitDrain = () =>
-    new Promise<void>((resolve) => {
-      const onDrain = () => {
-        res.off("drain", onDrain);
-        res.off("close", onClose);
-        resolve();
-      };
-      const onClose = () => {
-        res.off("drain", onDrain);
-        res.off("close", onClose);
-        resolve();
-      };
-      res.once("drain", onDrain);
-      res.once("close", onClose);
-    });
-  return {
-    // F11: the cap counts queued chain bytes, not just the kernel buffer.
-    overCap: () => res.writableLength + queuedBytes > SSE_HUB_VIEWER_BYTES,
-    close: () => {
-      closed = true;
-    },
-    write: (event) => {
-      if (closed) return;
-      // F16: segment by UTF-8 bytes — a 4-byte codepoint can never be split.
-      const buf = Buffer.from(event, "utf8");
-      if (res.writableLength + queuedBytes + buf.length > SSE_HUB_VIEWER_BYTES) {
-        // Slow browser: cut THIS viewer; producers keep running.
-        closed = true;
-        res.end();
-        return;
-      }
-      queuedBytes += buf.length;
-      chain = chain.then(async () => {
-        try {
-          for (let i = 0; i < buf.length && !closed; i += PACE_WRITE_BYTES) {
-            const ok = res.write(buf.subarray(i, i + PACE_WRITE_BYTES));
-            if (!ok) await waitDrain();
-          }
-        } finally {
-          queuedBytes -= buf.length;
-        }
-      });
-      chain = chain.catch(() => {
-        /* response torn down mid-event: the close handler cleaned up */
-      });
-    },
-  };
+export function pacedSseWriter(res: Response, opts: { budget?: ByteBudget; onClose?: () => void } = {}): PacedSseWriter {
+  return createPacedSseWriter(res, {
+    maxBufferedBytes: SSE_HUB_VIEWER_BYTES,
+    budget: opts.budget ?? sseBudget,
+    onClose: opts.onClose,
+  });
 }
 
 const KEY =
@@ -119,6 +79,7 @@ export class StreamMux {
   constructor(
     private readonly registry: NetworkRegistry,
     private readonly monitor: DeviceMonitor,
+    private readonly options: { budget?: ByteBudget } = {},
   ) {}
 
   private readerCount(deviceId: string): number {
@@ -153,21 +114,10 @@ export class StreamMux {
     });
     res.flushHeaders();
     let closed = false;
-    const writer = pacedSseWriter(res);
-    const stream: BrowserStream = {
-      upstreams: new Map(),
-      send: (frame) => writer.write(`data: ${JSON.stringify(frame)}\n\n`),
-    };
-    this.streams.set(streamId, stream);
-    stream.send({ sub: "hello", frame: { type: "stream", streamId } });
-    const pushNetwork = () =>
-      stream.send({ sub: "network", frame: { type: "network", devices: this.monitor.network() } });
-    pushNetwork();
-    const off = this.monitor.onChange(pushNetwork);
-    // Ping rides the SAME chain as events: it can only land between complete
-    // events, never inside a half-written one.
-    const ping = setInterval(() => !closed && writer.write(": ping\n\n"), 15_000);
-    res.on("close", () => {
+    let ping: NodeJS.Timeout | undefined;
+    let off = () => {};
+    const cleanup = () => {
+      if (closed) return;
       closed = true;
       writer.close();
       clearInterval(ping);
@@ -178,7 +128,30 @@ export class StreamMux {
       }
       stream.upstreams.clear();
       this.streams.delete(streamId);
-    });
+    };
+    const writer = pacedSseWriter(res, { budget: this.options.budget, onClose: cleanup });
+    const stream: BrowserStream = {
+      upstreams: new Map(),
+      send: (frame) => {
+        if (writer.write(`data: ${JSON.stringify(frame)}\n\n`) === "too-large") {
+          stream.send({
+            sub: frame.sub,
+            frame: { type: "fault", error: { code: "invalid", message: `Stream event exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes; reduce the scope or payload` } },
+          });
+        }
+      },
+    };
+    this.streams.set(streamId, stream);
+    stream.send({ sub: "hello", frame: { type: "stream", streamId } });
+    if (closed) return;
+    const pushNetwork = () =>
+      stream.send({ sub: "network", frame: { type: "network", devices: this.monitor.network() } });
+    pushNetwork();
+    if (closed) return;
+    off = this.monitor.onChange(pushNetwork);
+    // Ping rides the SAME chain as events: it can only land between complete
+    // events, never inside a half-written one.
+    ping = setInterval(() => !closed && writer.write(": ping\n\n"), 15_000);
   }
 
   /** Replace a tab's subscription set: open new upstreams, close dropped ones. */

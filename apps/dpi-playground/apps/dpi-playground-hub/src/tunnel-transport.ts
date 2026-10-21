@@ -55,7 +55,7 @@ export interface DispatcherOptions {
   audit?: Audit;
   /** Test-only deadline policy (production: CANON REST_TIMEOUT_MS). */
   deadlineMs?: number;
-  /** Test-only shared budget (production: standardBudgets().hub). */
+  /** Shared admission for REST payloads, reassembly and SSE output. */
   budget?: ByteBudget;
 }
 
@@ -89,6 +89,7 @@ export class TunnelDispatcher {
     clearTimeout(p.timer);
     p.signal.removeEventListener("abort", p.onAbort);
     p.reservation?.release();
+    this.reassemblers.get(p.connectionId)?.abort({ kind: "rest-response", reqId });
     // Remember recently-settled reqIds (bounded): a late response for an
     // aborted/timed-out OWN request on the SAME connection is benign and must
     // not kill the connection; foreign reqIds still do (below).
@@ -135,22 +136,11 @@ export class TunnelDispatcher {
     }
     if (type === "tunnel-chunk") {
       const chunk = frame as unknown as TunnelChunk;
-      const re = this.reassemblerFor(conn);
       if (chunk.kind === "rest-response") {
-        const correlation: ChunkCorrelation = { kind: "rest-response", reqId: chunk.reqId };
-        const out = re.feed(chunk, (c) => {
-          if (c.kind !== "rest-response") return false;
-          const p = this.pending.get(c.reqId);
-          return !!p && p.connectionId === conn.connectionId;
-        });
-        // F09: ownership is re-checked before EVERY settle — a chunk whose
-        // reqId belongs to ANOTHER connection can never resolve (or 502) the
-        // victim's request. The sender is denied, audited and cut instead.
-        const ownsReqId = (() => {
-          const p = this.pending.get(chunk.reqId);
-          return !!p && p.connectionId === conn.connectionId;
-        })();
-        if (!ownsReqId) {
+        const pending = this.pending.get(chunk.reqId);
+        // Match the plain-response grace before allocating any assembly.
+        if (!pending && this.settled.get(chunk.reqId) === conn.connectionId) return;
+        if (!pending || pending.connectionId !== conn.connectionId) {
           this.audit?.append({
             actor: `device:${conn.deviceId}`,
             action: "auth.denied",
@@ -161,6 +151,10 @@ export class TunnelDispatcher {
           this.server.closeConnection(conn.deviceId, 1008, "tunnel-chunk for a foreign reqId");
           return;
         }
+        const out = this.reassemblerFor(conn).feed(chunk, (c) => {
+          if (c.kind !== "rest-response") return false;
+          return this.pending.get(c.reqId)?.connectionId === conn.connectionId;
+        });
         if (!out.ok) {
           const p = this.settle(chunk.reqId);
           p?.resolve({ status: 502, body: { error: { code: "response_too_large", message: out.error } } });
@@ -184,7 +178,7 @@ export class TunnelDispatcher {
         // routing so consumers never see chunk plumbing. An oversize/invalid
         // assembly faults THIS reader only — the tunnel stays up.
         const correlation: ChunkCorrelation = { kind: "tunnel-data", subscriptionId: chunk.subscriptionId, sub: chunk.sub };
-        const out = re.feed(chunk, (c) => {
+        const out = this.reassemblerFor(conn).feed(chunk, (c) => {
           if (c.kind !== "tunnel-data") return false;
           const s = this.subs.get(c.subscriptionId);
           return !!s && s.connectionId === conn.connectionId;

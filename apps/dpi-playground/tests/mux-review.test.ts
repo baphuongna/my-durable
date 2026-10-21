@@ -5,8 +5,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
+import express from "express";
 import { pacedSseWriter } from "../apps/dpi-playground-hub/src/mux.js";
-import { PACE_WRITE_BYTES, SSE_HUB_VIEWER_BYTES } from "../../dpi-sdk/src/protocol/limits.js";
+import { LOGICAL_MESSAGE_MAX_BYTES, PACE_WRITE_BYTES, SSE_HUB_VIEWER_BYTES } from "../../dpi-sdk/src/protocol/limits.js";
+import { ByteBudget } from "../../dpi-sdk/src/node/chunk.js";
 
 class FakeRes extends EventEmitter {
   writableLength = 0;
@@ -32,6 +35,48 @@ class FakeRes extends EventEmitter {
 const settle = () => new Promise((r) => setTimeout(r, 0));
 const settleN = (n: number) => Array.from({ length: n }, () => settle()).reduce((a, b) => a.then(() => b), Promise.resolve());
 
+test("hub F11 follow-up: fast HTTP clients receive large MuxFrames without reconnect", { timeout: 20_000 }, async () => {
+  let event = "";
+  const app = express();
+  app.get("/", (_req, res) => {
+    res.set("content-type", "text/event-stream");
+    res.flushHeaders();
+    const writer = pacedSseWriter(res);
+    res.on("close", writer.close);
+    writer.write(event);
+  });
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    for (const bytes of [5_000_000, LOGICAL_MESSAGE_MAX_BYTES - 512]) {
+      const payload = "x".repeat(bytes - 7) + "𝄞漢";
+      event = `data: ${JSON.stringify({ sub: "d1/device", frame: { type: "doc", kind: "large-test", value: payload } })}\n\n`;
+      const expected = Buffer.byteLength(event, "utf8");
+      const response = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(5000) });
+      const reader = response.body!.getReader();
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+      try {
+        while (received < expected) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.byteLength;
+        }
+        assert.equal(received, expected, "the full event must reach the reader, not trigger the 4 MB socket cap");
+        const frame = JSON.parse(Buffer.concat(chunks).toString("utf8").slice(6));
+        assert.ok(frame.frame.value === payload, "the complete UTF-8 MuxFrame is intact");
+      } finally {
+        await reader.cancel();
+      }
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("hub F16: 4-byte codepoint at a segment boundary survives", async () => {
   const res = new FakeRes();
   const w = pacedSseWriter(res as never);
@@ -53,7 +98,8 @@ test("hub F16: 4-byte codepoint at a segment boundary survives", async () => {
 test("hub F11: queued bytes enforce the viewer cap even when writableLength stays 0", async () => {
   const res = new FakeRes();
   res.block = true; // writes park on drain — the queue must carry the cap
-  const w = pacedSseWriter(res as never);
+  const budget = new ByteBudget("queued-mux-test", SSE_HUB_VIEWER_BYTES);
+  const w = pacedSseWriter(res as never, { budget });
   const blob = "z".repeat(100_000);
   let cutAt = -1;
   for (let i = 0; i < 40; i++) {

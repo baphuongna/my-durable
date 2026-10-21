@@ -6,7 +6,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
+import { execFileSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +20,9 @@ import { TunnelServer } from "../apps/dpi-playground-hub/src/tunnel.js";
 import { TunnelDispatcher, TunnelTransport } from "../apps/dpi-playground-hub/src/tunnel-transport.js";
 import { RotationService } from "../apps/dpi-playground-hub/src/rotation.js";
 import type { NetworkDevice } from "../../dpi-sdk/src/models.js";
+import { ByteBudget, sendChunked } from "../../dpi-sdk/src/node/chunk.js";
+import { makeTestCa, trustedAgent } from "./harness/ca.js";
+import { bootCaddyDeploy, CADDY_BINARY, type CaddyHandle } from "./harness/caddy.js";
 
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 const HUB_ID = "0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c99";
@@ -31,13 +36,16 @@ interface DeviceRow {
   token: string;
 }
 
-async function fixture(policy?: ConstructorParameters<typeof TunnelServer>[4]) {
+async function fixture(
+  policy?: ConstructorParameters<typeof TunnelServer>[4],
+  dispatcherOptions?: ConstructorParameters<typeof TunnelDispatcher>[1],
+) {
   const dir = await mkdtemp(join(tmpdir(), "dpi-trev-"));
   const registry = new NetworkRegistry(join(dir, "net.sqlite"));
   registry.clearTunnelState();
   const audit = new Audit(registry);
   const tunnel = new TunnelServer(registry, audit, HUB_ID, {}, policy);
-  const dispatcher = new TunnelDispatcher(tunnel, { audit });
+  const dispatcher = new TunnelDispatcher(tunnel, { audit, ...dispatcherOptions });
   const addDevice = (id: string): DeviceRow => {
     const uid = randomUUID();
     const epoch = randomUUID();
@@ -64,7 +72,7 @@ async function fixture(policy?: ConstructorParameters<typeof TunnelServer>[4]) {
       .run(credentialId, id, epoch, 1, sha(token), t0, t0);
     return { id, uid, epoch, credentialId, token };
   };
-  const server = createServer();
+  const server = createServer((req, res) => res.writeHead(req.url === "/healthz" ? 200 : 404).end());
   server.on("upgrade", (req, socket, head) => tunnel.handleUpgrade(req, socket, head));
   await new Promise<void>((d) => server.listen(0, "127.0.0.1", d));
   const port = (server.address() as { port: number }).port;
@@ -73,7 +81,11 @@ async function fixture(policy?: ConstructorParameters<typeof TunnelServer>[4]) {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/tunnel`, { headers: { authorization: `Bearer ${d.token}` } });
     await new Promise<void>((res, rej) => {
       ws.once("open", res);
-      ws.once("unexpected-response", (_q, r) => rej(new Error(`upgrade ${r.statusCode}`)));
+      ws.once("error", rej);
+      ws.once("unexpected-response", (_q, r) => {
+        r.resume();
+        rej(new Error(`upgrade ${r.statusCode}`));
+      });
     });
     ws.send(JSON.stringify({
       type: "pair-handshake", v: 1, deviceUid: d.uid, deviceId: d.id, pairingEpoch: d.epoch,
@@ -93,8 +105,8 @@ async function fixture(policy?: ConstructorParameters<typeof TunnelServer>[4]) {
   };
   const cleanup = async () => {
     tunnel.close();
-    await new Promise<void>((d) => server.close(() => d()));
     server.closeAllConnections();
+    await new Promise<void>((d) => server.close(() => d()));
     await rm(dir, { recursive: true, force: true });
   };
   return { registry, audit, tunnel, dispatcher, addDevice, connect, cleanup, port };
@@ -219,6 +231,190 @@ test("F09 regression: foreign tunnel-chunk cannot settle the victim's request; t
     const res = await result;
     assert.equal(res.status, 200, "victim request settled by its OWNER, never by the attacker's chunk");
     victimWs.close();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("F09 follow-up: late own chunks after timeout or completion are ignored without closing the tunnel", async () => {
+  const budget = new ByteBudget("late-response-test", 32 * 1024 * 1024);
+  const f = await fixture(undefined, { deadlineMs: 1000, budget });
+  try {
+    const d = f.addDevice("f09-late");
+    const ws = await f.connect(d);
+    const transport = new TunnelTransport({ id: d.id, transport: "tunnel" }, f.dispatcher);
+    const firstRequest = new Promise<string>((resolve) => {
+      ws.once("message", (buf: Buffer) => resolve(JSON.parse(buf.toString()).reqId));
+    });
+    const expired = assert.rejects(
+      transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(5000)),
+      (e: { status?: number }) => e.status === 504,
+    );
+    const expiredReqId = await firstRequest;
+    await expired;
+    assert.equal(budget.used, 0);
+
+    const lateChunk = (reqId: string) => ws.send(JSON.stringify({
+      type: "tunnel-chunk", v: 1, kind: "rest-response", reqId,
+      messageId: randomUUID(), index: 0, count: 1, totalBytes: 16 * 1024 * 1024,
+      data: Buffer.from("late").toString("base64"),
+    }));
+    let completedReqId = "";
+    ws.on("message", (buf: Buffer) => {
+      const msg = JSON.parse(buf.toString());
+      if (msg.type === "rest-request" && ws.readyState === WebSocket.OPEN) {
+        completedReqId = msg.reqId;
+        ws.send(JSON.stringify({ type: "rest-response", reqId: msg.reqId, status: 200, body: "ok" }));
+      }
+    });
+
+    lateChunk(expiredReqId);
+    assert.equal((await transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(5000))).status, 200);
+    lateChunk(completedReqId);
+    // A second round-trip is an ordering barrier for the second late chunk.
+    assert.equal((await transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(5000))).status, 200);
+    assert.equal(ws.readyState, WebSocket.OPEN);
+    assert.equal(budget.used, 0, "late chunks never reserve their advertised 16 MiB");
+    const denied = f.registry.db.prepare("SELECT COUNT(*) c FROM events WHERE action='auth.denied'").get() as { c: number };
+    assert.equal(denied.c, 0, "own settled correlations are not foreign-response attacks");
+    ws.close();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("F09 follow-up: settling a request releases its partial assembly before late chunks are ignored", async () => {
+  const budget = new ByteBudget("partial-response-test", 256_000);
+  const f = await fixture(undefined, { deadlineMs: 2000, budget });
+  try {
+    const d = f.addDevice("f09-partial");
+    const ws = await f.connect(d);
+    const transport = new TunnelTransport({ id: d.id, transport: "tunnel" }, f.dispatcher);
+    let tail = "";
+    const partialSent = new Promise<void>((resolve) => {
+      ws.once("message", (buf: Buffer) => {
+        const req = JSON.parse(buf.toString());
+        const chunks: string[] = [];
+        const sent = sendChunked(
+          { type: "rest-response", reqId: req.reqId, status: 200, body: "x".repeat(100_000) },
+          { kind: "rest-response", reqId: req.reqId },
+          (chunk) => chunks.push(JSON.stringify(chunk)),
+        );
+        assert.ok(sent.ok);
+        ws.send(chunks[0]);
+        tail = chunks[1];
+        resolve();
+      });
+    });
+    const expired = assert.rejects(
+      transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(5000)),
+      (e: { status?: number }) => e.status === 504,
+    );
+    await partialSent;
+    const pong = once(ws, "pong");
+    ws.ping();
+    await pong; // server processed the partial chunk before this ordering barrier
+    assert.ok(budget.used > 100_000, "a live partial response was admitted");
+    await expired;
+    assert.equal(budget.used, 0, "settlement releases the partial buffer immediately, not 30 seconds later");
+    ws.on("message", (buf: Buffer) => {
+      const req = JSON.parse(buf.toString());
+      if (req.type === "rest-request")
+        ws.send(JSON.stringify({ type: "rest-response", reqId: req.reqId, status: 200, body: "ok" }));
+    });
+    ws.send(tail);
+    assert.equal((await transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(5000))).status, 200);
+    assert.equal(budget.used, 0);
+    ws.close();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("F10 follow-up: real WSS clients through reference Caddy have separate, spoof-resistant IP quotas", { timeout: 30_000 }, async () => {
+  const f = await fixture({ ipPerMinute: 1, globalPerMinute: 120 });
+  let ca: Awaited<ReturnType<typeof makeTestCa>> | undefined;
+  let caddy: CaddyHandle | undefined;
+  let agent: Awaited<ReturnType<typeof trustedAgent>> | undefined;
+  try {
+    ca = await makeTestCa();
+    agent = await trustedAgent(ca);
+    const adminHash = execFileSync(CADDY_BINARY, ["hash-password", "--plaintext", "tunnel-proxy-test-only"], { encoding: "utf8" }).trim();
+    caddy = await bootCaddyDeploy({
+      hubPort: f.port, certFile: join(ca.dir, "hub.crt"), keyFile: join(ca.dir, "hub.key"), adminHash,
+    });
+    const attempt = (from: string, forgedIp: string) => new Promise<number>((resolve, reject) => {
+      const ws = new WebSocket(caddy!.httpsBase.replace("https:", "wss:") + "/api/tunnel", {
+        agent, localAddress: from, handshakeTimeout: 3000,
+        headers: { authorization: `Bearer ${mint()}`, "x-forwarded-for": forgedIp },
+      });
+      ws.once("error", reject);
+      ws.once("open", () => {
+        ws.terminate();
+        reject(new Error("unknown credential unexpectedly upgraded"));
+      });
+      ws.once("unexpected-response", (req, res) => {
+        res.resume();
+        res.once("end", () => {
+          resolve(res.statusCode!);
+          req.destroy();
+        });
+      });
+    });
+    assert.equal(await attempt("127.0.0.1", "198.51.100.1"), 401);
+    assert.equal(await attempt("127.0.0.2", "127.0.0.1"), 401, "B must not inherit A's exhausted IP bucket");
+    assert.equal(await attempt("127.0.0.1", "198.51.100.2"), 429, "forged XFF cannot reset A's bucket");
+
+    const { clientIp } = await import("../apps/dpi-playground-hub/src/client-ip.js");
+    const ip = (peer: string, forwarded: string | string[]) =>
+      clientIp({ socket: { remoteAddress: peer }, headers: { "x-forwarded-for": forwarded } } as unknown as IncomingMessage);
+    assert.equal(ip("198.51.100.9", "203.0.113.9"), "198.51.100.9", "non-loopback peers cannot assert XFF");
+    assert.equal(ip("::ffff:198.51.100.9", "203.0.113.9"), "::ffff:198.51.100.9");
+    assert.equal(ip("::1", "2001:db8::7"), "2001:db8::7");
+    assert.equal(ip("::ffff:7f00:1", "203.0.113.7"), "203.0.113.7");
+    assert.equal(ip("127.0.0.1", "203.0.113.7, 198.51.100.8"), "198.51.100.8", "stop at the nearest untrusted hop");
+    assert.equal(ip("127.0.0.1", "not-an-ip"), "127.0.0.1");
+    assert.equal(ip("127.0.0.1", ["203.0.113.7"]), "127.0.0.1");
+  } finally {
+    agent?.destroy();
+    try {
+      await caddy?.stop();
+    } finally {
+      await f.cleanup();
+      if (ca) await rm(ca.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("F13 follow-up: rejected HTTP upgrades release the pending handshake slot", async () => {
+  const f = await fixture({ maxPendingHandshakes: 1, maxAuthenticated: 8 });
+  try {
+    const d = f.addDevice("f13-rejected");
+    const validKey = Buffer.alloc(16, 1).toString("base64");
+    for (const headers of [
+      { "sec-websocket-version": "13" },
+      { "sec-websocket-version": "13", "sec-websocket-key": "invalid" },
+      { "sec-websocket-version": "12", "sec-websocket-key": validKey },
+      { "sec-websocket-version": "13", "sec-websocket-key": validKey, "sec-websocket-protocol": ",," },
+    ]) {
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = httpRequest(`http://127.0.0.1:${f.port}/api/tunnel`, {
+          headers: { connection: "Upgrade", upgrade: "websocket", authorization: `Bearer ${d.token}`, ...headers },
+        }, (res) => {
+          res.resume();
+          res.once("end", () => resolve(res.statusCode!));
+        });
+        req.once("error", reject);
+        req.end();
+      });
+      assert.equal(status, 400);
+      const ws = await f.connect(d);
+      assert.equal(ws.readyState, WebSocket.OPEN, "a malformed upgrade must not exhaust cap=1");
+      const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+      ws.close();
+      await closed;
+      assert.equal(f.tunnel.pendingHandshakeCount(), 0, "completion/close never double-releases the slot");
+    }
   } finally {
     await f.cleanup();
   }

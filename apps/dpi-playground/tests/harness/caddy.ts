@@ -6,7 +6,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
@@ -45,7 +45,13 @@ export async function bootCaddyDeploy(opts: {
   port?: number;
 }): Promise<CaddyHandle> {
   const port = opts.port ?? (await freePort());
+  const profile = await readFile(DEPLOY_CADDYFILE, "utf8");
+  const site = "https://{$DPI_PUBLIC_HOST} {";
+  if (!profile.includes(site)) throw new Error("reference Caddy site marker not found");
   const dir = await mkdtemp(join(tmpdir(), "dpi-caddy-deploy-"));
+  // Preserve the reference routing/headers/auth; tests only listen on loopback.
+  const config = join(dir, "Caddyfile");
+  await writeFile(config, profile.replace(site, `${site}\n\tbind 127.0.0.1`));
   const log = new BoundedLog("caddy-deploy", 400);
   const env = {
     ...process.env,
@@ -57,7 +63,7 @@ export async function bootCaddyDeploy(opts: {
     XDG_CONFIG_HOME: join(dir, "config"),
     XDG_DATA_HOME: join(dir, "data"),
   };
-  const child = spawn(CADDY_BINARY, ["run", "--config", DEPLOY_CADDYFILE, "--adapter", "caddyfile"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(CADDY_BINARY, ["run", "--config", config, "--adapter", "caddyfile"], { env, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout?.on("data", (x) => log.push(String(x)));
   child.stderr?.on("data", (x) => log.push(String(x)));
   const base = `https://127.0.0.1:${port}`;
