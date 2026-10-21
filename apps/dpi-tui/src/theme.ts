@@ -1,4 +1,6 @@
-// Colors follow the playground: warm dark, pink accent, amber secondary.
+// Colors mirror the FE brand tokens exactly (apps/dpi-playground-fe/src/style.css :root):
+// fg #f2eeee, accent #ff8997, secondary/muted #c9a87c, faint #8d7778, ok #6fcf97,
+// warn #f2c94c, err #ff6b6b, line-soft #2a2021, primary #b9283c, primary-line #df5363.
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-works/pi-tui";
 
 const rgb = (hex: string) => {
@@ -10,19 +12,21 @@ const wrap = (on: string, off: string) => (s: string) => `\x1b[${on}m${s}\x1b[${
 
 export const c = {
   accent: fg("#ff8997"),
-  muted: fg("#a08a74"),
+  muted: fg("#8d7778"),
   secondary: fg("#c9a87c"),
   text: fg("#f2eeee"),
   ok: fg("#6fcf97"),
-  warn: fg("#f2c66d"),
+  warn: fg("#f2c94c"),
   err: fg("#ff6b6b"),
   user: fg("#8ec5ff"),
+  primary: fg("#b9283c"),
+  primaryLine: fg("#df5363"),
   bold: wrap("1", "22"),
   dim: wrap("2", "22"),
   italic: wrap("3", "23"),
   underline: wrap("4", "24"),
   strike: wrap("9", "29"),
-  userBg: (s: string) => `\x1b[48;2;43;32;33m${s}\x1b[49m`,
+  userBg: (s: string) => `\x1b[48;2;42;32;33m${s}\x1b[49m`,
 };
 
 export const markdownTheme: MarkdownTheme = {
