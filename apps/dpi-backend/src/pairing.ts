@@ -25,11 +25,14 @@ import {
   type DeviceKeypair,
   type PairingFile,
 } from "./pairing-files.js";
-import { PAIR_HTTP_MAX_RETRIES, PAIR_HTTP_TIMEOUT_MS, PAIR_POLL_MS } from "../../dpi-sdk/src/protocol/limits.js";
+import { PAIR_HTTP_MAX_RETRIES, PAIR_HTTP_TIMEOUT_MS, PAIR_OFFER_SKEW_MS, PAIR_POLL_MS } from "../../dpi-sdk/src/protocol/limits.js";
 import {
   normalizePairCode,
+  pairOfferFragment,
   pairingSigningPayload,
   parseHubOrigin,
+  parsePairOfferUrl,
+  readPairOffer,
 } from "../../dpi-sdk/src/protocol/pairing.js";
 import type { TokenIssue } from "../../dpi-sdk/src/protocol/pairing.js";
 
@@ -183,12 +186,29 @@ export class DevicePairing {
     let pairUrlOrigin: string | undefined;
     let code = input.code ?? "";
     if (input.pairUrl) {
-      const parsed = this.codeFromPairUrl(input.pairUrl);
-      if (!parsed) throw err("invalid", "pairUrl must look like https://<hub>/pair?code=<CODE>&v=1");
-      code = parsed;
-      const o = this.originOf(input.pairUrl);
-      if (!o.ok) throw err("invalid", o.error);
-      pairUrlOrigin = o.origin;
+      // v2 offer link: the whole handoff (hub origin, hubId, code, expiry) rides the
+      // #offer= fragment — decode it and take the code + origin FROM the offer.
+      if (pairOfferFragment(input.pairUrl) !== undefined) {
+        const parsed = parsePairOfferUrl(input.pairUrl, this.now());
+        if (!parsed) {
+          // A structurally-valid offer whose exp is past gets its own error — still before any network.
+          const structural = readPairOffer(pairOfferFragment(input.pairUrl)!);
+          if (structural && structural.exp < this.now() - PAIR_OFFER_SKEW_MS)
+            throw err("invalid", "pairing offer expired; mint a fresh code in the hub wizard");
+          throw err("invalid", "pairUrl is not a valid offer link; mint a fresh one in the hub wizard");
+        }
+        code = parsed.offer.code;
+        const o = this.originOf(parsed.offer.hub);
+        if (!o.ok) throw err("invalid", o.error);
+        pairUrlOrigin = o.origin;
+      } else {
+        const parsed = this.codeFromPairUrl(input.pairUrl);
+        if (!parsed) throw err("invalid", "pairUrl must look like https://<hub>/pair?code=<CODE>&v=1");
+        code = parsed;
+        const o = this.originOf(input.pairUrl);
+        if (!o.ok) throw err("invalid", o.error);
+        pairUrlOrigin = o.origin;
+      }
     }
     // Precedence: pair URL → explicit --hub → DPI_HUB_URL → saved origin. Every
     // EXPLICIT source must be a valid HTTPS origin (fail on the bad one), then

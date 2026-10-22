@@ -39,6 +39,7 @@ import {
   PairRequest as PairRequestSchema,
   PairResponse as PairResponseSchema,
   checkPairingDto,
+  encodePairOffer,
   isPairCode,
   normalizePairCode,
   pairingSigningPayload,
@@ -204,6 +205,21 @@ export class PairingService {
     return { ok: true, value };
   }
 
+  /**
+   * v2 offer link, minted from the SAME values the v1 pairUrl uses (same code,
+   * same expiry): the whole handoff — hub origin, hubId, code, expiry — rides
+   * the #offer= fragment, which no server or CDN ever sees in a log.
+   */
+  private offerUrlFor(code: string, expiresAt: number): string {
+    return `${this.deps.hubOrigin}/pair#offer=${encodePairOffer({
+      v: 2,
+      hub: this.deps.hubOrigin,
+      id: this.deps.hubId,
+      code,
+      exp: expiresAt,
+    })}`;
+  }
+
   /** POST /api/pair/code (admin) — mint a fresh single-use code. */
   createCode(address: string): { ok: true; value: PairCodeIssue } | PairingFailure {
     const now = this.now();
@@ -240,6 +256,7 @@ export class PairingService {
       expiresAt: entry.expiresAt,
       hubOrigin: this.deps.hubOrigin,
       pairUrl: `${this.deps.hubOrigin}/pair?code=${code}&v=1`,
+      offerUrl: this.offerUrlFor(code, entry.expiresAt),
     });
   }
 
@@ -267,6 +284,7 @@ export class PairingService {
       expiresAt: entry.expiresAt,
       hubOrigin: this.deps.hubOrigin,
       pairUrl: `${this.deps.hubOrigin}/pair?code=${entry.code}&v=1`,
+      offerUrl: this.offerUrlFor(entry.code, entry.expiresAt),
     });
   }
 

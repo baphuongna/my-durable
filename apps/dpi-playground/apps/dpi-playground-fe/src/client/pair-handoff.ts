@@ -1,10 +1,22 @@
 /** Pair links stay in RAM and may only refer to the browser's own hub. */
-import { normalizePairCode } from "../../../../../dpi-sdk/src/protocol/pairing";
+import { decodePairOffer, normalizePairCode, parsePairOfferUrl } from "../../../../../dpi-sdk/src/protocol/pairing";
 
 export type PairHandoff = { code: string; origin: string } | { error: string };
 
 export function readPairHandoff(url: URL): PairHandoff | undefined {
   if (!/^\/pair\/?$/.test(url.pathname)) return undefined;
+  // v2 FIRST: the whole handoff rides the #offer= fragment, decoded client-side —
+  // the code never travels in a query, so it never reaches any server or CDN log.
+  if (url.hash.startsWith("#offer=")) {
+    const parsed = parsePairOfferUrl(url.href);
+    if (parsed) return { code: parsed.offer.code, origin: url.origin };
+    const offer = decodePairOffer(url.hash.slice("#offer=".length));
+    if (offer && offer.hub !== url.origin)
+      return {
+        error: "This pairing link does not belong to this hub. Open the original hub link instead.",
+      };
+    return { error: "Invalid pairing link. Use a complete link from the hub wizard." };
+  }
   const params = url.searchParams;
   if (!params.has("code") && !params.has("origin") && !params.has("v")) return undefined;
   const code = params.get("code");

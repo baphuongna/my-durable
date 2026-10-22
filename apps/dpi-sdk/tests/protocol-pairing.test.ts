@@ -287,3 +287,119 @@ test("hardening: normalizePairCode canonicalises typed/grouped codes", () => {
     assert.ok(checkPairingDto(PairRequest, { ...requestBase, code: canonical }), raw);
   }
 });
+
+// --- Pairing offer links (v2): the whole handoff rides the #offer= fragment ---
+
+import {
+  decodePairOffer,
+  encodePairOffer,
+  parsePairOfferUrl,
+  readPairOffer,
+  type PairOffer,
+} from "../src/protocol/pairing.js";
+import { PAIR_OFFER_MAX_AHEAD_MS, PAIR_OFFER_SKEW_MS } from "../src/protocol/limits.js";
+
+const OFFER_HUB = "https://pi.example.com";
+const OFFER_ID = "1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d";
+const OFFER_CODE = "a1b2c3d4-e5f6-4789-abcd-eff012345678"; // minted family: canonical UUID v4
+const OFFER_NOW = 1760000000000;
+
+const offer = (over: Partial<PairOffer> = {}): PairOffer => ({
+  v: 2,
+  hub: OFFER_HUB,
+  id: OFFER_ID,
+  code: OFFER_CODE,
+  exp: OFFER_NOW + 240_000,
+  ...over,
+});
+/** Encode arbitrary JSON as the wire payload, bypassing encodePairOffer (tamper tests). */
+const rawOf = (json: unknown) => Buffer.from(JSON.stringify(json), "utf8").toString("base64url");
+
+test("offer: encode/decode round-trip — canonical field order, base64url without padding", () => {
+  const raw = encodePairOffer(offer());
+  assert.match(raw, /^[A-Za-z0-9_-]+$/); // standard base64url, no padding, nothing else
+  assert.ok(!raw.includes("="));
+  // canonical JSON: exactly v,hub,id,code,exp in that order, short keys
+  const bytes = Buffer.from(raw, "base64url");
+  assert.deepEqual(JSON.parse(bytes.toString("utf8")), offer());
+  assert.deepEqual(Object.keys(JSON.parse(bytes.toString("utf8"))), ["v", "hub", "id", "code", "exp"]);
+  assert.deepEqual(decodePairOffer(raw, OFFER_NOW), offer());
+  // decode is clock-relative: the same raw offer decodes while fresh and fails once stale
+  assert.equal(decodePairOffer(raw, offer().exp + PAIR_OFFER_MAX_AHEAD_MS), undefined);
+});
+
+test("offer: strict decode — tampering any field yields undefined, never a throw", () => {
+  const good = offer();
+  const tampers: [name: string, json: Record<string, unknown>][] = [
+    ["wrong version", { ...good, v: 1 }],
+    ["http origin", { ...good, hub: "http://pi.example.com" }],
+    ["userinfo in hub", { ...good, hub: "https://user:pw@pi.example.com" }],
+    ["hub with base path", { ...good, hub: "https://pi.example.com/hub" }],
+    ["non-canonical hub form", { ...good, hub: "https://pi.example.com/" }],
+    ["unknown field", { ...good, extra: 1 }],
+    ["missing field", { v: 2, hub: OFFER_HUB, id: OFFER_ID, code: OFFER_CODE }],
+    ["wrong UUID shape (id)", { ...good, id: OFFER_ID.toUpperCase() }],
+    ["wrong UUID shape (code)", { ...good, code: "a1b2c3d4-e5f6-5789-abcd-eff012345678" }],
+    ["legacy base32 code", { ...good, code: "ABCD2345EF67" }],
+    ["exp in the past (beyond skew)", { ...good, exp: OFFER_NOW - PAIR_OFFER_SKEW_MS - 1 }],
+    ["exp too far ahead", { ...good, exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS + 1 }],
+    ["exp not an integer", { ...good, exp: OFFER_NOW + 0.5 }],
+    ["exp not a number", { ...good, exp: String(OFFER_NOW) }],
+  ];
+  for (const [name, json] of tampers) {
+    assert.equal(decodePairOffer(rawOf(json), OFFER_NOW), undefined, name);
+  }
+  // never throws: garbage, empty, huge, non-UTF8-safe payloads all just return undefined
+  for (const junk of ["", "!!!", "e30", rawOf({ v: 2 }), "a".repeat(4096), "\ud800"]) {
+    assert.equal(decodePairOffer(junk, OFFER_NOW), undefined, JSON.stringify(junk.slice(0, 20)));
+  }
+});
+
+test("offer: exp window boundaries — 30 s skew back, 10 minutes ahead", () => {
+  assert.deepEqual(decodePairOffer(rawOf(offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS })), OFFER_NOW),
+    offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS }));
+  assert.equal(decodePairOffer(rawOf(offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS - 1 })), OFFER_NOW), undefined);
+  assert.deepEqual(decodePairOffer(rawOf(offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS })), OFFER_NOW),
+    offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS }));
+  assert.equal(decodePairOffer(rawOf(offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS + 1 })), OFFER_NOW), undefined);
+  // the structural reader is freshness-blind: it is how a caller distinguishes "expired" from "junk"
+  const expired = rawOf(offer({ exp: OFFER_NOW - 60_000 }));
+  assert.equal(decodePairOffer(expired, OFFER_NOW), undefined);
+  assert.deepEqual(readPairOffer(expired), offer({ exp: OFFER_NOW - 60_000 }));
+});
+
+test("offer: parsePairOfferUrl — only <origin>/pair with a lone #offer= fragment", () => {
+  const link = `${OFFER_HUB}/pair#offer=${encodePairOffer(offer())}`;
+  const parsed = parsePairOfferUrl(link, OFFER_NOW);
+  assert.ok(parsed);
+  assert.deepEqual(parsed.offer, offer());
+  assert.equal(parsed.rest, `${OFFER_HUB}/pair`); // the URL minus its fragment, safe to keep
+  // /pair/ with a trailing slash is the same page
+  assert.ok(parsePairOfferUrl(`${OFFER_HUB}/pair/#offer=${encodePairOffer(offer())}`, OFFER_NOW));
+  for (const bad of [
+    `${OFFER_HUB}/other#offer=${encodePairOffer(offer())}`, // not /pair
+    `${OFFER_HUB}/pair?x=1#offer=${encodePairOffer(offer())}`, // a stray query
+    `${OFFER_HUB}/pair?code=${OFFER_CODE}&v=1#offer=${encodePairOffer(offer())}`, // v1+v2 mixed
+    `${OFFER_HUB}/pair#offer=!!!`, // not base64url
+    `${OFFER_HUB}/pair#offer=`, // empty payload
+    `${OFFER_HUB}/pair#offer=${encodePairOffer(offer({ hub: "https://other.example.com" }))}`, // minted by another hub
+    `https://user:pw@pi.example.com/pair#offer=${encodePairOffer(offer())}`, // userinfo in the link
+    `${OFFER_HUB}/pair#offer=${encodePairOffer(offer())}x`, // trailing junk after the payload
+    `not a url`,
+  ]) {
+    assert.equal(parsePairOfferUrl(bad, OFFER_NOW), undefined, bad.slice(0, 60));
+  }
+  // a fresh-looking link at a stale clock is still just undefined (no throw)
+  assert.equal(parsePairOfferUrl(link, offer().exp + 605_000), undefined);
+});
+
+test("offer: PairCodeIssue carries an optional bounded offerUrl alongside pairUrl", () => {
+  const base = {
+    type: "pair.code", v: 1, codeId: uuid(), code: OFFER_CODE, expiresAt: 1,
+    hubOrigin: "https://h.example", pairUrl: `https://h.example/pair?code=${OFFER_CODE}&v=1`,
+  };
+  assert.ok(checkPairingDto(PairCodeIssue, base), "offerUrl stays optional (transition)");
+  const withOffer = { ...base, offerUrl: `https://h.example/pair#offer=${encodePairOffer(offer())}` };
+  assert.ok(checkPairingDto(PairCodeIssue, withOffer));
+  assert.ok(!checkPairingDto(PairCodeIssue, { ...withOffer, offerUrl: "h".repeat(2049) }));
+});

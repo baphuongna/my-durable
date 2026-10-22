@@ -44,9 +44,17 @@ export function v1(store: Store, pairing?: DevicePairing, connector?: { status()
       void (async () => {
         try {
           const input = req.body as { code?: string; hub?: string; pairUrl?: string; force?: boolean };
-          if (!input || typeof input.code !== "string" || (input.hub !== undefined && typeof input.hub !== "string") || (input.pairUrl !== undefined && typeof input.pairUrl !== "string"))
-            throw invalid("body: { code: string, hub?: string, pairUrl?: string, force?: boolean }");
-          await pairing.start({ code: input.code, hub: input.hub, pairUrl: input.pairUrl, force: input.force });
+          // A pasted pair URL (v1) or offer link (v2) carries the code itself — a pairUrl-only body
+          // is the TUI/daemon paste path, so code is required only when pairUrl is absent.
+          if (
+            !input ||
+            (input.code !== undefined && typeof input.code !== "string") ||
+            (input.hub !== undefined && typeof input.hub !== "string") ||
+            (input.pairUrl !== undefined && typeof input.pairUrl !== "string") ||
+            (input.code === undefined && input.pairUrl === undefined)
+          )
+            throw invalid("body: { code: string, hub?: string, pairUrl?: string, force?: boolean } — code or pairUrl required");
+          await pairing.start({ code: input.code ?? "", hub: input.hub, pairUrl: input.pairUrl, force: input.force });
           res.json(pairing.status());
         } catch (e) {
           fail(e, res);

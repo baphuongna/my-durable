@@ -9,6 +9,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
+import { encodePairOffer, type PairOffer } from "../../dpi-sdk/src/protocol/pairing.js";
 import { AUDIT_ACTIONS, Audit, scrubSecrets } from "../apps/dpi-playground-hub/src/audit.js";
 
 async function tempAudit(hooks?: ConstructorParameters<typeof Audit>[1]) {
@@ -24,6 +25,15 @@ async function tempAudit(hooks?: ConstructorParameters<typeof Audit>[1]) {
 
 const rows = (registry: NetworkRegistry) =>
   registry.db.prepare("SELECT * FROM events ORDER BY id").all() as Record<string, unknown>[];
+
+/** A structurally valid offer fixture (encode needs no freshness, so any exp works). */
+const offerFixture = (): PairOffer => ({
+  v: 2,
+  hub: "https://pi.example.com",
+  id: "1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d",
+  code: "a1b2c3d4-e5f6-4789-abcd-eff012345678",
+  exp: 1760000240000,
+});
 
 test("append: all 16 required actions round-trip with correlation fields", async () => {
   const { registry, audit, cleanup } = await tempAudit();
@@ -179,6 +189,9 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
         url12: `https://hub/pair?code=ABCD2345EF67&v=1`,
         uuidCode: `{"code":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}`,
         uuidUrl: `https://hub/pair?code=a1b2c3d4-e5f6-4789-abcd-eff012345678&v=1`,
+        // v2 offer links: the secret IS the fragment payload — redact it wherever a URL shows up
+        offerUrl: `https://hub/pair#offer=${encodePairOffer(offerFixture())}`,
+        offerNested: { link: `https://hub/pair/#offer=${encodePairOffer(offerFixture())}` },
       },
     });
     const stored = JSON.stringify(rows(registry));
@@ -204,6 +217,13 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
     assert.ok(!scrubSecrets("code=a1b2c3d4-e5f6-4789-abcd-eff012345678").includes("a1b2c3d4"));
     // an id that is NOT labelled a code is correlation, not a secret
     assert.ok(scrubSecrets('{"codeId":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("a1b2c3d4-e5f6-4789-abcd-eff012345678"));
+    // a #offer= fragment is redacted in any URL-bearing field, standalone or nested
+    const payload = encodePairOffer(offerFixture());
+    assert.ok(!stored.includes(payload));
+    assert.ok(scrubSecrets(`https://hub/pair#offer=${payload}`).includes("#offer=<redacted>"));
+    assert.ok(scrubSecrets(`see #offer=${payload} there`).includes("#offer=<redacted>"));
+    const short = payload.slice(0, 20); // a truncated fragment run is still a secret prefix
+    assert.ok(!scrubSecrets(`https://hub/pair/#offer=${short}`).includes(`#offer=${short}`));
   } finally {
     await cleanup();
   }

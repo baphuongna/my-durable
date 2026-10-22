@@ -15,6 +15,7 @@ import { bootHub } from "./harness/hub.js";
 import { makeActors } from "./harness/actors.js";
 import { startBarrierHub, childGate } from "./harness/barriers.js";
 import { sanitize } from "./harness/logs.js";
+import { encodePairOffer } from "../../dpi-sdk/src/protocol/pairing.js";
 
 const hreq = async (
   url: string,
@@ -196,7 +197,14 @@ test("barrier: deterministic park/release, no timing races", async () => {
 });
 
 test("log sanitizer: tokens/codes/private keys never leak", () => {
-  const dirty = `token=dpt_${"A".repeat(43)} dpi_${"B".repeat(43)} code=AB2C7DEF code=ABCD2345EF67 code=a1b2c3d4-e5f6-4789-abcd-eff012345678 Authorization: Bearer abc123.xyz\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----`;
+  const offer = `https://hub/pair#offer=${encodePairOffer({
+    v: 2,
+    hub: "https://pi.example.com",
+    id: "1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d",
+    code: "a1b2c3d4-e5f6-4789-abcd-eff012345678",
+    exp: 1760000240000,
+  })}`;
+  const dirty = `token=dpt_${"A".repeat(43)} dpi_${"B".repeat(43)} code=AB2C7DEF code=ABCD2345EF67 code=a1b2c3d4-e5f6-4789-abcd-eff012345678 Authorization: Bearer abc123.xyz\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\npasted ${offer}`;
   const clean = sanitize(dirty);
   assert.ok(!clean.includes("dpt_AAAA"));
   assert.ok(!clean.includes("dpi_BBBB"));
@@ -208,4 +216,7 @@ test("log sanitizer: tokens/codes/private keys never leak", () => {
   );
   assert.ok(!clean.includes("secret"));
   assert.ok(clean.includes("dpt_<redacted>"));
+  // a pasted offer link never carries its payload into test output
+  assert.ok(!clean.includes(offer.split("#offer=")[1]!), "the #offer= payload is redacted");
+  assert.ok(clean.includes("#offer=<redacted>"));
 });

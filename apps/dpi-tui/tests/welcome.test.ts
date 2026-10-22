@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
+import { encodePairOffer } from "../../dpi-sdk/src/protocol/pairing.ts";
 import {
   applyBackendEnv,
   assemblePairArgs,
@@ -96,6 +97,22 @@ test("assemblePairArgs: a pasted pair URL carries its own origin — no hub need
   assert.deepEqual(assemblePairArgs("https://hub.example.com/pair?code=AB12CD34"), {
     code: undefined,
     pairUrl: "https://hub.example.com/pair?code=AB12CD34",
+    hub: undefined,
+    force: undefined,
+  });
+});
+
+test("assemblePairArgs: a pasted v2 offer link passes through WHOLE as pairUrl — the backend parses the fragment", () => {
+  const link = `https://hub.example.com/pair#offer=${encodePairOffer({
+    v: 2,
+    hub: "https://hub.example.com",
+    id: "1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d",
+    code: "a1b2c3d4-e5f6-4789-abcd-eff012345678",
+    exp: 1760000240000,
+  })}`;
+  assert.deepEqual(assemblePairArgs(link), {
+    code: undefined,
+    pairUrl: link, // the whole link, fragment included — origin and code travel inside it
     hub: undefined,
     force: undefined,
   });

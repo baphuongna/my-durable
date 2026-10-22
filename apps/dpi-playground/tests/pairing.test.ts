@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
 import { Audit } from "../apps/dpi-playground-hub/src/audit.js";
 import { PairingService } from "../apps/dpi-playground-hub/src/pairing.js";
-import { pairingSigningPayload } from "../../dpi-sdk/src/protocol/pairing.js";
+import { pairingSigningPayload, parsePairOfferUrl } from "../../dpi-sdk/src/protocol/pairing.js";
 import type { TokenIssue } from "../../dpi-sdk/src/protocol/pairing.js";
 
 const HUB_ORIGIN = "https://pi.example.com";
@@ -604,10 +604,42 @@ test("hardening: a minted code is a canonical UUID v4 and 500 mints are all dist
       assert.ok(created.ok, `mint ${i} refused`);
       assert.match(created.value.code, UUID_V4_CODE, `mint ${i} is UUID v4`);
       assert.ok(created.value.pairUrl.endsWith(`/pair?code=${created.value.code}&v=1`), `mint ${i} pairUrl`);
+      // every mint also carries the v2 offer link: no query, the payload rides the fragment
+      assert.ok(created.value.offerUrl!.startsWith(`${HUB_ORIGIN}/pair#offer=`), `mint ${i} offerUrl`);
+      assert.ok(!created.value.offerUrl!.includes("?"), `mint ${i} offerUrl carries no query`);
       codes.push(created.value.code);
     }
     assert.equal(new Set(codes).size, 500, "500 mints are all distinct");
     assert.equal(new Set(codes.map((c) => c.slice(0, 1))).size > 1, true, "the first character varies");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("offer link: createCode and resolveCode mint an offerUrl whose fragment decodes to the same code/expiry as pairUrl", async () => {
+  const fx = await fixture();
+  try {
+    const created = fx.service.createCode("10.0.0.1");
+    assert.ok(created.ok);
+    const { code, expiresAt, hubOrigin, pairUrl, offerUrl } = created.value;
+    assert.ok(offerUrl, "the v2 link is minted alongside the v1 one");
+    assert.ok(offerUrl.startsWith(`${HUB_ORIGIN}/pair#offer=`));
+    const parsed = parsePairOfferUrl(offerUrl, fx.clock.now);
+    assert.ok(parsed, "decodes at mint time");
+    assert.equal(parsed.offer.code, code, "same code as the v1 pairUrl");
+    assert.equal(parsed.offer.exp, expiresAt, "same expiry as the v1 pairUrl");
+    assert.equal(parsed.offer.hub, hubOrigin);
+    assert.equal(parsed.offer.id, HUB_ID, "carries the hubId trust anchor");
+    assert.equal(pairUrl, `${HUB_ORIGIN}/pair?code=${code}&v=1`, "v1 stays minted and unchanged");
+
+    const resolved = fx.service.resolveCode({ code });
+    assert.ok(resolved.ok, JSON.stringify(resolved));
+    assert.equal(resolved.value.code, code);
+    const parsed2 = parsePairOfferUrl(resolved.value.offerUrl!, fx.clock.now);
+    assert.ok(parsed2, "resolveCode offerUrl decodes too");
+    assert.equal(parsed2.offer.code, code);
+    assert.equal(parsed2.offer.exp, resolved.value.expiresAt);
+    assert.equal(resolved.value.pairUrl, `${HUB_ORIGIN}/pair?code=${code}&v=1`);
   } finally {
     await fx.cleanup();
   }

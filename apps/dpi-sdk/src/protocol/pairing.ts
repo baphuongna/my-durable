@@ -10,7 +10,14 @@
  */
 import { Type, type Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
-import { PAIR_CODE_LENGTH, PAIR_CODE_LEGACY_LENGTH, PAIR_CODE_UUID_LENGTH } from "./limits.js";
+import {
+  PAIR_CODE_LENGTH,
+  PAIR_CODE_LEGACY_LENGTH,
+  PAIR_CODE_UUID_LENGTH,
+  PAIR_OFFER_MAX_AHEAD_MS,
+  PAIR_OFFER_MAX_JSON_BYTES,
+  PAIR_OFFER_SKEW_MS,
+} from "./limits.js";
 
 const Strict = { additionalProperties: false } as const;
 
@@ -214,6 +221,8 @@ export const PairCodeIssue = Type.Object(
     expiresAt: Type.Integer(),
     hubOrigin: Type.String({ maxLength: 2048 }),
     pairUrl: Type.String({ maxLength: 4096 }),
+    /** v2 offer link: the whole handoff rides the #offer= fragment (never a query). */
+    offerUrl: Type.Optional(Type.String({ maxLength: 2048 })),
   },
   Strict,
 );
@@ -319,6 +328,146 @@ export function parseHubOrigin(
     return { ok: false, error: "origin: base path not allowed" };
   }
   return { ok: true, origin: url.origin, tunnelUrl: `${url.origin}/api/tunnel` };
+}
+
+/**
+ * v2 pairing offer — ONE artifact carrying identity, trust anchor and transport:
+ * hub origin + hubId + code + expiry, base64url-encoded into the URL FRAGMENT
+ * (`<hubOrigin>/pair#offer=…`). A fragment never leaves the client, so the
+ * code cannot reach server/CDN query logs, and the origin travels inside the
+ * link (no --hub needed on the device).
+ */
+export interface PairOffer {
+  v: 2;
+  /** Canonical HTTPS hub origin (the transport the device pairs against). */
+  hub: string;
+  /** hubId trust anchor (deployment id), a canonical UUID. */
+  id: string;
+  /** The single-use pairing code — canonical UUID v4, the only minted family. */
+  code: string;
+  /** Expiry, hub epoch ms. */
+  exp: number;
+}
+
+/** base64url (no padding) of UTF-8 bytes — browser-safe, no Node builtins. */
+function offerEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function offerDecode(raw: string): Uint8Array | undefined {
+  if (raw === "" || !/^[A-Za-z0-9_-]+$/.test(raw)) return undefined;
+  try {
+    const binary = atob(raw.replace(/-/g, "+").replace(/_/g, "/"));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return undefined;
+  }
+}
+
+const OFFER_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** The minted family only: offer links carry a UUID v4 code, never legacy base32. */
+const OFFER_CODE_RE = new RegExp(`^${UUID_V4}$`);
+
+/**
+ * Encode an offer to the exact fragment payload: canonical JSON (field order
+ * v,hub,id,code,exp — byte-lean and deterministic), base64url, no padding.
+ * Pure encoder: it does not validate; callers mint from live hub values.
+ */
+export function encodePairOffer(offer: PairOffer): string {
+  return offerEncode(
+    new TextEncoder().encode(
+      JSON.stringify({ v: offer.v, hub: offer.hub, id: offer.id, code: offer.code, exp: offer.exp }),
+    ),
+  );
+}
+
+/**
+ * Structural decode (freshness-blind): exactly the five known fields, v===2,
+ * canonical HTTPS origin (byte-exact, reusing the parseHubOrigin rules),
+ * canonical UUIDs for id and code, safe-integer exp. Unknown or malformed
+ * input → undefined, never a throw. Exported so a caller can tell an EXPIRED
+ * offer apart from junk (decodePairOffer refuses both).
+ */
+export function readPairOffer(raw: string): PairOffer | undefined {
+  const bytes = offerDecode(raw);
+  if (!bytes || bytes.length > PAIR_OFFER_MAX_JSON_BYTES) return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return undefined;
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
+  const o = json as Record<string, unknown>;
+  if (Object.keys(o).length !== 5 || o.v !== 2) return undefined; // unknown/missing fields refuse
+  if (typeof o.hub !== "string") return undefined;
+  const origin = parseHubOrigin(o.hub);
+  if (!origin.ok || origin.origin !== o.hub) return undefined; // canonical form, byte-exact
+  if (typeof o.id !== "string" || !OFFER_UUID_RE.test(o.id)) return undefined;
+  if (typeof o.code !== "string" || !OFFER_CODE_RE.test(o.code)) return undefined;
+  if (typeof o.exp !== "number" || !Number.isSafeInteger(o.exp)) return undefined;
+  return { v: 2, hub: o.hub, id: o.id, code: o.code, exp: o.exp };
+}
+
+/**
+ * Strict decode: the structural rules above PLUS freshness — exp is in the
+ * future (30 s clock skew allowed) and no further ahead than 10 minutes.
+ * Unknown/malformed/stale → undefined, never a throw.
+ */
+export function decodePairOffer(raw: string, now: number = Date.now()): PairOffer | undefined {
+  const offer = readPairOffer(raw);
+  if (!offer) return undefined;
+  if (offer.exp < now - PAIR_OFFER_SKEW_MS) return undefined;
+  if (offer.exp > now + PAIR_OFFER_MAX_AHEAD_MS) return undefined;
+  return offer;
+}
+
+export interface ParsedPairOfferUrl {
+  offer: PairOffer;
+  /** The URL minus its fragment (`<origin>/pair`) — safe to keep in history. */
+  rest: string;
+}
+
+/**
+ * The raw `#offer=` payload of a URL, when the fragment is exactly one
+ * unpadded base64url run — undefined otherwise. The cheap first look a caller
+ * uses to tell "this is an offer link" apart from a v1 pair URL.
+ */
+export function pairOfferFragment(url: string): string | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (!u.hash.startsWith("#offer=")) return undefined;
+  const payload = u.hash.slice("#offer=".length);
+  return /^[A-Za-z0-9_-]+$/.test(payload) ? payload : undefined;
+}
+
+/**
+ * Parse an offer LINK: only `<origin>/pair` (or `/pair/`) with the fragment
+ * `#offer=<payload>` and nothing else — a stray query or any other path →
+ * undefined. The offer's hub must equal the link's own origin (the hub minted
+ * this link); the fragment never travels server-side.
+ */
+export function parsePairOfferUrl(url: string, now: number = Date.now()): ParsedPairOfferUrl | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (!/^\/pair\/?$/.test(u.pathname)) return undefined;
+  if (u.username || u.password || u.search) return undefined; // the payload rides the fragment only
+  if (!u.hash.startsWith("#offer=")) return undefined;
+  const offer = decodePairOffer(u.hash.slice("#offer=".length), now);
+  if (!offer || offer.hub !== u.origin) return undefined;
+  return { offer, rest: `${u.origin}/pair` };
 }
 
 /** Exact Ed25519 signing payload — element order is normative (03 §4.2). */

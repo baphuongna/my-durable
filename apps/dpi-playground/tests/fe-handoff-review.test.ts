@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   barePairHome,
   readPairHandoff,
+  settledPairPath,
 } from "../apps/dpi-playground-fe/src/client/pair-handoff.js";
 
 test("R08: pairing handoffs reject ambiguous or foreign inputs without echoing the code", () => {
@@ -85,4 +86,63 @@ test("R08: a minted UUID v4 handoff is accepted, canonicalised and keeps its hyp
   }
   // the version contract is unchanged for UUID links
   assert.ok("error" in readPairHandoff(new URL(`https://hub.example/pair?code=${UUID_CODE}&v=2`))!);
+});
+
+// --- v2 offer links: the whole handoff rides the #offer= fragment, decoded client-side ---
+
+import { encodePairOffer } from "../../dpi-sdk/src/protocol/pairing.js";
+
+const OFFER = {
+  v: 2 as const,
+  hub: "https://hub.example",
+  id: "1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d",
+  code: UUID_CODE,
+  exp: Date.now() + 240_000,
+};
+const offerLink = (over: Partial<typeof OFFER> = {}) =>
+  `https://hub.example/pair#offer=${encodePairOffer({ ...OFFER, ...over })}`;
+
+test("R08: a valid offer fragment hands over the canonical code without any query", () => {
+  const handoff = readPairHandoff(new URL(offerLink()));
+  assert.deepEqual(handoff, { code: UUID_CODE, origin: "https://hub.example" });
+  // the settled scrub target is unchanged: the replaceState to it clears query AND fragment
+  assert.equal(settledPairPath(new URL(offerLink())), "/");
+  assert.notEqual(barePairHome(new URL(offerLink())), "/", "a live handoff keeps the wizard URL");
+  // /pair/ with a trailing slash is the same page
+  assert.deepEqual(readPairHandoff(new URL(offerLink().replace("/pair#", "/pair/#"))), {
+    code: UUID_CODE,
+    origin: "https://hub.example",
+  });
+});
+
+test("R08: an offer minted by another hub is the existing foreign-origin error, without echoing the payload", () => {
+  const link = offerLink({ hub: "https://other.example" });
+  const value = readPairHandoff(new URL(link));
+  assert.ok(value && "error" in value, "a foreign offer never starts a lookup");
+  assert.match(value.error, /does not belong to this hub/);
+  assert.equal(JSON.stringify(value).includes(link.split("#offer=")[1]!), false);
+});
+
+test("R08: junk fragments are rejected like today — only a decodable #offer= counts", () => {
+  // a bare junk hash with no query is not a handoff at all (goes home, like today)
+  assert.equal(readPairHandoff(new URL("https://hub.example/pair#junk")), undefined);
+  assert.equal(barePairHome(new URL("https://hub.example/pair#junk")), "/");
+  // an #offer= fragment that does not decode is an explicit error, payload not echoed
+  for (const link of [
+    "https://hub.example/pair#offer=!!!",
+    "https://hub.example/pair#offer=",
+    `https://hub.example/pair#offer=${encodePairOffer({ ...OFFER, exp: Date.now() - 60_000 })}`,
+    `https://hub.example/pair?x=1#offer=${encodePairOffer(OFFER)}`,
+    `https://hub.example/pair?code=${UUID_CODE}&v=1#offer=${encodePairOffer(OFFER)}`,
+  ]) {
+    const value = readPairHandoff(new URL(link));
+    assert.ok(value && "error" in value, link.slice(0, 60));
+    const payload = link.split("#offer=")[1] ?? "";
+    if (payload) assert.equal(JSON.stringify(value).includes(payload), false, link.slice(0, 60));
+  }
+  // the v1 path is untouched: no offer fragment, same rules as before
+  assert.deepEqual(readPairHandoff(new URL(`https://hub.example/pair?code=${UUID_CODE}&v=1`)), {
+    code: UUID_CODE,
+    origin: "https://hub.example",
+  });
 });

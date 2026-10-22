@@ -42,6 +42,7 @@ const closing = ref(false);
 const confirmed = ref(false);
 const replaceKey = ref(false);
 const copied = ref(false);
+const linkCopied = ref(false);
 const watcher = ref<(() => void) | undefined>();
 
 const grouped = computed(() => {
@@ -210,6 +211,18 @@ async function copyCode(): Promise<void> {
   }
 }
 
+/** Copies the v2 offer link (code never in a query); falls back to the v1 pair URL. */
+async function copyLink(): Promise<void> {
+  if (!issue.value) return;
+  try {
+    await navigator.clipboard.writeText(issue.value.offerUrl ?? issue.value.pairUrl);
+    linkCopied.value = true;
+    setTimeout(() => (linkCopied.value = false), 1500);
+  } catch {
+    error.value = "Clipboard unavailable; copy the link manually.";
+  }
+}
+
 async function close(): Promise<void> {
   if (closing.value) return;
   closing.value = true;
@@ -280,9 +293,14 @@ onBeforeUnmount(() => {
         <div class="pair-grid">
           <div class="pair-code-box">
             <div class="pair-code" aria-label="Pairing code">{{ grouped }}</div>
-            <button type="button" class="small" @click="copyCode">
-              <Copy :size="14" /> {{ copied ? "Copied" : "Copy code" }}
-            </button>
+            <div class="pair-copy-actions">
+              <button type="button" class="small" @click="copyCode">
+                <Copy :size="14" /> {{ copied ? "Copied" : "Copy code" }}
+              </button>
+              <button type="button" class="small" @click="copyLink" title="Self-contained link: hub, code and expiry all in the fragment — it never reaches server logs">
+                <Copy :size="14" /> {{ linkCopied ? "Copied link" : "Copy link" }}
+              </button>
+            </div>
             <p class="hint">
               Run the device pairing command and scan, or enter this code on the device. Expires in
               5 minutes.
@@ -399,6 +417,11 @@ onBeforeUnmount(() => {
   letter-spacing: 0.18em;
   font-family: var(--mono, monospace);
   margin-bottom: 0.35rem;
+}
+.pair-wizard .pair-copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 .pair-wizard .pair-qr svg {
   border: 1px solid var(--border, #333);

@@ -93,6 +93,12 @@ export const PAIR_RECEIPT_GRACE_MS = 120_000;
 export const PAIR_SIGNATURE_FAIL_LIMIT = 3;
 /** Clock-skew tolerance for challenges accepted by the device. ±60 s. */
 export const PAIR_CLOCK_SKEW_MS = 60_000;
+/** Pair-offer decode window: exp may sit this far in the PAST (clock skew). 30 s. */
+export const PAIR_OFFER_SKEW_MS = 30_000;
+/** Pair-offer decode window: exp may sit at most this far in the FUTURE. 10 min. */
+export const PAIR_OFFER_MAX_AHEAD_MS = 600_000;
+/** Decoded pair-offer JSON byte cap — minted offers are ~180 bytes; anything bigger is not ours. */
+export const PAIR_OFFER_MAX_JSON_BYTES = 1_024;
 
 /** Rate limits (per real-IP, hub-side token buckets). */
 export const PAIR_RATE_LIMITS = {
