@@ -55,6 +55,8 @@ const server = createServer(app);
 server.keepAliveTimeout = 65_000;
 server.listen(config.port, config.host, () => {
   console.log(`dpi-backend "${config.name}" (uid ${store.uid}) on http://${config.host}:${config.port}`);
+  if (config.tokenCreated)
+    console.log(`first run: created DPI_TOKEN in ${config.envFile} — keep this file private`);
   console.log(`data: ${config.dataDir}  start dirs: ${config.startDirs.join(", ")}  provider: ${config.provider}`);
   if (config.host === "0.0.0.0")
     for (const addresses of Object.values(networkInterfaces()))
