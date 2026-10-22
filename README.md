@@ -17,6 +17,8 @@ md hub                 # web UI + device tunnel server  → http://127.0.0.1:478
 md device              # device daemon (pairs to a hub, serves this machine)
 md tui                 # terminal admin client
 md --help              # commands, flags and environment variables
+md update --check      # is a newer published version available?
+md update              # install it (npm i -g my-durable@latest)
 ```
 
 `md hub` is the only component that other machines talk to, so it is also the one
