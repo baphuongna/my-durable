@@ -147,7 +147,27 @@ if (startup.kind === "welcome") {
   await start(device, client, info);
 } else {
   const known = registry.list().map((d) => d.id);
-  if (!deviceRef) fail(`${USAGE}\n\nKnown devices: ${known.join(", ") || "none"}`);
+  if (!deviceRef && (values.pair !== undefined || values.hub !== undefined)) {
+    // Fresh-install flow: an explicit --pair (a pasted code, pair URL or offer link IS
+    // the whole configuration) must never die on usage text — pair this machine's LOCAL
+    // backend first, then the app opens on it. Mirrors the welcome screen's [p] action.
+    const { applyBackendEnv } = await import("./welcome.ts");
+    applyBackendEnv();
+    const { LocalPairing } = await import("./pairing.ts");
+    try {
+      LocalPairing.fromEnv();
+    } catch (e) {
+      fail((e as Error).message);
+    }
+    const port = Number(process.env.DPI_PORT ?? "4780");
+    const url = `http://127.0.0.1:${port}`;
+    const device: DeviceRef = { id: "local", name: "This machine", url, token: process.env.DPI_TOKEN ?? "" };
+    const client = new DpiClient(url, device.token);
+    const info = await client.device({ timeoutMs: 8000 }).catch((e: unknown) =>
+      fail(`no local dpi-backend on ${url} — start one with: dpi device (${(e as Error).message})`),
+    );
+    await start(device, client, info);
+  } else if (!deviceRef) fail(`${USAGE}\n\nKnown devices: ${known.join(", ") || "none"}`);
   const row = registry.get(deviceRef);
   if (!row) fail(`Unknown device "${deviceRef}". Known: ${known.join(", ") || "none (add one to dpi-network.yaml)"}`);
   if (!row.token) fail(`No token for ${row.id}. Run: just net register ${row.id}`);
