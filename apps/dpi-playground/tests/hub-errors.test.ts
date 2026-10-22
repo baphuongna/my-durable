@@ -86,7 +86,10 @@ test("GA-10: malformed JSON on the public pairing surface is a clean JSON 400", 
   const hub = await bootHub();
   try {
     for (const path of ["/api/pair/start", "/api/pair/verify", "/api/pair/code"]) {
-      const r = await raw(hub.base, "POST", path, { body: '{"requestId":', headers: JSON_BODY });
+      const r = await raw(hub.base, "POST", path, {
+        body: '{"requestId":',
+        headers: { ...JSON_BODY, ...hub.adminHeaders },
+      });
       assert.equal(r.status, 400, path);
       assertClean(r, path);
       assert.equal((JSON.parse(r.text) as { error: { code: string } }).error.code, "invalid_json");
@@ -134,7 +137,7 @@ test("GA-10: malformed JSON and an undecodable URL on the admin API/static surfa
     assertClean(json, "admin malformed json");
 
     for (const path of ["/%E0%A4%A", "/assets/%E0%A4%A", "/api/devices/%E0%A4%A/check"]) {
-      const r = await raw(hub.base, "GET", path, {});
+      const r = await raw(hub.base, "GET", path, { headers: hub.adminHeaders });
       assert.equal(r.status, 400, path);
       assertClean(r, path);
     }
@@ -144,10 +147,17 @@ test("GA-10: malformed JSON and an undecodable URL on the admin API/static surfa
 });
 
 test("GA-02: while the audit volume is under its free-space floor an audited change is a JSON 503 and reads keep working", async () => {
-  const hub = await bootHub({ env: { DPI_AUDIT_MIN_FREE_BYTES: String(Number.MAX_SAFE_INTEGER) } });
+  const hub = await bootHub({
+    env: {
+      DPI_AUDIT_MIN_FREE_BYTES: String(Number.MAX_SAFE_INTEGER),
+      // A first boot mints + audits the admin token; under the floor that is a
+      // boot refusal, which is not what THIS test measures. Hand it a token.
+      DPI_ADMIN_TOKEN: `adm_${"h".repeat(43)}`,
+    },
+  });
   try {
     const refused = await raw(hub.base, "POST", "/api/pair/code", {
-      headers: JSON_BODY,
+      headers: { ...JSON_BODY, ...hub.adminHeaders },
       body: "{}",
     });
     assert.equal(refused.status, 503);
@@ -157,7 +167,7 @@ test("GA-02: while the audit volume is under its free-space floor an audited cha
       "audit_unavailable",
     );
 
-    const read = await raw(hub.base, "GET", "/api/network", {});
+    const read = await raw(hub.base, "GET", "/api/network", { headers: hub.adminHeaders });
     assert.equal(read.status, 200, "read-only API is unaffected");
     const health = await raw(hub.base, "GET", "/healthz", {});
     assert.equal(health.status, 200);
@@ -227,8 +237,9 @@ function registryState(home: string, deviceId: string): RegistryState {
 async function publicPairing(
   base: string,
   deviceId: string,
+  headers?: Record<string, string>,
 ): Promise<{ status: string; rotationPending: boolean } | undefined> {
-  const r = await raw(base, "GET", "/api/network", {});
+  const r = await raw(base, "GET", "/api/network", { headers });
   assert.equal(r.status, 200, "the device list is a read and must not depend on audit storage");
   const devices = (
     JSON.parse(r.text) as {
@@ -244,7 +255,7 @@ test("GA-02: under the audit floor revoke and rotate of a paired device are JSON
   const id = "floor-dev";
   const post = (path: string) =>
     raw(hub.base, "POST", path, {
-      headers: JSON_BODY,
+      headers: { ...JSON_BODY, ...hub.adminHeaders },
       body: JSON.stringify({ reason: "compromise" }),
     });
   try {
@@ -260,7 +271,7 @@ test("GA-02: under the audit floor revoke and rotate of a paired device are JSON
       before.credentials.map((c) => c.status),
       ["current"],
     );
-    assert.deepEqual(await publicPairing(hub.base, id), {
+    assert.deepEqual(await publicPairing(hub.base, id, hub.adminHeaders), {
       status: "paired",
       keyFingerprint: `sha256:${"4".repeat(64)}`,
       pairedAt: before.pairing.paired_at,
@@ -290,11 +301,14 @@ test("GA-02: under the audit floor revoke and rotate of a paired device are JSON
       "a refused revoke/rotate leaves the pairing, every credential and the audit log as they were",
     );
     assert.equal(
-      (await publicPairing(hub.base, id))?.status,
+      (await publicPairing(hub.base, id, hub.adminHeaders))?.status,
       "paired",
       "reads still show the device as paired",
     );
-    assert.equal((await raw(hub.base, "GET", "/api/pairings", {})).status, 200);
+    assert.equal(
+      (await raw(hub.base, "GET", "/api/pairings", { headers: hub.adminHeaders })).status,
+      200,
+    );
 
     // Same device, same requests, floor lifted: the 503 above was the floor and not the fixture.
     await hub.stop();
@@ -327,7 +341,7 @@ test("GA-02: under the audit floor revoke and rotate of a paired device are JSON
       revoked.events.slice(before.events.length).map((e) => e.action),
       ["token.rotate_started", "pair.revoke"],
     );
-    assert.equal((await publicPairing(hub.base, id))?.status, "revoked");
+    assert.equal((await publicPairing(hub.base, id, hub.adminHeaders))?.status, "revoked");
   } finally {
     await hub.cleanup();
   }
@@ -338,9 +352,10 @@ test("GA-15: the admin API quota of one address survives churn through thousands
   const agent = new Agent({ keepAlive: true, maxSockets: 16 });
   try {
     const hit = (ip: string) =>
-      raw(hub.base, "GET", "/api/network", { headers: { "x-forwarded-for": ip }, agent }).then(
-        (r) => r.status,
-      );
+      raw(hub.base, "GET", "/api/network", {
+        headers: { "x-forwarded-for": ip, ...hub.adminHeaders },
+        agent,
+      }).then((r) => r.status);
     const victim = "9.9.9.9";
     let served = 0;
     const burstStartedAt = Date.now();
@@ -448,11 +463,11 @@ test("RR: the app shell is served under a CSP without inline script, framing or 
 test("RR: admin API answers are never cached and are not sniffable", async () => {
   const hub = await bootHub();
   try {
-    const r = await raw(hub.base, "GET", "/api/network", {});
+    const r = await raw(hub.base, "GET", "/api/network", { headers: hub.adminHeaders });
     assert.equal(r.status, 200);
     assert.equal(r.headers["cache-control"], "no-store");
     assert.equal(r.headers["x-content-type-options"], "nosniff");
-    const missing = await raw(hub.base, "GET", "/api/nope", {});
+    const missing = await raw(hub.base, "GET", "/api/nope", { headers: hub.adminHeaders });
     assert.equal(missing.status, 404);
     assert.equal(missing.headers["cache-control"], "no-store");
   } finally {
@@ -484,7 +499,9 @@ test("RR: an unknown route or a missing asset is a clean JSON 404, whatever the 
       ["POST", "/api/nope"],
       ["DELETE", "/api/devices"],
     ] as const) {
-      const r = await raw(hub.base, method, path, { headers: JSON_BODY });
+      const r = await raw(hub.base, method, path, {
+        headers: { ...JSON_BODY, ...hub.adminHeaders },
+      });
       assert.equal(r.status, 404, `${method} ${path}`);
       assertClean(r, `${method} ${path}`);
       assert.equal(
@@ -503,7 +520,7 @@ test("RR: a UI-state value over the limit is a clean 413, not a 400 that echoes 
   try {
     const r = await raw(hub.base, "PUT", "/api/ui-state/k", {
       body: JSON.stringify({ value: "x".repeat(150_000) }),
-      headers: JSON_BODY,
+      headers: { ...JSON_BODY, ...hub.adminHeaders },
     });
     assert.equal(r.status, 413);
     assertClean(r, "ui-state over limit");
@@ -513,7 +530,7 @@ test("RR: a UI-state value over the limit is a clean 413, not a 400 that echoes 
     );
     const ok = await raw(hub.base, "PUT", "/api/ui-state/k", {
       body: JSON.stringify({ value: { fine: true } }),
-      headers: JSON_BODY,
+      headers: { ...JSON_BODY, ...hub.adminHeaders },
     });
     assert.equal(ok.status, 200);
   } finally {
@@ -531,7 +548,10 @@ test("RR: the rotate route reports 404/400/202/409 to match what actually happen
   const hub = await bootHub();
   let devWs: WsClient | undefined;
   const rotate = (id: string) =>
-    raw(hub.base, "POST", `/api/devices/${id}/rotate`, { headers: JSON_BODY, body: "{}" });
+    raw(hub.base, "POST", `/api/devices/${id}/rotate`, {
+      headers: { ...JSON_BODY, ...hub.adminHeaders },
+      body: "{}",
+    });
   try {
     const ghost = await rotate("ghost-dev");
     assert.equal(ghost.status, 404, ghost.text);

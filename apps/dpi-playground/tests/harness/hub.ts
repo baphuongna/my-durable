@@ -6,6 +6,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BoundedLog } from "./logs.js";
@@ -35,6 +36,15 @@ export interface HubHandle {
   port: number;
   base: string; // http://127.0.0.1:<port>
   home: string;
+  /**
+   * The admin token this hub booted with (env override or the minted admin.token file).
+   * Lazy: bootHub returns on the first /healthz answer, which in the restart-on-
+   * same-port pattern is the PREVIOUS hub — the new child mints its token slightly
+   * later. Read on first use, memoized (the token survives stop/start).
+   */
+  readonly adminToken: string;
+  /** `authorization: Bearer <adminToken>` — the header every admin call needs. */
+  readonly adminHeaders: Record<string, string>;
   log: BoundedLog;
   start: () => Promise<void>; // restart after stop, same port/home
   stop: (signal?: NodeJS.Signals) => Promise<void>;
@@ -106,10 +116,23 @@ export async function bootHub(
     await rm(home, { recursive: true, force: true });
     throw err;
   }
+  const tokenPath = opts.env?.DPI_ADMIN_TOKEN_FILE ?? join(home, "admin.token");
+  let cachedToken: string | undefined;
+  const readToken = () => {
+    if (cachedToken) return cachedToken;
+    cachedToken = opts.env?.DPI_ADMIN_TOKEN ?? readFileSync(tokenPath, "utf8").trim();
+    return cachedToken;
+  };
   return {
     port,
     base: `http://127.0.0.1:${port}`,
     home,
+    get adminToken() {
+      return readToken();
+    },
+    get adminHeaders() {
+      return { authorization: `Bearer ${readToken()}` };
+    },
     log,
     start,
     stop: (signal = "SIGTERM") => waitForExit(signal, 5000),

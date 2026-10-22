@@ -12,8 +12,17 @@ import { DeviceMonitor } from "./monitor.js";
 import { StreamMux } from "./mux.js";
 import { proxy } from "./proxy.js";
 import { guard, requireTls } from "./guard.js";
-import { ipKey, isTrustedProxy } from "./client-ip.js";
+import { ipKey, isTrustedProxy, viaTls } from "./client-ip.js";
 import { Audit, denialLogging } from "./audit.js";
+import {
+  ADMIN_COOKIE,
+  LOGIN_RATE,
+  SESSION_TTL_MS,
+  bootstrapAdminToken,
+  requireAdmin,
+  signSession,
+  tokenEquals,
+} from "./admin-auth.js";
 import { body as failureBody, describeFailure, errorMiddleware, safe } from "./http-errors.js";
 import { TokenBuckets } from "./limiter.js";
 import { PairingService } from "./pairing.js";
@@ -56,6 +65,9 @@ const requireTlsEnabled = tlsRequired();
 
 const registry = new NetworkRegistry();
 registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect from DB
+// The operator's own credential: minted at first boot into DPI_HOME/admin.token (0600),
+// overridable via DPI_ADMIN_TOKEN. A set-but-short token refuses to boot (admin-auth.ts).
+const adminToken = bootstrapAdminToken();
 const configFile = seedFromConfig(registry, appDir);
 const monitor = new DeviceMonitor(registry);
 monitor.start();
@@ -108,6 +120,15 @@ function auditFloorFromEnv(): { minFreeBytes?: number } {
 }
 const audit = new Audit(registry, auditFloorFromEnv());
 audit.startSweeper();
+if (adminToken.created)
+  audit.append({
+    actor: "hub",
+    action: "admin.token_created",
+    outcome: "ok",
+    detail: { file: adminToken.path },
+  });
+/** Every admin route requires this: the dpi_admin cookie or the raw token as a bearer. */
+const adminAuth = requireAdmin(adminToken.token);
 // Everything registered below needs proof of TLS; /healthz (above) stays reachable for supervisors.
 if (requireTlsEnabled) app.use(denialLogging(audit), requireTls());
 
@@ -181,7 +202,11 @@ const pairErr = (
 // PairingService enforces its own per-IP code/verify buckets + fail-window
 // here. Host-allowlist + denial logging still apply.
 const pairGuard = [denialLogging(audit), guard(allowedHosts)] as const;
-app.post("/api/pair/code", ...pairGuard, express.json({ limit: "16kb" }), (req, res) => {
+// The operator side of pairing (mint/state/approve/cancel) is admin surface:
+// it needs the admin cookie or bearer too. pair/start + pair/verify stay public
+// — their bearer is the pairing code, presented by the DEVICE, not the operator.
+const adminPairGuard = [denialLogging(audit), guard(allowedHosts), adminAuth] as const;
+app.post("/api/pair/code", ...adminPairGuard, express.json({ limit: "16kb" }), (req, res) => {
   const r = pairing.createCode(req.ip ?? "unknown");
   return r.ok ? res.status(201).json(r.value) : pairErr(r, res);
 });
@@ -194,31 +219,76 @@ app.post("/api/pair/verify", ...pairGuard, express.json({ limit: "16kb" }), asyn
   if (r.ok) return res.status(r.status).json(r.value);
   pairErr(r, res);
 });
-app.get("/api/pair/codes/:codeId", ...pairGuard, (req, res) => {
+app.get("/api/pair/codes/:codeId", ...adminPairGuard, (req, res) => {
   const r = pairing.status(String(req.params.codeId));
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
 app.post(
   "/api/pair/codes/:codeId/approve",
-  ...pairGuard,
+  ...adminPairGuard,
   express.json({ limit: "16kb" }),
   (req, res) => {
     const r = pairing.approve(String(req.params.codeId), req.body);
     return r.ok ? res.json(r.value) : pairErr(r, res);
   },
 );
-app.post("/api/pair/codes/:codeId/cancel", ...pairGuard, (req, res) => {
+app.post("/api/pair/codes/:codeId/cancel", ...adminPairGuard, (req, res) => {
   const r = pairing.cancel(String(req.params.codeId));
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
 
-// Admin /api surface: guarded, rate-bucketed per real client IP, 256 KiB JSON.
+// Admin login: POST /api/session {token} → the dpi_admin cookie. Own per-IP bucket
+// (5/min burst 5) — a failed guess must never be retried at line rate. Audited as
+// admin.login ok|denied with the client address as the actor and no token material.
+const loginBuckets = new TokenBuckets({
+  capacity: LOGIN_RATE.capacity,
+  perMinute: LOGIN_RATE.perMinute,
+  maxKeys: 10_000,
+  idleTtlMs: 15 * 60_000,
+});
+setInterval(() => loginBuckets.sweep(), 60_000).unref();
+app.post(
+  "/api/session",
+  denialLogging(audit),
+  guard(allowedHosts),
+  (req, res, next) => {
+    const taken = loginBuckets.take(ipKey(req.ip ?? req.socket.remoteAddress ?? "?"));
+    if (taken.ok) return void next();
+    res.set("Retry-After", String(Math.max(1, Math.ceil(taken.retryAfterMs / 1000))));
+    res.status(429).json(err("rate_limited", "Too many login attempts; slow down"));
+  },
+  express.json({ limit: "16kb" }),
+  (req, res) => {
+    const presented = typeof req.body?.token === "string" ? req.body.token : "";
+    const ip = req.ip ?? "unknown";
+    if (!presented || !tokenEquals(presented, adminToken.token)) {
+      audit.denied("admin.login", ip, { reason: "bad_token" });
+      return void res.status(401).json(err("unauthorized", "Missing or invalid admin token"));
+    }
+    const exp = Date.now() + SESSION_TTL_MS;
+    audit.append({ actor: `ip:${ipKey(ip)}`, action: "admin.login", outcome: "ok" });
+    // Secure only when the request arrived via the TLS proxy: on plain loopback
+    // (local development, tests) the flag would just break the cookie.
+    res.cookie(ADMIN_COOKIE, signSession(adminToken.token, exp), {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: viaTls(req),
+      path: "/",
+      maxAge: SESSION_TTL_MS,
+    });
+    res.json({ ok: true, exp });
+  },
+);
+
+// Admin /api surface: guarded, rate-bucketed per real client IP, 256 KiB JSON,
+// and behind the admin credential (cookie or bearer).
 app.use(
   "/api",
   denialLogging(audit),
   guard(allowedHosts),
   apiRate,
   express.json({ limit: "256kb" }),
+  adminAuth,
 );
 app.post("/api/pair/resolve", (req, res) => {
   const r = pairing.resolveCode(req.body);
@@ -435,6 +505,9 @@ server.listen(port, host, () => {
     console.log(
       "TLS required: only requests the loopback TLS proxy marks X-Forwarded-Proto: https are served",
     );
+  console.log(
+    `admin: login with the token in ${adminToken.path} (POST /api/session sets the browser cookie)`,
+  );
   if (host !== "127.0.0.1" && host !== "localhost")
     console.warn(
       `WARNING: the hub is listening on ${host}. Anyone who can reach it can drive every device it holds tokens for.`,

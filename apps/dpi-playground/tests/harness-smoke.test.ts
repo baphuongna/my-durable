@@ -63,13 +63,19 @@ test("harness smoke: boot → TLS trust → hostname/CA failures → restart →
     await hub.cleanup();
     const hubBehindProxy = await bootHub({ port: hub.port, publicHost: `127.0.0.1:${caddy.port}` });
 
-    const trusted = await hreq(`${caddy.httpsBase}/api/network`, { agent });
+    const trusted = await hreq(`${caddy.httpsBase}/api/network`, {
+      agent,
+      headers: hubBehindProxy.adminHeaders,
+    });
     assert.equal(trusted.status, 200, `trusted fetch must pass: ${trusted.body}`);
     assert.ok(JSON.parse(trusted.body).devices !== undefined);
 
     // 2. Hostname failure: localhost is NOT in SAN. Caddy has no cert for that
     //    SNI (TLS alert → EPROTO) or Node's own alt-name check fires.
-    const hostname = await hreq(`https://localhost:${caddy.port}/api/network`, { agent });
+    const hostname = await hreq(`https://localhost:${caddy.port}/api/network`, {
+      agent,
+      headers: hubBehindProxy.adminHeaders,
+    });
     assert.ok(
       hostname.code === "ERR_TLS_CERT_ALTNAME_INVALID" || hostname.code === "EPROTO",
       `expected hostname failure, got ${hostname.code}`,
@@ -90,7 +96,10 @@ test("harness smoke: boot → TLS trust → hostname/CA failures → restart →
     await hubBehindProxy.stop();
     assert.ok(hubBehindProxy.exited());
     await hubBehindProxy.start();
-    const after = await hreq(`${caddy.httpsBase}/api/network`, { agent });
+    const after = await hreq(`${caddy.httpsBase}/api/network`, {
+      agent,
+      headers: hubBehindProxy.adminHeaders,
+    });
     assert.equal(after.status, 200);
 
     // 5. Direct child PID bookkeeping — all children exited on cleanup, no pkill.
@@ -128,7 +137,11 @@ test("harness smoke: SSE tab survives device-child SIGKILL (network stays, T-2/T
     await hub.cleanup();
 
     // Open a browser tab through TLS; mux pings keep it alive.
-    tab = await openTab(`${caddy.httpsBase}/api/stream`, { agent, signal: ac.signal });
+    tab = await openTab(`${caddy.httpsBase}/api/stream`, {
+      agent,
+      headers: hubBehindProxy.adminHeaders,
+      signal: ac.signal,
+    });
     const first = await tab.next(); // initial tree frame
     assert.ok(first.event.length > 0);
 
@@ -136,7 +149,10 @@ test("harness smoke: SSE tab survives device-child SIGKILL (network stays, T-2/T
     await device.stop("SIGKILL");
     await new Promise((r) => setTimeout(r, 800));
     // Hub still answers REST through TLS — the tab's SSE connection is hub-owned.
-    const net = await hreq(`${caddy.httpsBase}/api/network`, { agent });
+    const net = await hreq(`${caddy.httpsBase}/api/network`, {
+      agent,
+      headers: hubBehindProxy.adminHeaders,
+    });
     assert.equal(net.status, 200);
 
     await hubBehindProxy.cleanup();
@@ -180,13 +196,16 @@ test("barrier: deterministic park/release, no timing races", async () => {
 });
 
 test("log sanitizer: tokens/codes/private keys never leak", () => {
-  const dirty = `token=dpt_${ "A".repeat(43)} dpi_${"B".repeat(43)} code=AB2C7DEF code=ABCD2345EF67 code=a1b2c3d4-e5f6-4789-abcd-eff012345678 Authorization: Bearer abc123.xyz\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----`;
+  const dirty = `token=dpt_${"A".repeat(43)} dpi_${"B".repeat(43)} code=AB2C7DEF code=ABCD2345EF67 code=a1b2c3d4-e5f6-4789-abcd-eff012345678 Authorization: Bearer abc123.xyz\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----`;
   const clean = sanitize(dirty);
   assert.ok(!clean.includes("dpt_AAAA"));
   assert.ok(!clean.includes("dpi_BBBB"));
   assert.ok(!clean.includes("AB2C7DEF"));
   assert.ok(!clean.includes("ABCD2345EF67"));
-  assert.ok(!clean.includes("a1b2c3d4-e5f6-4789-abcd-eff012345678"), "a minted UUID v4 code is redacted");
+  assert.ok(
+    !clean.includes("a1b2c3d4-e5f6-4789-abcd-eff012345678"),
+    "a minted UUID v4 code is redacted",
+  );
   assert.ok(!clean.includes("secret"));
   assert.ok(clean.includes("dpt_<redacted>"));
 });

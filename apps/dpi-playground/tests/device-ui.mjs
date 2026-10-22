@@ -9,20 +9,26 @@ const { chromium, expect } = require("@playwright/test");
 const hub = process.env.DPI_URL ?? "http://localhost:4781";
 const device = process.env.DPI_DEVICE ?? "local";
 const v1 = `${hub}/api/devices/${device}/v1`;
-const get = async (path) => (await fetch(v1 + path)).json();
+// The hub's admin surface needs the operator credential: log in once (token from
+// DPI_ADMIN_TOKEN or the hub's admin.token file) and carry the cookie everywhere.
+const { hubSession } = await import("./harness/admin-auth.mjs");
+const session = await hubSession(hub);
+const jsonHeaders = { "content-type": "application/json", cookie: session.header };
+const get = async (path) => (await fetch(v1 + path, { headers: session.bearer })).json();
 const name = `UI suite ${new Date().toISOString().slice(11, 19)}`;
 const pass = (msg) => console.log(`PASS [${device}] ${msg}`);
 
 // Start from expanded side panels; the hub persists the layout across runs.
 await fetch(`${hub}/api/ui-state/layout.panels`, {
   method: "PUT",
-  headers: { "content-type": "application/json" },
+  headers: jsonHeaders,
   body: JSON.stringify({ value: { tree: true, inspector: true } }),
 });
 const browser = await chromium.launch({ channel: "chrome", headless: !process.env.HEADED });
 const page = await (
   await browser.newContext({ viewport: { width: 1600, height: 1000 } })
 ).newPage();
+await page.context().addCookies([session.playwrightCookie]);
 const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
 const chat = () => page.getByTestId("chat");

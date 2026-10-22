@@ -248,7 +248,7 @@ test("hub process: a configured public host means TLS is required everywhere but
       assert.equal(r.body.error?.code, "tls_required", `${method} ${path}`);
     }
     assert.equal(
-      (await rawGet(hub.port, "/api/network", https)).status,
+      (await rawGet(hub.port, "/api/network", { ...https, ...hub.adminHeaders })).status,
       200,
       "the proxy's word is accepted",
     );
@@ -274,7 +274,7 @@ test("hub process: a configured public host means TLS is required everywhere but
 test("hub process: DPI_HUB_REQUIRE_TLS overrides the default in both directions and rejects typos", async () => {
   const off = await bootHub({ publicHost: "hub.example.test", env: { DPI_HUB_REQUIRE_TLS: "0" } });
   try {
-    assert.equal((await rawGet(off.port, "/api/network")).status, 200);
+    assert.equal((await rawGet(off.port, "/api/network", off.adminHeaders)).status, 200);
   } finally {
     await off.cleanup();
   }
@@ -289,7 +289,12 @@ test("hub process: DPI_HUB_REQUIRE_TLS overrides the default in both directions 
   const plain = await bootHub();
   try {
     assert.equal(
-      (await rawGet(plain.port, "/api/network", { host: `127.0.0.1:${plain.port}` })).status,
+      (
+        await rawGet(plain.port, "/api/network", {
+          host: `127.0.0.1:${plain.port}`,
+          ...plain.adminHeaders,
+        })
+      ).status,
       200,
       "no public host, no flag: local development works as before",
     );

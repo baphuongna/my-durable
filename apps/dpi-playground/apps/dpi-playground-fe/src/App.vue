@@ -13,6 +13,7 @@ import DeviceCredentialsDialog from "./components/DeviceCredentialsDialog.vue";
 import PromptDialog from "./components/PromptDialog.vue";
 import ModelPicker from "./components/ModelPicker.vue";
 import HelpDialog from "./components/HelpDialog.vue";
+import LoginCard from "./components/LoginCard.vue";
 import Toast from "./components/Toast.vue";
 import {
   boot,
@@ -32,6 +33,7 @@ import {
   toggleTree,
   toggleInspector,
 } from "./client/store";
+import { auth } from "./client/auth";
 
 const onlineCount = () => network.devices.value.filter((d) => d.status === "online").length;
 const pairWizard = ref<{ close(): Promise<void> }>();
@@ -175,6 +177,7 @@ onBeforeUnmount(() => {
       </section>
     </div>
     <HelpDialog v-else-if="ui.dialog?.kind === 'help'" />
+    <LoginCard v-if="auth.needed" />
     <Toast />
   </div>
 </template>

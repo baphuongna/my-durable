@@ -38,6 +38,8 @@ export const AUDIT_ACTIONS = [
   "token.rotate_regenerated",
   "tunnel.connect",
   "tunnel.disconnect",
+  "admin.token_created",
+  "admin.login",
   "auth.denied",
   "rate_limited",
   "tunnel.listener_error",
@@ -90,6 +92,8 @@ export function scrubSecrets(value: string): string {
   let out = value;
   out = out.replace(/dpt_[A-Za-z0-9_-]{1,64}/g, "dpt_<redacted>");
   out = out.replace(/dpi_[A-Za-z0-9_-]{1,64}/g, "dpi_<redacted>");
+  // The hub's own admin token (adm_ + 32 random bytes, base64url).
+  out = out.replace(/adm_[A-Za-z0-9_-]{32,}/g, "adm_<redacted>");
   out = out.replace(
     /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g,
     "<private-key-redacted>",
@@ -100,10 +104,7 @@ export function scrubSecrets(value: string): string {
   // Credential material without its prefix (slices, echo): 43-char base64url runs.
   out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
   // Pairing codes as standalone values ("code":"AB2C7DEF" / "ABCD2345EF67") but not ordinary words.
-  out = out.replace(
-    /(["'?=:,\s])([A-Z2-7]{12}|[A-Z2-7]{8})(?=["'?\s:,}]|$)/g,
-    "$1<code-redacted>",
-  );
+  out = out.replace(/(["'?=:,\s])([A-Z2-7]{12}|[A-Z2-7]{8})(?=["'?\s:,}]|$)/g, "$1<code-redacted>");
   // A MINTED code is a canonical UUID v4. Only a value LABELLED a code is a secret here: an audit
   // row's own codeId/enrollmentId are correlation ids and must stay readable.
   out = out.replace(

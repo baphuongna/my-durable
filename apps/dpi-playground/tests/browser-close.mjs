@@ -8,12 +8,16 @@ const { chromium, expect } = require("@playwright/test");
 const hub = process.env.DPI_URL ?? "http://localhost:4781";
 const device = process.env.DPI_DEVICE ?? "local";
 const v1 = `${hub}/api/devices/${device}/v1`;
+// The hub's admin surface needs the operator credential: log in once (token from
+// DPI_ADMIN_TOKEN or the hub's admin.token file) and carry the cookie everywhere.
+const { hubSession } = await import("./harness/admin-auth.mjs");
+const adminSession = await hubSession(hub);
 const json = (method, body) => ({
   method,
-  headers: { "content-type": "application/json" },
+  headers: { "content-type": "application/json", cookie: adminSession.header },
   body: JSON.stringify(body),
 });
-const get = async (path) => (await fetch(v1 + path)).json();
+const get = async (path) => (await fetch(v1 + path, { headers: adminSession.bearer })).json();
 
 const info = await get("/device");
 const model = info.models.find((m) => m.id === info.defaultModel) ?? info.models[0];
@@ -36,12 +40,17 @@ console.log("DEVICE", device, "SESSION", session.id);
 // Start from expanded side panels; the hub persists the layout across runs.
 await fetch(`${hub}/api/ui-state/layout.panels`, {
   method: "PUT",
-  headers: { "content-type": "application/json" },
+  headers: { "content-type": "application/json", cookie: adminSession.header },
   body: JSON.stringify({ value: { tree: true, inspector: true } }),
 });
 const launch = () => chromium.launch({ channel: "chrome", headless: !process.env.HEADED });
 let browser = await launch();
-let page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+const openTab = async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await context.addCookies([adminSession.playwrightCookie]);
+  return context.newPage();
+};
+let page = await openTab();
 try {
   await page.goto(hub);
   await expect(page.locator(".device-chip")).toHaveText(device, { timeout: 20000 });
@@ -80,7 +89,7 @@ try {
   expect(JSON.stringify(entries)).toContain("FULL_BROWSER_QUIT_OK");
 
   browser = await launch();
-  page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+  page = await openTab();
   await page.goto(hub);
   await expect(page.locator(".markdown").filter({ hasText: "Browser quit verified" })).toBeVisible({
     timeout: 20000,

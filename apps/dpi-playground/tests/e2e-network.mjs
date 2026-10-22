@@ -22,6 +22,11 @@ if (!device) {
 }
 const repo = resolve(import.meta.dirname, "../../..");
 const v1 = `${hub}/api/devices/${device}/v1`;
+// The hub's admin surface (network, ui-state, the device proxy) needs the
+// operator credential: log in once; Node calls carry the bearer, the browser
+// context carries the cookie.
+const { hubSession } = await import("./harness/admin-auth.mjs");
+const adminSession = await hubSession(hub);
 const NAME = "e2e-network";
 const S = `dpi-e2e-${process.pid}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -30,8 +35,12 @@ async function api(method, path, body) {
   const r = await fetch(
     v1 + path,
     body === undefined
-      ? { method }
-      : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+      ? { method, headers: adminSession.bearer }
+      : {
+          method,
+          headers: { "content-type": "application/json", ...adminSession.bearer },
+          body: JSON.stringify(body),
+        },
   );
   const data = await r.json().catch(() => undefined);
   if (!r.ok) throw Error(`${method} ${path}: ${r.status} ${JSON.stringify(data)}`);
@@ -77,7 +86,7 @@ const onScreen = (pattern, ms, label) =>
 // Start from expanded side panels; the hub persists the layout across runs.
 await fetch(`${hub}/api/ui-state/layout.panels`, {
   method: "PUT",
-  headers: { "content-type": "application/json" },
+  headers: { "content-type": "application/json", cookie: adminSession.header },
   body: JSON.stringify({ value: { tree: true, inspector: true } }),
 });
 const launch = () => chromium.launch({ channel: "chrome", headless: !process.env.HEADED });
@@ -112,11 +121,12 @@ try {
   // 2. The web UI shows the same run live.
   await fetch(`${hub}/api/ui-state/tree.selected`, {
     method: "PUT",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", cookie: adminSession.header },
     body: JSON.stringify({ value: { deviceId: device, sessionId: session.id, agentId: 1 } }),
   });
   browser = await launch();
   let page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  await page.context().addCookies([adminSession.playwrightCookie]);
   await page.goto(hub);
   await expect(page.locator(".device-chip")).toHaveText(device, { timeout: 20000 });
   await expect(
@@ -153,9 +163,9 @@ try {
   let watching = true;
   const watcher = (async () => {
     while (watching) {
-      const d = (await (await fetch(`${hub}/api/network`)).json()).devices.find(
-        (x) => x.id === device,
-      );
+      const d = (
+        await (await fetch(`${hub}/api/network`, { headers: adminSession.bearer })).json()
+      ).devices.find((x) => x.id === device);
       seen.add(d.status);
       await sleep(100);
     }
@@ -172,8 +182,9 @@ try {
   await until(
     async () =>
       seen.size > 1 &&
-      (await (await fetch(`${hub}/api/network`)).json()).devices.find((x) => x.id === device)
-        .status === "online",
+      (
+        await (await fetch(`${hub}/api/network`, { headers: adminSession.bearer })).json()
+      ).devices.find((x) => x.id === device).status === "online",
     90000,
     "device back online",
   );
@@ -211,6 +222,7 @@ try {
   // 6. Fork from the web at the first agent reply; reattach the TUI to the fork.
   browser = await launch();
   page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  await page.context().addCookies([adminSession.playwrightCookie]);
   await page.goto(hub);
   await expect(page.locator(".device-chip")).toHaveText(device, { timeout: 30000 });
   const firstReply = page.locator("[data-testid=chat] .entry.pi-assistant").first();

@@ -29,13 +29,17 @@ const FINGERPRINT = `sha256:${"e".repeat(64)}`;
 
 /**
  * pair.ts speaks browser URLs ("/api/..."). Bind them to the test hub the way
- * a browser origin would — the client code itself stays unmodified.
+ * a browser origin would, and attach the hub admin bearer the way the harness
+ * does (in the browser the credential is the dpi_admin cookie instead).
  */
-function withBase(base: string): void {
+function withBase(base: string, headers: Record<string, string> = {}): void {
   const real = globalThis.fetch.bind(globalThis);
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
     typeof input === "string" && input.startsWith("/")
-      ? real(new URL(input, base), init)
+      ? real(new URL(input, base), {
+          ...init,
+          headers: { ...(init?.headers as Record<string, string> | undefined), ...headers },
+        })
       : real(input as RequestInfo, init)) as typeof fetch;
 }
 
@@ -96,7 +100,7 @@ async function deviceEnroll(base: string, code: string, hubOrigin: string) {
 
 test("admin pairing flow: typed state → fingerprint approval → issued; no secret in any admin response", async () => {
   const hub = await bootHub();
-  withBase(hub.base);
+  withBase(hub.base, hub.adminHeaders);
   try {
     const created = await pairingAdmin.createCode();
     assert.equal(created.type, "pair.code");
@@ -151,7 +155,9 @@ test("admin pairing flow: typed state → fingerprint approval → issued; no se
     assert.equal(issued.phase, "issued");
     assert.ok(issued.deviceId, "issued state names the device row");
     assert.ok(!JSON.stringify(issued).includes("dpt_"), "no token in admin state");
-    const network = await (await fetch(`${hub.base}/api/network`)).json();
+    const network = await (
+      await fetch(`${hub.base}/api/network`, { headers: hub.adminHeaders })
+    ).json();
     const device = network.devices.find((d: { id: string }) => d.id === issued.deviceId);
     assert.equal(
       device?.status,
@@ -184,7 +190,7 @@ test("admin pairing flow: typed state → fingerprint approval → issued; no se
 
 test("pollCode: terminal resolves; abort rejects AbortError; closed session stops silently; timeout is typed", async () => {
   const hub = await bootHub();
-  withBase(hub.base);
+  withBase(hub.base, hub.adminHeaders);
   try {
     const created = await pairingAdmin.createCode();
     const s1 = createPairingSession();
@@ -214,7 +220,7 @@ test("pollCode: terminal resolves; abort rejects AbortError; closed session stop
 test("rotate + revoke contract: 202 accepted; double revoke is a typed 400; needsAuth pins 401 mapping", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dpi-fe-pair-"));
   const hub = await bootHub();
-  withBase(hub.base);
+  withBase(hub.base, hub.adminHeaders);
   try {
     // Seed a tunnel device straight into the hub registry (WAL multi-process).
     const registry = new NetworkRegistry(join(hub.home, "network.sqlite"));
@@ -240,7 +246,7 @@ test("rotate + revoke contract: 202 accepted; double revoke is a typed 400; need
     assert.equal(rev.ok, true);
     const again = await fetch(`${hub.base}/api/devices/dev-fe/revoke`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...hub.adminHeaders },
       body: JSON.stringify({ reason: "user" }),
     });
     assert.ok(

@@ -26,8 +26,16 @@ let page;
 const post = async (path, body) => {
   const response = await fetch(`${base}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", authorization: `Bearer ${hub.adminToken}` },
     body: JSON.stringify(body),
+  });
+  assert.ok(response.ok, `${path} returned ${response.status}`);
+  return response.json();
+};
+/** Node-side GET of an admin endpoint (the browser side rides the login cookie). */
+const adminGet = async (path) => {
+  const response = await fetch(`${base}${path}`, {
+    headers: { authorization: `Bearer ${hub.adminToken}` },
   });
   assert.ok(response.ok, `${path} returned ${response.status}`);
   return response.json();
@@ -202,6 +210,15 @@ try {
   );
   page.on("console", (message) => logged.push(message.text()));
   await page.goto(base);
+  // The hub gates every admin call now: the first load answers 401 and the app
+  // shows the login card. Sign in with the boot-time admin token through the
+  // REAL view; the failed boot() call is retried and the shell loads.
+  await expect(page.getByRole("dialog", { name: "Admin token", exact: true })).toBeVisible();
+  await page.getByRole("textbox", { name: "Admin token", exact: true }).fill(hub.adminToken);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByTestId("login-card")).toHaveCount(0);
+  await expect(page.getByTestId("app-shell")).toBeVisible();
+  console.log("PASS admin login through the web view unlocks the admin surface");
   const minted = page.waitForResponse(
     (r) => new URL(r.url()).pathname === "/api/pair/code" && r.request().method() === "POST",
   );
@@ -212,7 +229,7 @@ try {
   assert.deepEqual(leaksIn(await browserSurface(page)), [], "S-7: wizard open with a live code");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  const state = await (await fetch(`${base}/api/pair/codes/${issue.codeId}`)).json();
+  const state = await adminGet(`/api/pair/codes/${issue.codeId}`);
   assert.equal(
     state.phase,
     "cancelled",
@@ -251,9 +268,7 @@ try {
   await expect(page.getByRole("dialog")).toHaveCount(0);
   releaseCreate();
   await expect
-    .poll(
-      async () => (await (await fetch(`${base}/api/pair/codes/${lateIssue.codeId}`)).json()).phase,
-    )
+    .poll(async () => (await adminGet(`/api/pair/codes/${lateIssue.codeId}`)).phase)
     .toBe("cancelled");
   await page.unroute("**/api/pair/code");
   console.log("PASS R05 closing before code creation returns cancels the late code");
@@ -262,7 +277,7 @@ try {
   const raceCode = await (await raceMinted).json();
   mintedCodes.add(raceCode.code);
   await expect(page.getByLabel("Pairing code", { exact: true })).toBeVisible();
-  const openState = await (await fetch(`${base}/api/pair/codes/${raceCode.codeId}`)).json();
+  const openState = await adminGet(`/api/pair/codes/${raceCode.codeId}`);
   let unlockStatus = false;
   // Collect, never assert, inside a route handler: an assert there can be swallowed by Playwright.
   const cancelStatuses = [];
@@ -297,7 +312,7 @@ try {
     [],
     "S-7: wizard showing an issued credential",
   );
-  const network = await (await fetch(`${base}/api/network`)).json();
+  const network = await adminGet(`/api/network`);
   assert.equal(
     network.devices.find((d) => d.id === ticket.deviceId)?.pairing?.status,
     "paired",
@@ -327,8 +342,8 @@ try {
     .poll(
       async () =>
         (await page.getByLabel("Pairing code", { exact: true }).textContent())
-          .replace("-", "")
-          .trim() === handoff.code,
+          .replace(/-/g, "")
+          .trim() === handoff.code.replace(/-/g, ""),
     )
     .toBe(true);
   assert.equal(
@@ -346,10 +361,7 @@ try {
   );
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  assert.equal(
-    (await (await fetch(`${base}/api/pair/codes/${handoff.codeId}`)).json()).phase,
-    "cancelled",
-  );
+  assert.equal((await adminGet(`/api/pair/codes/${handoff.codeId}`)).phase, "cancelled");
   console.log(
     "PASS R08 direct handoff reuses and scrubs the code without approval, persistence or referrer leaks",
   );
@@ -496,7 +508,7 @@ try {
   );
   await expect(manager.getByRole("status")).toHaveCount(0, { timeout: 10_000 });
   await expect(manager.locator("dd").nth(2)).toHaveText("3", { timeout: 10_000 }); // the UI shows the new generation
-  const rotatedPairing = (await (await fetch(`${base}/api/network`)).json()).devices.find(
+  const rotatedPairing = (await adminGet(`/api/network`)).devices.find(
     (d) => d.id === ticket.deviceId,
   ).pairing;
   assert.equal(rotatedPairing.credentialGeneration, 3, "the committed generation is 3");

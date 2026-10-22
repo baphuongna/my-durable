@@ -1,11 +1,15 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 import { ui } from "./client/store";
+import { installAdminLoginFetch } from "./client/auth";
 import { barePairHome, readPairHandoff } from "./client/pair-handoff";
 import "./style.css";
 import "./network.css";
 import "./jobs.css";
 import "./extensions.css";
+// Before anything can call out: a 401 from an admin route raises the login card
+// and the failed call is retried after a successful login (client/auth.ts).
+installAdminLoginFetch();
 const url = new URL(window.location.href);
 if (/^\/pair\/?$/.test(url.pathname)) {
   const handoff = readPairHandoff(url);

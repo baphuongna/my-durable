@@ -25,7 +25,7 @@ async function tempAudit(hooks?: ConstructorParameters<typeof Audit>[1]) {
 const rows = (registry: NetworkRegistry) =>
   registry.db.prepare("SELECT * FROM events ORDER BY id").all() as Record<string, unknown>[];
 
-test("append: all 14 required actions round-trip with correlation fields", async () => {
+test("append: all 16 required actions round-trip with correlation fields", async () => {
   const { registry, audit, cleanup } = await tempAudit();
   try {
     for (const action of AUDIT_ACTIONS) {
@@ -38,11 +38,16 @@ test("append: all 14 required actions round-trip with correlation fields", async
         detail: { x: 1 },
       });
     }
-    assert.equal(AUDIT_ACTIONS.length, 14);
+    assert.equal(AUDIT_ACTIONS.length, 16);
     const all = rows(registry);
-    assert.equal(all.length, 14);
+    assert.equal(all.length, 16);
     assert.equal(all[0].action, "pair.code_created");
-    assert.equal(all[13].action, "rotation.stale_cleared");
+    assert.equal(all[12].action, "auth.denied");
+    assert.equal(all[15].action, "rotation.stale_cleared");
+    assert.ok(
+      all.some((r) => r.action === "admin.token_created") && all.some((r) => r.action === "admin.login"),
+      "the admin auth actions are part of the contract",
+    );
     assert.equal(all[0].request_id, "req-1");
     // append-only: UPDATE/DELETE raise (S-6)
     assert.throws(() => registry.db.prepare("UPDATE events SET actor='x' WHERE id=1").run());

@@ -51,7 +51,10 @@ const hreq = async (
             resolveReq({
               status: res.statusCode ?? 0,
               body,
-              headers: { hsts: res.headers["strict-transport-security"] },
+              headers: {
+                hsts: res.headers["strict-transport-security"],
+                "set-cookie": res.headers["set-cookie"]?.[0],
+              },
             }),
           );
         },
@@ -123,8 +126,29 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
       headers: { authorization: "Basic " + Buffer.from("admin:wrong").toString("base64") },
     });
     assert.equal(wrong.status, 401);
-    // Correct basic auth → 200
-    const ok = await hreq(`${base}/api/network`, { agent, headers: { authorization: basic } });
+    // Correct Caddy basic auth is not enough anymore: the hub itself gates the admin
+    // surface (Caddy strips Authorization on admin routes, so the cookie is the
+    // credential that reaches the hub). No hub cookie → the hub answers 401.
+    const noHubCookie = await hreq(`${base}/api/network`, {
+      agent,
+      headers: { authorization: basic },
+    });
+    assert.equal(noHubCookie.status, 401, "hub admin auth applies behind Caddy too");
+    // Log in through Caddy: basic (edge) + the hub admin token (body) → dpi_admin cookie.
+    const login = await hreq(`${base}/api/session`, {
+      agent,
+      method: "POST",
+      headers: { authorization: basic, "content-type": "application/json" },
+      body: JSON.stringify({ token: hub.adminToken }),
+    });
+    assert.equal(login.status, 200, login.body);
+    const cookie = (login.headers["set-cookie"] ?? "").split(";")[0];
+    assert.match(cookie, /^dpi_admin=/);
+    // Cookie + basic → 200
+    const ok = await hreq(`${base}/api/network`, {
+      agent,
+      headers: { authorization: basic, cookie },
+    });
     assert.equal(ok.status, 200);
 
     // Tunnel WS through Caddy: exempt, Bearer preserved. Seed a REAL credential
@@ -182,7 +206,7 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
             hostname: u.hostname,
             port: u.port,
             path: u.pathname,
-            headers: { authorization: basic, accept: "text/event-stream" },
+            headers: { authorization: basic, cookie, accept: "text/event-stream" },
             agent,
           },
           (res) => {
@@ -211,7 +235,7 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
     await new Promise((r) => setTimeout(r, 200));
     const auditRows = registry.db
       .prepare(
-        "SELECT actor, detail_json FROM events WHERE action IN ('auth.denied','pair.revoke','rate_limited') ORDER BY id DESC LIMIT 5",
+        "SELECT actor, detail_json FROM events WHERE action IN ('auth.denied','admin.login','pair.revoke','rate_limited') ORDER BY id DESC LIMIT 8",
       )
       .all() as { actor: string; detail_json: string }[];
     const hubDenials = auditRows.filter((r) => r.actor.startsWith("ip:"));

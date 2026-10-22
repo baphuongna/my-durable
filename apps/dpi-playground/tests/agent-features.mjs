@@ -7,12 +7,20 @@ import assert from "node:assert/strict";
 const hub = process.env.DPI_URL ?? "http://localhost:4781";
 const device = process.env.DPI_DEVICE ?? "local";
 const v1 = `${hub}/api/devices/${device}/v1`;
+// The hub's admin surface (this includes the device proxy) needs the operator
+// credential: log in once and attach the bearer to every call.
+const { hubSession } = await import("./harness/admin-auth.mjs");
+const adminSession = await hubSession(hub);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function call(method, path, body, ok = true) {
   const init =
     body === undefined
-      ? { method }
-      : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
+      ? { method, headers: adminSession.bearer }
+      : {
+          method,
+          headers: { "content-type": "application/json", ...adminSession.bearer },
+          body: JSON.stringify(body),
+        };
   const r = await fetch(v1 + path, init);
   const data = await r.json().catch(() => undefined);
   if (ok) assert(r.ok, `${method} ${path}: ${r.status} ${JSON.stringify(data)}`);

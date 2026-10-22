@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   bootServer,
@@ -50,13 +51,16 @@ async function bootHub(home: string, networkFile: string, env: Record<string, st
   child.stderr?.on("data", (x) => (output += x));
   for (let i = 0; i < 100; i++) {
     try {
-      if ((await fetch(`${base}/api/network`)).ok) break;
+      if ((await fetch(`${base}/healthz`)).ok) break;
     } catch {}
     if (child.exitCode !== null) throw Error(output);
     await delay(100);
   }
+  const adminToken = (await readFile(join(home, "admin.token"), "utf8")).trim();
+  const adminHeaders = { authorization: `Bearer ${adminToken}` };
   return {
     base,
+    adminHeaders,
     output: () => output,
     stop: async () => {
       if (child.exitCode === null) {
@@ -73,6 +77,16 @@ const json = (body: unknown) => ({
   headers: { "content-type": "application/json" },
   body: JSON.stringify(body),
 });
+/** Admin-plane fetch: the same call with the hub's admin bearer attached. */
+const adminFetch = (
+  hub: { base: string; adminHeaders: Record<string, string> },
+  path: string,
+  init: RequestInit = {},
+) =>
+  fetch(`${hub.base}${path}`, {
+    ...init,
+    headers: { ...hub.adminHeaders, ...(init.headers as Record<string, string> | undefined) },
+  });
 
 test("R03: real hub publishes safe offline credential metadata and notifies an open tab after rotate/revoke", async () => {
   const t = await tempStore();
@@ -100,7 +114,7 @@ test("R03: real hub publishes safe offline credential metadata and notifies an o
   const ctl = new AbortController();
   let ws: WebSocket | undefined;
   try {
-    const network = (await (await fetch(`${hub.base}/api/network`)).json()) as {
+    const network = (await (await adminFetch(hub, "/api/network")).json()) as {
       devices: NetworkDevice[];
     };
     const dto = network.devices.find((d) => d.id === ticket.deviceId)!;
@@ -113,7 +127,7 @@ test("R03: real hub publishes safe offline credential metadata and notifies an o
     });
     assert.deepEqual(dto.tunnel, { state: "disconnected", readerCount: 0 });
     assert.equal(dto.status, "offline");
-    const listing = await fetch(`${hub.base}/api/pairings`);
+    const listing = await adminFetch(hub, "/api/pairings");
     assert.equal(listing.status, 200, "the canonical pairing API is available");
     assert.deepEqual(await listing.json(), [
       {
@@ -124,7 +138,7 @@ test("R03: real hub publishes safe offline credential metadata and notifies an o
         tunnel: dto.tunnel,
       },
     ]);
-    const response = await fetch(`${hub.base}/api/stream`, { signal: ctl.signal });
+    const response = await adminFetch(hub, "/api/stream", { signal: ctl.signal });
     const frames: MuxFrame[] = [];
     void (async () => {
       for await (const event of readSse(response.body!))
@@ -135,7 +149,7 @@ test("R03: real hub publishes safe offline credential metadata and notifies an o
     await until(() => devices().length > 0, 2000, "initial credential metadata on SSE");
     assert.deepEqual(devices()[0].pairing, dto.pairing);
     assert.equal(
-      (await fetch(`${hub.base}/api/pairings/${ticket.deviceId}/rotate`, json({}))).status,
+      (await adminFetch(hub, `/api/pairings/${ticket.deviceId}/rotate`, json({}))).status,
       202,
     );
     await until(
@@ -192,8 +206,8 @@ test("R03: real hub publishes safe offline credential metadata and notifies an o
       }),
     );
     await greeted;
-    await fetch(`${hub.base}/api/devices/${ticket.deviceId}/check`, json({}));
-    const liveNetwork = (await (await fetch(`${hub.base}/api/network`)).json()) as {
+    await adminFetch(hub, `/api/devices/${ticket.deviceId}/check`, json({}));
+    const liveNetwork = (await (await adminFetch(hub, "/api/network")).json()) as {
       devices: NetworkDevice[];
     };
     const live = liveNetwork.devices.find((d) => d.id === ticket.deviceId)!;
@@ -227,7 +241,7 @@ test("R03: real hub publishes safe offline credential metadata and notifies an o
     ws.close();
     await disconnected;
     assert.equal(
-      (await fetch(`${hub.base}/api/devices/${ticket.deviceId}/revoke`, json({ reason: "user" })))
+      (await adminFetch(hub, `/api/devices/${ticket.deviceId}/revoke`, json({ reason: "user" })))
         .status,
       202,
     );
@@ -276,7 +290,7 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
   );
   const hub = await bootHub(hubHome, networkFile, { TOKEN_A: tokenA, TOKEN_B: tokenB });
   const network = async () =>
-    ((await (await fetch(`${hub.base}/api/network`)).json()) as { devices: NetworkDevice[] })
+    ((await (await adminFetch(hub, "/api/network")).json()) as { devices: NetworkDevice[] })
       .devices;
   const status = async (id: string) => (await network()).find((d) => d.id === id)?.status;
   try {
@@ -285,7 +299,7 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
       15000,
       "both online",
     );
-    const all = await (await fetch(`${hub.base}/api/network`)).text();
+    const all = await (await adminFetch(hub, "/api/network")).text();
     assert.equal(
       all.includes(tokenA) || all.includes(tokenB),
       false,
@@ -293,16 +307,17 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
     );
 
     // Proxy: browser requests carry no token; the hub injects it.
-    const info = await (await fetch(`${hub.base}/api/devices/box-a/v1/device`)).json();
+    const info = await (await adminFetch(hub, "/api/devices/box-a/v1/device")).json();
     assert.equal(info.name, "box-a");
-    const created = await fetch(
-      `${hub.base}/api/devices/box-a/v1/sessions`,
+    const created = await adminFetch(
+      hub,
+      "/api/devices/box-a/v1/sessions",
       json({ name: "Via hub", cwd: t.work, model: faux }),
     );
     assert.equal(created.status, 201);
     const session = await created.json();
     assert.equal(
-      (await fetch(`${hub.base}/api/devices/box-a/v1/sessions/${session.id}/agents/main/events`))
+      (await adminFetch(hub, `/api/devices/box-a/v1/sessions/${session.id}/agents/main/events`))
         .status,
       400,
       "streams only via mux",
@@ -336,22 +351,22 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
     // Devices are configured outside the UI: the hub has no device write routes. A wrong token in
     // the registry → unauthorized; `just net register` fixes the registry, a check brings it online.
     assert.equal(
-      (await fetch(`${hub.base}/api/devices`, json({ id: "x", url: "http://x" }))).status,
+      (await adminFetch(hub, "/api/devices", json({ id: "x", url: "http://x" }))).status,
       404,
     );
     const registry = new NetworkRegistry(join(hubHome, "network.sqlite"));
     registry.setToken("box-b", "x".repeat(40));
-    await fetch(`${hub.base}/api/devices/box-b/check`, json({}));
+    await adminFetch(hub, "/api/devices/box-b/check", json({}));
     await until(async () => (await status("box-b")) === "unauthorized", 8000, "box-b unauthorized");
     registry.setToken("box-b", tokenB);
     assert.equal(
-      (await (await fetch(`${hub.base}/api/devices/box-b/check`, json({}))).json()).status,
+      (await (await adminFetch(hub, "/api/devices/box-b/check", json({}))).json()).status,
       "online",
     );
 
     // Mux: one browser stream carries network + device + agent frames; subscription changes close upstreams.
     const stop = new AbortController();
-    const res = await fetch(`${hub.base}/api/stream`, { signal: stop.signal });
+    const res = await adminFetch(hub, "/api/stream", { signal: stop.signal });
     const frames: MuxFrame[] = [];
     let streamId = "";
     void (async () => {
@@ -367,7 +382,7 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
       `box-a/agent/${session.id}/main?docs=demo.job-runs`,
       `box-a/session/${session.id}`,
     ];
-    const put = await fetch(`${hub.base}/api/stream/${streamId}`, {
+    const put = await adminFetch(hub, `/api/stream/${streamId}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ subs }),
@@ -378,8 +393,9 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
       8000,
       "agent snapshot via mux",
     );
-    await fetch(
-      `${hub.base}/api/devices/box-a/v1/sessions/${session.id}/agents/main/messages`,
+    await adminFetch(
+      hub,
+      `/api/devices/box-a/v1/sessions/${session.id}/agents/main/messages`,
       json({ content: "hi hub", requestId: "hub-1" }),
     );
     await until(
@@ -397,7 +413,7 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
     assert.ok(frames.some((f) => f.sub === subs[0] && f.frame.type === "tree"));
     assert.ok(frames.some((f) => f.sub === subs[2] && f.frame.type === "session"));
     assert.ok(frames.some((f) => f.sub === subs[1] && f.frame.type === "doc"));
-    const bad = await fetch(`${hub.base}/api/stream/${streamId}`, {
+    const bad = await adminFetch(hub, `/api/stream/${streamId}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ subs: ["nope/agent"] }),
@@ -407,7 +423,7 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
     // Offline: kill box-b → offline with a cached tree; proxy answers 503; restart → online again.
     await b.stop("SIGKILL");
     await until(async () => (await status("box-b")) === "offline", 15000, "box-b offline");
-    assert.equal((await fetch(`${hub.base}/api/devices/box-b/v1/device`)).status, 503);
+    assert.equal((await adminFetch(hub, "/api/devices/box-b/v1/device")).status, 503);
     assert.ok(
       (await network()).find((d) => d.id === "box-b")?.tree,
       "cached tree survives offline",
@@ -427,7 +443,7 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
     });
     await until(async () => (await status("box-b")) === "mismatch", 30000, "mismatch");
     registry.forgetUid("box-b"); // what `just net register box-b` does
-    const accepted = await fetch(`${hub.base}/api/devices/box-b/check`, json({}));
+    const accepted = await adminFetch(hub, "/api/devices/box-b/check", json({}));
     assert.equal((await accepted.json()).status, "online");
     registry.close();
     stop.abort();

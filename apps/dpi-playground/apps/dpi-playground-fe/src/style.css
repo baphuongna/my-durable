@@ -1753,6 +1753,30 @@ svg {
   flex-direction: column;
   overflow: hidden;
 }
+/* The admin gate: one centered card over a dark veil while a 401 waits for the
+   operator's token. Same panel/border/radius language as the dialogs. */
+.login-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #0d0808e0;
+  backdrop-filter: blur(7px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login-card {
+  width: 400px;
+}
+.login-card .hint {
+  color: var(--fg);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.login-card footer {
+  justify-content: flex-end;
+}
 .model-list {
   overflow: auto;
   margin-top: 12px;

@@ -112,10 +112,31 @@ const hub = run(
   app,
 );
 const base = `http://localhost:${hubPort}`;
-await waitHttp(`${base}/api/network`);
+await waitHttp(`${base}/healthz`);
+// The admin surface needs the hub's admin token: read the one this hub minted and
+// log in once — the browser context gets the cookie, Node fetches the bearer.
+const { readFile: readTokenFile } = await import("node:fs/promises");
+const adminToken = (await readTokenFile(join(tmp, "hub", "admin.token"), "utf8")).trim();
+const adminHeaders = { authorization: `Bearer ${adminToken}` };
+const loginReply = await fetch(`${base}/api/session`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ token: adminToken }),
+});
+if (!loginReply.ok) throw Error(`admin login failed: ${loginReply.status}`);
+const adminCookie = /dpi_admin=[^;]+/.exec(loginReply.headers.get("set-cookie") ?? "")?.[0];
 
 const browser = await chromium.launch({ channel: "chrome", headless: !process.env.HEADED });
 const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+await context.addCookies([
+  {
+    name: "dpi_admin",
+    value: adminCookie.slice("dpi_admin=".length),
+    url: base,
+    httpOnly: true,
+    sameSite: "Strict",
+  },
+]);
 // Inject only an external SSE peer event; the real store, models and UI remain intact.
 await context.addInitScript(() => {
   const NativeSource = window.EventSource;
@@ -581,7 +602,7 @@ try {
   await json.fill(JSON.stringify({ ...current, goal: "stale edit" }, null, 2));
   await fetch(`${base}/api/devices/box-b/v1/sessions/Renamed B/agents/main/demo/state`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...adminHeaders },
     body: JSON.stringify({ operation: "increment", path: "/counter", value: 1 }),
   });
   await expect(page.getByText("State changed elsewhere")).toBeVisible();

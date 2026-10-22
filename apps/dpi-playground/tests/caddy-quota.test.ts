@@ -31,27 +31,35 @@ const hreq = async (
 ) => {
   const https = await import("node:https");
   const u = new URL(url);
-  return new Promise<{ status: number; body: string }>((resolveReq, rejectReq) => {
-    const req = https.request(
-      {
-        hostname: u.hostname,
-        port: u.port,
-        path: u.pathname + u.search,
-        method: opts.method ?? "GET",
-        headers: opts.headers,
-        ...(opts.agent ? { agent: opts.agent } : {}),
-        ...(opts.localAddress ? { localAddress: opts.localAddress } : {}),
-      },
-      (res) => {
-        let body = "";
-        res.on("data", (x: Buffer) => (body += x));
-        res.on("end", () => resolveReq({ status: res.statusCode ?? 0, body }));
-      },
-    );
-    req.on("error", (e) => rejectReq(e));
-    if (opts.body) req.write(opts.body);
-    req.end();
-  });
+  return new Promise<{ status: number; body: string; setCookie?: string }>(
+    (resolveReq, rejectReq) => {
+      const req = https.request(
+        {
+          hostname: u.hostname,
+          port: u.port,
+          path: u.pathname + u.search,
+          method: opts.method ?? "GET",
+          headers: opts.headers,
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          ...(opts.localAddress ? { localAddress: opts.localAddress } : {}),
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (x: Buffer) => (body += x));
+          res.on("end", () =>
+            resolveReq({
+              status: res.statusCode ?? 0,
+              body,
+              setCookie: res.headers["set-cookie"]?.[0],
+            }),
+          );
+        },
+      );
+      req.on("error", (e) => rejectReq(e));
+      if (opts.body) req.write(opts.body);
+      req.end();
+    },
+  );
 };
 
 test("F10 regression: two real client IPs keep separate pairing buckets; a public pairing flood never 429s the admin API", async () => {
@@ -72,12 +80,28 @@ test("F10 regression: two real client IPs keep separate pairing buckets; a publi
   const base = caddy.httpsBase;
   const basic = "Basic " + Buffer.from(`admin:${ADMIN_PASSWORD}`).toString("base64");
   try {
+    // The hub gates the admin pairing surface behind its own admin cookie (Caddy
+    // strips Authorization); log in once per client address the test uses.
+    const login = async (from: string) => {
+      const r = await hreq(`${base}/api/session`, {
+        method: "POST",
+        agent,
+        localAddress: from,
+        headers: { authorization: basic, "content-type": "application/json" },
+        body: JSON.stringify({ token: hub.adminToken }),
+      });
+      assert.equal(r.status, 200, `login from ${from}: ${r.body.slice(0, 120)}`);
+      return (r.setCookie ?? "").split(";")[0];
+    };
+    // One shared login from 127.0.0.1 carries the whole run (the cookie is not IP-bound).
+    const cookie = await login("127.0.0.1");
+    assert.match(cookie, /^dpi_admin=/);
     const mkCode = (from: string) =>
       hreq(`${base}/api/pair/code`, {
         method: "POST",
         agent,
         localAddress: from,
-        headers: { authorization: basic, "content-type": "application/json" },
+        headers: { authorization: basic, cookie, "content-type": "application/json" },
         body: "{}",
       });
     // Client A (127.0.0.1) exhausts ITS pairing code bucket (5 / 15 min).
@@ -132,7 +156,7 @@ test("F10 regression: two real client IPs keep separate pairing buckets; a publi
     const net = await hreq(`${base}/api/network`, {
       agent,
       localAddress: "127.0.0.1",
-      headers: { authorization: basic },
+      headers: { authorization: basic, cookie },
     });
     assert.equal(
       net.status,

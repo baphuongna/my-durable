@@ -186,7 +186,7 @@ test("API bucket: 121st burst → 429; healthz exempt; stable forged XFF does no
   try {
     const base = hub.base;
     const hit = async (path: string, headers: Record<string, string> = {}) => {
-      const r = await fetch(`${base}${path}`, { headers });
+      const r = await fetch(`${base}${path}`, { headers: { ...hub.adminHeaders, ...headers } });
       await r.arrayBuffer();
       return r.status;
     };
@@ -210,7 +210,9 @@ test("API bucket: every address of one IPv6 /64 draws on the same bucket; the ne
   const hub = await bootHub();
   try {
     const hit = async (xff: string) => {
-      const r = await fetch(`${hub.base}/api/network`, { headers: { "x-forwarded-for": xff } });
+      const r = await fetch(`${hub.base}/api/network`, {
+        headers: { "x-forwarded-for": xff, ...hub.adminHeaders },
+      });
       await r.arrayBuffer();
       return r.status;
     };

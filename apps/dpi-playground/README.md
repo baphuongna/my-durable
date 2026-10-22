@@ -22,6 +22,8 @@ npm run dev                          # Vite middleware with hot reload (no build
 | `--public-host` / `DPI_HUB_PUBLIC_HOST` | empty | the browser-facing `host:port` when the hub sits behind the TLS reverse proxy; allow-listed as a Host and turns TLS proof on (below) |
 | `DPI_HUB_REQUIRE_TLS` | on when `--public-host` is set | `1`/`0` override: refuse admin/pairing requests the loopback TLS proxy did not vouch for. A typo stops the start |
 | `DPI_HUB_ORIGIN` | `https://<hostname>` | the origin written into issued tunnel credentials (`hubUrl`/`hubOrigin`); set it to the public HTTPS origin |
+| `DPI_ADMIN_TOKEN` | minted at first boot | the operator's admin credential. When set it must be ≥ 32 characters or the hub refuses to start (never silently replaced) |
+| `DPI_ADMIN_TOKEN_FILE` | `<DPI_HOME>/admin.token` | where the admin token lives; minted at first boot (`adm_` + 32 random bytes, file mode 0600) |
 | `DPI_AUDIT_MIN_FREE_BYTES` | `33554432` | free-space floor on the registry volume: below it audited changes answer 503 and nothing is mutated (reads keep working) |
 | `DPI_HOME` | `~/.dpi` | where `network.sqlite` lives |
 | `DPI_NETWORK_FILE` | `dpi-network.yaml`, found by walking up from the app | devices seeded into the registry at boot |
@@ -30,6 +32,7 @@ npm run dev                          # Vite middleware with hot reload (no build
 
 | Route | Purpose |
 |---|---|
+| `POST /api/session {"token":"adm_…"}` | admin login: sets the `dpi_admin` cookie (HttpOnly, SameSite=Strict, 4 h, `Secure` behind TLS) that carries every admin route below. 5 attempts/min per client address |
 | `GET /api/network` | devices with live status, device info and the last known tree (never tokens), plus `configFile`, the loaded `dpi-network.yaml` |
 | `POST /api/devices/:id/check` | probe a device now. There are no device write routes: devices come from `dpi-network.yaml` and `just net register` |
 | `GET`/`PUT /api/ui-state/:key` | selection, panel layout and tree width |
@@ -38,6 +41,8 @@ npm run dev                          # Vite middleware with hot reload (no build
 | `ALL /api/devices/:id/v1/*` | REST proxy with the device token injected. Answers 503 while the device is not online and 502 when it does not answer. Paths ending in `/events` answer 400: streams go through `/api/stream` |
 
 `guard.ts` rejects unknown Host headers (DNS rebinding), cross-origin requests and non-JSON writes.
+
+**Admin authentication.** Everything on this hub that is operator-facing — the network view, code mint/approve/cancel, pairing resolution, the SSE stream, UI state and the device proxy — requires the admin credential: a stateless `dpi_admin` cookie obtained from `POST /api/session`, or the raw token as `Authorization: Bearer adm_…` / `X-Admin-Token` (for the TUI, tests and curl). Without it the answer is `401 {"error":{"code":"unauthorized"}}`. The token itself is minted at first boot into `<DPI_HOME>/admin.token` (owner-only 0600, logged once, audited as `admin.token_created`); set `DPI_ADMIN_TOKEN` to override it (≥ 32 characters or the hub refuses to start) or `DPI_ADMIN_TOKEN_FILE` to relocate it. In the browser no credential is ever stored — the login card exchanges the typed token for the HttpOnly cookie, which survives a hub restart. Devices are unaffected: the pairing ceremony (`/api/pair/start`, `/api/pair/verify`) keeps its own pairing-code bearer and `/api/tunnel` keeps device tokens, exactly as before.
 
 Security behavior worth knowing when you operate it:
 
