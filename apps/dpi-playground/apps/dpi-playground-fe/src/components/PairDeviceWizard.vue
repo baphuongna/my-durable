@@ -26,6 +26,7 @@ import {
   type PairingSession,
 } from "../client/pair";
 import { qrSvg } from "../client/qrcode";
+import DeviceHandoff from "./DeviceHandoff.vue";
 import type { PairCodeIssue, PairCodeState } from "@sdk/api";
 import { DpiError } from "@sdk/errors";
 import { isPairCode } from "@sdk/protocol/pairing";
@@ -287,6 +288,11 @@ onBeforeUnmount(() => {
           <X :size="18" />
         </button>
       </header>
+
+      <DeviceHandoff
+        v-if="props.handoff && 'offerFragment' in props.handoff && props.handoff.offerFragment"
+        :offer-fragment="props.handoff.offerFragment"
+      />
 
       <p v-if="step === 'boot'" class="hint">Minting a pairing code…</p>
 

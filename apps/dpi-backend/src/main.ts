@@ -1,5 +1,6 @@
 // dpi-backend: one device of the Durable Agent Network.
 import express from "express";
+import type { Request, Response, NextFunction } from "express";
 import { assertLimitsConfig } from "../../dpi-sdk/src/protocol/limits.js";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
@@ -10,6 +11,7 @@ import { errorMiddleware } from "./errors.js";
 import { v1 } from "./routes.js";
 import { DevicePairing } from "./pairing.js";
 import { DeviceConnector, readCaPem } from "./tunnel.js";
+import { PAIR_PAGE_HTML } from "./pair-page.js";
 
 assertLimitsConfig();
 
@@ -44,24 +46,111 @@ const connector = new DeviceConnector(
     onRevoked: (epoch, reason) => pairing.markRevoked(reason, epoch),
     onRotated: (file) => pairing.markRotated(file),
   },
-  { baseUrl: `http://${config.host === "0.0.0.0" ? "127.0.0.1" : config.host}:${config.port}`, token: config.token },
+  {
+    baseUrl: `http://${config.host === "0.0.0.0" ? "127.0.0.1" : config.host}:${config.port}`,
+    token: config.token,
+  },
 );
 connector.start();
-app.use("/v1", bearerAuth(config.token), express.json({ limit: "256kb" }), v1(store, pairing, connector));
-app.use((_req, res) => res.status(404).json({ error: { code: "not_found", message: "Route not found" } }));
+// GET /pair + /v1/pair-enroll — the device-side browser enrollment surface
+// (gap #4). Unauthenticated BUT narrow: the custom x-dpi-pair header forces a
+// CORS preflight on every foreign origin (a drive-by page cannot POST), the
+// POST only runs while UNPAIRED (a paired device re-pairs through the TUI's
+// token-authed route with force), and the status view carries no secrets.
+const pairEnrollGuard = (req: Request, res: Response, next: NextFunction) => {
+  if (req.get("x-dpi-pair") !== "1")
+    return res
+      .status(403)
+      .json({ error: { code: "forbidden", message: "missing x-dpi-pair header" } });
+  next();
+};
+app.get("/pair", (_req, res) => res.type("html").send(PAIR_PAGE_HTML));
+app.get("/v1/pair-enroll", pairEnrollGuard, (_req, res) => {
+  const s = pairing.status();
+  res.json({
+    state: s.state,
+    deviceName: s.deviceName,
+    fingerprint: s.fingerprint,
+    hubOrigin: s.hubOrigin ?? s.pending?.hubOrigin,
+    lastError: s.lastError,
+  });
+});
+app.post("/v1/pair-enroll", pairEnrollGuard, express.json({ limit: "8kb" }), (req, res) => {
+  void (async () => {
+    const s = pairing.status();
+    if (s.state === "paired")
+      return res
+        .status(409)
+        .json({
+          error: {
+            code: "paired",
+            message:
+              "this device is already paired; re-pairing runs in the TUI (dpi tui) so it stays operator-driven",
+          },
+        });
+    if (s.state === "pairing")
+      return res
+        .status(409)
+        .json({
+          error: {
+            code: "busy",
+            message: "a pairing operation is already running — watch its status below",
+          },
+        });
+    const pairUrl = (req.body as { pairUrl?: unknown } | null)?.pairUrl;
+    if (typeof pairUrl !== "string" || pairUrl.length === 0 || pairUrl.length > 4096)
+      return res
+        .status(400)
+        .json({
+          error: {
+            code: "invalid",
+            message: "body: { pairUrl: string } — the offer link from the hub",
+          },
+        });
+    try {
+      await pairing.start({ code: "", pairUrl });
+      const after = pairing.status();
+      res.json({
+        state: after.state,
+        deviceName: after.deviceName,
+        fingerprint: after.fingerprint,
+        hubOrigin: after.pending?.hubOrigin,
+        lastError: after.lastError,
+      });
+    } catch (e) {
+      res.status((e as { status?: number }).status ?? 400).json({
+        error: { code: (e as { code?: string }).code ?? "invalid", message: (e as Error).message },
+      });
+    }
+  })();
+});
+app.use(
+  "/v1",
+  bearerAuth(config.token),
+  express.json({ limit: "256kb" }),
+  v1(store, pairing, connector),
+);
+app.use((_req, res) =>
+  res.status(404).json({ error: { code: "not_found", message: "Route not found" } }),
+);
 app.use(errorMiddleware);
 
 const server = createServer(app);
 server.keepAliveTimeout = 65_000;
 server.listen(config.port, config.host, () => {
-  console.log(`dpi-backend "${config.name}" (uid ${store.uid}) on http://${config.host}:${config.port}`);
+  console.log(
+    `dpi-backend "${config.name}" (uid ${store.uid}) on http://${config.host}:${config.port}`,
+  );
   if (config.tokenCreated)
     console.log(`first run: created DPI_TOKEN in ${config.envFile} — keep this file private`);
-  console.log(`data: ${config.dataDir}  start dirs: ${config.startDirs.join(", ")}  provider: ${config.provider}`);
+  console.log(
+    `data: ${config.dataDir}  start dirs: ${config.startDirs.join(", ")}  provider: ${config.provider}`,
+  );
   if (config.host === "0.0.0.0")
     for (const addresses of Object.values(networkInterfaces()))
       for (const a of addresses ?? [])
-        if (a.family === "IPv4" && !a.internal) console.log(`LAN: http://${a.address}:${config.port}`);
+        if (a.family === "IPv4" && !a.internal)
+          console.log(`LAN: http://${a.address}:${config.port}`);
 });
 
 let closing = false;

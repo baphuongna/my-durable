@@ -53,7 +53,14 @@ test("R08: 12-char and grouped handoffs are accepted and scrubbed to the canonic
     assert.match(handoff.code, /^(?:[A-Z2-7]{12}|[A-Z2-7]{8})$/);
   }
   // unsupported lengths / alphabets / a truncated group never start a lookup, and are not echoed
-  for (const raw of ["ABCD2345EF678", "ABCD2345EF", "ABCD2345EF6", "AB2C7DE0", "ABCD-2345", "ABCD2345EF67-AB"]) {
+  for (const raw of [
+    "ABCD2345EF678",
+    "ABCD2345EF",
+    "ABCD2345EF6",
+    "AB2C7DE0",
+    "ABCD-2345",
+    "ABCD2345EF67-AB",
+  ]) {
     const value = readPairHandoff(new URL(`https://hub.example/pair?code=${raw}&v=1`));
     assert.ok(value && "error" in value, raw);
     assert.equal(JSON.stringify(value).includes(raw.replace(/[-% ]/g, "")), false, raw);
@@ -69,7 +76,9 @@ test("R08: a minted UUID v4 handoff is accepted, canonicalised and keeps its hyp
     origin: "https://hub.example",
   });
   // upper case from a human is the same code, scrubbed to the canonical form
-  const upper = (readPairHandoff(new URL(`https://hub.example/pair?code=${UUID_CODE.toUpperCase()}&v=1`)));
+  const upper = readPairHandoff(
+    new URL(`https://hub.example/pair?code=${UUID_CODE.toUpperCase()}&v=1`),
+  );
   assert.ok(upper && "code" in upper);
   assert.equal(upper.code, UUID_CODE);
   assert.equal(JSON.stringify(upper).includes("-"), true, "a UUID keeps its hyphens");
@@ -103,16 +112,41 @@ const offerLink = (over: Partial<typeof OFFER> = {}) =>
   `https://hub.example/pair#offer=${encodePairOffer({ ...OFFER, ...over })}`;
 
 test("R08: a valid offer fragment hands over the canonical code without any query", () => {
-  const handoff = readPairHandoff(new URL(offerLink()));
-  assert.deepEqual(handoff, { code: UUID_CODE, origin: "https://hub.example" });
-  // the settled scrub target is unchanged: the replaceState to it clears query AND fragment
-  assert.equal(settledPairPath(new URL(offerLink())), "/");
-  assert.notEqual(barePairHome(new URL(offerLink())), "/", "a live handoff keeps the wizard URL");
-  // /pair/ with a trailing slash is the same page
-  assert.deepEqual(readPairHandoff(new URL(offerLink().replace("/pair#", "/pair/#"))), {
+  const link = offerLink();
+  const handoff = readPairHandoff(new URL(link));
+  assert.deepEqual(handoff, {
     code: UUID_CODE,
     origin: "https://hub.example",
+    offerFragment: `offer=${link.split("#offer=")[1]}`,
   });
+  // the settled scrub target is unchanged: the replaceState to it clears query AND fragment
+  assert.equal(settledPairPath(new URL(link)), "/");
+  assert.notEqual(barePairHome(new URL(link)), "/", "a live handoff keeps the wizard URL");
+  // /pair/ with a trailing slash is the same page
+  const trailing = readPairHandoff(new URL(link.replace("/pair#", "/pair/#")));
+  assert.deepEqual(
+    {
+      code: trailing && "code" in trailing ? trailing.code : undefined,
+      origin: trailing && "code" in trailing ? trailing.origin : undefined,
+    },
+    { code: UUID_CODE, origin: "https://hub.example" },
+  );
+  assert.ok(
+    trailing && "code" in trailing && trailing.offerFragment,
+    "the trailing-slash link also relays the fragment",
+  );
+});
+
+test("gap #4: an offer handoff carries its RAW fragment for the device page relay — never a query, never a fetch", () => {
+  const link = offerLink();
+  const handoff = readPairHandoff(new URL(link));
+  assert.ok(handoff && "offerFragment" in handoff && handoff.offerFragment);
+  // exactly the URL fragment, nothing else — no code-only echo, no origin munging
+  assert.equal(handoff.offerFragment, link.split("#")[1]);
+  assert.match(handoff.offerFragment, /^offer=[A-Za-z0-9_-]+$/);
+  // v1 query handoffs have NO fragment to relay (the wizard stays their only path)
+  const v1 = readPairHandoff(new URL("https://hub.example/pair?code=ABCD2345&v=1"));
+  assert.ok(v1 && "code" in v1 && v1.offerFragment === undefined);
 });
 
 test("R08: an offer minted by another hub is the existing foreign-origin error, without echoing the payload", () => {
@@ -145,4 +179,33 @@ test("R08: junk fragments are rejected like today — only a decodable #offer= c
     code: UUID_CODE,
     origin: "https://hub.example",
   });
+});
+
+// --- gap #4: the no-admin "Pair THIS machine" relay card ---
+
+test("gap #4: DeviceHandoff renders the local relay card from the offer fragment (vite SSR)", async () => {
+  const { createServer } = await import("vite");
+  const { createSSRApp, h } = await import("vue");
+  const { renderToString } = await import("vue/server-renderer");
+  const FE_ROOT = new URL("../apps/dpi-playground-fe/", import.meta.url);
+  const vite = await createServer({
+    configFile: new URL("vite.config.ts", FE_ROOT).pathname,
+    server: { middlewareMode: true, hmr: false, watch: null },
+    appType: "custom",
+    logLevel: "error",
+  });
+  try {
+    const mod = await vite.ssrLoadModule("src/components/DeviceHandoff.vue");
+    const fragment = `offer=${offerLink().split("#offer=")[1]}`;
+    const html = await renderToString(
+      createSSRApp({ render: () => h(mod.default, { offerFragment: fragment }) }),
+    );
+    assert.match(html, /Pair THIS machine/);
+    assert.match(html, /127\.0\.0\.1/, "the relay target is the machine's own backend");
+    assert.ok(!html.includes("https://hub.example"), "the hub origin never leaks into the card");
+    assert.match(html, /Open the device page/);
+    assert.match(html, /Copy link/);
+  } finally {
+    await vite.close();
+  }
 });
