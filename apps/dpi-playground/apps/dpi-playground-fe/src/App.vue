@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { Database, GitFork, Activity, Info, Plus, X } from "lucide-vue-next";
 import TopBar from "./components/TopBar.vue";
 import MobileNav from "./components/MobileNav.vue";
@@ -9,6 +9,7 @@ import Inspector from "./components/Inspector.vue";
 import OfflinePanel from "./components/OfflinePanel.vue";
 import NewSessionDialog from "./components/NewSessionDialog.vue";
 import PairDeviceWizard from "./components/PairDeviceWizard.vue";
+import DeviceCredentialsDialog from "./components/DeviceCredentialsDialog.vue";
 import PromptDialog from "./components/PromptDialog.vue";
 import ModelPicker from "./components/ModelPicker.vue";
 import HelpDialog from "./components/HelpDialog.vue";
@@ -33,6 +34,7 @@ import {
 } from "./client/store";
 
 const onlineCount = () => network.devices.value.filter((d) => d.status === "online").length;
+const pairWizard = ref<{ close(): Promise<void> }>();
 
 function openNewSession() {
   ui.dialog = { kind: "new-session", deviceId: selected.value?.deviceId };
@@ -46,7 +48,8 @@ function keydown(e: KeyboardEvent) {
   }
   if (e.key !== "Escape") return;
   if (ui.dialog) {
-    ui.dialog = undefined;
+    if (ui.dialog.kind === "pair") void pairWizard.value?.close();
+    else ui.dialog = undefined;
     return;
   }
   if (!e.repeat && !e.isComposing && busy.value) {
@@ -124,7 +127,12 @@ onBeforeUnmount(() => {
     </main>
 
     <MobileNav />
-    <PairDeviceWizard v-if="ui.dialog?.kind === 'pair'" @close="ui.dialog = undefined" />
+    <PairDeviceWizard ref="pairWizard" v-if="ui.dialog?.kind === 'pair'" :handoff="ui.dialog.handoff" @close="ui.dialog = undefined" />
+    <DeviceCredentialsDialog
+      v-if="ui.dialog?.kind === 'credentials'"
+      :device-id="ui.dialog.deviceId"
+      @close="ui.dialog = undefined"
+    />
     <NewSessionDialog
       v-if="ui.dialog?.kind === 'new-session'"
       :device-id="ui.dialog.deviceId"

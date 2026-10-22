@@ -23,10 +23,6 @@ const busy = ref(false);
 const error = ref("");
 
 const pairing = computed(() => props.device.pairing);
-const shortFp = computed(() => {
-  const fp = pairing.value?.keyFingerprint ?? "";
-  return fp.length > 24 ? `${fp.slice(0, 16)}…${fp.slice(-8)}` : fp;
-});
 
 async function rotate(): Promise<void> {
   if (busy.value) return;
@@ -67,7 +63,7 @@ async function revoke(): Promise<void> {
     </header>
     <dl>
       <dt>Key fingerprint</dt>
-      <dd><code :title="pairing.keyFingerprint">{{ shortFp }}</code></dd>
+      <dd><code class="credential-fingerprint">{{ pairing.keyFingerprint }}</code></dd>
       <dt>Paired</dt>
       <dd :title="new Date(pairing.pairedAt).toISOString()">{{ ago(pairing.pairedAt) }}</dd>
       <dt>Generation</dt>
@@ -77,7 +73,7 @@ async function revoke(): Promise<void> {
       <RefreshCw :size="13" class="spin" /> rotation queued — waiting for the device to ACK
     </p>
     <div class="token-actions">
-      <button class="small" :disabled="busy" @click="rotate">
+      <button v-if="pairing.status === 'paired'" class="small" :disabled="busy || pairing.rotationPending" @click="rotate">
         <RefreshCw :size="14" /> Rotate credential
       </button>
       <button
@@ -103,6 +99,7 @@ async function revoke(): Promise<void> {
 .token-manager dl { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.8rem; margin: 0; }
 .token-manager dt { color: var(--muted, #888); }
 .token-manager dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.token-manager .credential-fingerprint { white-space: normal; overflow-wrap: anywhere; }
 .token-manager .rotation-badge { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--warn, #e0b040); font-size: 0.75rem; }
 .token-manager .token-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .token-manager .spin { animation: tm-spin 1.2s linear infinite; }

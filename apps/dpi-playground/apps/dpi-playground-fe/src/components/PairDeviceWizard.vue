@@ -26,9 +26,13 @@ import {
 } from "../client/pair";
 import { qrSvg } from "../client/qrcode";
 import type { PairCodeIssue, PairCodeState } from "@sdk/api";
+import { DpiError } from "@sdk/errors";
+import { settledPairPath, type PairHandoff } from "../client/pair-handoff";
+import { CANCEL_TIMEOUT_MS, closeWizard, type CancelResult } from "../client/pair-close";
 import { notify, network } from "../client/store";
 
 const emit = defineEmits<{ close: [] }>();
+const props = defineProps<{ handoff?: PairHandoff }>();
 
 type Step = "boot" | "code" | "proof" | "approve" | "issued" | "cancelled" | "expired";
 
@@ -38,10 +42,10 @@ const issue = ref<PairCodeIssue>();
 const state = ref<PairCodeState>();
 const error = ref("");
 const busy = ref(false);
+const closing = ref(false);
 const confirmed = ref(false);
 const replaceKey = ref(false);
 const copied = ref(false);
-const handoff = ref("");
 const watcher = ref<(() => void) | undefined>();
 
 const grouped = computed(() => {
@@ -50,8 +54,7 @@ const grouped = computed(() => {
 });
 const qrData = computed(() => {
   if (!issue.value) return "";
-  const origin = handoff.value || issue.value.hubOrigin;
-  return `${origin.replace(/\/$/, "")}/pair?code=${issue.value.code}`;
+  return issue.value.pairUrl;
 });
 const qr = computed(() => (qrData.value ? qrSvg(qrData.value, 148) : ""));
 const fingerprint = computed(() => state.value?.enrollment?.keyFingerprint ?? "");
@@ -76,7 +79,7 @@ watch(deviceId, (id) => {
   );
 });
 
-async function createCode(): Promise<void> {
+async function createCode(handoffCode?: string): Promise<void> {
   step.value = "boot";
   error.value = "";
   confirmed.value = false;
@@ -87,10 +90,19 @@ async function createCode(): Promise<void> {
   const s = createPairingSession();
   session.value = s;
   try {
-    const created = await pairingAdmin.createCode();
-    if (s.closed()) return;
+    const created = handoffCode ? await pairingAdmin.resolveCode(handoffCode) : await pairingAdmin.createCode();
+    if (s.closed()) {
+      await pairingAdmin.cancel(created.codeId).catch(() => {
+        notify("The late pairing code could not be cancelled. Check device credentials before retrying.");
+      });
+      return;
+    }
     issue.value = created;
     step.value = "code";
+    if (handoffCode) {
+      const path = settledPairPath(new URL(window.location.href));
+      if (path) window.history.replaceState(window.history.state, "", path);
+    }
     void pollCode(s, created.codeId, {
       intervalMs: 1_000,
       onState: (st) => {
@@ -137,14 +149,33 @@ async function approve(): Promise<void> {
 }
 
 /** Cancel before issuance; 409 already_issued → explicit Revoke path. */
-async function cancelCode(): Promise<void> {
-  if (!issue.value) return;
+async function cancelLive(keepalive: boolean): Promise<CancelResult> {
+  if (!issue.value) return "cancelled";
   try {
-    await pairingAdmin.cancel(issue.value.codeId);
+    const next = await pairingAdmin.cancel(issue.value.codeId, undefined, keepalive);
+    state.value = next;
+    if (session.value) session.value.state = next;
+    step.value = next.phase === "expired" ? "expired" : "cancelled";
+    session.value?.close();
+    return "cancelled";
   } catch (e) {
+    if (e instanceof DpiError && e.status === 409 && String(e.code) === "already_issued") {
+      const latest = await pairingAdmin.codeState(issue.value.codeId).catch(() => undefined);
+      if (latest) {
+        state.value = latest;
+        if (session.value) session.value.state = latest;
+      }
+      step.value = "issued";
+      error.value = "Credential already issued. Closing does not revoke it; choose Revoke explicitly if needed.";
+      return "issued";
+    }
     error.value = e instanceof Error ? e.message : String(e);
+    return "failed";
   }
 }
+const cancelCode = () => cancelLive(false);
+
+const settled = () => ["issued", "connected", "cancelled", "expired"].includes(state.value?.phase ?? "");
 
 async function revokeIssued(): Promise<void> {
   const id = deviceId.value;
@@ -173,37 +204,45 @@ async function copyCode(): Promise<void> {
 }
 
 async function close(): Promise<void> {
-  const s = session.value;
-  const created = issue.value;
-  session.value = undefined;
-  s?.close();
-  watcher.value?.();
-  // RAM-only: cancel the live code (best effort) unless it already terminated.
-  if (created && s && !["issued", "cancelled", "expired"].includes(s.state?.phase ?? "")) {
-    await cancelCode().catch(() => undefined);
+  if (closing.value) return;
+  closing.value = true;
+  busy.value = true;
+  try {
+    const outcome = await closeWizard({
+      needsCancel: !!issue.value && !settled(),
+      cancel: cancelCode,
+      timeoutMs: CANCEL_TIMEOUT_MS,
+    });
+    if (!outcome.closed) return;
+    session.value?.close();
+    watcher.value?.();
+    if (!outcome.confirmed)
+      notify("Pairing cancellation was not confirmed. The code expires on its own; check device credentials before retrying.");
+    emit("close");
+  } finally {
+    closing.value = false;
+    busy.value = false;
   }
-  emit("close");
 }
 
+defineExpose({ close });
+
 onMounted(() => {
-  // /pair handoff: read code/origin once, scrub the URL, pre-fill — no router.
-  const url = new URL(window.location.href);
-  const code = url.searchParams.get("code");
-  const origin = url.searchParams.get("origin");
-  if (code || origin) {
-    url.search = "";
-    window.history.replaceState({}, "", url);
+  if (props.handoff && "error" in props.handoff) {
+    error.value = props.handoff.error;
+    step.value = "expired";
+    return;
   }
-  if (origin) handoff.value = origin;
-  void createCode().then(() => {
-    // A handoff code only pre-fills the wizard; it never auto-approves.
-    if (code && issue.value && issue.value.code !== code) {
-      notify("Handoff code does not match the fresh code; use the new code.");
-    }
-  });
+  void createCode(props.handoff?.code);
 });
 onBeforeUnmount(() => {
-  session.value?.close();
+  const s = session.value;
+  if (s && !s.closed() && issue.value && !settled()) {
+    void cancelLive(true).then((result) => {
+      if (result !== "cancelled") notify("Pairing cancellation was not confirmed. Check device credentials before retrying.");
+    });
+  }
+  s?.close();
   watcher.value?.();
 });
 </script>
@@ -299,18 +338,22 @@ onBeforeUnmount(() => {
 
             <template v-else-if="step === 'cancelled'">
               <p class="hint">Pairing was cancelled (or the signature failed too many times).</p>
-              <button type="button" class="small" @click="createCode">Start over</button>
+              <button type="button" class="small" @click="createCode()">Start over</button>
             </template>
 
             <template v-else-if="step === 'expired'">
               <p class="hint">The pairing code expired.</p>
-              <button type="button" class="small" @click="createCode">New code</button>
+              <button type="button" class="small" @click="createCode()">New code</button>
             </template>
 
             <p v-if="error" class="error" role="alert">{{ error }}</p>
           </div>
         </div>
       </template>
+      <div v-else>
+        <p class="error" role="alert">{{ error || "This pairing link is unavailable." }}</p>
+        <button type="button" class="small" @click="createCode()">New code</button>
+      </div>
     </div>
   </div>
 </template>

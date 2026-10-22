@@ -5,8 +5,10 @@ import type { AgentDetail, ModelInfo, NetworkDevice, TaskNode } from "@sdk/api";
 import { sumUsage } from "@sdk/transcript";
 import { lineage } from "@sdk/models";
 import { HubStream } from "./stream";
+import { iconPath } from "./icon-path";
 import { deviceClient, hub, message } from "./hub";
 import { useAgent, useDevice, useNetwork, useSession, type AgentTarget } from "./composables";
+import type { PairHandoff } from "./pair-handoff";
 
 export const stream = new HubStream();
 export const streamState = ref(stream.state);
@@ -247,7 +249,8 @@ export const ui = reactive({
 
 export type Dialog =
   | { kind: "new-session"; deviceId?: string }
-  | { kind: "pair" }
+  | { kind: "pair"; handoff?: PairHandoff }
+  | { kind: "credentials"; deviceId: string }
   | { kind: "models" }
   | { kind: "help" }
   | { kind: "path"; path: string }
@@ -293,8 +296,7 @@ export function preset(text: string) {
 export const number = (n: number) =>
   Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n);
 export const json = (v: unknown) => JSON.stringify(v, null, 2);
-export const icon = (modelId = "") =>
-  `/icons/${models.value.find((m) => m.id === modelId)?.icon ?? "lab.png"}`;
+export const icon = (modelId = "") => iconPath(models.value.find((m) => m.id === modelId)?.icon);
 export const shortPath = (s = "", n = 34) => (s.length > n ? "…" + s.slice(-(n - 1)) : s);
 export function ago(ms?: number) {
   if (!ms) return "never";
@@ -330,7 +332,10 @@ export const inspectorExpanded = computed(() =>
 /** Show the inspector, optionally on a tab: expand its column, or open it over the chat when narrow. */
 export function showInspector(tab?: string) {
   if (tab) ui.tab = tab;
-  if (narrow.value) ui.inspectorOverlay = true;
+  if (narrow.value) {
+    ui.drawer = false;
+    ui.inspectorOverlay = true;
+  }
   else layout.inspector = true;
 }
 
@@ -341,7 +346,10 @@ export function hideInspector() {
 
 export function toggleTree() {
   if (!narrow.value) layout.tree = !layout.tree;
-  else if ((ui.drawer = !ui.drawer)) layout.tree = true;
+  else if ((ui.drawer = !ui.drawer)) {
+    ui.inspectorOverlay = false;
+    layout.tree = true;
+  }
 }
 
 export function toggleInspector() {

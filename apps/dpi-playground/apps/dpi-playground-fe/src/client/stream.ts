@@ -7,6 +7,20 @@ import type { Frame, MuxFrame, NetworkDevice } from "@sdk/api";
 export type Slot = "device" | "session" | "agent";
 export type StreamState = "connecting" | "live" | "offline";
 
+const MAX_BACKOFF_MS = 30_000;
+
+/** Delay before retry number `failures` (0-based) of a rejected PUT; a numeric Retry-After (seconds) wins. */
+export function retryDelay(failures: number, retryAfter?: string | null) {
+  if (retryAfter && /^\d+$/.test(retryAfter.trim()))
+    return Math.min(MAX_BACKOFF_MS, Math.max(1000, Number(retryAfter) * 1000));
+  return Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 10));
+}
+
+/** Delay before reconnect number `attempt` (0-based) after the browser gave up on the EventSource. */
+export function reconnectDelay(attempt: number) {
+  return Math.min(MAX_BACKOFF_MS, 2000 * 2 ** Math.min(attempt, 10));
+}
+
 export class HubStream {
   state: StreamState = "connecting";
   private source?: EventSource;
@@ -18,9 +32,13 @@ export class HubStream {
   private networkFns = new Set<(devices: NetworkDevice[]) => void>();
   private stateFns = new Set<(state: StreamState) => void>();
   private timer?: ReturnType<typeof setTimeout>;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private reconnects = 0;
+  private failures = 0;
   private flushing = Promise.resolve();
 
   start() {
+    clearTimeout(this.reconnectTimer);
     this.source?.close();
     this.streamId = "";
     this.source = new EventSource("/api/stream");
@@ -29,13 +47,19 @@ export class HubStream {
     this.source.onerror = () => {
       this.streamId = "";
       this.setState(this.source?.readyState === EventSource.CLOSED ? "offline" : "connecting");
-      if (this.source?.readyState === EventSource.CLOSED) setTimeout(() => this.start(), 2000);
+      if (this.source?.readyState === EventSource.CLOSED) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = setTimeout(() => this.start(), reconnectDelay(this.reconnects++));
+      }
     };
   }
 
   stop() {
     clearTimeout(this.timer);
+    clearTimeout(this.reconnectTimer);
     this.source?.close();
+    // An in-flight PUT that settles later sees a different stream and does not retry.
+    this.streamId = "";
   }
 
   /** Point a slot at a subscription key (or clear it). A changed key always gets a fresh snapshot. */
@@ -46,6 +70,14 @@ export class HubStream {
       this.fresh.add(key);
     } else this.slots.delete(slot);
     this.schedule();
+  }
+
+  /** Retry a failed slot without discarding the other scopes or their cached models. */
+  reopen(slot: Slot) {
+    const key = this.slots.get(slot);
+    if (!key) return;
+    this.fresh.add(key);
+    this.schedule(0);
   }
 
   route(slot: Slot, fn: (frame: Frame) => void) {
@@ -74,16 +106,21 @@ export class HubStream {
   private receive(m: MuxFrame) {
     const frame = m.frame;
     if (frame.type === "stream") {
+      if (m.sub !== "hello") return;
       this.streamId = frame.streamId;
       this.applied = [];
+      this.reconnects = 0;
+      this.failures = 0;
       this.setState("live");
       this.schedule(0);
       return;
     }
     if (frame.type === "network") {
+      if (m.sub !== "network") return;
       for (const fn of this.networkFns) fn(frame.devices);
       return;
     }
+    if (m.sub === "hello" || m.sub === "network") return;
     for (const [slot, key] of this.slots)
       if (key === m.sub) for (const fn of this.routes.get(slot) ?? []) fn(frame);
   }
@@ -108,28 +145,39 @@ export class HubStream {
         streamId,
         subs.filter((k) => !reopen.includes(k)),
       ))
-    )
+    ) {
+      for (const k of reopen) this.fresh.add(k);
       return;
+    }
     if (subs.join("\n") !== this.applied.join("\n") || reopen.length)
       await this.put(streamId, subs);
   }
 
   private async put(streamId: string, subs: string[]) {
+    let retryAfter: string | null = null;
     try {
       const r = await fetch(`/api/stream/${streamId}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ subs }),
       });
+      // The reply belongs to a stream that has since been replaced or stopped.
+      if (streamId !== this.streamId) return false;
       if (r.ok) {
         this.applied = subs;
+        this.failures = 0;
         return true;
       }
-      if (r.status === 404 && streamId === this.streamId) this.start();
-      else console.warn("subscription rejected", await r.text());
+      if (r.status === 404) {
+        this.start();
+        return false;
+      }
+      console.warn("subscription rejected", r.status, await r.text());
+      retryAfter = r.headers.get("retry-after");
     } catch {
-      this.schedule(1000);
+      if (streamId !== this.streamId) return false;
     }
+    this.schedule(retryDelay(this.failures++, retryAfter));
     return false;
   }
 }

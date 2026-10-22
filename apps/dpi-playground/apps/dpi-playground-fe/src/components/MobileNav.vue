@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // MobileNav: three-view phone nav (chat | details | network) mapped onto the existing
 // store state instead of a new mview field — net = the tree drawer, details = the inspector
-// overlay, chat = neither. client/store.ts is untouched.
+// overlay, chat = neither. The store keeps the overlays mutually exclusive.
 import { MessageSquare, PanelRight, Waypoints } from "lucide-vue-next";
 import {
   inspectorExpanded,

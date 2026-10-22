@@ -5,6 +5,7 @@ import type { WhenBusy } from "@sdk/api";
 import { newId } from "../client/ids";
 import { commands, parseCommand, type SlashCommand } from "../client/commands";
 import {
+  agent,
   agentHandle,
   agentState,
   attempt,
@@ -13,11 +14,15 @@ import {
   interrupting,
   online,
   selected,
+  streamState,
   ui,
 } from "../client/store";
 
 const mode = ref<WhenBusy>("followUp");
 const pending = ref(false);
+const canSend = computed(() =>
+  online.value && agentState.value.ready && agent.status.value === "live" && streamState.value === "live",
+);
 
 // Typing "/" lists the slash commands; arrows pick, Tab or Enter completes.
 const menuIndex = ref(0);
@@ -80,7 +85,7 @@ async function runCommand(text: string) {
 async function send() {
   const content = ui.composer.trim();
   const handle = agentHandle.value;
-  if (!content || pending.value || !handle) return;
+  if (!content || pending.value || !handle || !canSend.value) return;
   if (content.startsWith("/") && (await runCommand(content))) return;
   pending.value = true;
   const t = selected.value!;
@@ -174,7 +179,7 @@ function withdraw(id: number) {
           ><button
             class="send"
             aria-label="Send message"
-            :disabled="!ui.composer.trim() || pending || !agentState.ready || !online"
+            :disabled="!ui.composer.trim() || pending || !canSend"
             @click="send"
           >
             <ArrowUp :size="20" />

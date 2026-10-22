@@ -26,23 +26,37 @@ function feed(
   stream: HubStream,
   slot: "device" | "session" | "agent",
   apply: (frame: Frame) => void,
+  readyOn: "hello" | "snapshot" = "hello",
 ) {
   const status = ref<FeedStatus>("idle");
   const fault = ref("");
   stream.route(slot, (frame) => {
-    if (frame.type === "hello") status.value = "live";
+    if (frame.type === "hello") {
+      status.value = readyOn === "hello" ? "live" : "connecting";
+      if (readyOn === "hello") fault.value = "";
+    }
     else if (frame.type === "disconnected") status.value = "reconnecting";
     else if (frame.type === "fault") {
       status.value = "fault";
       fault.value = frame.error.message;
-    } else apply(frame);
+    } else {
+      apply(frame);
+      if (frame.type === readyOn) {
+        fault.value = "";
+        status.value = "live";
+      }
+    }
   });
   const select = (key?: string) => {
     fault.value = "";
     status.value = key ? "connecting" : "idle";
     stream.set(slot, key);
   };
-  return { status, fault, select };
+  const retry = () => {
+    status.value = "connecting";
+    stream.reopen(slot);
+  };
+  return { status, fault, select, retry };
 }
 
 export function useNetwork(stream: HubStream) {
@@ -96,7 +110,7 @@ export function useAgent(stream: HubStream, target: Ref<AgentTarget | undefined>
   const model = new AgentModel();
   const version = ref(0);
   model.subscribe(() => version.value++);
-  const { status, fault, select } = feed(stream, "agent", (frame) => model.apply(frame));
+  const { status, fault, select, retry } = feed(stream, "agent", (frame) => model.apply(frame), "snapshot");
   watch(
     () => (target.value ? agentSub(target.value) : undefined),
     (key) => {
@@ -107,5 +121,5 @@ export function useAgent(stream: HubStream, target: Ref<AgentTarget | undefined>
   );
   // A fresh object per version: the model mutates its state in place.
   const state = computed(() => (version.value, { ...model.state }));
-  return { model, state, status, fault, version };
+  return { model, state, status, fault, version, retry };
 }

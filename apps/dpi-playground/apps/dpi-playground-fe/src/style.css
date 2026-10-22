@@ -859,6 +859,24 @@ svg {
   background: var(--chat);
   position: relative;
 }
+.agent-stream-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--warn);
+  color: var(--warn);
+}
+.agent-stream-status > div {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agent-stream-status p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
 .chat-header {
   display: flex;
   align-items: center;

@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Archive,
+  KeyRound,
 } from "lucide-vue-next";
 import DeviceIcon from "./DeviceIcon.vue";
 import type { TreeNode } from "@sdk/models";
@@ -103,6 +104,15 @@ const title = computed(() => {
       <span class="badge">{{ device.kind }}</span>
       <span class="meta" :class="{ err: dot === 'err' }">{{ statusText }}</span>
       <span class="acts" @click.stop>
+        <button
+          v-if="device.pairing"
+          class="icon-button"
+          :aria-label="`Manage credentials for ${label}`"
+          title="Manage device credentials, including while offline"
+          @click="emit('action', 'credentials')"
+        >
+          <KeyRound :size="16" />
+        </button>
         <button
           class="icon-button"
           :disabled="!online"

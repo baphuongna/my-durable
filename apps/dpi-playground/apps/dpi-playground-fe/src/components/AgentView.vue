@@ -267,13 +267,26 @@ watch(
         </template>
       </div>
     </header>
+    <div
+      v-if="agent.fault.value || agent.status.value === 'fault' || agent.status.value === 'reconnecting' || (agentState.ready && agent.status.value === 'connecting')"
+      class="agent-stream-status"
+      role="alert"
+    >
+      <div>
+        <strong>{{ agentState.ready ? "Cached transcript is stale." : "Agent stream unavailable." }}</strong>
+        <p>{{ agent.fault.value || "Updates are paused while the stream reconnects." }}</p>
+        <p>Sending is paused until a fresh snapshot arrives. Your draft is kept.</p>
+      </div>
+      <button :disabled="agent.status.value === 'connecting'" @click="agent.retry">
+        Retry stream
+      </button>
+    </div>
     <div ref="chat" class="chat-scroll" data-testid="chat">
       <div v-if="!agentState.ready" class="chat-empty">
         <Activity :size="30" />
         <h2 v-if="agent.status.value === 'fault'">This agent is unavailable.</h2>
         <h2 v-else>Connecting to the agent…</h2>
-        <p v-if="agent.fault.value" class="message-error">{{ agent.fault.value }}</p>
-        <p v-else>The agent keeps working on {{ device?.id }} while this view connects.</p>
+        <p>The agent keeps working on {{ device?.id }} while this view connects.</p>
       </div>
       <template v-else>
         <div v-if="!items.length" class="chat-empty">
