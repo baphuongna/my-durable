@@ -60,7 +60,9 @@ const dot = computed(() => {
   const s = device.value?.status;
   return s === "online" ? "on" : s === "checking" ? "chk" : s === "offline" ? "off" : "err";
 });
-const label = computed(() => device.value?.id ?? session.value?.name ?? agent.value?.name ?? "");
+const label = computed(
+  () => device.value?.name ?? device.value?.id ?? session.value?.name ?? agent.value?.name ?? "",
+);
 const title = computed(() => {
   if (device.value)
     return `${device.value.name} · ${device.value.url}${device.value.error ? `\n${device.value.error}` : ""}`;
