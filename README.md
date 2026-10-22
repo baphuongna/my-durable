@@ -8,20 +8,20 @@
 
 📺 Watch this video to get the full breakdown of this codebase: **[Pi Durable PROACTIVE Agents](https://youtu.be/DNDYYHsypZg)**
 
-## Quick start (`md`)
+## Quick start (`dpi`)
 
 ```sh
 npm install -g my-durable
 
-md hub                 # web UI + device tunnel server  → http://127.0.0.1:4781
-md device              # device daemon (pairs to a hub, serves this machine)
-md tui                 # terminal admin client
-md --help              # commands, flags and environment variables
-md update --check      # is a newer published version available?
-md update              # install it (npm i -g my-durable@latest)
+dpi hub                 # web UI + device tunnel server  → http://127.0.0.1:4781
+dpi device              # device daemon (pairs to a hub, serves this machine)
+dpi tui                 # terminal admin client
+dpi --help              # commands, flags and environment variables
+dpi update --check      # is a newer published version available?
+dpi update              # install it (npm i -g my-durable@latest)
 ```
 
-`md hub` is the only component that other machines talk to, so it is also the one
+`dpi hub` is the only component that other machines talk to, so it is also the one
 to put behind a TLS proxy or tunnel (it refuses anything that did not arrive over
 HTTPS). Pair a device by opening the hub, pressing **Pair a device**, and entering
 the code — or open the pairing link directly on the machine being added.

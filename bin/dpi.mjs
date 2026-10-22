@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// `md` — one command for the Durable Pi stack.
-//   md hub    [--port N] [--host H] [--public-host H]   web UI + device tunnel server
-//   md device                                            device-side daemon
-//   md tui                                               terminal admin client
+// `dpi` — one command for the Durable Pi stack.
+//   dpi hub    [--port N] [--host H] [--public-host H]   web UI + device tunnel server
+//   dpi device                                            device-side daemon
+//   dpi tui                                               terminal admin client
 // Every subcommand runs the TypeScript entry through tsx, so no build step is needed.
 import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -14,18 +14,18 @@ const COMMANDS = {
   tui: "../apps/dpi-tui/src/main.ts",
 };
 
-const HELP = `md — Durable Pi
+const HELP = `dpi — Durable Pi
 
 Usage:
-  md hub [--port 4781] [--host 127.0.0.1] [--public-host <host>]
+  dpi hub [--port 4781] [--host 127.0.0.1] [--public-host <host>]
       Web UI + device tunnel server (devices dial this).
-  md device
+  dpi device
       Device-side daemon (pairs to a hub, serves one machine's agents).
-  md tui
+  dpi tui
       Terminal admin client.
-  md help | md --help | md -h
-  md version | md --version | md -v
-  md update [--check]
+  dpi help | dpi --help | dpi -h
+  dpi version | dpi --version | dpi -v
+  dpi update [--check]
       --check  compare the installed version with the registry, change nothing
       (no flag) install the latest published version globally
 
@@ -37,7 +37,7 @@ Environment (device): DPI_HUB_URL, DPI_HOME
 /**
  * tsx is a dependency of the published package, but a bare repository checkout has it only
  * inside the per-app node_modules. Try the normal resolution first, then the known local
- * copies, so `md` works in both places without a root install.
+ * copies, so `dpi` works in both places without a root install.
  */
 async function loadTsx() {
   try {
@@ -61,7 +61,7 @@ async function loadTsx() {
     }
   }
   throw new Error(
-    "md: cannot find tsx. Install the package (npm install -g my-durable) or run npm install in an app directory.",
+    "dpi: cannot find tsx. Install the package (npm install -g my-durable) or run npm install in an app directory.",
   );
 }
 
@@ -75,7 +75,7 @@ if (!first || first === "help" || first === "--help" || first === "-h") {
 if (first === "version" || first === "--version" || first === "-v") {
   const { readFileSync } = await import("node:fs");
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  process.stdout.write(`md (my-durable) ${pkg.version}\n`);
+  process.stdout.write(`dpi (my-durable) ${pkg.version}\n`);
   process.exit(0);
 }
 
@@ -94,7 +94,7 @@ if (first === "update" || first === "upgrade") {
     if (!res.ok) throw new Error(`registry responded ${res.status}`);
     latest = (await res.json()).version;
   } catch (error) {
-    process.stderr.write(`md update: cannot reach the npm registry (${error.message})\n`);
+    process.stderr.write(`dpi update: cannot reach the npm registry (${error.message})\n`);
     process.exit(1);
   }
 
@@ -116,30 +116,30 @@ if (first === "update" || first === "upgrade") {
   if (order === 0 && a.pre !== b.pre) order = a.pre ? -1 : 1;
 
   if (order >= 0) {
-    process.stdout.write(`md ${current} is up to date (latest ${latest}).\n`);
+    process.stdout.write(`dpi ${current} is up to date (latest ${latest}).\n`);
     process.exit(0);
   }
-  process.stdout.write(`md ${current} -> ${latest} available.\n`);
+  process.stdout.write(`dpi ${current} -> ${latest} available.\n`);
   if (checkOnly) {
-    process.stdout.write("Run `md update` to install it.\n");
+    process.stdout.write("Run `dpi update` to install it.\n");
     process.exit(0);
   }
 
   const child = spawn("npm", ["install", "-g", `my-durable@${latest}`], { stdio: "inherit" });
   child.on("error", (error) => {
-    process.stderr.write(`md update: cannot run npm (${error.message})\n`);
+    process.stderr.write(`dpi update: cannot run npm (${error.message})\n`);
     process.exit(1);
   });
   child.on("exit", (code) => {
     if (code !== 0) {
-      process.stderr.write(`md update: npm exited ${code}; still on ${current}.\n`);
+      process.stderr.write(`dpi update: npm exited ${code}; still on ${current}.\n`);
       process.exit(code ?? 1);
     }
-    process.stdout.write(`md updated ${current} -> ${latest}.\n`);
+    process.stdout.write(`dpi updated ${current} -> ${latest}.\n`);
     process.exit(0);
   });
 } else if (!Object.hasOwn(COMMANDS, first)) {
-  process.stderr.write(`md: unknown command '${first}'\n\n${HELP}`);
+  process.stderr.write(`dpi: unknown command '${first}'\n\n${HELP}`);
   process.exit(2);
 } else {
   // The entries parse process.argv.slice(2) themselves: hand them their own args.
