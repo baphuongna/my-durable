@@ -180,11 +180,13 @@ test("barrier: deterministic park/release, no timing races", async () => {
 });
 
 test("log sanitizer: tokens/codes/private keys never leak", () => {
-  const dirty = `token=dpt_${"A".repeat(43)} dpi_${"B".repeat(43)} code=AB2C7DEF Authorization: Bearer abc123.xyz\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----`;
+  const dirty = `token=dpt_${ "A".repeat(43)} dpi_${"B".repeat(43)} code=AB2C7DEF code=ABCD2345EF67 code=a1b2c3d4-e5f6-4789-abcd-eff012345678 Authorization: Bearer abc123.xyz\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----`;
   const clean = sanitize(dirty);
   assert.ok(!clean.includes("dpt_AAAA"));
   assert.ok(!clean.includes("dpi_BBBB"));
   assert.ok(!clean.includes("AB2C7DEF"));
+  assert.ok(!clean.includes("ABCD2345EF67"));
+  assert.ok(!clean.includes("a1b2c3d4-e5f6-4789-abcd-eff012345678"), "a minted UUID v4 code is redacted");
   assert.ok(!clean.includes("secret"));
   assert.ok(clean.includes("dpt_<redacted>"));
 });

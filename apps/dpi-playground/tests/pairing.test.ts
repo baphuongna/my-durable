@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign as edSign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign as edSign } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -487,9 +487,15 @@ test("W-3 + malformed: schema rejects; non-Ed25519 key rejected; declared-finger
     // unknown field
     let r = fx.service.start({ ...base, sneaky: 1 }, "10.0.0.2");
     assert.ok(!r.ok && r.error.code === "invalid");
-    // bad code charset
-    r = fx.service.start({ ...base, code: "ab2c7def" }, "10.0.0.2");
+    // bad code charset: an out-of-alphabet character is a format error (0/1/8/9 are not base32)
+    r = fx.service.start({ ...base, code: "ab2c7de0" }, "10.0.0.2");
     assert.ok(!r.ok && r.error.code === "invalid");
+    // unsupported length: 9 chars stays a format error
+    r = fx.service.start({ ...base, code: "AB2C7DEFF" }, "10.0.0.2");
+    assert.ok(!r.ok && r.error.code === "invalid");
+    // lower case is CANONICALISED (human-typed path), so it reaches the lookup: unknown code, not a format error
+    r = fx.service.start({ ...base, code: "ab2c7def" }, "10.0.0.2");
+    assert.ok(!r.ok && r.error.code === "code_invalid" && r.error.status === 404);
     // wrong declared fingerprint
     r = fx.service.start({ ...base, keyFingerprint: "sha256:" + "01".repeat(32) }, "10.0.0.2");
     assert.ok(!r.ok && r.error.code === "fingerprint_mismatch");
@@ -555,6 +561,136 @@ test("rates: code creation 5/min/IP then rate_limited; clientTime never drives T
       "10.0.0.2",
     );
     assert.ok(!late.ok && late.error.code === "code_expired");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// --- Pairing code hardening: UUID v4 minted; 12- and 8-char base32 are legacy parse paths ---
+
+const UUID_V4_CODE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_CODE = "a1b2c3d4-e5f6-4789-abcd-eff012345678";
+
+const PAIR_REQUEST = (code: string, kp: ReturnType<typeof deviceKey>) => ({
+  type: "pair.request",
+  v: 1,
+  requestId: uuid(),
+  code,
+  deviceUid: uuid(),
+  deviceName: "dev-a",
+  publicKey: pubPem(kp),
+  keyFingerprint: fingerprintOf(kp),
+  clientTime: 0,
+});
+
+/** A code entry the way the service builds one, at a legacy (base32) length. */
+function injectLegacyCode(fx: Fixture, code: string): string {
+  const service = fx.service as unknown as {
+    codes: Map<string, { codeId: string; code: string; expiresAt: number; cancelled: boolean }>;
+    byCode: Map<string, string>;
+  };
+  const codeId = randomUUID(); // distinct per injected entry: `uuid()` is a fixed test value
+  service.codes.set(codeId, { codeId, code, expiresAt: fx.clock.now + 300_000, cancelled: false });
+  service.byCode.set(code, codeId);
+  return codeId;
+}
+
+test("hardening: a minted code is a canonical UUID v4 and 500 mints are all distinct", async () => {
+  const fx = await fixture();
+  try {
+    const codes: string[] = [];
+    for (let i = 0; i < 500; i++) {
+      const created = fx.service.createCode(`10.0.${i >> 8}.${i & 0xff}`);
+      assert.ok(created.ok, `mint ${i} refused`);
+      assert.match(created.value.code, UUID_V4_CODE, `mint ${i} is UUID v4`);
+      assert.ok(created.value.pairUrl.endsWith(`/pair?code=${created.value.code}&v=1`), `mint ${i} pairUrl`);
+      codes.push(created.value.code);
+    }
+    assert.equal(new Set(codes).size, 500, "500 mints are all distinct");
+    assert.equal(new Set(codes.map((c) => c.slice(0, 1))).size > 1, true, "the first character varies");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("hardening: an upper-case UUID resolves and starts the same code", async () => {
+  const fx = await fixture();
+  try {
+    const created = fx.service.createCode("10.0.0.1");
+    assert.ok(created.ok);
+    const code = created.value.code;
+    const upper = code.toUpperCase();
+    assert.notEqual(upper, code);
+
+    // resolveCode (admin handoff) returns the canonical lower-case code and a v=1 URL
+    const r = fx.service.resolveCode({ code: upper });
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.equal(r.value.code, code);
+    assert.equal(r.value.codeId, created.value.codeId);
+    assert.ok(r.value.pairUrl.endsWith(`/pair?code=${code}&v=1`), "the scrubbed URL carries the canonical code");
+
+    // start accepts it and binds it to the SAME entry: the same tuple lower-cased returns the same challenge
+    const kp = deviceKey();
+    const request = PAIR_REQUEST(upper, kp);
+    const started = fx.service.start(request, "10.0.0.2");
+    assert.ok(started.ok, JSON.stringify(started));
+    const lowerRetry = fx.service.start({ ...request, code }, "10.0.0.3");
+    assert.ok(lowerRetry.ok, JSON.stringify(lowerRetry));
+    assert.equal(
+      (lowerRetry.value as { enrollmentId: string }).enrollmentId,
+      (started.value as { enrollmentId: string }).enrollmentId,
+      "upper and lower case renderings are the same code",
+    );
+    // A different device on the canonical code hits the SAME entry → code_in_use.
+    const other = fx.service.start(PAIR_REQUEST(code, deviceKey()), "10.0.0.4");
+    assert.ok(!other.ok && other.error.code === "code_in_use", JSON.stringify(other));
+
+    // Non-UUID rubbish and hyphen-less hex are format errors, never lookups.
+    for (const bad of [code.replace(/-/g, ""), "ABCD2345EF678", "AB2C7DE0", "ABCD2345EF", "not-a-code"]) {
+      const badResolve = fx.service.resolveCode({ code: bad });
+      assert.ok(!badResolve.ok && badResolve.error.status === 400 && badResolve.error.code === "code_invalid", bad);
+      const badStart = fx.service.start(PAIR_REQUEST(bad, deviceKey()), "10.0.0.5");
+      assert.ok(!badStart.ok && badStart.error.status === 400, bad);
+    }
+    // exactly one body key stays required
+    const extra = fx.service.resolveCode({ code, extra: 1 });
+    assert.ok(!extra.ok && extra.error.status === 400 && extra.error.code === "code_invalid");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("hardening: legacy 12- and 8-char base32 codes still resolve and start; unknown codes are 404", async () => {
+  const fx = await fixture();
+  try {
+    const legacy12 = "ABCD2345EF67";
+    const legacy8 = "AB2C7DEF";
+    injectLegacyCode(fx, legacy12);
+    injectLegacyCode(fx, legacy8);
+
+    for (const legacy of [legacy12, legacy8]) {
+      const r = fx.service.resolveCode({ code: legacy });
+      assert.ok(r.ok, JSON.stringify(r));
+      assert.equal(r.value.code, legacy);
+      assert.ok(r.value.pairUrl.endsWith(`/pair?code=${legacy}&v=1`), "an in-flight legacy link keeps working");
+      const started = fx.service.start(PAIR_REQUEST(legacy, deviceKey()), "10.0.0.2");
+      assert.ok(started.ok && started.value.type === "pair.challenge", JSON.stringify(started));
+    }
+
+    // A grouped 12-char code is the human rendering of a legacy code → same entry.
+    const grouped = fx.service.resolveCode({ code: "ABCD-2345-EF67" });
+    assert.ok(grouped.ok && grouped.value.code === legacy12, JSON.stringify(grouped));
+    // …but a truncated group is a format error, not an 8-char code.
+    const truncated = fx.service.resolveCode({ code: "ABCD-2345" });
+    assert.ok(!truncated.ok && truncated.error.status === 400 && truncated.error.code === "code_invalid");
+
+    // A legacy code nobody minted is a LOOKUP miss (404), never a schema/format error.
+    for (const unknown of ["ZZ7Y6X2W", "ZZ7Y6X2WABCD"]) {
+      const r = fx.service.resolveCode({ code: unknown });
+      assert.ok(!r.ok && r.error.status === 404 && r.error.code === "code_invalid", unknown);
+      const s = fx.service.start(PAIR_REQUEST(unknown, deviceKey()), "10.0.0.9");
+      assert.ok(!s.ok && s.error.status === 404 && s.error.code === "code_invalid", unknown);
+    }
   } finally {
     await fx.cleanup();
   }

@@ -1,4 +1,6 @@
 /** Pair links stay in RAM and may only refer to the browser's own hub. */
+import { normalizePairCode } from "../../../../../dpi-sdk/src/protocol/pairing";
+
 export type PairHandoff = { code: string; origin: string } | { error: string };
 
 export function readPairHandoff(url: URL): PairHandoff | undefined {
@@ -6,13 +8,14 @@ export function readPairHandoff(url: URL): PairHandoff | undefined {
   const params = url.searchParams;
   if (!params.has("code") && !params.has("origin") && !params.has("v")) return undefined;
   const code = params.get("code");
+  // The SDK owns the code shape: canonicalise a grouped/lower-case value, refuse anything else.
+  const canonical = code === null ? undefined : normalizePairCode(code);
   if (
     url.username ||
     url.password ||
     url.hash ||
     params.getAll("code").length !== 1 ||
-    !code ||
-    !/^[A-Z2-7]{8}$/.test(code) ||
+    !canonical ||
     params.getAll("v").length !== 1 ||
     params.get("v") !== "1"
   ) {
@@ -37,7 +40,7 @@ export function readPairHandoff(url: URL): PairHandoff | undefined {
       };
     }
   }
-  return { code, origin: url.origin };
+  return { code: canonical, origin: url.origin };
 }
 
 /**

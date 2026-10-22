@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   PAIRING_DTOS,
+  PAIR_CODE_PATTERN,
   PairCodeIssue,
   PairCodeState,
   PairError,
@@ -14,11 +15,18 @@ import {
   PairResponse,
   TokenIssue,
   checkPairingDto,
+  isPairCode,
+  normalizePairCode,
   parseHubOrigin,
   pairingSigningPayload,
   strictTokenBytes,
 } from "../src/protocol/pairing.js";
-import { assertLimitsConfig } from "../src/protocol/limits.js";
+import {
+  PAIR_CODE_LENGTH,
+  PAIR_CODE_LEGACY_LENGTH,
+  PAIR_CODE_UUID_LENGTH,
+  assertLimitsConfig,
+} from "../src/protocol/limits.js";
 
 const uuid = () => "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
 const fp = () => "sha256:" + "ab".repeat(32);
@@ -177,4 +185,105 @@ test("strictTokenBytes — base64url charset, trailing newline, decoded byte len
 
 test("limits config self-check", () => {
   assert.doesNotThrow(assertLimitsConfig);
+});
+
+// --- Pairing code hardening: UUID v4 minted; 12- and 8-char base32 are legacy parse paths ---
+
+const UUID_CODE = "a1b2c3d4-e5f6-4789-abcd-eff012345678";
+
+const requestBase = {
+  type: "pair.request",
+  v: 1,
+  requestId: uuid(),
+  deviceUid: uuid(),
+  deviceName: "d",
+  publicKey: "k",
+  keyFingerprint: fp(),
+  clientTime: 1,
+};
+
+test("hardening: code shape constants — UUID v4 minted, 12 and 8 char base32 legacy", () => {
+  assert.equal(PAIR_CODE_LENGTH, 12);
+  assert.equal(PAIR_CODE_LEGACY_LENGTH, 8);
+  assert.equal(PAIR_CODE_UUID_LENGTH, 36);
+  // One pattern, three accepted families — every consumer reads this string.
+  const re = new RegExp(PAIR_CODE_PATTERN);
+  assert.ok(re.test(UUID_CODE));
+  assert.ok(re.test("ABCD2345EF67"));
+  assert.ok(re.test("AB2C7DEF"));
+});
+
+test("hardening: a UUID v4 code validates; 12- and 8-char base32 codes still parse", () => {
+  assert.ok(checkPairingDto(PairRequest, { ...requestBase, code: UUID_CODE }));
+  assert.ok(checkPairingDto(PairRequest, { ...requestBase, code: "ABCD2345EF67" }));
+  assert.ok(checkPairingDto(PairRequest, { ...requestBase, code: "AB2C7DEF" }));
+  assert.ok(
+    checkPairingDto(PairCodeIssue, {
+      type: "pair.code", v: 1, codeId: uuid(), code: UUID_CODE, expiresAt: 1,
+      hubOrigin: "https://h.example", pairUrl: `https://h.example/pair?code=${UUID_CODE}&v=1`,
+    }),
+  );
+});
+
+test("hardening: only canonical UUID v4 is a code — not any hex string", () => {
+  for (const bad of [
+    UUID_CODE.toUpperCase(), // canonical form is lower case
+    "a1b2c3d4e5f64789abcdeff012345678", // hyphens dropped: 32 hex, not a UUID
+    "a1b2c3d4-e5f6-5789-abcd-eff012345678", // version nibble 5
+    "a1b2c3d4-e5f6-4789-7bcd-eff012345678", // variant nibble 7
+    "g1b2c3d4-e5f6-4789-abcd-eff012345678", // not hex
+    "a1b2c3d4-e5f6-4789-abcd-eff01234567", // one hex short
+    ` ${UUID_CODE}`,
+  ]) {
+    assert.ok(!checkPairingDto(PairRequest, { ...requestBase, code: bad }), bad);
+    assert.equal(isPairCode(bad), false, bad);
+  }
+});
+
+test("hardening: 10/11/13 chars, non-alphabet and trailing newline are rejected", () => {
+  for (const code of ["ABCD2345EF", "ABCD2345EF6", "ABCD2345EF67A", "AB2C7DEFG", "AB2C7DE0"]) {
+    assert.ok(!checkPairingDto(PairRequest, { ...requestBase, code }), code);
+    assert.equal(isPairCode(code), false, code);
+  }
+  // `$` alone matches before a final newline; the strict end anchor must not.
+  for (const code of ["AB2C7DEF\n", "ABCD2345EF67\n", `${UUID_CODE}\n`]) {
+    assert.ok(!checkPairingDto(PairRequest, { ...requestBase, code }), JSON.stringify(code));
+    assert.equal(isPairCode(code), false, JSON.stringify(code));
+  }
+});
+
+test("hardening: isPairCode accepts UUID v4, 12 and 8 char base32 — nothing else, no trim", () => {
+  assert.equal(isPairCode(UUID_CODE), true);
+  assert.equal(isPairCode("ABCD2345EF67"), true);
+  assert.equal(isPairCode("AB2C7DEF"), true);
+  for (const bad of ["", " ABCD2345EF67", "ABCD2345EF67 ", "abcd2345ef67", "ABCD-2345-EF67", 12, null, undefined, {}]) {
+    assert.equal(isPairCode(bad), false, JSON.stringify(bad));
+  }
+});
+
+test("hardening: normalizePairCode canonicalises typed/grouped codes", () => {
+  // base32 family: separators go, case is normalised
+  assert.equal(normalizePairCode("abcd-2345-ef67"), "ABCD2345EF67");
+  assert.equal(normalizePairCode("ABCD 2345 EF67"), "ABCD2345EF67");
+  assert.equal(normalizePairCode("ABCD-2345-EF67"), "ABCD2345EF67");
+  assert.equal(normalizePairCode("ABCD2345EF67"), "ABCD2345EF67");
+  assert.equal(normalizePairCode("AB2C7DEF"), "AB2C7DEF");
+  // UUID family: hyphens are structure, so they stay; only the case changes
+  assert.equal(normalizePairCode(UUID_CODE.toUpperCase()), UUID_CODE);
+  assert.equal(normalizePairCode(UUID_CODE), UUID_CODE);
+  // A grouped base32 value is the human rendering of a 12-char code: a truncated group is refused.
+  assert.equal(normalizePairCode("ABCD-2345"), undefined);
+  assert.equal(normalizePairCode("ABCD 2345 EF67 GHIJ"), undefined);
+  assert.equal(normalizePairCode("ABCD2345EF678"), undefined);
+  assert.equal(normalizePairCode("AB2C7DE0"), undefined);
+  assert.equal(normalizePairCode(""), undefined);
+  // …and a hyphen-less or malformed UUID is not rescued into the base32 family
+  assert.equal(normalizePairCode("a1b2c3d4e5f64789abcdeff012345678"), undefined);
+  assert.equal(normalizePairCode("a1b2c3d4-e5f6-5789-abcd-eff012345678"), undefined);
+  // Round-trip: whatever normalises is exactly what the schema accepts.
+  for (const raw of ["abcd-2345-ef67", "AB2C7DEF", "ABCD 2345 EF67", UUID_CODE.toUpperCase(), UUID_CODE]) {
+    const canonical = normalizePairCode(raw);
+    assert.ok(canonical && isPairCode(canonical), raw);
+    assert.ok(checkPairingDto(PairRequest, { ...requestBase, code: canonical }), raw);
+  }
 });

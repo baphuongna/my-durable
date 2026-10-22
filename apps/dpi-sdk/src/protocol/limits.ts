@@ -72,6 +72,17 @@ export const RECONNECT_BACKOFF_S = { initS: 1, capS: 15 } as const;
 /** Monitor probe backoff: the same curve with a 30 s cap. */
 export const MONITOR_BACKOFF_S = { initS: 1, capS: 30 } as const;
 
+/**
+ * Pairing codes are minted as canonical lower-case UUID v4 (122 random bits): the code is a
+ * bearer secret that authorises one enrollment, so 40/60-bit base32 was too short.
+ * `PAIR_CODE_LENGTH` and `PAIR_CODE_LEGACY_LENGTH` are the base32 lengths PARSING still accepts
+ * for links already in flight; the hub never mints them anymore.
+ */
+export const PAIR_CODE_UUID_LENGTH = 36;
+/** Legacy base32 code length (60 bits), accepted when parsing only. */
+export const PAIR_CODE_LENGTH = 12;
+/** Oldest legacy base32 code length (40 bits), accepted when parsing only. */
+export const PAIR_CODE_LEGACY_LENGTH = 8;
 /** Pairing code TTL by hub clock. 5 min. */
 export const PAIR_CODE_TTL_MS = 300_000;
 /** Challenge nonce TTL. 60 s. */

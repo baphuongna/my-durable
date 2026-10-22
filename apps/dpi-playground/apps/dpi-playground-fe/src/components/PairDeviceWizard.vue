@@ -22,6 +22,7 @@ import { createPairingSession, pairingAdmin, pollCode, type PairingSession } fro
 import { qrSvg } from "../client/qrcode";
 import type { PairCodeIssue, PairCodeState } from "@sdk/api";
 import { DpiError } from "@sdk/errors";
+import { isPairCode } from "@sdk/protocol/pairing";
 import { settledPairPath, type PairHandoff } from "../client/pair-handoff";
 import { CANCEL_TIMEOUT_MS, closeWizard, type CancelResult } from "../client/pair-close";
 import { notify, network } from "../client/store";
@@ -45,7 +46,11 @@ const watcher = ref<(() => void) | undefined>();
 
 const grouped = computed(() => {
   const code = issue.value?.code ?? "";
-  return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+  if (!isPairCode(code)) return code; // never invent separators around an unsupported value
+  // A minted code is a UUID v4: its hyphens are structure, so it is shown as it is.
+  if (code.includes("-")) return code;
+  // Legacy base32 (12 | 8 chars) reads better in blocks of four: `ABCD-2345-EF67`.
+  return (code.match(/.{4}/g) ?? []).join("-");
 });
 const qrData = computed(() => {
   if (!issue.value) return "";

@@ -320,3 +320,103 @@ test("local API: GET/POST /v1/pairing over the real backend (auth, no secrets)",
   }
 });
 
+
+// --- Pairing code hardening: 12 chars (60 bits) minted, 8 chars (40 bits) parse-only ---
+
+test("hardening: 12-char and grouped codes are sent to the hub canonical; v=1 stays the only version", async () => {
+  const home = await tempHome();
+  const hub = fakeHub();
+  const dp = newPairing(home, hub);
+  try {
+    // human-typed grouped + lower case → the hub sees the canonical ungrouped code
+    await dp.start({ code: "abcd-2345-ef67", hub: "https://h.example.com" });
+    assert.equal(dp.status().state, "pairing");
+    const first = hub.calls.find((c) => c.url.endsWith("/api/pair/start"));
+    assert.ok(first, "the hub was called");
+    assert.equal((first.body as { code: string }).code, "ABCD2345EF67");
+    assert.equal((first.body as { v: number }).v, 1);
+    dp.cancel();
+
+    // a plain 12-char code and a legacy 8-char code both pass the shape check
+    await dp.start({ code: "ABCD2345EF67", hub: "https://h.example.com" });
+    assert.equal(dp.status().state, "pairing");
+    dp.cancel();
+    await dp.start({ code: "AB2C7DEF", hub: "https://h.example.com" });
+    assert.equal(dp.status().state, "pairing");
+    dp.cancel();
+
+    // an unsupported length is refused before any network I/O
+    const callsBefore = hub.calls.length;
+    await assert.rejects(dp.start({ code: "ABCD2345EF678", hub: "https://h.example.com" }), /Pairing code must be/i);
+    await assert.rejects(dp.start({ code: "ABCD-2345", hub: "https://h.example.com" }), /Pairing code must be/i);
+    assert.equal(hub.calls.length, callsBefore, "no network on a malformed code");
+  } finally {
+    if (dp.status().pending) dp.cancel();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("hardening: a 12-char pair URL is accepted, a grouped one is canonicalised, v=2 stays refused", async () => {
+  const home = await tempHome();
+  try {
+    const okHub = fakeHub();
+    const okDp = newPairing(home, okHub);
+    await okDp.start({ code: "", pairUrl: "https://h.example.com/pair?code=ABCD2345EF67&v=1" });
+    assert.equal(okDp.status().state, "pairing");
+    assert.equal(
+      (okHub.calls.find((c) => c.url.endsWith("/api/pair/start"))!.body as { code: string }).code,
+      "ABCD2345EF67",
+    );
+    okDp.cancel();
+
+    const groupedHub = fakeHub();
+    const groupedDp = newPairing(home, groupedHub);
+    await groupedDp.start({ code: "", pairUrl: "https://h.example.com/pair?code=abcd-2345-ef67&v=1" });
+    assert.equal(
+      (groupedHub.calls.find((c) => c.url.endsWith("/api/pair/start"))!.body as { code: string }).code,
+      "ABCD2345EF67",
+    );
+    groupedDp.cancel();
+
+    // the URL contract is unchanged: v must be exactly "1"
+    const v2Hub = fakeHub();
+    const v2Dp = newPairing(home, v2Hub);
+    await assert.rejects(v2Dp.start({ code: "", pairUrl: "https://h.example.com/pair?code=ABCD2345EF67&v=2" }), /pairUrl/);
+    assert.equal(v2Hub.calls.length, 0);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("hardening: a minted UUID v4 code is canonicalised (lower case, hyphens kept) before the hub", async () => {
+  const home = await tempHome();
+  const hub = fakeHub();
+  const dp = newPairing(home, hub);
+  const uuidCode = "a1b2c3d4-e5f6-4789-abcd-eff012345678";
+  try {
+    // an operator pastes the code in upper case: the hub still sees the canonical lower-case form
+    await dp.start({ code: uuidCode.toUpperCase(), hub: "https://h.example.com" });
+    assert.equal(dp.status().state, "pairing");
+    const sent = (hub.calls.find((c) => c.url.endsWith("/api/pair/start"))!.body as { code: string }).code;
+    assert.equal(sent, uuidCode);
+    dp.cancel();
+
+    // a UUID pair URL is accepted…
+    await dp.start({ code: "", pairUrl: `https://h.example.com/pair?code=${uuidCode}&v=1` });
+    assert.equal(dp.status().state, "pairing");
+    dp.cancel();
+
+    // …but the version contract is unchanged and a hyphen-less hex string is not a code
+    const before = hub.calls.length;
+    await assert.rejects(
+      dp.start({ code: "", pairUrl: `https://h.example.com/pair?code=${uuidCode}&v=2` }),
+      /pairUrl/,
+    );
+    await assert.rejects(dp.start({ code: uuidCode.replace(/-/g, ""), hub: "https://h.example.com" }), /8 or 12 base32|UUID/);
+    await assert.rejects(dp.start({ code: "a1b2c3d4-e5f6-5789-abcd-eff012345678", hub: "https://h.example.com" }), /8 or 12 base32|UUID/);
+    assert.equal(hub.calls.length, before, "no network on a malformed code");
+  } finally {
+    if (dp.status().pending) dp.cancel();
+    await rm(home, { recursive: true, force: true });
+  }
+});

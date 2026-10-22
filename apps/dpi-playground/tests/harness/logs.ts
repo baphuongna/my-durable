@@ -31,7 +31,9 @@ export class BoundedLog {
 const TOKEN_PATTERERS: [RegExp, string][] = [
   [/\bdpi_[A-Za-z0-9_-]{43}\b/g, "dpi_<redacted>"],
   [/\bdpt_[A-Za-z0-9_-]{43}\b/g, "dpt_<redacted>"],
-  [/\bcode[=:"'\s]+([A-Z2-7]{8})\b/g, "code=<redacted>"],
+  [/\bcode[=:"'\s]+((?:[A-Z2-7]{12}|[A-Z2-7]{8}))\b/g, "code=<redacted>"],
+  // A minted code is a canonical UUID v4: the base32 pattern above cannot see it.
+  [/\bcode[=:"'\s]+([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\b/gi, "code=<redacted>"],
   [
     /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
     "<private key redacted>",

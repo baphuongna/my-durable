@@ -39,6 +39,8 @@ import {
   PairRequest as PairRequestSchema,
   PairResponse as PairResponseSchema,
   checkPairingDto,
+  isPairCode,
+  normalizePairCode,
   pairingSigningPayload,
 } from "../../../../dpi-sdk/src/protocol/pairing.js";
 import type { PairCodeIssue, TokenIssue } from "../../../../dpi-sdk/src/protocol/pairing.js";
@@ -52,7 +54,18 @@ import type { PairCodeState } from "../../../../dpi-sdk/src/protocol/pairing.js"
 const CODE_TTL_MS = 300_000;
 const NONCE_TTL_MS = 60_000;
 const RECEIPT_GRACE_MS = 120_000;
-const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/**
+ * A code as a human types it (`abcd-2345-ef67`) is canonicalised before the strict wire
+ * schema sees it: only the code field is rewritten, so unknown fields are still rejected.
+ */
+function withCanonicalCode(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const raw = (body as { code?: unknown }).code;
+  if (typeof raw !== "string") return body;
+  const code = normalizePairCode(raw);
+  return code && code !== raw ? { ...(body as Record<string, unknown>), code } : body;
+}
 
 export type PairingFailure = {
   ok: false;
@@ -200,7 +213,9 @@ export class PairingService {
       return this.fail(429, "rate_limited", "Pairing capacity reached; retry later", 60_000);
     let code = "";
     do {
-      code = [...randomBytes(8)].map((b) => CODE_ALPHABET[b % 32]).join("");
+      // A code is a bearer secret authorising one enrollment: canonical UUID v4 = 122 random bits.
+      // The re-mint guard is kept: it costs nothing and makes "two live codes share a string" impossible.
+      code = randomUUID();
     } while (this.byCode.has(code));
     const entry: CodeEntry = {
       codeId: randomUUID(),
@@ -230,13 +245,13 @@ export class PairingService {
 
   /** Admin handoff lookup. Reuses a code; never creates an enrollment or approves it. */
   resolveCode(body: unknown): { ok: true; value: PairCodeIssue } | PairingFailure {
-    const code = (body as { code?: unknown } | null)?.code;
+    const raw = (body as { code?: unknown } | null)?.code;
+    const code = typeof raw === "string" ? normalizePairCode(raw) : undefined;
     if (
       !body ||
       typeof body !== "object" ||
       Object.keys(body).length !== 1 ||
-      typeof code !== "string" ||
-      !/^[A-Z2-7]{8}$/.test(code)
+      !isPairCode(code)
     )
       return this.fail(400, "code_invalid", "Invalid pairing handoff");
     const codeId = this.byCode.get(code);
@@ -272,11 +287,13 @@ export class PairingService {
       return this.fail(429, "rate_limited", "Too many pairing failures; slow down", 60_000);
     const taken = this.startLimiter.take(ip);
     if (!taken.ok) return this.rateLimited(taken, "Too many pairing starts; slow down");
-    if (!checkPairingDto(PairRequestSchema, body)) {
+    // A grouped or lower-case code from a client is the same code: canonicalise it first.
+    const request = withCanonicalCode(body);
+    if (!checkPairingDto(PairRequestSchema, request)) {
       this.noteFailure(ip);
       return this.fail(400, "invalid", "pair.request body failed schema validation");
     }
-    const req = body as {
+    const req = request as {
       requestId: string;
       code: string;
       deviceUid: string;

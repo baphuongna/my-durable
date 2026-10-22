@@ -10,6 +10,7 @@
  */
 import { Type, type Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
+import { PAIR_CODE_LENGTH, PAIR_CODE_LEGACY_LENGTH, PAIR_CODE_UUID_LENGTH } from "./limits.js";
 
 const Strict = { additionalProperties: false } as const;
 
@@ -29,7 +30,57 @@ const DeviceId = Type.String({
 const Fingerprint = Type.String({ pattern: "^sha256:[0-9a-f]{64}$", minLength: 71, maxLength: 71 });
 const Nonce = Type.String({ pattern: "^[A-Za-z0-9_-]{43}$", minLength: 43, maxLength: 43 });
 const TunnelToken = Type.String({ pattern: "^dpt_[A-Za-z0-9_-]{43}$", minLength: 47, maxLength: 47 });
-const PairCode = Type.String({ pattern: "^[A-Z2-7]{8}$", minLength: 8, maxLength: 8 });
+/**
+ * Canonical lower-case UUID v4: any hex is NOT a code, so the version nibble must be 4 and the
+ * variant nibble 8/9/a/b.
+ */
+const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+/**
+ * One pattern for every accepted code shape: the minted UUID v4, plus the 12- and 8-char base32
+ * forms that links already in flight still carry. `$` alone can match before a final newline, so
+ * the pattern ends with an explicit lookahead — the length clamp below cannot catch a newline
+ * when min and max differ.
+ */
+export const PAIR_CODE_PATTERN = `^(?:${UUID_V4}|[A-Z2-7]{12}|[A-Z2-7]{8})(?![\\s\\S])`;
+const PairCode = Type.String({
+  pattern: PAIR_CODE_PATTERN,
+  minLength: PAIR_CODE_LEGACY_LENGTH,
+  maxLength: PAIR_CODE_UUID_LENGTH,
+});
+
+const PAIR_CODE_RE = new RegExp(PAIR_CODE_PATTERN);
+/** Shape test for the UUID family — used to pick the normalisation rule, never to accept on its own. */
+const UUID_SHAPED_RE = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
+
+/**
+ * Exact-shape check for a pairing code, with NO trimming: a value with a leading/trailing space
+ * or a newline is not a code. Consumers that accept a typed value use `normalizePairCode`.
+ */
+export function isPairCode(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > PAIR_CODE_UUID_LENGTH) return false;
+  return PAIR_CODE_RE.test(value);
+}
+
+/**
+ * Canonicalise a code a human typed or pasted. The two families canonicalise differently, so the
+ * shape decides first:
+ * - UUID v4 (`A1B2…-E5F6-4789-ABCD-EFF012345678`): hyphens are structure — only the case changes.
+ * - base32 (`abcd-2345-ef67`, `ABCD 2345 EF67`): hyphens/spaces are group separators — they go
+ *   and the result is upper case.
+ * Anything that does not fit either family exactly (a hyphen-less hex run, a 10/11/13-char run,
+ * non-alphabet characters, a truncated group like `ABCD-2345`) is refused.
+ */
+export function normalizePairCode(raw: string): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  if (UUID_SHAPED_RE.test(raw)) {
+    const lower = raw.toLowerCase();
+    return isPairCode(lower) ? lower : undefined; // version/variant nibbles must be v4
+  }
+  const compact = raw.replace(/[\s-]+/g, "").toUpperCase();
+  if (!isPairCode(compact)) return undefined;
+  if (/[\s-]/.test(raw) && compact.length !== PAIR_CODE_LENGTH) return undefined;
+  return compact;
+}
 
 export const PairRequest = Type.Object(
   {

@@ -99,8 +99,17 @@ export function scrubSecrets(value: string): string {
   out = out.replace(/([?&]code=)[A-Za-z0-9_-]+/g, "$1<redacted>");
   // Credential material without its prefix (slices, echo): 43-char base64url runs.
   out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
-  // Pairing codes as standalone values ("code":"AB2C7DEF") but not ordinary words.
-  out = out.replace(/(["'?=:,\s])([A-Z2-7]{8})(?=["'?\s:,}]|$)/g, "$1<code-redacted>");
+  // Pairing codes as standalone values ("code":"AB2C7DEF" / "ABCD2345EF67") but not ordinary words.
+  out = out.replace(
+    /(["'?=:,\s])([A-Z2-7]{12}|[A-Z2-7]{8})(?=["'?\s:,}]|$)/g,
+    "$1<code-redacted>",
+  );
+  // A MINTED code is a canonical UUID v4. Only a value LABELLED a code is a secret here: an audit
+  // row's own codeId/enrollmentId are correlation ids and must stay readable.
+  out = out.replace(
+    /(\bcode["']?\s*[:=]\s*["']?)([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?=["'?\s:,}&]|$)/gi,
+    "$1<code-redacted>",
+  );
   return out;
 }
 

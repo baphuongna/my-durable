@@ -170,17 +170,35 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
           pem: "-----BEGIN PRIVATE KEY-----\nzz\n-----END PRIVATE KEY-----",
         },
         free: `prefix ${dpt.slice(4)} mid ${"AB2C7DEF"} end`,
+        free12: `prefix ${"ABCD2345EF67"} end`,
+        url12: `https://hub/pair?code=ABCD2345EF67&v=1`,
+        uuidCode: `{"code":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}`,
+        uuidUrl: `https://hub/pair?code=a1b2c3d4-e5f6-4789-abcd-eff012345678&v=1`,
       },
     });
     const stored = JSON.stringify(rows(registry));
     assert.ok(!stored.includes("A".repeat(20)));
     assert.ok(!stored.includes("B".repeat(20)));
     assert.ok(!stored.includes("AB2C7DEF"));
+    assert.ok(!stored.includes("ABCD2345EF67"));
+    // a minted UUID v4 code is redacted too — but the row's own correlation ids stay readable
+    assert.ok(!stored.includes("a1b2c3d4-e5f6-4789-abcd-eff012345678"));
+    const rowIds = rows(registry).map((r) => r.code_id).filter((id): id is string => !!id);
+    for (const id of rowIds) assert.ok(stored.includes(id), "audit correlation ids survive redaction");
     assert.ok(!stored.includes("BEGIN PRIVATE KEY"));
     assert.ok(stored.includes("<redacted>") || stored.includes("<code-redacted>"));
     // unit-level substring checks
     assert.ok(scrubSecrets(`x${dpt}y`).includes("dpt_<redacted>"));
     assert.ok(!scrubSecrets(`see ${dpi} later`).includes(dpi));
+    // a 12-char minted code is redacted as one token, wherever it stands alone
+    assert.ok(!scrubSecrets(`see ABCD2345EF67 later`).includes("ABCD2345EF67"));
+    assert.ok(!scrubSecrets('{"code":"ABCD2345EF67"}').includes("ABCD2345EF67"));
+    assert.ok(scrubSecrets('{"code":"ABCD2345EF67"}').includes("<code-redacted>"));
+    assert.ok(!scrubSecrets('{"code":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("a1b2c3d4"));
+    assert.ok(scrubSecrets('{"code":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("<code-redacted>"));
+    assert.ok(!scrubSecrets("code=a1b2c3d4-e5f6-4789-abcd-eff012345678").includes("a1b2c3d4"));
+    // an id that is NOT labelled a code is correlation, not a secret
+    assert.ok(scrubSecrets('{"codeId":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("a1b2c3d4-e5f6-4789-abcd-eff012345678"));
   } finally {
     await cleanup();
   }

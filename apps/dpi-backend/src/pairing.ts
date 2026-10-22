@@ -26,7 +26,11 @@ import {
   type PairingFile,
 } from "./pairing-files.js";
 import { PAIR_HTTP_MAX_RETRIES, PAIR_HTTP_TIMEOUT_MS, PAIR_POLL_MS } from "../../dpi-sdk/src/protocol/limits.js";
-import { pairingSigningPayload, parseHubOrigin } from "../../dpi-sdk/src/protocol/pairing.js";
+import {
+  normalizePairCode,
+  pairingSigningPayload,
+  parseHubOrigin,
+} from "../../dpi-sdk/src/protocol/pairing.js";
 import type { TokenIssue } from "../../dpi-sdk/src/protocol/pairing.js";
 
 const CLOCK_SKEW_MS = 60_000;
@@ -202,8 +206,15 @@ export class DevicePairing {
       throw err("hub_required", "A pairing code alone is not enough: provide --hub, DPI_HUB_URL, a pair URL, or a prior saved hub");
     const o = this.originOf(origin);
     if (!o.ok) throw err("invalid", o.error);
-    if (!/^[A-Z2-7]{8}$/.test(code)) throw err("invalid", "Pairing code must be 8 base32 characters (A-Z2-7)");
-    return { origin: o.origin, code };
+    // A typed code may be grouped/lower case (`abcd-2345-ef67`); the hub only ever sees the canonical form.
+    // `normalizePairCode` is the SDK's exact validator: UUID v4 | legacy 12-char | legacy 8-char base32.
+    const canonical = normalizePairCode(code);
+    if (!canonical)
+      throw err(
+        "invalid",
+        "Pairing code must be a UUID v4, or a legacy 8- or 12-character base32 code (A-Z2-7)",
+      );
+    return { origin: o.origin, code: canonical };
   }
 
   private codeFromPairUrl(url: string): string | undefined {
@@ -218,7 +229,7 @@ export class DevicePairing {
         if (u.searchParams.getAll("origin").length !== 1 || origin.origin !== u.origin || origin.pathname !== "/"
           || origin.username || origin.password || origin.search || origin.hash) return undefined;
       }
-      return code && /^[A-Z2-7]{8}$/.test(code) ? code : undefined;
+      return code ? normalizePairCode(code) : undefined;
     } catch {
       return undefined;
     }
