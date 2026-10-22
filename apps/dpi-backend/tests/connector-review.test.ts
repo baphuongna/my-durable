@@ -55,12 +55,17 @@ interface ScriptedHub {
   close: () => Promise<void>;
 }
 
-async function scriptedHub(hello = () => true): Promise<ScriptedHub> {
+async function scriptedHub(hello = () => true, rateLimited = () => false): Promise<ScriptedHub> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1_048_576 });
   const handshakes: any[] = [];
   let live: WebSocket | null = null;
   const server = createServer((_q, r) => r.writeHead(404).end());
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (rateLimited()) {
+      const body = JSON.stringify({ type: "tunnel.auth-error", code: "rate_limited", retryAfterMs: 60_000 });
+      socket.end(`HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       live = ws;
       ws.on("message", (d) => {
@@ -186,6 +191,54 @@ test("F06 follow-up: cancellation before hello permits immediate restart or re-p
       } finally {
         c.stop("cleanup");
         await hub.close();
+        await rm(home, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("R10: stop/re-pair cancels an old 60-second backoff without waiting for its clock", async (t) => {
+  for (const transition of ["restart", "cross-hub re-pair"] as const) {
+    await t.test(transition, async () => {
+      const home = await mkdtemp(join(tmpdir(), "dpi-r10-"));
+      let limited = true;
+      const oldHub = await scriptedHub(() => true, () => limited);
+      const nextHub = transition === "restart" ? oldHub : await scriptedHub();
+      const delays: number[] = [];
+      const releaseClocks: Array<() => void> = [];
+      const connector = new DeviceConnector(home, undefined, {
+        sleep: (ms) => {
+          delays.push(ms);
+          return new Promise<void>((resolve) => releaseClocks.push(resolve));
+        },
+      });
+      try {
+        await writeFiles(home, oldHub.url);
+        connector.start();
+        await until(() => delays.length === 1, 2000, "real 429 backoff");
+        assert.deepEqual(delays, [60_000]);
+        if (transition === "restart") {
+          limited = false;
+          connector.stop("operator restart during backoff");
+          connector.start();
+        } else {
+          await writeFiles(home, nextHub.url, { pairingEpoch: EPOCH2, credentialId: CRED2 });
+          connector.reload("approved cross-hub pairing");
+        }
+        await until(() => connector.status().state === "connected", 1500, "replacement connection before old sleep resolves");
+        assert.equal(nextHub.handshakes.length, 1);
+        assert.equal(nextHub.handshakes[0].pairingEpoch, transition === "restart" ? EPOCH : EPOCH2);
+        assert.equal(connector.status().attempts, 2);
+        for (const release of releaseClocks) release();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(connector.status().state, "connected", "late old clock completion cannot restart or overwrite the replacement loop");
+        assert.equal(connector.status().attempts, 2);
+        assert.equal(nextHub.handshakes.length, 1);
+      } finally {
+        connector.stop("cleanup");
+        for (const release of releaseClocks) release();
+        await oldHub.close();
+        if (nextHub !== oldHub) await nextHub.close();
         await rm(home, { recursive: true, force: true });
       }
     });

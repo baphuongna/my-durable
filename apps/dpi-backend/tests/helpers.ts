@@ -45,9 +45,19 @@ export async function freePort() {
 export const newToken = () => `dpi_${randomBytes(32).toString("base64url")}`;
 
 /** Boot the real backend as a child process (faux provider, temp DPI_HOME). */
-export async function bootServer(opts: { home: string; startDirs: string; token: string; port?: number; name?: string; cwd?: string }) {
+export async function bootServer(opts: {
+  home: string;
+  startDirs: string;
+  token: string;
+  port?: number;
+  name?: string;
+  cwd?: string;
+  /** How often to ask /healthz while the child boots. Timing tests set it low so the poll does not dominate. */
+  healthPollMs?: number;
+}) {
   const port = opts.port ?? (await freePort());
   const base = `http://127.0.0.1:${port}`;
+  const healthPollMs = opts.healthPollMs ?? 100;
   let child: ChildProcess | undefined;
   let output = "";
   const start = async () => {
@@ -66,12 +76,12 @@ export async function bootServer(opts: { home: string; startDirs: string; token:
     });
     child.stdout?.on("data", (x) => (output += x));
     child.stderr?.on("data", (x) => (output += x));
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < Math.ceil(20_000 / healthPollMs); i++) {
       try {
         if ((await fetch(`${base}/healthz`)).ok) return;
       } catch {}
       if (child.exitCode !== null) throw Error(output);
-      await delay(100);
+      await delay(healthPollMs);
     }
     throw Error("Server did not start: " + output);
   };

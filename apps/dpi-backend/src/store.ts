@@ -33,6 +33,7 @@ import { ApiFault, invalid, notFound } from "./errors.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
+import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 import { join, dirname, resolve } from "node:path";
 import { homedir, hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -207,7 +208,7 @@ export class Store {
         getModels: () => catalog.filter((m) => curatedModels.some((c) => c.id === m.id)),
       });
     }
-    mkdirSync(options.dataDir, { recursive: true, mode: 0o700 });
+    ensurePrivateDir(options.dataDir);
     this.unlockCatalog = lockFile(`${this.catalogPath}.lock`);
     this.catalog = new DatabaseSync(this.catalogPath);
     this.catalog.exec(`PRAGMA journal_mode=WAL;

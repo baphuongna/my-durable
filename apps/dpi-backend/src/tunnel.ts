@@ -26,20 +26,40 @@ import {
   type TunnelFrame,
 } from "../../dpi-sdk/src/protocol/tunnel.js";
 import {
-  CONNECTOR_BACKOFF_S,
+  CONNECTION_BUFFER_BUDGET_BYTES,
   IDLE_TIMEOUT_MS,
+  LOGICAL_MESSAGE_MAX_BYTES,
   PING_INTERVAL_MS,
   PING_MISS_LIMIT,
+  RECONNECT_BACKOFF_S,
+  WS_BACKPRESSURE_BYTES,
   WS_MAX_MESSAGE_BYTES,
+  WS_PACE_LOW_WATER_BYTES,
 } from "../../dpi-sdk/src/protocol/limits.js";
+import { Backoff } from "../../dpi-sdk/src/protocol/backoff.js";
 import { loadJson, pairingPath, keypairPath, writeAtomic, type PairingFile, type DeviceKeypair } from "./pairing-files.js";
-import { sendChunked } from "../../dpi-sdk/src/node/chunk.js";
+import { ByteBudget, SseReader, chunkMessage } from "../../dpi-sdk/src/node/chunk.js";
 import { REST_BODY_MAX_BYTES as LOCAL_BODY_CAP } from "../../dpi-sdk/src/protocol/limits.js";
 
 /** F07: the ONLY loopback endpoints a tunnel subscription may read (the
  * three SSE scopes). Anything else the hub asks for is refused silently. */
 const SUBSCRIBE_PATH_OK =
   /^\/v1\/(?:events|sessions\/[^/?#]{1,128}\/events|sessions\/[^/?#]{1,128}\/agents\/[^/?#]{1,128}\/events)(?:\?[^\s?]{0,256})?$/;
+
+/** The hub names the stream path, so it is judged by what the loopback server will resolve, not by the regex alone. */
+function isSubscribePathOk(sub: string): boolean {
+  if (!SUBSCRIBE_PATH_OK.test(sub) || sub.includes("\\")) return false;
+  const path = sub.split("?", 1)[0]!;
+  return path.split("/").slice(1).every((segment) => {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      return false;
+    }
+    return segment !== "" && decoded !== "." && decoded !== ".." && !decoded.includes("/") && !decoded.includes("\\");
+  });
+}
 
 /** Bounded clamp for server-advised 429 delays (04 §6: never trust raw body). */
 const RETRY_AFTER_MIN_MS = 1_000;
@@ -49,6 +69,40 @@ const HANDSHAKE_TCP_TIMEOUT_MS = 10_000;
 const AUTH_BODY_MAX_BYTES = 4_096;
 /** Loopback REST deadline on the device (matches hub REST_TIMEOUT budget). */
 const REST_LOCAL_TIMEOUT_MS = 320_000;
+/** One WS message above this serialized size travels as chunks (the hub reassembles). */
+const INLINE_FRAME_MAX_BYTES = 512 * 1024;
+/** How often a paced sender re-checks the socket's outbound queue. */
+const DRAIN_POLL_MS = 20;
+/** After close(1011) a hub that is not reading never answers; the socket is torn down after this. */
+const BACKPRESSURE_CLOSE_GRACE_MS = 1_000;
+
+/**
+ * Read a loopback response as text without ever holding more than `cap` bytes: a declared length over the
+ * cap is refused on the headers, an undeclared one is cut off as soon as the bytes read pass it, and in both
+ * cases the loopback connection is abandoned.
+ */
+async function readTextCapped(res: Response, cap: number): Promise<{ ok: true; text: string } | { ok: false }> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > cap) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false };
+  }
+  if (!res.body) return { ok: true, text: "" };
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      await reader.cancel().catch(() => {});
+      return { ok: false };
+    }
+    parts.push(value);
+  }
+  return { ok: true, text: new TextDecoder().decode(Buffer.concat(parts, total)) };
+}
 
 export type ConnectorState =
   | "stopped" // not started / stopped by operator or shutdown
@@ -73,9 +127,22 @@ export interface ConnectorHooks {
   now?(): number;
   sleep?(ms: number): Promise<void>;
   /** Interval overrides are test-only deployment policy, never per-request. */
-  intervals?: { pingMs?: number; idleMs?: number; helloMs?: number };
+  intervals?: { pingMs?: number; idleMs?: number; helloMs?: number; drainMs?: number };
   onStatus?(status: ConnectorStatus): void;
+  /** The hub revoked the pairing of this epoch and the pairing file is gone. */
+  onRevoked?(pairingEpoch: string, reason: string): void;
+  /** A rotated credential was persisted and is now the live one. */
+  onRotated?(file: PairingFile): void;
 }
+
+type AttemptOutcome =
+  | { kind: "closed"; code: number; reason: string }
+  | { kind: "auth"; status: number; body: unknown; raw: string }
+  | { kind: "error"; message: string }
+  | { kind: "hello"; serverTime: number }
+  | { kind: "hub-id-mismatch"; sawHubId: string }
+  | { kind: "hello-timeout" }
+  | { kind: "stopped" };
 
 interface Classified {
   kind: "retry" | "reauth" | "revoked-terminal" | "hub-mismatch" | "stopped";
@@ -97,10 +164,11 @@ export class DeviceConnector {
   private loopRunning = false;
   /** Resolves when the connect loop fully exits (reload chains start() on it). */
   private loopIdle: Promise<void> = Promise.resolve();
-  private backoffIdx = 0;
+  private readonly backoff = new Backoff(RECONNECT_BACKOFF_S);
   private ws: WebSocket | null = null;
   private wsGeneration = 0;
   private cancelAttempt: (() => void) | undefined;
+  private cancelBackoff: (() => void) | undefined;
   private pingTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private pongMisses = 0;
@@ -108,6 +176,12 @@ export class DeviceConnector {
   private readonly agent: HttpsAgent | undefined;
 
   private readonly readers = new Map<string, AbortController>();
+  /** Loopback REST calls in flight for the current connection; the hub that asked is gone when the connection is. */
+  private readonly restCalls = new Set<AbortController>();
+  /** Bytes of unfinished loopback SSE events across all readers of this connector (04 §3.3, 32 MiB). */
+  private readonly ingress = new ByteBudget("connector-ingress", CONNECTION_BUFFER_BUDGET_BYTES);
+  /** Why the connector itself ended the current socket; reported once by `classify`. */
+  private closeCause: string | undefined;
 
   constructor(
     private readonly home: string,
@@ -132,8 +206,35 @@ export class DeviceConnector {
   private get helloMs() {
     return this.hooks.intervals?.helloMs ?? 10_000;
   }
-  private sleep(ms: number) {
-    return this.hooks.sleep ? this.hooks.sleep(ms) : new Promise<void>((done) => setTimeout(done, ms));
+  /** How long the outbound queue may sit without draining before the hub counts as not reading. */
+  private get drainMs() {
+    return this.hooks.intervals?.drainMs ?? IDLE_TIMEOUT_MS;
+  }
+  private sleep(ms: number): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    return new Promise<void>((done, fail) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (this.cancelBackoff === cancel) this.cancelBackoff = undefined;
+        if (error === undefined) done();
+        else fail(error);
+      };
+      const cancel = () => finish();
+      this.cancelBackoff = cancel;
+      if (this.hooks.sleep) {
+        // Keep existing clock hooks compatible, but never let their late
+        // completion hold (or mutate) a replacement connector loop.
+        try {
+          void this.hooks.sleep(ms).then(cancel, finish);
+        } catch (error) {
+          finish(error);
+        }
+      } else timer = setTimeout(cancel, ms);
+    });
   }
 
   status(): ConnectorStatus {
@@ -210,6 +311,7 @@ export class DeviceConnector {
   stop(reason = "stopped"): void {
     this.stopped = true;
     this.cancelAttempt?.();
+    this.cancelBackoff?.();
     this.clearTimers();
     this.dropSocket("stop");
     this.setState("stopped", reason);
@@ -222,7 +324,7 @@ export class DeviceConnector {
    */
   updateCredential(file: PairingFile): void {
     this.file = file;
-    this.backoffIdx = 0;
+    this.backoff.reset();
   }
 
   // -- connect loop --------------------------------------------------------
@@ -248,6 +350,7 @@ export class DeviceConnector {
         if (verdict.kind === "revoked-terminal") {
           this.stopped = true;
           this.setState("revoked", verdict.detail);
+          this.notify(() => this.hooks.onRevoked?.(attemptTuple.pairingEpoch, verdict.detail));
           break;
         }
         if (verdict.kind === "hub-mismatch") {
@@ -257,8 +360,9 @@ export class DeviceConnector {
         }
         if (verdict.kind === "reauth") this.setState("reauth", verdict.detail);
         else this.setState("connecting", verdict.detail);
-        const delay = verdict.delayMs ?? this.backoffMs();
-        if (verdict.kind === "retry" && verdict.delayMs === undefined) this.backoffIdx = Math.min(this.backoffIdx + 1, CONNECTOR_BACKOFF_S.length - 1);
+        // A verdict without its own delay (transport failure, 5xx, re-pair-needed 401) walks the shared curve.
+        const delay = verdict.delayMs ?? this.backoff.ms;
+        if (verdict.delayMs === undefined) this.backoff.advance();
         await this.sleep(delay);
       }
     } finally {
@@ -267,33 +371,26 @@ export class DeviceConnector {
     }
   }
 
-  private backoffMs(): number {
-    return CONNECTOR_BACKOFF_S[this.backoffIdx] * 1000;
-  }
-
-  private attemptOnce(file: PairingFile): Promise<
-    | { kind: "closed"; code: number; reason: string }
-    | { kind: "auth"; status: number; body: unknown; raw: string }
-    | { kind: "error"; message: string }
-    | { kind: "hello"; serverTime: number }
-    | { kind: "hub-id-mismatch"; sawHubId: string }
-    | { kind: "hello-timeout" }
-    | { kind: "stopped" }
-  > {
+  private attemptOnce(file: PairingFile): Promise<AttemptOutcome> {
     return new Promise((resolve) => {
       const generation = ++this.wsGeneration;
+      this.closeCause = undefined;
       let settled = false;
       // F06: settle on ANY terminal event, including cancellation. The old
       // generation gate left the promise pending forever after dropSocket(),
       // pinning loopRunning and making the connector un-restartable. Stale
       // events after settle are already blocked by `settled`.
-      const finish = (v: Parameters<typeof resolve>[0]) => {
+      let socket: WebSocket | undefined;
+      const finish = (v: AttemptOutcome) => {
         if (settled) return;
         settled = true;
         if (this.cancelAttempt === cancel) {
           this.cancelAttempt = undefined;
           this.clearTimers();
         }
+        // Only a close the peer completed (`closed`) or an operator stop (dropSocket owns that socket) leaves the
+        // socket alone; every other verdict means this hub is not one we keep a connection to while backing off.
+        if (socket && v.kind !== "closed" && v.kind !== "stopped") this.hangUp(socket);
         resolve(v);
       };
       const cancel = () => finish({ kind: "stopped" });
@@ -311,6 +408,7 @@ export class DeviceConnector {
         finish({ kind: "error", message: (e as Error).message });
         return;
       }
+      socket = ws;
       this.ws = ws;
       this.lastByte = this.now();
       this.pongMisses = 0;
@@ -392,7 +490,7 @@ export class DeviceConnector {
             helloDone = true;
             clearTimeout(helloTimer);
             this.hellos++;
-            this.backoffIdx = 0;
+            this.backoff.reset();
             this.lastConnectedAt = this.now();
             this.setState("connected", `connectionId ${frame.connectionId}`);
             this.lastByte = this.now();
@@ -428,15 +526,11 @@ export class DeviceConnector {
    * the device API (P2-16 hardens ownership/caps).
    */
   private dispatch(ws: WebSocket, generation: number, frame: TunnelFrame): void {
-    const send = (payload: TunnelFrame) => {
-      if (this.wsGeneration !== generation || ws.readyState !== ws.OPEN) return false;
-      try {
-        ws.send(JSON.stringify(payload));
-        return true;
-      } catch {
-        return false;
-      }
-    };
+    // Immediate send for small replies and control acks: refused (and the connection cut) when the
+    // hub has already left the outbound queue past the cap.
+    const send = (payload: unknown) => this.sendNow(ws, generation, payload);
+    // Paced send for payload-sized frames: waits, buffering nothing more, while the queue is above the pacing mark.
+    const sendPaced = (payload: unknown) => this.sendPaced(ws, generation, payload);
     const api = this.localApi;
     if (!api) return; // no local API wired (unit contexts)
     if (frame.type === "rest-request") {
@@ -451,6 +545,10 @@ export class DeviceConnector {
           send({ type: "rest-response", reqId: frame.reqId, status: 413, body: { error: { code: "invalid", message: `Request body exceeds ${LOCAL_BODY_CAP} bytes` } } });
           return;
         }
+        const tooLarge = (message: string) =>
+          send({ type: "rest-response", reqId: frame.reqId, status: 502, body: { error: { code: "response_too_large", message } } });
+        const call = new AbortController();
+        this.restCalls.add(call);
         try {
           const hasBody = !["GET", "HEAD", "DELETE"].includes(frame.method);
           const res = await fetch(api.baseUrl + frame.path, {
@@ -462,19 +560,36 @@ export class DeviceConnector {
               ...(frame.idempotencyKey ? { "idempotency-key": frame.idempotencyKey } : {}),
             },
             body: hasBody && frame.body !== undefined ? JSON.stringify(frame.body) : undefined,
-            signal: AbortSignal.timeout(REST_LOCAL_TIMEOUT_MS),
+            signal: AbortSignal.any([call.signal, AbortSignal.timeout(REST_LOCAL_TIMEOUT_MS)]),
+            redirect: "manual",
           });
-          const text = await res.text();
-          // Small responses ride one frame; large ones chunk (hub reassembles).
-          const envelope = { type: "rest-response", reqId: frame.reqId, status: res.status, contentType: res.headers.get("content-type") ?? undefined, body: text } as const;
-          const serialized = JSON.stringify(envelope);
-          if (Buffer.byteLength(serialized, "utf8") > 512 * 1024) {
-            sendChunked(envelope, { kind: "rest-response", reqId: frame.reqId }, (chunk) => send(chunk as unknown as TunnelFrame));
-          } else {
-            send(envelope as unknown as TunnelFrame);
+          if (res.status >= 300 && res.status < 400) {
+            await res.body?.cancel().catch(() => {});
+            send({ type: "rest-response", reqId: frame.reqId, status: 502, body: { error: { code: "offline", message: `Device API answered with a redirect (${res.status}); redirects are not followed` } } });
+            return;
           }
+          const read = await readTextCapped(res, LOGICAL_MESSAGE_MAX_BYTES);
+          if (!read.ok) {
+            tooLarge(`Device response exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes`);
+            return;
+          }
+          // Small responses ride one frame; large ones chunk (hub reassembles).
+          const envelope = { type: "rest-response", reqId: frame.reqId, status: res.status, contentType: res.headers.get("content-type") ?? undefined, body: read.text } as const;
+          const serialized = JSON.stringify(envelope);
+          if (Buffer.byteLength(serialized, "utf8") <= INLINE_FRAME_MAX_BYTES) {
+            await sendPaced(serialized);
+            return;
+          }
+          const plan = chunkMessage(envelope, { kind: "rest-response", reqId: frame.reqId });
+          if (!plan.ok) {
+            tooLarge(plan.error);
+            return;
+          }
+          for (const chunk of plan.chunks) if (!(await sendPaced(chunk))) return;
         } catch (e) {
           send({ type: "rest-response", reqId: frame.reqId, status: 502, body: { error: { code: "offline", message: (e as Error).message } } });
+        } finally {
+          this.restCalls.delete(call);
         }
       })();
       return;
@@ -485,10 +600,18 @@ export class DeviceConnector {
       // F07: the hub names the STREAM PATH; scope must reach the device API.
       // Allow-list the three SSE endpoints — a hub can never aim the reader
       // at REST-only or pairing routes.
-      if (!SUBSCRIBE_PATH_OK.test(frame.sub)) return;
+      if (!isSubscribePathOk(frame.sub)) return;
       const ctl = new AbortController();
       this.readers.set(frame.subscriptionId, ctl);
       void (async () => {
+        // Raw bytes are bounded before they are framed or parsed; what an unfinished event holds is charged
+        // to the connector-wide budget and released when this reader ends.
+        const sse = new SseReader(this.ingress);
+        // This reader failed, the tunnel did not: say so for this subscription only and stop reading.
+        const fault = (message: string) => {
+          send({ type: "tunnel-data", frame: { type: "fault", error: { code: "invalid", message } }, subscriptionId: frame.subscriptionId, sub: frame.sub });
+          ctl.abort();
+        };
         try {
           const res = await fetch(api.baseUrl + frame.sub, {
             headers: { authorization: `Bearer ${api.token}`, "x-dpi-token": api.token, accept: "text/event-stream" },
@@ -496,40 +619,36 @@ export class DeviceConnector {
           });
           if (!res.ok || !res.body) throw new Error(`${frame.sub} answered ${res.status}`);
           const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            this.lastByte = this.now();
-            buffer += decoder.decode(value, { stream: true });
-            let idx: number;
-            while ((idx = buffer.indexOf("\n\n")) >= 0) {
-              const block = buffer.slice(0, idx);
-              buffer = buffer.slice(idx + 2);
-              for (const line of block.split("\n")) {
-                if (!line.startsWith("data:")) continue;
-                const data = line.slice(5).trimStart();
-                if (!data) continue;
-                let parsed: unknown;
-                try {
-                  parsed = JSON.parse(data);
-                } catch {
-                  continue;
-                }
-                const dataFrame = { type: "tunnel-data", frame: parsed as never, subscriptionId: frame.subscriptionId, sub: frame.sub } as TunnelFrame;
-                const wire = JSON.stringify(dataFrame);
-                if (Buffer.byteLength(wire, "utf8") > 512 * 1024) {
-                  // One WS message ≤1 MiB: large frames (big trees) chunk.
-                    if (!sendChunked(parsed, { kind: "tunnel-data", subscriptionId: frame.subscriptionId, sub: frame.sub }, (chunk) => send(chunk as unknown as TunnelFrame))) return;
-                } else if (!send(dataFrame)) return;
+            const fed = sse.feed(value);
+            if (fed.error) return fault(fed.error);
+            for (const event of fed.events) {
+              if (!event.data) continue;
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(event.data);
+              } catch {
+                continue;
               }
+              const wire = JSON.stringify({ type: "tunnel-data", frame: parsed, subscriptionId: frame.subscriptionId, sub: frame.sub });
+              if (Buffer.byteLength(wire, "utf8") <= INLINE_FRAME_MAX_BYTES) {
+                if (!(await sendPaced(wire))) return;
+                continue;
+              }
+              // One WS message ≤1 MiB: large frames (big trees) chunk, one paced frame at a time.
+              const plan = chunkMessage(parsed, { kind: "tunnel-data", subscriptionId: frame.subscriptionId, sub: frame.sub });
+              if (!plan.ok) return fault(plan.error);
+              for (const chunk of plan.chunks) if (!(await sendPaced(chunk))) return;
             }
           }
         } catch {
           /* aborted or connection lost: the hub will resubscribe on the new connection */
         } finally {
-          this.readers.delete(frame.subscriptionId);
+          sse.close();
+          ctl.abort();
+          if (this.readers.get(frame.subscriptionId) === ctl) this.readers.delete(frame.subscriptionId);
         }
       })();
       return;
@@ -567,7 +686,8 @@ export class DeviceConnector {
         return;
       }
       this.file = next;
-      this.backoffIdx = 0;
+      this.backoff.reset();
+      this.notify(() => this.hooks.onRotated?.(next));
       send({
         type: "control",
         action: "token-rotate-ack",
@@ -602,10 +722,75 @@ export class DeviceConnector {
         /* best effort */
       }
       this.setState("revoked", "hub revoked this pairing; pairing removed — re-pair to continue");
+      this.notify(() => this.hooks.onRevoked?.(file.pairingEpoch, this.detail));
       // Cancellation settles immediately, even if the peer never completes close.
       return;
     }
     // unpair control frames land with the forced-hub-change flow (P2-21).
+  }
+
+  /**
+   * Send now, if this socket is still the live one. A queue already past the cap means the hub stopped
+   * reading: the connection is cut (04 §10) instead of queueing behind it.
+   */
+  private sendNow(ws: WebSocket, generation: number, payload: unknown): boolean {
+    if (this.wsGeneration !== generation || ws.readyState !== ws.OPEN) return false;
+    if (ws.bufferedAmount > WS_BACKPRESSURE_BYTES) {
+      this.closeForBackpressure(ws, generation, "outbound queue over cap");
+      return false;
+    }
+    try {
+      ws.send(typeof payload === "string" ? payload : JSON.stringify(payload));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Send once the outbound queue is at or below the pacing mark, waiting (and buffering nothing more) until
+   * it is. Waiting also stops the caller reading its loopback source, so pressure reaches the local API.
+   * False when the connection went away, or the queue stopped draining for `drainMs` (the hub is not reading).
+   */
+  private async sendPaced(ws: WebSocket, generation: number, payload: unknown): Promise<boolean> {
+    let lowest = ws.bufferedAmount;
+    let progressAt = this.now();
+    while (ws.bufferedAmount > WS_PACE_LOW_WATER_BYTES) {
+      if (this.wsGeneration !== generation || ws.readyState !== ws.OPEN) return false;
+      if (ws.bufferedAmount < lowest) {
+        lowest = ws.bufferedAmount;
+        progressAt = this.now();
+      } else if (this.now() - progressAt >= this.drainMs) {
+        this.closeForBackpressure(ws, generation, `outbound queue did not drain for ${this.drainMs} ms`);
+        return false;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, DRAIN_POLL_MS));
+    }
+    return this.sendNow(ws, generation, payload);
+  }
+
+  /** Slow-consumer cut (04 §10): stop the producers, close 1011, and let the connect loop back off and retry. */
+  private closeForBackpressure(ws: WebSocket, generation: number, why: string): void {
+    if (this.wsGeneration !== generation || ws.readyState !== ws.OPEN) return;
+    this.closeCause = "backpressure";
+    this.setState("connecting", `backpressure: ${why}`);
+    for (const ctl of this.readers.values()) ctl.abort();
+    this.readers.clear();
+    try {
+      ws.close(1011, "backpressure");
+    } catch {
+      /* already closing */
+    }
+    // A hub that is not reading never answers the close frame; drop the socket (and its queued bytes) anyway.
+    const force = setTimeout(() => {
+      try {
+        ws.terminate();
+      } catch {
+        /* already gone */
+      }
+    }, BACKPRESSURE_CLOSE_GRACE_MS);
+    force.unref();
+    ws.once("close", () => clearTimeout(force));
   }
 
   private startHeartbeat(ws: WebSocket, generation: number): void {
@@ -638,12 +823,16 @@ export class DeviceConnector {
   }
 
   private classify(
-    outcome: Awaited<ReturnType<DeviceConnector["attemptOnce"]>>,
+    outcome: AttemptOutcome,
     attemptTuple: { credentialId: string; pairingEpoch: string },
   ): Classified {
     if (outcome.kind === "stopped") return { kind: "stopped", detail: "attempt cancelled" };
     if (outcome.kind === "hello") return { kind: "retry", delayMs: 0, detail: "hello" };
     if (outcome.kind === "closed") {
+      // A slow-consumer cut may end as a forced terminate (1006); the cause is ours, so say that.
+      const cause = this.closeCause;
+      this.closeCause = undefined;
+      if (cause) return { kind: "retry", detail: `closed 1011 ${cause}` };
       // 1000 "superseded" is the hub's connection swap: reconnect normally.
       return { kind: "retry", detail: `closed ${outcome.code} ${outcome.reason}`.trim() };
     }
@@ -671,13 +860,13 @@ export class DeviceConnector {
         const onDisk = loadJson<PairingFile>(pairingPath(this.home));
         if (onDisk && (onDisk.credentialId !== attemptTuple.credentialId || onDisk.pairingEpoch !== attemptTuple.pairingEpoch)) {
           this.file = onDisk; // adopt the newer pairing and keep going
-          this.backoffIdx = 0;
+          this.backoff.reset();
           return { kind: "retry", delayMs: 0, detail: "revoked for an old credential; a newer pairing file is on disk" };
         }
         this.removePairingFile();
         return { kind: "revoked-terminal", detail: "hub revoked this credential; pairing removed — re-pair to continue" };
       }
-      return { kind: "retry", delayMs: this.backoffMs(), detail: "late revoked response for a replaced credential; ignored" };
+      return { kind: "retry", delayMs: this.backoff.ms, detail: "late revoked response for a replaced credential; ignored" };
     }
     if (parsed?.code === "token_unknown" || outcome.status === 401) {
       // Non-terminal, actionable: the operator can re-pair any time; the
@@ -702,6 +891,24 @@ export class DeviceConnector {
     this.idleTimer = null;
     for (const ctl of this.readers.values()) ctl.abort();
     this.readers.clear();
+    for (const call of this.restCalls) call.abort();
+    this.restCalls.clear();
+  }
+
+  /** Drop a socket we are done with. One already in a close handshake (we sent the close frame) gets a short grace to finish it. */
+  private hangUp(ws: WebSocket): void {
+    if (ws.readyState === ws.CLOSED) return;
+    try {
+      if (ws.readyState !== ws.CLOSING) {
+        ws.terminate();
+        return;
+      }
+      const force = setTimeout(() => ws.terminate(), BACKPRESSURE_CLOSE_GRACE_MS);
+      force.unref();
+      ws.once("close", () => clearTimeout(force));
+    } catch {
+      /* already gone */
+    }
   }
 
   private dropSocket(reason: string): void {
@@ -715,6 +922,15 @@ export class DeviceConnector {
       } catch {
         /* already gone */
       }
+    }
+  }
+
+  /** Observers never get to fail the connector. */
+  private notify(call: () => void): void {
+    try {
+      call();
+    } catch {
+      /* best effort */
     }
   }
 

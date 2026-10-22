@@ -19,6 +19,8 @@ import {
   keypairPath,
   loadJson,
   pairingPath,
+  readKeypairFile,
+  removeStaleTemps,
   writeAtomic,
   type DeviceKeypair,
   type PairingFile,
@@ -58,12 +60,53 @@ interface PendingOp {
   deviceName: string;
   keyFingerprint: string;
   proof: { type: "pair.response"; v: 1; enrollmentId: string; nonce: string; signature: string };
+  hubId: string;
   expiresAt: number;
   startedAt: number;
   abort: AbortController;
 }
 
 const err = (code: string, message: string) => Object.assign(new Error(message), { code, status: 400 });
+
+const isLoopbackHost = (hostname: string) => hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+const nonEmpty = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
+
+/** Why a hub-issued credential must not be saved, or undefined when it may be. The token leaves this device for hubUrl, so that is judged hardest. */
+function refuseIssue(issue: TokenIssue, expect: { origin: string; hubId: string; enrollmentId: string; deviceUid: string; now: number }): string | undefined {
+  const raw = issue as unknown as Record<string, unknown>;
+  if (raw.enrollmentId !== expect.enrollmentId) return "enrollmentId differs from the enrollment this device started";
+  if (raw.deviceUid !== expect.deviceUid) return "deviceUid is not this device's";
+  if (raw.hubId !== expect.hubId) return "hubId differs from the hubId the challenge announced";
+  if (raw.hubOrigin !== expect.origin) return `hubOrigin differs from the origin paired against (${expect.origin})`;
+  const urlProblem = refuseTunnelUrl(raw.hubUrl, expect.origin);
+  if (urlProblem) return urlProblem;
+  if (typeof raw.issuedAt !== "number" || !Number.isFinite(raw.issuedAt)) return "issuedAt is not a finite number";
+  if (Math.abs(expect.now - raw.issuedAt) > CLOCK_SKEW_MS) return `issuedAt is more than ${CLOCK_SKEW_MS / 1000}s from this device's clock`;
+  if (!nonEmpty(raw.deviceId, 64)) return "deviceId is empty or not a string";
+  if (!nonEmpty(raw.pairingEpoch, 128)) return "pairingEpoch is empty or not a string";
+  if (!nonEmpty(raw.credentialId, 128)) return "credentialId is empty or not a string";
+  if (typeof raw.generation !== "number" || !Number.isInteger(raw.generation) || raw.generation < 1) return "generation is not a positive integer";
+  if (typeof raw.tunnelToken !== "string" || !/^dpt_[A-Za-z0-9_-]{43}$/.test(raw.tunnelToken)) return "tunnelToken is malformed";
+  return undefined;
+}
+
+/** The tunnel is the paired origin's own /api/tunnel, over TLS (https is what the hub issues; ws clients upgrade it to wss). Plaintext only to this machine. */
+function refuseTunnelUrl(raw: unknown, origin: string): string | undefined {
+  if (typeof raw !== "string") return "hubUrl is not a string";
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "hubUrl is not a valid URL";
+  }
+  const tls = url.protocol === "wss:" || url.protocol === "https:";
+  const plain = url.protocol === "ws:" || url.protocol === "http:";
+  if (!tls && !(plain && isLoopbackHost(url.hostname))) return `hubUrl scheme ${url.protocol} is not allowed (wss or https; ws or http only on a loopback host)`;
+  if (url.username || url.password) return "hubUrl must not carry credentials";
+  if (url.host !== new URL(origin).host) return `hubUrl host differs from the origin paired against (${origin})`;
+  if (url.pathname !== "/api/tunnel" || url.search || url.hash) return "hubUrl must be exactly the origin's /api/tunnel";
+  return undefined;
+}
 
 export class DevicePairing {
   private pending: PendingOp | undefined;
@@ -79,6 +122,7 @@ export class DevicePairing {
     private readonly hooks: { now?: () => number; fetchImpl?: typeof fetch; stopOldConnector?: (origin: string) => void; onPaired?: () => void; pollMs?: number } = {},
   ) {
     ensurePrivateDir(home);
+    removeStaleTemps(home);
     this.loadKeypair();
     this.paired = loadJson<PairingFile>(pairingPath(home));
     if (this.paired) ensureFileMode0600(pairingPath(home));
@@ -91,14 +135,13 @@ export class DevicePairing {
 
   private loadKeypair(): void {
     const path = keypairPath(this.home);
-    const loaded = loadJson<DeviceKeypair>(path);
-    if (loaded?.privateKeyPem && loaded?.publicKeyPem && loaded?.fingerprint) {
+    const loaded = readKeypairFile(path);
+    if (loaded) {
       this.keypair = loaded;
       ensureFileMode0600(path);
       return;
     }
-    // First boot (or malformed keypair file): mint a new key. The old pairing,
-    // if any, stays keyed to the old key and must be re-paired by the operator.
+    // First boot only: a file that exists but cannot be used throws above instead of being replaced.
     const kp = generateKeyPairSync("ed25519");
     const der = kp.publicKey.export({ type: "spki", format: "der" }) as Buffer;
     this.keypair = {
@@ -111,7 +154,7 @@ export class DevicePairing {
 
   status(): PairingStatus {
     const base: PairingStatus = {
-      state: this.revokedNotice ? "revoked" : this.paired ? "paired" : this.pending ? "pairing" : "unpaired",
+      state: this.pending ? "pairing" : this.revokedNotice ? "revoked" : this.paired ? "paired" : "unpaired",
       deviceUid: this.store.uid,
       deviceName: this.deviceName,
       fingerprint: this.keypair!.fingerprint,
@@ -126,6 +169,7 @@ export class DevicePairing {
       ...(this.pending
         ? { pending: { hubOrigin: this.pending.hubOrigin, startedAt: this.pending.startedAt, note: "polling for approval; cancel stops the local operation only" } }
         : {}),
+      ...(this.lastFailure ? { lastError: this.lastFailure } : {}),
     };
     return base;
   }
@@ -166,6 +210,14 @@ export class DevicePairing {
     try {
       const u = new URL(url);
       const code = u.searchParams.get("code");
+      if (!/^\/pair\/?$/.test(u.pathname) || u.username || u.password || u.hash
+        || u.searchParams.getAll("code").length !== 1
+        || u.searchParams.getAll("v").length !== 1 || u.searchParams.get("v") !== "1") return undefined;
+      if (u.searchParams.has("origin")) {
+        const origin = new URL(u.searchParams.get("origin")!);
+        if (u.searchParams.getAll("origin").length !== 1 || origin.origin !== u.origin || origin.pathname !== "/"
+          || origin.username || origin.password || origin.search || origin.hash) return undefined;
+      }
       return code && /^[A-Z2-7]{8}$/.test(code) ? code : undefined;
     } catch {
       return undefined;
@@ -184,18 +236,16 @@ export class DevicePairing {
     const { origin, code } = this.resolveOrigin(input);
 
     if (this.pending) throw err("busy", "A pairing operation is already running; cancel it first");
-    if (this.paired && this.paired.hubOrigin !== origin && !input.force)
+    // A revoked pairing no longer binds the device to its hub.
+    const incumbent = this.revokedNotice ? undefined : this.paired;
+    if (incumbent && incumbent.hubOrigin !== origin && !input.force)
       throw err(
         "invalid",
-        `Already paired with ${this.paired.hubOrigin}; re-pairing another hub needs force (and revokes this pairing only after the new one succeeds)`,
+        `Already paired with ${incumbent.hubOrigin}; re-pairing another hub needs force (and revokes this pairing only after the new one succeeds)`,
       );
-    if (this.paired && this.paired.hubOrigin !== origin && input.force) {
-      // Stop the old connector first; best-effort unpair notice, honest report.
-      this.hooks.stopOldConnector?.(this.paired.hubOrigin);
-      await this.bestEffortUnpair(this.paired).catch(() => undefined);
-    }
 
     const operationId = randomUUID();
+    this.lastFailure = undefined;
     const keypair = this.keypair!;
     const requestId = randomUUID();
     const deviceUid = this.store.uid;
@@ -212,6 +262,8 @@ export class DevicePairing {
       clientTime: this.now(),
     })) as { type: string; enrollmentId: string; nonce: string; issuedAt: number; hubId: string };
     if (challenge.type !== "pair.challenge") throw err("invalid", `Unexpected hub response: ${JSON.stringify(challenge).slice(0, 200)}`);
+    if (typeof challenge.issuedAt !== "number" || !Number.isFinite(challenge.issuedAt)) throw err("invalid", "Challenge issuedAt is not a finite number");
+    if (!nonEmpty(challenge.hubId, 64) || !nonEmpty(challenge.enrollmentId, 64)) throw err("invalid", "Challenge is missing hubId or enrollmentId");
     // P-4: device rejects a challenge skewed more than ±60s from its clock.
     if (Math.abs(this.now() - challenge.issuedAt) > CLOCK_SKEW_MS)
       throw err("clock_skew", `Hub clock differs by more than ${CLOCK_SKEW_MS / 1000}s; fix NTP and retry`);
@@ -237,6 +289,7 @@ export class DevicePairing {
       deviceName: this.deviceName,
       keyFingerprint: keypair.fingerprint,
       proof,
+      hubId: challenge.hubId,
       expiresAt: this.now() + 300_000,
       startedAt: this.now(),
       abort: new AbortController(),
@@ -257,7 +310,14 @@ export class DevicePairing {
         continue;
       }
       if (outcome.status === 200 && outcome.body && (outcome.body as TokenIssue).type === "pair.token") {
-        await this.commitTokenIssue(pending, outcome.body as TokenIssue);
+        const issue = outcome.body as TokenIssue;
+        const refusal = refuseIssue(issue, { origin: pending.hubOrigin, hubId: pending.hubId, enrollmentId: pending.proof.enrollmentId, deviceUid: pending.deviceUid, now: this.now() });
+        if (refusal) {
+          this.pending = undefined;
+          this.lastFailure = `invalid_token_issue: ${refusal}; the credential was not saved`;
+          return;
+        }
+        await this.commitTokenIssue(pending, issue);
         return;
       }
       if (outcome.status === 202) {
@@ -273,7 +333,10 @@ export class DevicePairing {
       }
       await sleep(pollMs * 2, pending.abort.signal);
     }
-    if (this.pending?.operationId === pending.operationId) this.pending = undefined;
+    if (this.pending?.operationId === pending.operationId) {
+      this.pending = undefined;
+      this.lastFailure = "code_expired: Pairing timed out; mint a fresh code and retry";
+    }
   }
 
   private lastFailure: string | undefined;
@@ -302,10 +365,20 @@ export class DevicePairing {
     // Re-check: a newer operation/pairing must not be clobbered by this commit.
     if (this.pending?.operationId !== pending.operationId) return;
     if (this.paired && this.paired.updatedAt > file.updatedAt) return; // never happens with sync writes, belt-and-braces
+    const previous = this.revokedNotice ? undefined : this.paired;
     this.paired = file;
     this.pending = undefined;
     this.lastFailure = undefined;
     this.revokedNotice = false;
+    // The old hub keeps its tunnel and its pairing right up to here: only a persisted replacement ends them.
+    if (previous && previous.hubOrigin !== file.hubOrigin) {
+      try {
+        this.hooks.stopOldConnector?.(previous.hubOrigin);
+      } catch {
+        /* hook errors never fail the pairing commit */
+      }
+      void this.bestEffortUnpair(previous).catch(() => undefined);
+    }
     // Credential file is durable: the same-daemon connector may start now.
     try {
       this.hooks.onPaired?.();
@@ -324,9 +397,18 @@ export class DevicePairing {
     return this.status();
   }
 
-  markRevoked(reason: string): void {
+  /** The connector learned the hub revoked this pairing (and removed the file). A notice for another epoch is about a pairing we no longer hold. */
+  markRevoked(reason: string, pairingEpoch?: string): void {
+    if (pairingEpoch !== undefined && this.paired && this.paired.pairingEpoch !== pairingEpoch) return;
     this.revokedNotice = true;
     this.lastFailure = reason;
+  }
+
+  /** The connector persisted a rotated credential for this pairing; only a strictly newer generation of the same epoch counts. */
+  markRotated(file: PairingFile): void {
+    if (!this.paired || this.revokedNotice) return;
+    if (file.pairingEpoch !== this.paired.pairingEpoch || file.generation <= this.paired.generation) return;
+    this.paired = file;
   }
 
   private async bestEffortUnpair(paired: PairingFile): Promise<void> {

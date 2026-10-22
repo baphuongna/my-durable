@@ -25,8 +25,9 @@ const app = express();
 app.disable("x-powered-by");
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 const pairing = new DevicePairing(store, config.home, config.name, process.env.DPI_HUB_URL, {
-  // Forced hub change (P-5): the OLD connector must die before the new
-  // pairing is written — never two live tunnels for one device.
+  // Forced hub change (P-5): once the new pairing is persisted the OLD
+  // connector is stopped — never two live tunnels for one device, and the old
+  // hub keeps its tunnel until a replacement exists.
   stopOldConnector: () => connector.stop("re-pairing: hub changed"),
   // Pairing success (P2-15/20 glue, F05): adopt the freshly persisted pairing
   // file — reload() swaps the RUNNING connector onto the new epoch instead of
@@ -38,7 +39,11 @@ const pairing = new DevicePairing(store, config.home, config.name, process.env.D
 const connector = new DeviceConnector(
   config.home,
   readCaPem(process.env.DPI_HUB_CA),
-  {},
+  {
+    // The local pairing view follows what the hub did to this pairing.
+    onRevoked: (epoch, reason) => pairing.markRevoked(reason, epoch),
+    onRotated: (file) => pairing.markRotated(file),
+  },
   { baseUrl: `http://${config.host === "0.0.0.0" ? "127.0.0.1" : config.host}:${config.port}`, token: config.token },
 );
 connector.start();

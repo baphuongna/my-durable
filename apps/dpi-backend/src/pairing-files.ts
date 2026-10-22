@@ -7,18 +7,22 @@
  * resolves, and async latecomers must re-check the active operation before
  * committing (see pairing.ts).
  */
-import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 
-export function ensurePrivateDir(dir: string): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-}
+export { ensurePrivateDir };
 
 /** Write `contents` to `path` atomically (temp → fsync → rename → dir fsync). */
 export function writeAtomic(path: string, contents: string): void {
+  ensurePrivateDir(dirname(path));
+  replaceFileAtomic(path, contents);
+}
+
+/** The write itself, for callers that have already judged the directory (and must not have it chmod'ed). */
+export function replaceFileAtomic(path: string, contents: string): void {
   const dir = dirname(path);
-  ensurePrivateDir(dir);
   const temp = join(dir, `.${basename(path)}.tmp-${randomBytes(6).toString("hex")}`);
   let fd: number | undefined;
   try {
@@ -50,6 +54,25 @@ export function writeAtomic(path: string, contents: string): void {
 
 const basename = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
+/** Exactly the names `replaceFileAtomic` gives its temp files for the two state files in the home directory. */
+const STATE_TEMP = /^\.(?:pairing|device-keypair)\.json\.tmp-[0-9a-f]{12}$/;
+
+/**
+ * A writer killed between creating its temp file and renaming it leaves that file behind, holding a credential.
+ * Run before anything in this process writes: it must not race a live writer.
+ */
+export function removeStaleTemps(dir: string): void {
+  for (const name of readdirSync(dir)) {
+    if (!STATE_TEMP.test(name)) continue;
+    const path = join(dir, name);
+    try {
+      unlinkSync(path); // never follows a symlink; refuses a directory
+    } catch {
+      /* raced away or not removable: the next start retries */
+    }
+  }
+}
+
 /** Tolerant JSON load for state files: malformed → undefined (caller decides). */
 export function loadJson<T>(path: string): T | undefined {
   try {
@@ -58,6 +81,32 @@ export function loadJson<T>(path: string): T | undefined {
     return undefined;
   }
 }
+
+/**
+ * The device key, or undefined when there is none yet. Anything else that keeps it from being read (permissions,
+ * I/O error, truncated or damaged contents) throws: the caller must not answer that by minting a new identity
+ * over the old file.
+ */
+export function readKeypairFile(path: string): DeviceKeypair | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw keypairUnusable(path, (e as Error).message);
+  }
+  let parsed: Partial<DeviceKeypair> | null;
+  try {
+    parsed = JSON.parse(raw) as Partial<DeviceKeypair> | null;
+  } catch {
+    throw keypairUnusable(path, "not valid JSON");
+  }
+  if (!parsed?.privateKeyPem || !parsed.publicKeyPem || !parsed.fingerprint) throw keypairUnusable(path, "key fields are missing");
+  return parsed as DeviceKeypair;
+}
+
+const keypairUnusable = (path: string, why: string) =>
+  new Error(`device keypair ${path} is unusable (${why}); refusing to replace it. Restore it from a backup, or move it away to enroll this device again.`);
 
 /** Tighten a file that must hold secrets if a copy/restore loosened it. */
 export function ensureFileMode0600(path: string): void {

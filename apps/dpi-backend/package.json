@@ -8,6 +8,7 @@
     "dev": "tsx watch src/main.ts",
     "check": "tsc --noEmit -p .",
     "test": "tsx --test tests/*.test.ts",
+    "test:timing": "tsx --test --test-reporter=tap --test-concurrency=1 tests/timing/*.timing.ts",
     "token": "tsx scripts/token.ts",
     "migrate-playground": "tsx scripts/migrate-playground.ts",
     "check:contract": "node scripts/check-contract.mjs"

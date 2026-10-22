@@ -29,6 +29,7 @@ interface HubScript {
 function fakeHub(script: HubScript = {}) {
   const calls: { url: string; body: unknown }[] = [];
   let verifyIndex = 0;
+  let challenge: { enrollmentId: string; issuedAt: number } | undefined;
   const kp = generateKeyPairSync("ed25519"); // not used for signing (hub doesn't sign in these tests)
   void kp;
   const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -38,10 +39,11 @@ function fakeHub(script: HubScript = {}) {
     if (url.endsWith("/api/pair/start")) {
       const status = script.startStatus ?? 200;
       const issuedAt = script.challengeAt ?? 1760000000000;
+      challenge = { enrollmentId: randomUUID(), issuedAt };
       return new Response(
         JSON.stringify(
           status === 200
-            ? { type: "pair.challenge", v: 1, enrollmentId: randomUUID(), nonce: "N".repeat(43), issuedAt, hubId: HUB_ID }
+            ? { type: "pair.challenge", v: 1, enrollmentId: challenge.enrollmentId, nonce: "N".repeat(43), issuedAt, hubId: HUB_ID }
             : { error: { code: "rate_limited", message: "no" } },
         ),
         { status, headers: { "content-type": "application/json" } },
@@ -51,7 +53,9 @@ function fakeHub(script: HubScript = {}) {
       const statuses = script.verifyStatus ?? [];
       const status = statuses[Math.min(verifyIndex, statuses.length - 1)] ?? 202;
       const bodies = script.verifyBodies ?? [];
-      const bodyOut = bodies[Math.min(verifyIndex, bodies.length - 1)] ?? { type: "pair.pending", v: 1, enrollmentId: "e", state: "awaiting_approval", expiresAt: 1760000300000, pollAfterMs: 1 };
+      let bodyOut = bodies[Math.min(verifyIndex, bodies.length - 1)] ?? { type: "pair.pending", v: 1, enrollmentId: "e", state: "awaiting_approval", expiresAt: 1760000300000, pollAfterMs: 1 };
+      // A credential answers the enrollment and the clock of the challenge it was minted for.
+      if ((bodyOut as { type?: string }).type === "pair.token") bodyOut = { ...(bodyOut as object), ...challenge };
       verifyIndex += 1;
       return new Response(JSON.stringify(bodyOut), { status, headers: { "content-type": "application/json" } });
     }
@@ -124,6 +128,27 @@ test("keypair: minted once, 0600, stable fingerprint across restarts", async () 
   await rm(home, { recursive: true, force: true });
 });
 
+test("R08: device pair URLs require the pair path and an unambiguous version 1 contract before network I/O", async () => {
+  const home = await tempHome();
+  const hub = fakeHub();
+  const dp = newPairing(home, hub);
+  try {
+    for (const pairUrl of [
+      "https://h.example.com/pair?code=AB2C7DEF",
+      "https://h.example.com/other?code=AB2C7DEF&v=1",
+      "https://h.example.com/pair?code=AB2C7DEF&v=2",
+      "https://h.example.com/pair?code=AB2C7DEF&code=ZZ7Y6X2W&v=1",
+      "https://h.example.com/pair?code=AB2C7DEF&v=1&origin=https://other.example.com",
+    ]) {
+      await assert.rejects(dp.start({ code: "", pairUrl }), /pairUrl/);
+      assert.equal(hub.calls.length, 0);
+    }
+  } finally {
+    if (dp.status().pending) dp.cancel();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("P-4: challenge skew ±61s rejected, ±60s accepted (client clock never drives TTL)", async () => {
   const home = await tempHome();
   try {
@@ -183,6 +208,38 @@ test("cancel: local abort only; keypair kept; honest message", async () => {
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
+test("R07: an active re-pair takes precedence over incumbent credentials and exposes its terminal error", async () => {
+  const home = await tempHome();
+  const ticket = {
+    type: "pair.token", v: 1, enrollmentId: "e1", deviceUid: UID, deviceId: "incumbent",
+    pairingEpoch: "old-epoch", credentialId: "old-credential", generation: 1, hubId: HUB_ID,
+    hubOrigin: "https://h.example.com", hubUrl: "https://h.example.com/api/tunnel",
+    tunnelToken: `dpt_${"I".repeat(43)}`, issuedAt: 1, expiresAt: null,
+  };
+  const hub = fakeHub({ verifyStatus: [200, 202, 410], verifyBodies: [
+    ticket,
+    { type: "pair.pending", v: 1, state: "awaiting_approval" },
+    { error: { code: "enrollment_lost", message: "Mint a fresh code and retry" } },
+  ] });
+  const dp = newPairing(home, hub, { pollMs: 20 });
+  try {
+    await dp.start({ code: "AB2C7DEF", hub: "https://h.example.com" });
+    await until(() => dp.status().state === "paired", 2000, "incumbent paired");
+    const incumbent = readFileSync(pairingPath(home), "utf8");
+    const pending = await dp.start({ code: "ZZ7Y6X2W", hub: "https://h.example.com" });
+    assert.equal(pending.state, "pairing", "an old pairing cannot terminate the new operation's UI polling");
+    assert.equal(pending.deviceId, "incumbent");
+    assert.ok(pending.pending);
+    await until(() => !dp.status().pending, 2000, "re-pair failed");
+    assert.equal(dp.status().state, "paired", "failure preserves the incumbent pairing");
+    assert.match(dp.status().lastError ?? "", /enrollment_lost.*fresh code/);
+    assert.equal(readFileSync(pairingPath(home), "utf8"), incumbent, "failed re-pair never replaces incumbent credentials");
+  } finally {
+    if (dp.status().pending) dp.cancel();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("P-5: incumbent hub wins without force; force stops old connector + best-effort unpair", async () => {
   const home = await tempHome();
   const hubA = fakeHub({ verifyStatus: [200], verifyBodies: [
@@ -193,18 +250,23 @@ test("P-5: incumbent hub wins without force; force stops old connector + best-ef
     await dp.start({ code: "AB2C7DEF", hub: "https://hub-a.example.com" });
     await until(() => dp.status().state === "paired", 5000, "paired to A");
     // switch without force → incumbent wins
-    const hubB = fakeHub();
+    const hubB = fakeHub({ verifyStatus: [202, 200], verifyBodies: [
+      { type: "pair.pending", v: 1, enrollmentId: "e", state: "awaiting_approval", expiresAt: 1760000300000, pollAfterMs: 1 },
+      { type: "pair.token", v: 1, deviceUid: UID, deviceId: "dev-b", pairingEpoch: "ep-b", credentialId: "c-b", generation: 1, hubId: HUB_ID, hubOrigin: "https://hub-b.example.com", hubUrl: "https://hub-b.example.com/api/tunnel", tunnelToken: `dpt_${"B".repeat(43)}`, expiresAt: null },
+    ] });
     await assert.rejects(dp.start({ code: "ZZ7Y6X2W", hub: "https://hub-b.example.com" }), /force/);
-    // with force: old connector stopped first, unpair attempted, then proceeds
+    // with force: the old connector and hub stay until the new pairing is persisted, then stop + unpair notice
     let stopped: string | undefined;
     const dp2 = new DevicePairing({ uid: UID } as never, home, "dev", undefined, {
       fetchImpl: hubB.fetchImpl, pollMs: 10, now: () => 1760000000000,
       stopOldConnector: (origin) => (stopped = origin),
     });
     await dp2.start({ code: "ZZ7Y6X2W", hub: "https://hub-b.example.com", force: true });
-    assert.equal(stopped, "https://hub-a.example.com");
+    assert.equal(stopped, undefined);
     assert.ok(hubB.calls.some((c) => c.url.startsWith("https://hub-b.example.com")));
-    dp2.cancel();
+    await until(() => dp2.status().hubOrigin === "https://hub-b.example.com", 5000, "paired to B");
+    assert.equal(stopped, "https://hub-a.example.com");
+    await until(() => hubB.calls.some((c) => c.url === "https://hub-a.example.com/api/tunnel"), 5000, "unpair notice");
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
