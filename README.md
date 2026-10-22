@@ -8,6 +8,22 @@
 
 📺 Watch this video to get the full breakdown of this codebase: **[Pi Durable PROACTIVE Agents](https://youtu.be/DNDYYHsypZg)**
 
+## Quick start (`md`)
+
+```sh
+npm install -g my-durable
+
+md hub                 # web UI + device tunnel server  → http://127.0.0.1:4781
+md device              # device daemon (pairs to a hub, serves this machine)
+md tui                 # terminal admin client
+md --help              # commands, flags and environment variables
+```
+
+`md hub` is the only component that other machines talk to, so it is also the one
+to put behind a TLS proxy or tunnel (it refuses anything that did not arrive over
+HTTPS). Pair a device by opening the hub, pressing **Pair a device**, and entering
+the code — or open the pairing link directly on the machine being added.
+
 <p align="center">
   <img src="images/01_durable_agent_network.svg" alt="Three clients (web UI, dpi-tui, curl) reach durable agents on four devices; the clients disconnect and every device keeps checkpointing its run to SQLite" width="850">
 </p>

@@ -1,6 +1,6 @@
 {
   "name": "my-durable",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Durable Pi — the durable agent network: hub web UI, device backend daemon, TUI admin and the shared SDK, packaged as one runnable monorepo install",
   "license": "MIT",
   "repository": {
@@ -15,9 +15,7 @@
     "node": ">=22.0.0"
   },
   "bin": {
-    "my-durable-hub": "bin/hub.mjs",
-    "my-durable-device": "bin/device.mjs",
-    "my-durable-tui": "bin/tui.mjs"
+    "md": "bin/md.mjs"
   },
   "scripts": {
     "hub": "tsx apps/dpi-playground/apps/dpi-playground-hub/src/main.ts",
