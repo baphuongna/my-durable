@@ -15,22 +15,33 @@ import { bootCaddyDeploy, DEPLOY_CADDYFILE, freePort } from "./harness/caddy.js"
 const CADDY_BIN = resolve(import.meta.dirname, "../../../tools/caddy");
 const ADMIN_PASSWORD = "p".repeat(24);
 
-interface Policy { match?: { sni?: string[] }; protocol_min?: string; protocol_max?: string }
+interface Policy {
+  match?: { sni?: string[] };
+  protocol_min?: string;
+  protocol_max?: string;
+}
 
 function adaptedPolicies(): Policy[] {
-  const out = execFileSync(CADDY_BIN, ["adapt", "--config", DEPLOY_CADDYFILE, "--adapter", "caddyfile"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"], // Caddy's advisory warnings go to stderr
-    env: {
-      ...process.env,
-      DPI_PUBLIC_HOST: "hub.example.test:8443",
-      DPI_TLS_CERT: "/nonexistent/hub.crt",
-      DPI_TLS_KEY: "/nonexistent/hub.key",
-      DPI_HUB_ADDR: "127.0.0.1:4781",
-      DPI_ADMIN_HASH: "$2a$14$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012",
+  const out = execFileSync(
+    CADDY_BIN,
+    ["adapt", "--config", DEPLOY_CADDYFILE, "--adapter", "caddyfile"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"], // Caddy's advisory warnings go to stderr
+      env: {
+        ...process.env,
+        DPI_PUBLIC_HOST: "hub.example.test:8443",
+        DPI_TLS_CERT: "/nonexistent/hub.crt",
+        DPI_TLS_KEY: "/nonexistent/hub.key",
+        DPI_HUB_ADDR: "127.0.0.1:4781",
+        DPI_ADMIN_HASH: "$2a$14$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012",
+      },
     },
-  });
-  const servers = JSON.parse(out).apps.http.servers as Record<string, { tls_connection_policies?: Policy[] }>;
+  );
+  const servers = JSON.parse(out).apps.http.servers as Record<
+    string,
+    { tls_connection_policies?: Policy[] }
+  >;
   return Object.values(servers).flatMap((s) => s.tls_connection_policies ?? []);
 }
 
@@ -40,13 +51,18 @@ test("S-9: the reference Caddyfile declares TLS 1.2 as the minimum for the publi
   assert.equal(named[0].protocol_min, "tls1.2");
   assert.equal(named[0].protocol_max, "tls1.3");
   for (const p of adaptedPolicies()) {
-    assert.ok(!p.protocol_min || p.protocol_min >= "tls1.2", `no policy may lower the floor: ${JSON.stringify(p)}`);
+    assert.ok(
+      !p.protocol_min || p.protocol_min >= "tls1.2",
+      `no policy may lower the floor: ${JSON.stringify(p)}`,
+    );
   }
 });
 
 test("S-9: the real Caddy refuses TLS 1.0 and 1.1 and serves TLS 1.2 and 1.3", async () => {
   const ca = await makeTestCa();
-  const adminHash = execFileSync(CADDY_BIN, ["hash-password", "--plaintext", ADMIN_PASSWORD], { encoding: "utf8" }).trim();
+  const adminHash = execFileSync(CADDY_BIN, ["hash-password", "--plaintext", ADMIN_PASSWORD], {
+    encoding: "utf8",
+  }).trim();
   const caddy = await bootCaddyDeploy({
     hubPort: await freePort(), // nothing listens there; the TLS handshake does not need the hub
     certFile: join(ca.dir, "hub.crt"),
@@ -57,13 +73,24 @@ test("S-9: the real Caddy refuses TLS 1.0 and 1.1 and serves TLS 1.2 and 1.3", a
   const handshake = (version: tls.SecureVersion) =>
     new Promise<string>((done) => {
       const socket = tls.connect(
-        { host: "127.0.0.1", port: caddy.port, rejectUnauthorized: false, minVersion: version, maxVersion: version, ciphers: "ALL:@SECLEVEL=0" },
+        {
+          host: "127.0.0.1",
+          port: caddy.port,
+          rejectUnauthorized: false,
+          minVersion: version,
+          maxVersion: version,
+          ciphers: "ALL:@SECLEVEL=0",
+        },
         () => {
           done(`accepted ${socket.getProtocol()}`);
           socket.destroy();
         },
       );
-      socket.on("error", (e) => done(`refused ${/alert protocol version|protocol version/i.test(e.message) ? "protocol version" : e.message}`));
+      socket.on("error", (e) =>
+        done(
+          `refused ${/alert protocol version|protocol version/i.test(e.message) ? "protocol version" : e.message}`,
+        ),
+      );
     });
   try {
     assert.equal(await handshake("TLSv1"), "refused protocol version");

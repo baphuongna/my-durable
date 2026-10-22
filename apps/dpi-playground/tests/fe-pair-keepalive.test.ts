@@ -8,9 +8,14 @@ function captureFetch(t: { after(fn: () => void): void }) {
   const inits: Array<RequestInit | undefined> = [];
   globalThis.fetch = (async (_url: string, init?: RequestInit) => {
     inits.push(init);
-    return new Response(JSON.stringify({ codeId: "c1", phase: "cancelled" }), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ codeId: "c1", phase: "cancelled" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   }) as never;
-  t.after(() => { globalThis.fetch = original; });
+  t.after(() => {
+    globalThis.fetch = original;
+  });
   return inits;
 }
 
@@ -26,5 +31,8 @@ test("FE-K2: other admin calls, and a plain cancel, are not keepalive", async (t
   await pairingAdmin.cancel("c1");
   await pairingAdmin.codeState("c1");
   await pairingAdmin.createCode();
-  assert.deepEqual(inits.map((i) => i?.keepalive ?? false), [false, false, false]);
+  assert.deepEqual(
+    inits.map((i) => i?.keepalive ?? false),
+    [false, false, false],
+  );
 });

@@ -84,18 +84,26 @@ export class DeviceMonitor {
 
   network(): NetworkDevice[] {
     const pairings = this.registry.publicPairings();
-    return this.registry.list().map((row) => toPublic(row, this.live.get(row.id), {
-      pairing: pairings.get(row.id),
-      ...(row.transport === "tunnel" ? { tunnel: this.tunnel?.diagnostics?.(row.id) ?? {
-        state: this.tunnel?.hasLiveConnection(row.id) ? "connected" : "disconnected", readerCount: 0,
-      } } : {}),
-    }));
+    return this.registry.list().map((row) =>
+      toPublic(row, this.live.get(row.id), {
+        pairing: pairings.get(row.id),
+        ...(row.transport === "tunnel"
+          ? {
+              tunnel: this.tunnel?.diagnostics?.(row.id) ?? {
+                state: this.tunnel?.hasLiveConnection(row.id) ? "connected" : "disconnected",
+                readerCount: 0,
+              },
+            }
+          : {}),
+      }),
+    );
   }
 
   /** Wire the tunnel dispatcher source (main.ts, after construction). */
   setTunnelSource(source: TunnelTransportSource): void {
     this.tunnel = source;
-    for (const device of this.registry.list()) if (device.transport === "tunnel") this.watch(device.id);
+    for (const device of this.registry.list())
+      if (device.transport === "tunnel") this.watch(device.id);
   }
 
   onChange(fn: () => void) {
@@ -223,15 +231,22 @@ export class DeviceMonitor {
           sleep(6_000, signal).then(() => null),
         ]);
         if (probe === null) throw new DpiError("offline", `Probe timeout for ${device.url}`);
-        if (probe.status === 401) throw new DpiError("unauthorized", "Device rejected the token", 401);
-        if (probe.status !== 200) throw new DpiError("offline", `/v1/device answered ${probe.status}`, probe.status);
+        if (probe.status === 401)
+          throw new DpiError("unauthorized", "Device rejected the token", 401);
+        if (probe.status !== 200)
+          throw new DpiError("offline", `/v1/device answered ${probe.status}`, probe.status);
         let parsed: { apiVersion?: number; uid?: string; name?: string } | undefined;
         try {
           parsed = typeof probe.body === "string" ? JSON.parse(probe.body) : (probe.body as never);
         } catch {
           throw new DpiError("invalid", `/v1/device returned a non-JSON body`);
         }
-        const info = { ...parsed, apiVersion: parsed?.apiVersion ?? 0, uid: parsed?.uid ?? "", name: parsed?.name ?? "" } as DeviceInfo;
+        const info = {
+          ...parsed,
+          apiVersion: parsed?.apiVersion ?? 0,
+          uid: parsed?.uid ?? "",
+          name: parsed?.name ?? "",
+        } as DeviceInfo;
         if (info.apiVersion !== 1) {
           this.update(id, {
             status: "incompatible",
@@ -261,7 +276,10 @@ export class DeviceMonitor {
         }
         this.update(id, { status: "online", error: undefined, info, lastSeenAt: Date.now() });
         backoff.reset();
-        for await (const frame of transport.watch({ path: "/v1/events", consumerId: `monitor:${id}` }, signal)) {
+        for await (const frame of transport.watch(
+          { path: "/v1/events", consumerId: `monitor:${id}` },
+          signal,
+        )) {
           if (frame.type === "tree")
             this.update(id, {
               status: "online",

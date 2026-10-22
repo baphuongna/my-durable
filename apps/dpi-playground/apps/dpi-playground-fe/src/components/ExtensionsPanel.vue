@@ -15,9 +15,15 @@ async function load() {
   data.value = (await handle.extensions().catch(() => undefined)) ?? data.value;
 }
 // Reload on a new selection, and when the agent's stored extension selection changes from any client.
-watch([agentHandle, online, () => JSON.stringify(agentState.value.agent.extensions ?? null)], load, { immediate: true });
+watch(
+  [agentHandle, online, () => JSON.stringify(agentState.value.agent.extensions ?? null)],
+  load,
+  { immediate: true },
+);
 
-async function set(patch: { name: string; enabled: boolean } | { prompt: string; enabled: boolean }) {
+async function set(
+  patch: { name: string; enabled: boolean } | { prompt: string; enabled: boolean },
+) {
   const handle = agentHandle.value;
   if (!handle || busy.value) return;
   busy.value = true;
@@ -38,8 +44,8 @@ async function set(patch: { name: string; enabled: boolean } | { prompt: string;
       <Puzzle :size="18" />
     </div>
     <p class="hint">
-      Custom harness capabilities for this agent. Turn one on and the next request uses it. The choice is stored
-      with the agent, so it survives restarts.
+      Custom harness capabilities for this agent. Turn one on and the next request uses it. The
+      choice is stored with the agent, so it survives restarts.
     </p>
     <p v-if="!data" class="task-empty">Loading extensions…</p>
     <article

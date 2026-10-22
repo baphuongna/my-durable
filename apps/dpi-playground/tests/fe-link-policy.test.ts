@@ -14,8 +14,15 @@ test("GA-01: absolute http(s) links to other origins survive, normalised", () =>
   assert.equal(externalHref("http://example.org", HUB), "http://example.org/");
   assert.equal(externalHref("HTTPS://EXAMPLE.ORG/x", HUB), "https://example.org/x");
   assert.equal(externalHref("  https://example.org/x\n", HUB), "https://example.org/x");
-  assert.equal(externalHref("https://hub.example.com.evil.test/x", HUB), "https://hub.example.com.evil.test/x");
-  assert.equal(externalHref("https://hub.example.com:8443/x", HUB), "https://hub.example.com:8443/x", "another port is another origin");
+  assert.equal(
+    externalHref("https://hub.example.com.evil.test/x", HUB),
+    "https://hub.example.com.evil.test/x",
+  );
+  assert.equal(
+    externalHref("https://hub.example.com:8443/x", HUB),
+    "https://hub.example.com:8443/x",
+    "another port is another origin",
+  );
 });
 
 test("GA-01: relative, protocol-relative and fragment-only links are dropped", () => {
@@ -45,7 +52,11 @@ test("GA-01: links that resolve to the hub's own origin are dropped however they
   ])
     assert.equal(externalHref(href, HUB), null, JSON.stringify(href));
   assert.equal(externalHref("http://127.0.0.1:4781/api/network", "http://127.0.0.1:4781"), null);
-  assert.equal(externalHref("http://0x7f.1:4781/api/network", "http://127.0.0.1:4781"), null, "numeric host forms normalise first");
+  assert.equal(
+    externalHref("http://0x7f.1:4781/api/network", "http://127.0.0.1:4781"),
+    null,
+    "numeric host forms normalise first",
+  );
 });
 
 test("GA-01: non-web schemes are dropped", () => {

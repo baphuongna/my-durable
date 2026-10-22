@@ -13,7 +13,8 @@ const err = (code: string, message: string) => ({ error: { code, message } });
 // where the browser holds the operator's credentials. It may therefore never
 // become an active document: only JSON keeps its type, every other type is an
 // opaque download, and the headers below stay on even for JSON.
-const mediaType = (value: string | undefined) => (value ?? "").split(";", 1)[0].trim().toLowerCase();
+const mediaType = (value: string | undefined) =>
+  (value ?? "").split(";", 1)[0].trim().toLowerCase();
 const LOCKED_DOWN_HEADERS = {
   "X-Content-Type-Options": "nosniff",
   "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
@@ -26,10 +27,16 @@ const isBrowserLoad = (req: Parameters<RequestHandler>[0]) => {
   return req.get("sec-fetch-mode") === "navigate" || (dest !== undefined && dest !== "empty");
 };
 
-export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor, tunnel?: TunnelTransportSource): RequestHandler {
+export function proxy(
+  registry: NetworkRegistry,
+  monitor: DeviceMonitor,
+  tunnel?: TunnelTransportSource,
+): RequestHandler {
   return async (req, res) => {
     if (isBrowserLoad(req))
-      return void res.status(403).json(err("forbidden", "Device responses are only served to API clients"));
+      return void res
+        .status(403)
+        .json(err("forbidden", "Device responses are only served to API clients"));
     const id = String(req.params.id);
     const device = registry.get(id);
     if (!device) return void res.status(404).json(err("not_found", `No device ${id}`));
@@ -64,18 +71,25 @@ export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor, tunnel?
         },
         closed.signal,
       );
-      const body = typeof upstream.body === "string" ? upstream.body : JSON.stringify(upstream.body ?? {});
+      const body =
+        typeof upstream.body === "string" ? upstream.body : JSON.stringify(upstream.body ?? {});
       // The device is untrusted input at the ADMIN origin. Only final statuses may reach the
       // operator's client: the plain-frame schema admits 100-599 and a 1xx hangs or kills the
       // client connection; the chunked envelope carries no schema at all. A bad envelope is a
       // bad gateway, never the device's own status line.
       const status =
-        typeof upstream.status === "number" && Number.isInteger(upstream.status) && upstream.status >= 200 && upstream.status <= 599
+        typeof upstream.status === "number" &&
+        Number.isInteger(upstream.status) &&
+        upstream.status >= 200 &&
+        upstream.status <= 599
           ? upstream.status
           : undefined;
       if (status === undefined)
-        return void res.status(502).json(err("invalid", `${device.name} answered out of contract (status)`));
-      const contentType = typeof upstream.contentType === "string" ? upstream.contentType : undefined;
+        return void res
+          .status(502)
+          .json(err("invalid", `${device.name} answered out of contract (status)`));
+      const contentType =
+        typeof upstream.contentType === "string" ? upstream.contentType : undefined;
       res.status(status).set(LOCKED_DOWN_HEADERS);
       if (!contentType || mediaType(contentType) === "application/json")
         res.type("application/json").send(body);
@@ -91,17 +105,24 @@ export function proxy(registry: NetworkRegistry, monitor: DeviceMonitor, tunnel?
       // mutation is NEVER auto-retried with a fresh reqId here — the client
       // sees the failure and decides). Everything else is a bad gateway.
       const dpi = e instanceof DpiError ? e : undefined;
-      const status = dpi?.status && dpi.status >= 400 && dpi.status <= 599 ? dpi.status : dpi?.code === "invalid" ? 400 : 502;
+      const status =
+        dpi?.status && dpi.status >= 400 && dpi.status <= 599
+          ? dpi.status
+          : dpi?.code === "invalid"
+            ? 400
+            : 502;
       const code =
-        dpi?.code === "rate_limited" ? "rate_limited"
-        : dpi?.code === "timeout" || status === 504 ? "timeout"
-        : status === 503 ? "unavailable"
-        : dpi?.code === "invalid" ? "invalid"
-        : "offline";
+        dpi?.code === "rate_limited"
+          ? "rate_limited"
+          : dpi?.code === "timeout" || status === 504
+            ? "timeout"
+            : status === 503
+              ? "unavailable"
+              : dpi?.code === "invalid"
+                ? "invalid"
+                : "offline";
       if (!dpi || dpi.code === "offline") monitor.check(id);
-      res
-        .status(status)
-        .json(err(code, `${device.name}: ${(e as Error).message}`));
+      res.status(status).json(err(code, `${device.name}: ${(e as Error).message}`));
     }
   };
 }

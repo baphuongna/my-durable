@@ -268,12 +268,19 @@ watch(
       </div>
     </header>
     <div
-      v-if="agent.fault.value || agent.status.value === 'fault' || agent.status.value === 'reconnecting' || (agentState.ready && agent.status.value === 'connecting')"
+      v-if="
+        agent.fault.value ||
+        agent.status.value === 'fault' ||
+        agent.status.value === 'reconnecting' ||
+        (agentState.ready && agent.status.value === 'connecting')
+      "
       class="agent-stream-status"
       role="alert"
     >
       <div>
-        <strong>{{ agentState.ready ? "Cached transcript is stale." : "Agent stream unavailable." }}</strong>
+        <strong>{{
+          agentState.ready ? "Cached transcript is stale." : "Agent stream unavailable."
+        }}</strong>
         <p>{{ agent.fault.value || "Updates are paused while the stream reconnects." }}</p>
         <p>Sending is paused until a fresh snapshot arrives. Your draft is kept.</p>
       </div>

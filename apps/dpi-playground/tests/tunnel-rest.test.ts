@@ -15,7 +15,10 @@ import WebSocket from "ws";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
 import { Audit } from "../apps/dpi-playground-hub/src/audit.js";
 import { TunnelServer } from "../apps/dpi-playground-hub/src/tunnel.js";
-import { TunnelDispatcher, TunnelTransport } from "../apps/dpi-playground-hub/src/tunnel-transport.js";
+import {
+  TunnelDispatcher,
+  TunnelTransport,
+} from "../apps/dpi-playground-hub/src/tunnel-transport.js";
 import { DeviceMonitor } from "../apps/dpi-playground-hub/src/monitor.js";
 import { proxy } from "../apps/dpi-playground-hub/src/proxy.js";
 import { sendChunked } from "../../dpi-sdk/src/node/chunk.js";
@@ -27,7 +30,13 @@ const UID = randomUUID();
 
 interface DeviceScript {
   /** Non-probe REST requests the device actually received. */
-  requests: { reqId: string; method: string; path: string; body: unknown; idempotencyKey?: string }[];
+  requests: {
+    reqId: string;
+    method: string;
+    path: string;
+    body: unknown;
+    idempotencyKey?: string;
+  }[];
   /** Monitor /v1/device probes, counted separately from app traffic. */
   probes: number;
   respond: (req: { reqId: string }, res: unknown) => void;
@@ -43,7 +52,11 @@ async function setup(deadlineMs?: number) {
   const tunnel = new TunnelServer(registry, audit, HUB_ID);
   const dispatcher = new TunnelDispatcher(tunnel, { audit, ...(deadlineMs ? { deadlineMs } : {}) });
   const deviceId = "rest-dev";
-  const token = "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+  const token =
+    "dpt_" +
+    Buffer.from(randomUUID() + randomUUID())
+      .toString("base64url")
+      .slice(0, 43);
   const t0 = Date.now();
   const epoch = randomUUID();
   registry.db
@@ -78,7 +91,9 @@ async function setup(deadlineMs?: number) {
     silent: new Set(),
     ws: undefined as unknown as WebSocket,
   };
-  const ws = new WebSocket(`ws://127.0.0.1:${hubPort}/api/tunnel`, { headers: { authorization: `Bearer ${token}` } });
+  const ws = new WebSocket(`ws://127.0.0.1:${hubPort}/api/tunnel`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
   script.ws = ws;
   await new Promise<void>((d) => ws.once("open", d));
   ws.on("message", (d) => {
@@ -87,19 +102,42 @@ async function setup(deadlineMs?: number) {
       if (msg.path === "/v1/device") {
         // monitor probe: always answer so the device is genuinely online
         script.probes++;
-        ws.send(JSON.stringify({ type: "rest-response", reqId: msg.reqId, status: 200, contentType: "application/json", body: JSON.stringify({ apiVersion: 1, uid: UID, name: "R Dev" }) }));
+        ws.send(
+          JSON.stringify({
+            type: "rest-response",
+            reqId: msg.reqId,
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ apiVersion: 1, uid: UID, name: "R Dev" }),
+          }),
+        );
         return;
       }
       script.requests.push(msg);
       if (!script.silent.has(msg.reqId))
-        script.respond(msg, (res: unknown) => ws.send(JSON.stringify({ type: "rest-response", reqId: msg.reqId, ...(res as object) })));
+        script.respond(msg, (res: unknown) =>
+          ws.send(JSON.stringify({ type: "rest-response", reqId: msg.reqId, ...(res as object) })),
+        );
     }
   });
-  ws.send(JSON.stringify({
-    type: "pair-handshake", v: 1, deviceUid: UID, deviceId, pairingEpoch: epoch,
-    credentialId: (registry.db.prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?").get(deviceId) as { credential_id: string }).credential_id,
-    generation: 1, apiVersion: 1, tunnelProto: 1, keyFingerprint: FINGERPRINT,
-  }));
+  ws.send(
+    JSON.stringify({
+      type: "pair-handshake",
+      v: 1,
+      deviceUid: UID,
+      deviceId,
+      pairingEpoch: epoch,
+      credentialId: (
+        registry.db
+          .prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?")
+          .get(deviceId) as { credential_id: string }
+      ).credential_id,
+      generation: 1,
+      apiVersion: 1,
+      tunnelProto: 1,
+      keyFingerprint: FINGERPRINT,
+    }),
+  );
   await new Promise<void>((d) => ws.once("message", () => d())); // hello
 
   const monitor = new DeviceMonitor(registry);
@@ -132,15 +170,23 @@ async function setup(deadlineMs?: number) {
   // (setTunnelSource alone re-watches tunnel devices; start() would double it.)
   monitor.setTunnelSource(source);
   const onlineBy = Date.now() + 10_000;
-  while (Date.now() < onlineBy && monitor.state(deviceId)?.status !== "online") await new Promise((r) => setTimeout(r, 50));
-  if (monitor.state(deviceId)?.status !== "online") throw new Error("fake device never came online: " + JSON.stringify(monitor.state(deviceId)) + " reqs=" + JSON.stringify(script.requests.map((r) => r.path)));
+  while (Date.now() < onlineBy && monitor.state(deviceId)?.status !== "online")
+    await new Promise((r) => setTimeout(r, 50));
+  if (monitor.state(deviceId)?.status !== "online")
+    throw new Error(
+      "fake device never came online: " +
+        JSON.stringify(monitor.state(deviceId)) +
+        " reqs=" +
+        JSON.stringify(script.requests.map((r) => r.path)),
+    );
   return { base, deviceId, script, registry, cleanup, tunnel, dispatcher };
 }
 
 test("proxy over tunnel: request/response passthrough, method/path/body/idempotency-key only", async () => {
   const f = await setup();
   try {
-    f.script.respond = (req, send) => send({ status: 200, contentType: "application/json", body: { ok: true, echo: req.body } });
+    f.script.respond = (req, send) =>
+      send({ status: 200, contentType: "application/json", body: { ok: true, echo: req.body } });
     const res = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "abc-123" },
@@ -177,13 +223,20 @@ test("device-local control paths rejected: /v1/pairing, /v1/tunnel never proxied
 test("GA-07: no spelling of a local-only or streaming route is forwarded; encoded names still are, verbatim", async () => {
   const f = await setup();
   try {
-    f.script.respond = (_req, send) => send({ status: 200, contentType: "application/json", body: { ok: true } });
+    f.script.respond = (_req, send) =>
+      send({ status: 200, contentType: "application/json", body: { ok: true } });
     // Raw HTTP: fetch() would resolve "." segments and drop fragments before the hub ever saw them.
     const send = (method: string, target: string) =>
       new Promise<{ status: number; body: string }>((resolve, reject) => {
         const url = new URL(f.base);
         const req = httpRequest(
-          { host: url.hostname, port: url.port, method, path: `/api/devices/${f.deviceId}${target}`, headers: { "content-type": "application/json" } },
+          {
+            host: url.hostname,
+            port: url.port,
+            method,
+            path: `/api/devices/${f.deviceId}${target}`,
+            headers: { "content-type": "application/json" },
+          },
           (res) => {
             let body = "";
             res.on("data", (d) => (body += d));
@@ -191,7 +244,11 @@ test("GA-07: no spelling of a local-only or streaming route is forwarded; encode
           },
         );
         req.on("error", reject);
-        req.end(method === "GET" ? undefined : JSON.stringify({ code: "12345678", hub: "https://elsewhere.invalid" }));
+        req.end(
+          method === "GET"
+            ? undefined
+            : JSON.stringify({ code: "12345678", hub: "https://elsewhere.invalid" }),
+        );
       });
     for (const [method, target] of [
       ["POST", "/v1/Pairing/start"],
@@ -219,7 +276,11 @@ test("GA-07: no spelling of a local-only or streaming route is forwarded; encode
     const name = "/v1/sessions/My%20Session%20%E2%9C%93/agents/main/messages?waitMs=5";
     assert.equal((await send("POST", name)).status, 200);
     assert.equal(f.script.requests.length, 1);
-    assert.equal(f.script.requests[0].path, name, "an allowlisted path travels exactly as the caller wrote it");
+    assert.equal(
+      f.script.requests[0].path,
+      name,
+      "an allowlisted path travels exactly as the caller wrote it",
+    );
   } finally {
     await f.cleanup();
   }
@@ -255,7 +316,11 @@ test("pending caps: 32/device → 33rd concurrent gets 429; no replay of in-flig
     assert.equal(codes.filter((c) => c === 429).length, 1, "overflow must surface as 429");
     assert.equal(codes.filter((c) => c === 504).length, 32, "the admitted 32 hit the deadline");
     assert.equal(f.script.requests.length, 32, "exactly 32 reached the device");
-    assert.equal(new Set(f.script.requests.map((r) => r.reqId)).size, 32, "no duplicate reqIds / replays");
+    assert.equal(
+      new Set(f.script.requests.map((r) => r.reqId)).size,
+      32,
+      "no duplicate reqIds / replays",
+    );
   } finally {
     await f.cleanup();
   }
@@ -282,7 +347,14 @@ test("foreign rest-response (unknown reqId) → sender closed 1008 + audited; ho
     await new Promise((r) => setTimeout(r, 100));
     const honestReqId = f.script.requests[0].reqId;
     // spoofed response for a reqId that was never issued
-    f.script.ws.send(JSON.stringify({ type: "rest-response", reqId: randomUUID(), status: 200, body: { pwned: true } }));
+    f.script.ws.send(
+      JSON.stringify({
+        type: "rest-response",
+        reqId: randomUUID(),
+        status: 200,
+        body: { pwned: true },
+      }),
+    );
     await new Promise((r) => setTimeout(r, 200));
     const denied = f.registry.db
       .prepare("SELECT detail_json FROM events WHERE action='auth.denied'")
@@ -371,7 +443,11 @@ test("GA-01: device-declared non-JSON content types are served as inert attachme
       assert.match(csp, /default-src 'none'/, contentType);
       assert.match(csp, /(^|;\s*)sandbox(\s|;|$)/, contentType);
       assert.equal(res.headers.get("cross-origin-resource-policy"), "same-origin", contentType);
-      assert.equal(await res.text(), ACTIVE_BODY, "the bytes are untouched; only their type is neutralised");
+      assert.equal(
+        await res.text(),
+        ACTIVE_BODY,
+        "the bytes are untouched; only their type is neutralised",
+      );
     }
   } finally {
     await f.cleanup();
@@ -382,11 +458,20 @@ test("GA-01: JSON stays JSON for the app, but still carries the locked-down head
   const f = await setup();
   try {
     for (const contentType of ["application/json", "Application/JSON; charset=UTF-8", undefined]) {
-      f.script.respond = (_req, send) => send({ status: 200, ...(contentType ? { contentType } : {}), body: { ok: true } });
+      f.script.respond = (_req, send) =>
+        send({ status: 200, ...(contentType ? { contentType } : {}), body: { ok: true } });
       const res = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`);
       assert.equal(res.status, 200);
-      assert.match(res.headers.get("content-type") ?? "", /^application\/json/i, String(contentType));
-      assert.equal(res.headers.get("content-disposition"), null, "JSON is not forced into a download");
+      assert.match(
+        res.headers.get("content-type") ?? "",
+        /^application\/json/i,
+        String(contentType),
+      );
+      assert.equal(
+        res.headers.get("content-disposition"),
+        null,
+        "JSON is not forced into a download",
+      );
       assert.equal(res.headers.get("x-content-type-options"), "nosniff");
       assert.match(res.headers.get("content-security-policy") ?? "", /default-src 'none'/);
       assert.deepEqual(await res.json(), { ok: true });
@@ -399,21 +484,29 @@ test("GA-01: JSON stays JSON for the app, but still carries the locked-down head
 test("GA-01: top-level navigations and subresource loads are refused before they reach the device", async () => {
   const f = await setup();
   try {
-    f.script.respond = (_req, send) => send({ status: 200, contentType: "text/html", body: ACTIVE_BODY });
+    f.script.respond = (_req, send) =>
+      send({ status: 200, contentType: "text/html", body: ACTIVE_BODY });
     // fetch() rewrites Sec-Fetch-Mode itself, so send the exact browser headers over raw HTTP.
     const attempt = (headers: Record<string, string>) =>
       new Promise<{ status: number; body: string }>((resolve, reject) => {
         const url = new URL(`${f.base}/api/devices/${f.deviceId}/v1/docs/app.shared-state`);
-        const req = httpRequest({ host: url.hostname, port: url.port, path: url.pathname, headers }, (res) => {
-          let body = "";
-          res.on("data", (d) => (body += d));
-          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
-        });
+        const req = httpRequest(
+          { host: url.hostname, port: url.port, path: url.pathname, headers },
+          (res) => {
+            let body = "";
+            res.on("data", (d) => (body += d));
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+          },
+        );
         req.on("error", reject);
         req.end();
       });
     for (const headers of [
-      { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", "sec-fetch-site": "same-origin" },
+      {
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "sec-fetch-site": "same-origin",
+      },
       { "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" },
       { "sec-fetch-mode": "navigate" },
       { "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image" },
@@ -426,7 +519,16 @@ test("GA-01: top-level navigations and subresource loads are refused before they
     }
     assert.equal(f.script.requests.length, 0, "nothing reached the device");
     // fetch()/XHR from the app and header-less API clients keep working.
-    assert.equal((await attempt({ "sec-fetch-mode": "cors", "sec-fetch-dest": "empty", "sec-fetch-site": "same-origin" })).status, 200);
+    assert.equal(
+      (
+        await attempt({
+          "sec-fetch-mode": "cors",
+          "sec-fetch-dest": "empty",
+          "sec-fetch-site": "same-origin",
+        })
+      ).status,
+      200,
+    );
     assert.equal((await attempt({})).status, 200);
     assert.equal(f.script.requests.length, 2);
   } finally {
@@ -438,16 +540,22 @@ test("RR: a device answer whose status is outside 200-599 is a prompt 502, never
   const f = await setup();
   try {
     // The plain-frame schema admits 100-599; a 1xx status hangs or kills the client socket if passed on.
-    f.script.respond = (_req, send) => send({ status: 150, contentType: "application/json", body: { pwned: true } });
-    const interim = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`, { signal: AbortSignal.timeout(5_000) });
+    f.script.respond = (_req, send) =>
+      send({ status: 150, contentType: "application/json", body: { pwned: true } });
+    const interim = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`, {
+      signal: AbortSignal.timeout(5_000),
+    });
     assert.equal(interim.status, 502, "a 1xx device status is not passed through");
     assert.equal((await interim.json()).error.code, "invalid");
 
     // The chunked envelope carries no schema: a status that is not even a finite number is refused
     // by the transport, and an out-of-range number by the proxy clamp. Either way it is a 502 and
     // never the device's own status line; the message pins which layer refused.
-    const chunked = (envelope: Record<string, unknown>) => (req: { reqId: string }, _send: unknown) =>
-      sendChunked(envelope, { kind: "rest-response", reqId: req.reqId }, (chunk) => f.script.ws.send(JSON.stringify(chunk)));
+    const chunked =
+      (envelope: Record<string, unknown>) => (req: { reqId: string }, _send: unknown) =>
+        sendChunked(envelope, { kind: "rest-response", reqId: req.reqId }, (chunk) =>
+          f.script.ws.send(JSON.stringify(chunk)),
+        );
     for (const [bad, layer] of [
       ["200", /envelope out of contract/],
       [Number.NaN, /envelope out of contract/],
@@ -458,8 +566,14 @@ test("RR: a device answer whose status is outside 200-599 is a prompt 502, never
       [3.5, /answered out of contract/],
       [150, /answered out of contract/],
     ] as const) {
-      f.script.respond = chunked({ status: bad, contentType: "application/json", body: { pwned: true } }) as never;
-      const res = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`, { signal: AbortSignal.timeout(5_000) });
+      f.script.respond = chunked({
+        status: bad,
+        contentType: "application/json",
+        body: { pwned: true },
+      }) as never;
+      const res = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`, {
+        signal: AbortSignal.timeout(5_000),
+      });
       assert.equal(res.status, 502, `status ${String(bad)}: never passed through`);
       const body = (await res.json()) as { error: { code: string; message: string } };
       assert.equal(body.error.code, "invalid", `status ${String(bad)}`);
@@ -467,7 +581,8 @@ test("RR: a device answer whose status is outside 200-599 is a prompt 502, never
     }
     // ...while every in-range status keeps passing through untouched.
     for (const good of [200, 201, 204, 301, 404, 418, 500, 599] as const) {
-      f.script.respond = (_req, send) => send({ status: good, contentType: "application/json", body: { ok: true } });
+      f.script.respond = (_req, send) =>
+        send({ status: good, contentType: "application/json", body: { ok: true } });
       const res = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`);
       assert.equal(res.status, good, `status ${good} preserved`);
       await res.text();
@@ -490,7 +605,11 @@ test("RR: a non-string contentType is treated as absent; it can never crash or m
         )) as never;
       const res = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`);
       assert.equal(res.status, 200, `contentType ${String(contentType)}`);
-      assert.match(res.headers.get("content-type") ?? "", /^application\/json/i, "absent contentType means the JSON default");
+      assert.match(
+        res.headers.get("content-type") ?? "",
+        /^application\/json/i,
+        "absent contentType means the JSON default",
+      );
       assert.deepEqual(await res.json(), { ok: true });
     }
   } finally {
@@ -507,17 +626,22 @@ test("RR: a non-string contentType is treated as absent; it can never crash or m
 test("RR: a percent-encoded spelling of a device id is refused, never forwarded mangled", async () => {
   const f = await setup();
   try {
-    f.script.respond = (_req, send) => send({ status: 200, contentType: "application/json", body: { ok: true } });
+    f.script.respond = (_req, send) =>
+      send({ status: 200, contentType: "application/json", body: { ok: true } });
     const encoded = f.deviceId.replace("-", "%2D");
     assert.notEqual(encoded, f.deviceId);
-    const res = await fetch(`${f.base}/api/devices/${encoded}/v1/tree`, { signal: AbortSignal.timeout(5_000) });
+    const res = await fetch(`${f.base}/api/devices/${encoded}/v1/tree`, {
+      signal: AbortSignal.timeout(5_000),
+    });
     assert.equal(res.status, 400, "the raw URL is not the device prefix");
     const body = (await res.json()) as { error: { code: string; message: string } };
     assert.equal(body.error.code, "invalid");
     assert.match(body.error.message, /outside the device prefix/);
     assert.deepEqual(f.script.requests, [], "nothing reached the device");
     // The same device under its plain spelling still forwards normally.
-    const plain = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`, { signal: AbortSignal.timeout(5_000) });
+    const plain = await fetch(`${f.base}/api/devices/${f.deviceId}/v1/tree`, {
+      signal: AbortSignal.timeout(5_000),
+    });
     assert.equal(plain.status, 200, "the ordinary spelling is unaffected");
     await plain.text();
   } finally {

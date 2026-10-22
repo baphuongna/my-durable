@@ -20,8 +20,12 @@ import {
 
 const mode = ref<WhenBusy>("followUp");
 const pending = ref(false);
-const canSend = computed(() =>
-  online.value && agentState.value.ready && agent.status.value === "live" && streamState.value === "live",
+const canSend = computed(
+  () =>
+    online.value &&
+    agentState.value.ready &&
+    agent.status.value === "live" &&
+    streamState.value === "live",
 );
 
 // Typing "/" lists the slash commands; arrows pick, Tab or Enter completes.

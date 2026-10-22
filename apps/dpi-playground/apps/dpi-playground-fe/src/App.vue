@@ -127,7 +127,12 @@ onBeforeUnmount(() => {
     </main>
 
     <MobileNav />
-    <PairDeviceWizard ref="pairWizard" v-if="ui.dialog?.kind === 'pair'" :handoff="ui.dialog.handoff" @close="ui.dialog = undefined" />
+    <PairDeviceWizard
+      ref="pairWizard"
+      v-if="ui.dialog?.kind === 'pair'"
+      :handoff="ui.dialog.handoff"
+      @close="ui.dialog = undefined"
+    />
     <DeviceCredentialsDialog
       v-if="ui.dialog?.kind === 'credentials'"
       :device-id="ui.dialog.deviceId"

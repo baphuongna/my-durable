@@ -67,7 +67,11 @@ const clientStatus = (n: unknown): number | undefined =>
  */
 export function describeFailure(e: unknown, plainStatus = 500): HttpFailure {
   if (e instanceof AuditUnavailableError)
-    return { status: 503, code: "audit_unavailable", message: "Audit storage is unavailable; the change was not applied" };
+    return {
+      status: 503,
+      code: "audit_unavailable",
+      message: "Audit storage is unavailable; the change was not applied",
+    };
 
   const t = (e && typeof e === "object" ? e : {}) as Thrown;
   switch (t.type) {
@@ -78,7 +82,11 @@ export function describeFailure(e: unknown, plainStatus = 500): HttpFailure {
       return { status: 413, code: "payload_too_large", message: MESSAGE_BY_STATUS[413]! };
     case "charset.unsupported":
     case "encoding.unsupported":
-      return { status: 415, code: "unsupported_media_type", message: "Unsupported request encoding" };
+      return {
+        status: 415,
+        code: "unsupported_media_type",
+        message: "Unsupported request encoding",
+      };
     case "request.aborted":
     case "request.size.invalid":
     case "parameters.too.many":
@@ -87,15 +95,27 @@ export function describeFailure(e: unknown, plainStatus = 500): HttpFailure {
 
   const status = clientStatus(t.status) ?? clientStatus(t.statusCode);
   // body-parser/send/http-errors set `type` or `expose`; the router flags an undecodable path param as a URIError.
-  const fromFramework = typeof t.type === "string" || typeof t.expose === "boolean" || e instanceof URIError;
+  const fromFramework =
+    typeof t.type === "string" || typeof t.expose === "boolean" || e instanceof URIError;
   if (status && fromFramework)
-    return { status, code: CODE_BY_STATUS[status] ?? "invalid", message: MESSAGE_BY_STATUS[status] ?? MESSAGE_BY_STATUS[400]! };
+    return {
+      status,
+      code: CODE_BY_STATUS[status] ?? "invalid",
+      message: MESSAGE_BY_STATUS[status] ?? MESSAGE_BY_STATUS[400]!,
+    };
 
   const own = status ?? clientStatus(plainStatus);
   if (own) {
-    const text = typeof t.message === "string" && t.message ? t.message : MESSAGE_BY_STATUS[own] ?? "Bad request";
+    const text =
+      typeof t.message === "string" && t.message
+        ? t.message
+        : (MESSAGE_BY_STATUS[own] ?? "Bad request");
     const code = own === 404 ? "not_found" : (CODE_BY_STATUS[own] ?? "invalid");
-    return { status: own, code: own === 400 ? "invalid" : code, message: scrubSecrets(text).slice(0, MESSAGE_MAX) };
+    return {
+      status: own,
+      code: own === 400 ? "invalid" : code,
+      message: scrubSecrets(text).slice(0, MESSAGE_MAX),
+    };
   }
 
   logUnexpected(e);

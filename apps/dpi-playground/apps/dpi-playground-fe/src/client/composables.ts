@@ -34,8 +34,7 @@ function feed(
     if (frame.type === "hello") {
       status.value = readyOn === "hello" ? "live" : "connecting";
       if (readyOn === "hello") fault.value = "";
-    }
-    else if (frame.type === "disconnected") status.value = "reconnecting";
+    } else if (frame.type === "disconnected") status.value = "reconnecting";
     else if (frame.type === "fault") {
       status.value = "fault";
       fault.value = frame.error.message;
@@ -110,7 +109,12 @@ export function useAgent(stream: HubStream, target: Ref<AgentTarget | undefined>
   const model = new AgentModel();
   const version = ref(0);
   model.subscribe(() => version.value++);
-  const { status, fault, select, retry } = feed(stream, "agent", (frame) => model.apply(frame), "snapshot");
+  const { status, fault, select, retry } = feed(
+    stream,
+    "agent",
+    (frame) => model.apply(frame),
+    "snapshot",
+  );
   watch(
     () => (target.value ? agentSub(target.value) : undefined),
     (key) => {

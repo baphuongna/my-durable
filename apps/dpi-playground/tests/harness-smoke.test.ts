@@ -16,12 +16,21 @@ import { makeActors } from "./harness/actors.js";
 import { startBarrierHub, childGate } from "./harness/barriers.js";
 import { sanitize } from "./harness/logs.js";
 
-const hreq = async (url: string, opts: { agent?: import("node:https").Agent; headers?: Record<string, string> } = {}) => {
+const hreq = async (
+  url: string,
+  opts: { agent?: import("node:https").Agent; headers?: Record<string, string> } = {},
+) => {
   const https = await import("node:https");
   return new Promise<{ status: number; body: string; code?: string }>((resolve, reject) => {
     const u = new URL(url);
     const req = https.get(
-      { hostname: u.hostname, port: u.port, path: u.pathname + u.search, headers: opts.headers, ...(opts.agent ? { agent: opts.agent } : {}) },
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname + u.search,
+        headers: opts.headers,
+        ...(opts.agent ? { agent: opts.agent } : {}),
+      },
       (res) => {
         let body = "";
         res.on("data", (x: Buffer) => (body += x));
@@ -41,7 +50,11 @@ test("harness smoke: boot → TLS trust → hostname/CA failures → restart →
   assert.ok(actors.deviceA.deviceToken.startsWith("dpi_"));
 
   const hub = await bootHub({}); // plain loopback first
-  const caddy = await bootCaddy({ hubPort: hub.port, certFile: join(ca.dir, "hub.crt"), keyFile: join(ca.dir, "hub.key") });
+  const caddy = await bootCaddy({
+    hubPort: hub.port,
+    certFile: join(ca.dir, "hub.crt"),
+    keyFile: join(ca.dir, "hub.key"),
+  });
 
   try {
     // 1. Cert trust success via 127.0.0.1 (SAN IP present). Restart the hub on the
@@ -64,7 +77,13 @@ test("harness smoke: boot → TLS trust → hostname/CA failures → restart →
 
     // 3. CA failure: default agent does not trust the test CA.
     const untrusted = await hreq(`${caddy.httpsBase}/api/network`);
-    assert.ok(untrusted.code === "SELF_SIGNED_CERT_IN_CHAIN" || untrusted.code === "DEPTH_ZERO_SELF_SIGNED_CERT" || untrusted.code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" || untrusted.code === "ERR_TLS_CERT_ALTNAME_INVALID", `unexpected code ${untrusted.code}`);
+    assert.ok(
+      untrusted.code === "SELF_SIGNED_CERT_IN_CHAIN" ||
+        untrusted.code === "DEPTH_ZERO_SELF_SIGNED_CERT" ||
+        untrusted.code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
+        untrusted.code === "ERR_TLS_CERT_ALTNAME_INVALID",
+      `unexpected code ${untrusted.code}`,
+    );
     assert.equal(untrusted.status, 0);
 
     // 4. Hub restart on the same port — health recovers, TLS path works again.
@@ -88,7 +107,11 @@ test("harness smoke: SSE tab survives device-child SIGKILL (network stays, T-2/T
   const ca = await makeTestCa();
   const agent = await trustedAgent(ca);
   const hub = await bootHub({});
-  const caddy = await bootCaddy({ hubPort: hub.port, certFile: join(ca.dir, "hub.crt"), keyFile: join(ca.dir, "hub.key") });
+  const caddy = await bootCaddy({
+    hubPort: hub.port,
+    certFile: join(ca.dir, "hub.crt"),
+    keyFile: join(ca.dir, "hub.key"),
+  });
   const { openTab } = await import("./harness/actors.js");
   const ac = new AbortController();
   let tab: Awaited<ReturnType<typeof openTab>> | undefined;
@@ -96,7 +119,11 @@ test("harness smoke: SSE tab survives device-child SIGKILL (network stays, T-2/T
     // Boot the real backend child (faux) — the "device".
     const home = await mkdtemp(join(tmpdir(), "dpi-dev-"));
     const { bootServer } = await import("../../dpi-backend/tests/helpers.js");
-    const device = await bootServer({ home, startDirs: join(home, "work"), token: makeActors().deviceA.deviceToken });
+    const device = await bootServer({
+      home,
+      startDirs: join(home, "work"),
+      token: makeActors().deviceA.deviceToken,
+    });
     const hubBehindProxy = await bootHub({ port: hub.port, publicHost: `127.0.0.1:${caddy.port}` });
     await hub.cleanup();
 
@@ -130,7 +157,9 @@ test("barrier: deterministic park/release, no timing races", async () => {
     script,
     `import { childGate } from ${JSON.stringify(new URL("./harness/barriers.js", import.meta.url).pathname)};\nawait childGate(${hub.port}, "file-rename");\nprocess.stdout.write("renamed\\n");\n`,
   );
-  const child = spawn(process.execPath, ["--import", "tsx", script], { stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawn(process.execPath, ["--import", "tsx", script], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
   let out = "";
   child.stdout!.on("data", (x) => (out += x));
   try {

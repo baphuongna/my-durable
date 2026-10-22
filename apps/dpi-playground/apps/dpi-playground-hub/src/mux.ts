@@ -12,7 +12,10 @@ import type { MuxFrame } from "../../../../dpi-sdk/src/api.js";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { DeviceMonitor, TunnelTransportSource } from "./monitor.js";
 import { ByteBudget } from "../../../../dpi-sdk/src/node/chunk.js";
-import { createPacedSseWriter, type PacedSseWriter } from "../../../../dpi-sdk/src/node/sse-writer.js";
+import {
+  createPacedSseWriter,
+  type PacedSseWriter,
+} from "../../../../dpi-sdk/src/node/sse-writer.js";
 import { checkDeviceFrame } from "../../../../dpi-sdk/src/protocol/tunnel.js";
 import { Backoff } from "../../../../dpi-sdk/src/protocol/backoff.js";
 import {
@@ -37,7 +40,10 @@ const sseBudget = new ByteBudget("hub-sse", HUB_BUFFER_BUDGET_BYTES);
  * a `: ping` can never land inside a half-written event, and a slow viewer is
  * cut at the CANON hub cap instead of buffering without bound.
  */
-export function pacedSseWriter(res: Response, opts: { budget?: ByteBudget; onClose?: () => void } = {}): PacedSseWriter {
+export function pacedSseWriter(
+  res: Response,
+  opts: { budget?: ByteBudget; onClose?: () => void } = {},
+): PacedSseWriter {
   return createPacedSseWriter(res, {
     maxBufferedBytes: SSE_HUB_VIEWER_BYTES,
     budget: opts.budget ?? sseBudget,
@@ -63,8 +69,10 @@ export function parseSubKey(key: string) {
     }
   };
   if (scope === "device") return { key, deviceId, path: `/v1/events${q}` };
-  if (scope === "session" && a && !b) return { key, deviceId, path: `/v1/sessions/${enc(a)}/events` };
-  if (scope === "agent" && a && b) return { key, deviceId, path: `/v1/sessions/${enc(a)}/agents/${enc(b)}/events${q}` };
+  if (scope === "session" && a && !b)
+    return { key, deviceId, path: `/v1/sessions/${enc(a)}/events` };
+  if (scope === "agent" && a && b)
+    return { key, deviceId, path: `/v1/sessions/${enc(a)}/agents/${enc(b)}/events${q}` };
   throw invalidKey();
 }
 
@@ -141,7 +149,13 @@ export class StreamMux {
         if (writer.write(`data: ${JSON.stringify(frame)}\n\n`) === "too-large") {
           stream.send({
             sub: frame.sub,
-            frame: { type: "fault", error: { code: "invalid", message: `Stream event exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes; reduce the scope or payload` } },
+            frame: {
+              type: "fault",
+              error: {
+                code: "invalid",
+                message: `Stream event exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes; reduce the scope or payload`,
+              },
+            },
           });
         }
       },
@@ -180,10 +194,19 @@ export class StreamMux {
           throw Object.assign(Error(`No device ${sub.deviceId}`), { status: 404 });
         // Reader caps (04 §8): 128/device incl. the monitor's reader, 1024
         // hub-wide. A rejected NEW reader must not disturb existing readers.
-        if (this.readerCount(sub.deviceId) >= READERS_PER_DEVICE || this.hubReaderCount() >= READERS_PER_HUB) {
+        if (
+          this.readerCount(sub.deviceId) >= READERS_PER_DEVICE ||
+          this.hubReaderCount() >= READERS_PER_HUB
+        ) {
           stream.send({
             sub: key,
-            frame: { type: "fault", error: { code: "unavailable", message: `Reader cap reached for ${sub.deviceId}; close other tabs or retry` } },
+            frame: {
+              type: "fault",
+              error: {
+                code: "unavailable",
+                message: `Reader cap reached for ${sub.deviceId}; close other tabs or retry`,
+              },
+            },
           });
           continue;
         }
@@ -227,7 +250,8 @@ export class StreamMux {
           { path: sub.path, consumerId: `mux:${sub.key}` },
           signal,
         )) {
-          if (!checkDeviceFrame(frame)) throw new DpiError("invalid", "Invalid device stream frame");
+          if (!checkDeviceFrame(frame))
+            throw new DpiError("invalid", "Invalid device stream frame");
           stream.send({ sub: sub.key, frame });
           if (frame.type === "hello") backoff.reset();
         }

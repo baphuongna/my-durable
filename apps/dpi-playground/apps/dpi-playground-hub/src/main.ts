@@ -22,7 +22,11 @@ import { TunnelServer } from "./tunnel.js";
 import { TunnelDispatcher, TunnelTransport } from "./tunnel-transport.js";
 import { RotationService } from "./rotation.js";
 import { seedFromConfig } from "./seed.js";
-import { assertLimitsConfig, API_RATE_LIMITS, HUB_BUFFER_BUDGET_BYTES } from "../../../../dpi-sdk/src/protocol/limits.js";
+import {
+  assertLimitsConfig,
+  API_RATE_LIMITS,
+  HUB_BUFFER_BUDGET_BYTES,
+} from "../../../../dpi-sdk/src/protocol/limits.js";
 
 const args = process.argv.slice(2);
 const option = (key: string, fallback: string) => {
@@ -98,7 +102,8 @@ assertLimitsConfig();
 function auditFloorFromEnv(): { minFreeBytes?: number } {
   const raw = process.env.DPI_AUDIT_MIN_FREE_BYTES;
   if (raw === undefined || raw === "") return {};
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw Error("DPI_AUDIT_MIN_FREE_BYTES must be a non-negative integer");
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw)))
+    throw Error("DPI_AUDIT_MIN_FREE_BYTES must be a non-negative integer");
   return { minFreeBytes: Number(raw) };
 }
 const audit = new Audit(registry, auditFloorFromEnv());
@@ -122,16 +127,28 @@ const apiRate: express.RequestHandler = (req, res, next) => {
   const taken = apiBuckets.take(ipKey(req.ip ?? req.socket.remoteAddress ?? "?"));
   if (taken.ok) return void next();
   res.set("Retry-After", String(Math.max(1, Math.ceil(taken.retryAfterMs / 1000))));
-  res.status(429).json(err("rate_limited", taken.reason === "full" ? "Too many clients; retry later" : "Too many requests; slow down"));
+  res
+    .status(429)
+    .json(
+      err(
+        "rate_limited",
+        taken.reason === "full" ? "Too many clients; retry later" : "Too many requests; slow down",
+      ),
+    );
 };
 // /healthz exempt (uptime probes must survive floods); one SSE open = one request;
 // stream frames are responses and never hit this middleware.
 
-const hubId = (registry.db.prepare("SELECT value FROM hub_meta WHERE key='hub_id'").get() as { value: string }).value;
+const hubId = (
+  registry.db.prepare("SELECT value FROM hub_meta WHERE key='hub_id'").get() as { value: string }
+).value;
 const hubOrigin = process.env.DPI_HUB_ORIGIN ?? `https://${hostname().toLowerCase()}`;
 const credentials = new CredentialService(registry, audit, hubOrigin, hubId);
 const pairing = new PairingService({
-  registry, audit, hubOrigin, hubId,
+  registry,
+  audit,
+  hubOrigin,
+  hubId,
   issue: async (e) => {
     const ticket = await credentials.issue(e);
     tunnel.closeConnection(ticket.deviceId, 1000, "pairing replaced");
@@ -145,8 +162,17 @@ const pairing = new PairingService({
 // included (they hold a plaintext token); the RAM maps never grow unbounded.
 const pairSweeper = setInterval(() => pairing.sweep(), 60_000);
 pairSweeper.unref();
-const pairErr = (r: { error: { status: number; code: string; message: string; retryAfterMs?: number } }, res: express.Response) =>
-  res.status(r.error.status).json({ error: { code: r.error.code, message: r.error.message, ...(r.error.retryAfterMs ? { retryAfterMs: r.error.retryAfterMs } : {}) } });
+const pairErr = (
+  r: { error: { status: number; code: string; message: string; retryAfterMs?: number } },
+  res: express.Response,
+) =>
+  res.status(r.error.status).json({
+    error: {
+      code: r.error.code,
+      message: r.error.message,
+      ...(r.error.retryAfterMs ? { retryAfterMs: r.error.retryAfterMs } : {}),
+    },
+  });
 
 // Public pairing ingress (03 §4) — registered BEFORE the admin /api chain so
 // that (a) the pairing 16 KiB body parsers are the FIRST parsers to touch
@@ -172,27 +198,49 @@ app.get("/api/pair/codes/:codeId", ...pairGuard, (req, res) => {
   const r = pairing.status(String(req.params.codeId));
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
-app.post("/api/pair/codes/:codeId/approve", ...pairGuard, express.json({ limit: "16kb" }), (req, res) => {
-  const r = pairing.approve(String(req.params.codeId), req.body);
-  return r.ok ? res.json(r.value) : pairErr(r, res);
-});
+app.post(
+  "/api/pair/codes/:codeId/approve",
+  ...pairGuard,
+  express.json({ limit: "16kb" }),
+  (req, res) => {
+    const r = pairing.approve(String(req.params.codeId), req.body);
+    return r.ok ? res.json(r.value) : pairErr(r, res);
+  },
+);
 app.post("/api/pair/codes/:codeId/cancel", ...pairGuard, (req, res) => {
   const r = pairing.cancel(String(req.params.codeId));
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
 
 // Admin /api surface: guarded, rate-bucketed per real client IP, 256 KiB JSON.
-app.use("/api", denialLogging(audit), guard(allowedHosts), apiRate, express.json({ limit: "256kb" }));
+app.use(
+  "/api",
+  denialLogging(audit),
+  guard(allowedHosts),
+  apiRate,
+  express.json({ limit: "256kb" }),
+);
 app.post("/api/pair/resolve", (req, res) => {
   const r = pairing.resolveCode(req.body);
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
-app.get("/api/pairings", (_req, res) => res.json(monitor.network().flatMap((device) =>
-  device.pairing && device.deviceUid && device.tunnel ? [{
-    ...device.pairing, deviceId: device.id, deviceUid: device.deviceUid,
-    deviceName: device.name, tunnel: device.tunnel,
-  }] : [],
-)));
+app.get("/api/pairings", (_req, res) =>
+  res.json(
+    monitor.network().flatMap((device) =>
+      device.pairing && device.deviceUid && device.tunnel
+        ? [
+            {
+              ...device.pairing,
+              deviceId: device.id,
+              deviceUid: device.deviceUid,
+              deviceName: device.name,
+              tunnel: device.tunnel,
+            },
+          ]
+        : [],
+    ),
+  ),
+);
 // Keep the original device routes as aliases for existing clients.
 app.post(["/api/pairings/:id/rotate", "/api/devices/:id/rotate"], (req, res) => {
   const r = rotation.startRotation(String(req.params.id), `admin:${req.ip ?? "unknown"}`);
@@ -203,31 +251,53 @@ app.post(["/api/pairings/:id/rotate", "/api/devices/:id/rotate"], (req, res) => 
   // Honest statuses: an unknown device or a device with no active pairing is a 404,
   // a second rotate while one is in flight is a 409, and only a request that names
   // something that can never rotate (a non-tunnel device) is a 400.
-  const status = r.code === "unknown_device" || r.code === "no_pairing" ? 404 : r.code === "in_flight" ? 409 : 400;
+  const status =
+    r.code === "unknown_device" || r.code === "no_pairing"
+      ? 404
+      : r.code === "in_flight"
+        ? 409
+        : 400;
   const code = status === 404 ? "not_found" : status === 409 ? "conflict" : "invalid";
   return res.status(status).json({ error: { code, message: r.error } });
 });
-app.post(["/api/pairings/:id/revoke", "/api/devices/:id/revoke"], express.json({ limit: "4kb" }), (req, res) => {
-  const id = String(req.params.id);
-  const pairingRow = registry.db.prepare("SELECT pairing_epoch FROM pairings WHERE device_id=? AND status='paired'").get(id) as { pairing_epoch: string } | undefined;
-  try {
-    credentials.revoke(id, req.body?.reason === "compromise" ? "compromise" : "user", `admin:${req.ip ?? "unknown"}`);
-  } catch (e) {
-    const failure = describeFailure(e);
-    return res.status(failure.status).json(failureBody(failure));
-  }
-  // Durable revoke committed: notice the live transport for ITS epoch and cut
-  // it immediately (<1 s). Authorization never waits for a notice ACK.
-  if (pairingRow)
-    tunnel.send(id, {
-      type: "control",
-      action: "revoked",
-      notice: { type: "pair.revoke", v: 1, deviceId: id, pairingEpoch: pairingRow.pairing_epoch, reason: req.body?.reason === "compromise" ? "compromise" : "user", revokedAt: Date.now() },
-    });
-  tunnel.closeConnection(id, 1000, "pairing revoked");
-  monitor.check(id);
-  res.status(202).json({ ok: true });
-});
+app.post(
+  ["/api/pairings/:id/revoke", "/api/devices/:id/revoke"],
+  express.json({ limit: "4kb" }),
+  (req, res) => {
+    const id = String(req.params.id);
+    const pairingRow = registry.db
+      .prepare("SELECT pairing_epoch FROM pairings WHERE device_id=? AND status='paired'")
+      .get(id) as { pairing_epoch: string } | undefined;
+    try {
+      credentials.revoke(
+        id,
+        req.body?.reason === "compromise" ? "compromise" : "user",
+        `admin:${req.ip ?? "unknown"}`,
+      );
+    } catch (e) {
+      const failure = describeFailure(e);
+      return res.status(failure.status).json(failureBody(failure));
+    }
+    // Durable revoke committed: notice the live transport for ITS epoch and cut
+    // it immediately (<1 s). Authorization never waits for a notice ACK.
+    if (pairingRow)
+      tunnel.send(id, {
+        type: "control",
+        action: "revoked",
+        notice: {
+          type: "pair.revoke",
+          v: 1,
+          deviceId: id,
+          pairingEpoch: pairingRow.pairing_epoch,
+          reason: req.body?.reason === "compromise" ? "compromise" : "user",
+          revokedAt: Date.now(),
+        },
+      });
+    tunnel.closeConnection(id, 1000, "pairing revoked");
+    monitor.check(id);
+    res.status(202).json({ ok: true });
+  },
+);
 
 app.get("/api/network", (_req, res) => res.json({ configFile, devices: monitor.network() }));
 // Devices are configured in dpi-network.yaml and `just net register`; the hub only reads them.
@@ -258,10 +328,13 @@ app.put(
   "/api/stream/:streamId",
   safe((req, res) => res.json(mux.subscribe(String(req.params.streamId), req.body?.subs))),
 );
-app.all("/api/devices/:id/v1/{*rest}", proxy(registry, monitor, {
-  dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
-  hasLiveConnection: (id) => tunnel.hasConnection(id),
-}));
+app.all(
+  "/api/devices/:id/v1/{*rest}",
+  proxy(registry, monitor, {
+    dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
+    hasLiveConnection: (id) => tunnel.hasConnection(id),
+  }),
+);
 app.use("/api", (_req, res) => res.status(404).json(err("not_found", "API route not found")));
 
 const server = createServer(app);
@@ -288,7 +361,11 @@ if (args.includes("--dev")) {
     "frame-ancestors 'none'",
   ].join("; ");
   app.use((_req, res, next) => {
-    res.set({ "Content-Security-Policy": shellPolicy, "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" });
+    res.set({
+      "Content-Security-Policy": shellPolicy,
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "no-referrer",
+    });
     next();
   });
   app.use(express.static(resolve(appDir, "apps/dpi-playground-fe/dist")));
@@ -306,7 +383,9 @@ app.use(errorMiddleware);
 // tunnel path is claimed here and other upgrades are left alone.
 const tunnel = new TunnelServer(registry, audit, hubId, {}, { requireTls: requireTlsEnabled });
 const dispatcher = new TunnelDispatcher(tunnel, { audit, budget: bufferBudget });
-const rotation = new RotationService(registry, audit, tunnel, { onChange: () => monitor.refresh() });
+const rotation = new RotationService(registry, audit, tunnel, {
+  onChange: () => monitor.refresh(),
+});
 mux.setTunnelSource({
   dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
   hasLiveConnection: (id) => tunnel.hasConnection(id),
@@ -314,7 +393,10 @@ mux.setTunnelSource({
 monitor.setTunnelSource({
   dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
   hasLiveConnection: (id) => tunnel.hasConnection(id),
-  diagnostics: (id) => ({ ...tunnel.diagnostics(id), readerCount: dispatcher.subscriptionCount(id) }),
+  diagnostics: (id) => ({
+    ...tunnel.diagnostics(id),
+    readerCount: dispatcher.subscriptionCount(id),
+  }),
 });
 server.on("upgrade", (req, socket, head) => {
   let path = "/";
@@ -349,7 +431,10 @@ server.listen(port, host, () => {
         .join(", ") || "none"
     }`,
   );
-  if (requireTlsEnabled) console.log("TLS required: only requests the loopback TLS proxy marks X-Forwarded-Proto: https are served");
+  if (requireTlsEnabled)
+    console.log(
+      "TLS required: only requests the loopback TLS proxy marks X-Forwarded-Proto: https are served",
+    );
   if (host !== "127.0.0.1" && host !== "localhost")
     console.warn(
       `WARNING: the hub is listening on ${host}. Anyone who can reach it can drive every device it holds tokens for.`,

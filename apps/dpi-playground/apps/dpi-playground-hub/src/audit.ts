@@ -28,10 +28,20 @@ import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import { ipKey } from "./client-ip.js";
 
 export const AUDIT_ACTIONS = [
-  "pair.code_created", "pair.approved", "pair.cancelled", "pair.success", "pair.revoke",
-  "token.rotate_started", "token.rotate_completed", "token.rotate_regenerated",
-  "tunnel.connect", "tunnel.disconnect", "auth.denied", "rate_limited",
-  "tunnel.listener_error", "rotation.stale_cleared",
+  "pair.code_created",
+  "pair.approved",
+  "pair.cancelled",
+  "pair.success",
+  "pair.revoke",
+  "token.rotate_started",
+  "token.rotate_completed",
+  "token.rotate_regenerated",
+  "tunnel.connect",
+  "tunnel.disconnect",
+  "auth.denied",
+  "rate_limited",
+  "tunnel.listener_error",
+  "rotation.stale_cleared",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -80,7 +90,10 @@ export function scrubSecrets(value: string): string {
   let out = value;
   out = out.replace(/dpt_[A-Za-z0-9_-]{1,64}/g, "dpt_<redacted>");
   out = out.replace(/dpi_[A-Za-z0-9_-]{1,64}/g, "dpi_<redacted>");
-  out = out.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, "<private-key-redacted>");
+  out = out.replace(
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g,
+    "<private-key-redacted>",
+  );
   out = out.replace(/(authorization\s*[:=]\s*)(\S+)/gi, "$1<redacted>");
   out = out.replace(/(bearer\s+)([A-Za-z0-9._-]{8,})/gi, "$1<redacted>");
   out = out.replace(/([?&]code=)[A-Za-z0-9_-]+/g, "$1<redacted>");
@@ -93,11 +106,13 @@ export function scrubSecrets(value: string): string {
 
 function scrubValue(value: unknown, depth = 0): unknown {
   if (depth > 8) return "<depth-limit>";
-  if (typeof value === "string") return scrubSecrets(value.length > 8192 ? value.slice(0, 8192) : value);
+  if (typeof value === "string")
+    return scrubSecrets(value.length > 8192 ? value.slice(0, 8192) : value);
   if (Array.isArray(value)) return value.slice(0, 32).map((v) => scrubValue(v, depth + 1));
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value).slice(0, 64)) out[scrubSecrets(k)] = scrubValue(v, depth + 1);
+    for (const [k, v] of Object.entries(value).slice(0, 64))
+      out[scrubSecrets(k)] = scrubValue(v, depth + 1);
     return out;
   }
   return value;
@@ -118,7 +133,8 @@ interface DenialBucket {
 function clipSample(sample: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(sample).slice(0, SAMPLE_FIELDS_MAX))
-    out[key.slice(0, SAMPLE_FIELD_MAX)] = typeof value === "string" ? value.slice(0, SAMPLE_FIELD_MAX) : value;
+    out[key.slice(0, SAMPLE_FIELD_MAX)] =
+      typeof value === "string" ? value.slice(0, SAMPLE_FIELD_MAX) : value;
   return out;
 }
 
@@ -149,7 +165,9 @@ export class Audit {
     const floor = this.hooks.minFreeBytes ?? MIN_FREE_BYTES;
     const free = this.hooks.freeBytes ? this.hooks.freeBytes() : this.volumeFreeBytes();
     if (free < floor)
-      throw new AuditUnavailableError(`audit: ${free} bytes free on the registry volume (floor ${floor}); audited changes are refused`);
+      throw new AuditUnavailableError(
+        `audit: ${free} bytes free on the registry volume (floor ${floor}); audited changes are refused`,
+      );
   }
 
   private volumeFreeBytes(): number {
@@ -210,11 +228,17 @@ export class Audit {
     // Reject oversize details BEFORE any scrubbing/truncation could mask them.
     const rawBytes = Buffer.byteLength(JSON.stringify(event.detail ?? {}), "utf8");
     if (rawBytes > DETAIL_MAX_BYTES)
-      throw new Error(`audit: detail_json is ${rawBytes} bytes (max ${DETAIL_MAX_BYTES} UTF-8 bytes)`);
+      throw new Error(
+        `audit: detail_json is ${rawBytes} bytes (max ${DETAIL_MAX_BYTES} UTF-8 bytes)`,
+      );
     const actor = scrubSecrets(String(event.actor)).slice(0, FIELD_MAX);
     const action = String(event.action).slice(0, FIELD_MAX);
-    const requestId = event.requestId ? scrubSecrets(String(event.requestId)).slice(0, FIELD_MAX) : null;
-    const connectionId = event.connectionId ? scrubSecrets(String(event.connectionId)).slice(0, FIELD_MAX) : null;
+    const requestId = event.requestId
+      ? scrubSecrets(String(event.requestId)).slice(0, FIELD_MAX)
+      : null;
+    const connectionId = event.connectionId
+      ? scrubSecrets(String(event.connectionId)).slice(0, FIELD_MAX)
+      : null;
     const detail = event.detail ? (scrubValue(event.detail) as Record<string, unknown>) : {};
     const detailJson = JSON.stringify(detail);
     const bytes = Buffer.byteLength(detailJson, "utf8");
@@ -245,7 +269,12 @@ export class Audit {
     }
   }
 
-  private recordDenial(action: AuditAction, address: string, sample: Record<string, unknown>, kind: string): void {
+  private recordDenial(
+    action: AuditAction,
+    address: string,
+    sample: Record<string, unknown>,
+    kind: string,
+  ): void {
     const now = Date.now();
     const window = Math.floor(now / DENIAL_WINDOW_MS) * DENIAL_WINDOW_MS;
     const source = ipKey(address);
@@ -260,7 +289,12 @@ export class Audit {
       if (oldest !== undefined) this.buckets.delete(oldest);
     }
     const bucket: DenialBucket = {
-      action, source, window, count: 1, persisted: false, closed: false,
+      action,
+      source,
+      window,
+      count: 1,
+      persisted: false,
+      closed: false,
       sample: scrubValue(clipSample(sample)) as Record<string, unknown>,
     };
     this.buckets.set(key, bucket);
@@ -271,11 +305,26 @@ export class Audit {
       if (this.overflowed.has(window)) return;
       this.overflowed.add(window);
       this.windowRows.set(window, written + 1);
-      this.append({ actor: "ip:*", action: "rate_limited", outcome: "denied", detail: { aggregated: true, window, overflow: true, note: "denial row budget exceeded; counts in RAM only" } });
+      this.append({
+        actor: "ip:*",
+        action: "rate_limited",
+        outcome: "denied",
+        detail: {
+          aggregated: true,
+          window,
+          overflow: true,
+          note: "denial row budget exceeded; counts in RAM only",
+        },
+      });
       return;
     }
     this.windowRows.set(window, written + 1);
-    this.append({ actor: `ip:${source}`, action, outcome: "denied", detail: { aggregated: true, window, sample: bucket.sample } });
+    this.append({
+      actor: `ip:${source}`,
+      action,
+      outcome: "denied",
+      detail: { aggregated: true, window, sample: bucket.sample },
+    });
     bucket.persisted = true;
   }
 
@@ -300,7 +349,9 @@ export class Audit {
     const now = Date.now();
     if (now - this.lastDropWarning < DROP_WARN_INTERVAL_MS) return;
     this.lastDropWarning = now;
-    console.error(`audit: denial record dropped (${scrubSecrets(String((e as Error)?.message ?? e)).slice(0, 160)}); ${this.droppedDenials} dropped so far`);
+    console.error(
+      `audit: denial record dropped (${scrubSecrets(String((e as Error)?.message ?? e)).slice(0, 160)}); ${this.droppedDenials} dropped so far`,
+    );
   }
 
   /** Close the windows that have ended, then drop buckets older than two windows (housekeeping for long-lived hubs). */
@@ -311,7 +362,8 @@ export class Audit {
       if (!bucket.closed && bucket.window + DENIAL_WINDOW_MS <= now) this.closeBucket(bucket);
       if (bucket.window < cutoff) this.buckets.delete(key);
     }
-    for (const window of this.windowRows.keys()) if (window < cutoff) this.windowRows.delete(window);
+    for (const window of this.windowRows.keys())
+      if (window < cutoff) this.windowRows.delete(window);
     for (const window of this.overflowed) if (window < cutoff) this.overflowed.delete(window);
   }
 
@@ -339,7 +391,11 @@ export function denialLogging(audit: Audit): import("express").RequestHandler {
     res.on("finish", () => {
       if ([401, 403, 421, 429, 415].includes(res.statusCode)) {
         try {
-          audit.denied("auth.denied", req.ip ?? "unknown", { method: req.method, path: req.path, status: res.statusCode });
+          audit.denied("auth.denied", req.ip ?? "unknown", {
+            method: req.method,
+            path: req.path,
+            status: res.statusCode,
+          });
         } catch {
           /* audit must never take the request path down */
         }

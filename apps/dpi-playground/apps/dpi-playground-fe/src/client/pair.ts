@@ -15,7 +15,12 @@
  * - No secret (code/token/hash) is ever logged or persisted here.
  */
 import { DpiError } from "../../../../../dpi-sdk/src/errors";
-import type { PairCodeIssue, PairCodeState, PairApproval, PublicPairing } from "../../../../../dpi-sdk/src/api";
+import type {
+  PairCodeIssue,
+  PairCodeState,
+  PairApproval,
+  PublicPairing,
+} from "../../../../../dpi-sdk/src/api";
 
 /** One hub REST call. 401 surfaces as DpiError(status=401) → needsAuth(). */
 async function call<T>(
@@ -57,22 +62,39 @@ export const pairingAdmin = {
   /** Operator opens the wizard: mint a code (admin-gated upstream by Caddy). */
   createCode: (signal?: AbortSignal) => call<PairCodeIssue>("POST", "/pair/code", {}, signal),
   /** Resolve an existing handoff through a same-origin JSON body, never a code-bearing API URL. */
-  resolveCode: (code: string, signal?: AbortSignal) => call<PairCodeIssue>("POST", "/pair/resolve", { code }, signal),
+  resolveCode: (code: string, signal?: AbortSignal) =>
+    call<PairCodeIssue>("POST", "/pair/resolve", { code }, signal),
   /** Phase metadata only — the issued token is NEVER in this response. */
   codeState: (codeId: string, signal?: AbortSignal) =>
     call<PairCodeState>("GET", `/pair/codes/${encodeURIComponent(codeId)}`, undefined, signal),
   /** Full-fingerprint approval (P-8/P-14): tuple must match the enrollment exactly. */
   approve: (codeId: string, approval: PairApproval, signal?: AbortSignal) =>
-    call<PairCodeState>("POST", `/pair/codes/${encodeURIComponent(codeId)}/approve`, approval, signal),
+    call<PairCodeState>(
+      "POST",
+      `/pair/codes/${encodeURIComponent(codeId)}/approve`,
+      approval,
+      signal,
+    ),
   /** `keepalive` lets the request outlive the page; use it only when the wizard is going away. */
   cancel: (codeId: string, signal?: AbortSignal, keepalive?: boolean) =>
-    call<PairCodeState>("POST", `/pair/codes/${encodeURIComponent(codeId)}/cancel`, {}, signal, keepalive),
+    call<PairCodeState>(
+      "POST",
+      `/pair/codes/${encodeURIComponent(codeId)}/cancel`,
+      {},
+      signal,
+      keepalive,
+    ),
   /** Ask the hub to rotate a device credential (202 — async via tunnel). */
   rotate: (deviceId: string, signal?: AbortSignal) =>
     call<{ ok: boolean }>("POST", `/pairings/${encodeURIComponent(deviceId)}/rotate`, {}, signal),
   /** Durable revoke (P2-20): every hash dies at commit; live transport is cut. */
   revoke: (deviceId: string, reason: RevokeReason = "user", signal?: AbortSignal) =>
-    call<{ ok: boolean }>("POST", `/pairings/${encodeURIComponent(deviceId)}/revoke`, { reason }, signal),
+    call<{ ok: boolean }>(
+      "POST",
+      `/pairings/${encodeURIComponent(deviceId)}/revoke`,
+      { reason },
+      signal,
+    ),
 };
 
 export type PairPhase = PairCodeState["phase"];
@@ -116,7 +138,8 @@ export class PollTimeout extends Error {
   }
 }
 
-const terminal = (phase: PairPhase) => phase === "issued" || phase === "cancelled" || phase === "expired";
+const terminal = (phase: PairPhase) =>
+  phase === "issued" || phase === "cancelled" || phase === "expired";
 
 /**
  * Poll a code until it reaches a terminal phase. Aborting (signal or

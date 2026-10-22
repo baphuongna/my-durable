@@ -18,7 +18,12 @@ const tmp = mkdtempSync(join(tmpdir(), "dpi-net-ui-"));
 const evidence = join(tmp, "evidence");
 mkdirSync(evidence, { recursive: true });
 const keepEvidence = () => {
-  const kept = resolve(app, "../../artifacts/verification", `network-ui-${Date.now()}`, "ui-evidence");
+  const kept = resolve(
+    app,
+    "../../artifacts/verification",
+    `network-ui-${Date.now()}`,
+    "ui-evidence",
+  );
   mkdirSync(kept, { recursive: true });
   cpSync(evidence, kept, { recursive: true });
   return kept;
@@ -138,7 +143,11 @@ await context.addInitScript(() => {
 await context.addInitScript(() => {
   const KEY = "__cspViolations";
   const read = () => {
-    try { return JSON.parse(sessionStorage.getItem(KEY) ?? "[]"); } catch { return []; }
+    try {
+      return JSON.parse(sessionStorage.getItem(KEY) ?? "[]");
+    } catch {
+      return [];
+    }
   };
   document.addEventListener("securitypolicyviolation", (event) => {
     const list = read();
@@ -149,7 +158,9 @@ await context.addInitScript(() => {
       element: event.element?.outerHTML?.slice(0, 160) ?? "",
       source: `${event.sourceFile ?? ""}:${event.lineNumber ?? 0}:${event.columnNumber ?? 0}`,
     });
-    try { sessionStorage.setItem(KEY, JSON.stringify(list)); } catch {}
+    try {
+      sessionStorage.setItem(KEY, JSON.stringify(list));
+    } catch {}
   });
 });
 const errors = [];
@@ -159,7 +170,11 @@ const collectCsp = async (p) => {
   try {
     cspViolations.push(
       ...(await p.evaluate(() => {
-        try { return JSON.parse(sessionStorage.getItem("__cspViolations") ?? "[]"); } catch { return []; }
+        try {
+          return JSON.parse(sessionStorage.getItem("__cspViolations") ?? "[]");
+        } catch {
+          return [];
+        }
       })),
     );
   } catch {}
@@ -229,10 +244,20 @@ try {
   await send("hello there");
   await expect(chat().locator(".markdown").filter({ hasText: "Echo: hello there" })).toBeVisible();
   await page.evaluate(() => {
-    window.__reviewMux.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
-      sub: window.__reviewAgentSub,
-      frame: { type: "fault", error: { code: "unavailable", message: "Review fixture: subscription failed after snapshot" } },
-    }) }));
+    window.__reviewMux.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          sub: window.__reviewAgentSub,
+          frame: {
+            type: "fault",
+            error: {
+              code: "unavailable",
+              message: "Review fixture: subscription failed after snapshot",
+            },
+          },
+        }),
+      }),
+    );
   });
   const stale = page.getByRole("alert").filter({ hasText: "subscription failed after snapshot" });
   await expect(stale).toBeVisible();
@@ -242,20 +267,25 @@ try {
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
   const mutations = [];
   const recordSend = (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/messages")) mutations.push(request.url());
+    if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/messages"))
+      mutations.push(request.url());
   };
   page.on("request", recordSend);
   await composer().press("Enter");
   await expect(composer()).toHaveValue("keep this draft until the stream recovers");
   expect(mutations).toEqual([]);
-  await page.evaluate(() => { window.__reviewHoldSnapshot = true; });
+  await page.evaluate(() => {
+    window.__reviewHoldSnapshot = true;
+  });
   await stale.getByRole("button", { name: "Retry stream", exact: true }).click();
   await expect.poll(() => page.evaluate(() => !!window.__reviewHeldSnapshot)).toBe(true);
   await expect(stale).toBeVisible();
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
   await page.evaluate(() => {
     window.__reviewHoldSnapshot = false;
-    window.__reviewMux.dispatchEvent(new MessageEvent("message", { data: window.__reviewHeldSnapshot }));
+    window.__reviewMux.dispatchEvent(
+      new MessageEvent("message", { data: window.__reviewHeldSnapshot }),
+    );
   });
   await expect(stale).toHaveCount(0, { timeout: 10000 });
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
@@ -263,7 +293,9 @@ try {
   await expect(chat().locator(".markdown").filter({ hasText: "Echo: hello there" })).toBeVisible();
   page.off("request", recordSend);
   await composer().fill("");
-  pass("R09 late stream fault stays visible, preserves transcript/draft, blocks Enter and retries a fresh snapshot");
+  pass(
+    "R09 late stream fault stays visible, preserves transcript/draft, blocks Enter and retries a fresh snapshot",
+  );
   await send("!echo TOOL_OK");
   await expect(chat().locator(".tool-call").filter({ hasText: "bash" }).last()).toContainText(
     "Done",
@@ -280,11 +312,14 @@ try {
   );
   const linked = chat().locator(".markdown").filter({ hasText: "Echo: links:" });
   await expect(linked).toBeVisible();
-  const anchors = await linked
-    .locator("a")
-    .evaluateAll((els) =>
-      els.map((a) => ({ text: a.textContent, href: a.getAttribute("href"), target: a.getAttribute("target"), rel: a.getAttribute("rel") })),
-    );
+  const anchors = await linked.locator("a").evaluateAll((els) =>
+    els.map((a) => ({
+      text: a.textContent,
+      href: a.getAttribute("href"),
+      target: a.getAttribute("target"),
+      rel: a.getAttribute("rel"),
+    })),
+  );
   expect(anchors.map((a) => a.text).sort()).toEqual(["ext", "js", "raw", "rel", "self"]);
   expect(anchors.filter((a) => a.href !== null)).toEqual([
     { text: "ext", href: "https://example.org/x", target: "_blank", rel: "noopener noreferrer" },
@@ -295,7 +330,9 @@ try {
   expect(await lure.content()).not.toContain('"apiVersion"');
   await collectCsp(lure);
   await lure.close();
-  pass("GA-01: transcript links cannot point at the hub; a document navigation to the device proxy is 403");
+  pass(
+    "GA-01: transcript links cannot point at the hub; a document navigation to the device proxy is 403",
+  );
 
   // FE-M: transcript markdown is attacker-influenced and rendered in the admin origin, so only
   // the markdown subset may reach the DOM: no forms, styles, overlays, remote images or ids.
@@ -340,17 +377,30 @@ try {
     const found = await hostile.evaluate((root) => {
       const all = [...root.querySelectorAll("*")];
       return {
-        active: root.querySelectorAll("form,button,style,select,textarea,svg,script,iframe,object,embed,math").length,
-        forbiddenAttrs: all.flatMap((n) => [...n.attributes].map((a) => `${n.localName}[${a.name}]`)).filter((a) =>
-          /\[(style|id|name|action|formaction)\]$|\[(on|data-|aria-)/.test(a)),
-        inputs: [...root.querySelectorAll("input")].map((i) => [...i.attributes].map((a) => a.name).sort().join()),
+        active: root.querySelectorAll(
+          "form,button,style,select,textarea,svg,script,iframe,object,embed,math",
+        ).length,
+        forbiddenAttrs: all
+          .flatMap((n) => [...n.attributes].map((a) => `${n.localName}[${a.name}]`))
+          .filter((a) => /\[(style|id|name|action|formaction)\]$|\[(on|data-|aria-)/.test(a)),
+        inputs: [...root.querySelectorAll("input")].map((i) =>
+          [...i.attributes]
+            .map((a) => a.name)
+            .sort()
+            .join(),
+        ),
         align: root.querySelector("th")?.getAttribute("align"),
-        classes: all.filter((n) => n.hasAttribute("class")).map((n) => `${n.localName}.${n.getAttribute("class")}`),
+        classes: all
+          .filter((n) => n.hasAttribute("class"))
+          .map((n) => `${n.localName}.${n.getAttribute("class")}`),
         images: root.querySelectorAll("img").length,
         imageSources: [...root.querySelectorAll("img")].map((i) => i.getAttribute("src")),
         text: root.textContent,
         anchors: [...root.querySelectorAll("a")].map((a) => ({
-          text: a.textContent, href: a.getAttribute("href"), target: a.getAttribute("target"), rel: a.getAttribute("rel"),
+          text: a.textContent,
+          href: a.getAttribute("href"),
+          target: a.getAttribute("target"),
+          rel: a.getAttribute("rel"),
         })),
         bodyShown: getComputedStyle(document.body).display !== "none",
         pageIdHit: document.getElementById("x") !== null,
@@ -372,7 +422,9 @@ try {
     await sleep(500);
     expect(beacons).toEqual([]);
     page.off("request", watchBeacons);
-    pass("FE-M: hostile transcript markdown keeps only the markdown subset (no form/style/overlay/remote image)");
+    pass(
+      "FE-M: hostile transcript markdown keeps only the markdown subset (no form/style/overlay/remote image)",
+    );
   }
 
   // Busy: queue + withdraw, reject-if-busy, steer, Escape interrupt.
@@ -439,25 +491,40 @@ try {
   await page.getByLabel("Thinking level").selectOption("minimal");
   await expect(page.locator(".toast")).toContainText("Thinking minimal");
   await tab("Tools");
-  await expect(page.locator(".tool-row").filter({ has: page.locator("summary strong", { hasText: /^bash$/ }) })).toBeVisible();
+  await expect(
+    page
+      .locator(".tool-row")
+      .filter({ has: page.locator("summary strong", { hasText: /^bash$/ }) }),
+  ).toBeVisible();
   await page.locator(".tool-row summary").filter({ hasText: "start_session" }).click();
   await expect(page.getByLabel("start_session TypeScript definition")).toContainText(
     "function start_session(args: {",
   );
-  await expect(page.getByLabel("start_session TypeScript definition")).toContainText("model?: string;");
+  await expect(page.getByLabel("start_session TypeScript definition")).toContainText(
+    "model?: string;",
+  );
   pass("model and thinking level saved; tool signatures render");
 
   // Read only: the tools that write fade out as disabled and leave the agent's requests.
-  const toolRow = (name) => page.locator(".tool-row").filter({ has: page.locator("summary strong", { hasText: new RegExp(`^${name}$`) }) });
+  const toolRow = (name) =>
+    page
+      .locator(".tool-row")
+      .filter({ has: page.locator("summary strong", { hasText: new RegExp(`^${name}$`) }) });
   await page.getByRole("switch", { name: "Read only" }).click();
-  await expect(page.getByRole("switch", { name: "Read only" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("switch", { name: "Read only" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
   await expect(toolRow("bash")).toHaveClass(/disabled/);
   await expect(toolRow("bash")).toContainText("disabled");
   await expect(toolRow("read")).not.toHaveClass(/disabled/);
   await send("!pwd");
   await expect(chat()).toContainText("Tool bash is not available", { timeout: 15000 });
   await page.getByRole("switch", { name: "Read only" }).click();
-  await expect(page.getByRole("switch", { name: "Read only" })).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByRole("switch", { name: "Read only" })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
   await expect(toolRow("bash")).not.toHaveClass(/disabled/);
   pass("read only disables the tools that write, then restores them");
 
@@ -474,18 +541,30 @@ try {
   await expect(jevSwitch).toHaveAttribute("aria-checked", "false");
   await page.getByRole("switch", { name: "System prompts" }).click();
   await jevSwitch.click();
-  await expect(page.getByRole("switch", { name: "System prompts" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("switch", { name: "System prompts" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
   await expect(jevSwitch).toHaveAttribute("aria-checked", "true");
   await jevSwitch.click();
   await page.getByRole("checkbox", { name: "one_sentence.md" }).check();
   await page.reload();
   await tab("Extend");
-  await expect(page.getByRole("switch", { name: "System prompts" })).toHaveAttribute("aria-checked", "true", { timeout: 10000 });
+  await expect(page.getByRole("switch", { name: "System prompts" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+    { timeout: 10000 },
+  );
   await expect(page.getByRole("checkbox", { name: "one_sentence.md" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "smart_ass_opus_fix.md" })).toBeChecked();
   await page.getByRole("switch", { name: "System prompts" }).click();
-  await expect(page.getByRole("switch", { name: "System prompts" })).toHaveAttribute("aria-checked", "false");
-  pass("extensions: jev-damage-control blocks rm -rf while on; both stack; the prompt checklist persists");
+  await expect(page.getByRole("switch", { name: "System prompts" })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+  pass(
+    "extensions: jev-damage-control blocks rm -rf while on; both stack; the prompt checklist persists",
+  );
 
   // App State: live controls and the JSON editor with its revision guard.
   await tab("State");
@@ -520,17 +599,23 @@ try {
   const snapshot = chat().locator(".job-run").filter({ hasText: "Workspace snapshot" }).first();
   await expect(snapshot).toContainText("Completed", { timeout: 20000 });
   await expect(snapshot.locator(".job-stepper .ph-done")).toHaveCount(4);
-  await expect(snapshot.locator(".job-steps code").filter({ hasText: "git status --short" })).toHaveCount(1);
+  await expect(
+    snapshot.locator(".job-steps code").filter({ hasText: "git status --short" }),
+  ).toHaveCount(1);
   await page.getByRole("button", { name: "Run Change watch" }).click();
   const watching = chat().locator(".job-run").filter({ hasText: "Change watch" }).first();
-  await expect(watching.locator(".job-stepper .ph-running")).toContainText("Watch", { timeout: 15000 });
+  await expect(watching.locator(".job-stepper .ph-running")).toContainText("Watch", {
+    timeout: 15000,
+  });
   await expect(page.locator(".task-row").filter({ hasText: "Change watch #1" })).toBeVisible();
   await watching.getByRole("button", { name: "Stop" }).click();
   await expect(watching).toContainText("Stopped", { timeout: 15000 });
   await page.getByRole("button", { name: "Run Release check" }).click();
   const release = chat().locator(".job-run").filter({ hasText: "Release check" }).first();
   await expect(release.getByRole("button", { name: /Approve/ })).toBeVisible({ timeout: 30000 });
-  await expect(release.locator(".job-steps .k-tool code").filter({ hasText: "bash" })).toHaveCount(1);
+  await expect(release.locator(".job-steps .k-tool code").filter({ hasText: "bash" })).toHaveCount(
+    1,
+  );
   await page.reload();
   await release.getByRole("button", { name: /Approve/ }).click();
   await expect(release).toContainText("Completed", { timeout: 20000 });
@@ -540,7 +625,9 @@ try {
   await expect(byAgent).toContainText("run #2");
   await tab("Tasks");
   await page.getByRole("button", { name: "Run Change watch" }).click();
-  await expect(page.locator(".task-row").filter({ hasText: "Change watch #2" })).toBeVisible({ timeout: 10000 });
+  await expect(page.locator(".task-row").filter({ hasText: "Change watch #2" })).toBeVisible({
+    timeout: 10000,
+  });
   await page.getByRole("button", { name: "Stop all" }).click();
   await expect(page.locator(".task-row")).toHaveCount(0, { timeout: 15000 });
   await page.locator("summary").filter({ hasText: "Runtime details" }).click();
@@ -551,7 +638,9 @@ try {
       .filter({ hasText: /#\d+/ })
       .first(),
   ).toBeVisible({ timeout: 10000 });
-  pass("durable jobs: run cards with phases and steps, stop, approval across reload, agent run, task tree, stop all");
+  pass(
+    "durable jobs: run cards with phases and steps, stop, approval across reload, agent run, task tree, stop all",
+  );
 
   // Context bar: the auto-compaction marker moves with the keyboard and the session keeps it.
   await tab("Session");
@@ -561,11 +650,9 @@ try {
   await page.keyboard.press("ArrowLeft");
   await expect(autoMarker).toContainText("Auto-compact at 77.8k");
   await page.reload();
-  await expect(page.getByRole("slider", { name: "Automatic compaction starts at" })).toHaveAttribute(
-    "aria-valuenow",
-    "77824",
-    { timeout: 10000 },
-  );
+  await expect(
+    page.getByRole("slider", { name: "Automatic compaction starts at" }),
+  ).toHaveAttribute("aria-valuenow", "77824", { timeout: 10000 });
   await page.getByRole("button", { name: "Details" }).click();
   const details = page.getByRole("dialog", { name: "Context compaction" });
   await expect(details.getByRole("checkbox", { name: "Automatic compaction" })).toBeChecked();
@@ -710,7 +797,9 @@ try {
   await page.screenshot({ path: join(evidence, "mobile.png") });
   await panels.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(page.locator(".network-sidebar.open, .inspector.overlay")).toHaveCount(0);
-  pass("R04 narrow viewport: Network/Details never overlap, Chat closes both, no horizontal overflow");
+  pass(
+    "R04 narrow viewport: Network/Details never overlap, Chat closes both, no horizontal overflow",
+  );
 
   // Archive the session from the tree.
   await page.setViewportSize({ width: 1600, height: 1000 });
@@ -731,7 +820,9 @@ try {
   // FE-M block above).
   await collectCsp(page);
   for (const v of cspViolations)
-    console.log(`CSP ${v.element ? "VIOLATION" : "sanitizer-parse"} ${v.directive} blocked=${v.blockedURI} el=${v.element} at ${v.source}`);
+    console.log(
+      `CSP ${v.element ? "VIOLATION" : "sanitizer-parse"} ${v.directive} blocked=${v.blockedURI} el=${v.element} at ${v.source}`,
+    );
   for (const c of cspConsole) console.log(`CSP CONSOLE ${c}`);
   expect(cspViolations.filter((v) => v.element)).toEqual([]);
   expect(errors).toEqual([]);

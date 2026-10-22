@@ -48,7 +48,9 @@ async function revoke(): Promise<void> {
     danger: true,
     run: async () => {
       await pairingAdmin.revoke(props.device.id, "user");
-      notify("Revoke committed on the hub. The tunnel is cut; the device cleans up on its next contact.");
+      notify(
+        "Revoke committed on the hub. The tunnel is cut; the device cleans up on its next contact.",
+      );
     },
   };
 }
@@ -63,7 +65,9 @@ async function revoke(): Promise<void> {
     </header>
     <dl>
       <dt>Key fingerprint</dt>
-      <dd><code class="credential-fingerprint">{{ pairing.keyFingerprint }}</code></dd>
+      <dd>
+        <code class="credential-fingerprint">{{ pairing.keyFingerprint }}</code>
+      </dd>
       <dt>Paired</dt>
       <dd :title="new Date(pairing.pairedAt).toISOString()">{{ ago(pairing.pairedAt) }}</dd>
       <dt>Generation</dt>
@@ -73,7 +77,12 @@ async function revoke(): Promise<void> {
       <RefreshCw :size="13" class="spin" /> rotation queued — waiting for the device to ACK
     </p>
     <div class="token-actions">
-      <button v-if="pairing.status === 'paired'" class="small" :disabled="busy || pairing.rotationPending" @click="rotate">
+      <button
+        v-if="pairing.status === 'paired'"
+        class="small"
+        :disabled="busy || pairing.rotationPending"
+        @click="rotate"
+      >
         <RefreshCw :size="14" /> Rotate credential
       </button>
       <button
@@ -90,18 +99,77 @@ async function revoke(): Promise<void> {
 </template>
 
 <style>
-.token-manager { border: 1px solid var(--border, #333); border-radius: 8px; padding: 0.6rem 0.8rem; display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.8rem; }
-.token-manager header { display: flex; align-items: center; gap: 0.4rem; }
-.token-manager h3 { margin: 0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; }
-.token-manager .pairing-status { margin-left: auto; font-size: 0.7rem; padding: 0.05rem 0.5rem; border-radius: 999px; border: 1px solid var(--border, #333); }
-.token-manager .pairing-status.paired { color: var(--ok, #6cc070); }
-.token-manager .pairing-status.revoked { color: var(--warn, #e0b040); }
-.token-manager dl { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.8rem; margin: 0; }
-.token-manager dt { color: var(--muted, #888); }
-.token-manager dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.token-manager .credential-fingerprint { white-space: normal; overflow-wrap: anywhere; }
-.token-manager .rotation-badge { display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--warn, #e0b040); font-size: 0.75rem; }
-.token-manager .token-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-.token-manager .spin { animation: tm-spin 1.2s linear infinite; }
-@keyframes tm-spin { to { transform: rotate(360deg); } }
+.token-manager {
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.token-manager header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.token-manager h3 {
+  margin: 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.token-manager .pairing-status {
+  margin-left: auto;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, #333);
+}
+.token-manager .pairing-status.paired {
+  color: var(--ok, #6cc070);
+}
+.token-manager .pairing-status.revoked {
+  color: var(--warn, #e0b040);
+}
+.token-manager dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.8rem;
+  margin: 0;
+}
+.token-manager dt {
+  color: var(--muted, #888);
+}
+.token-manager dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.token-manager .credential-fingerprint {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.token-manager .rotation-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  color: var(--warn, #e0b040);
+  font-size: 0.75rem;
+}
+.token-manager .token-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.token-manager .spin {
+  animation: tm-spin 1.2s linear infinite;
+}
+@keyframes tm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 </style>

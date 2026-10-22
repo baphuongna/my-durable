@@ -11,10 +11,18 @@ import { renderToString } from "vue/server-renderer";
 
 // SSR shims — store.ts touches window.matchMedia / navigator.userAgent at module scope.
 globalThis.window = globalThis.window ?? {
-  matchMedia: (q) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} }),
+  matchMedia: (q) => ({
+    matches: false,
+    media: q,
+    addEventListener() {},
+    removeEventListener() {},
+  }),
 };
 if (!globalThis.navigator) {
-  Object.defineProperty(globalThis, "navigator", { value: { userAgent: "node-test" }, configurable: true });
+  Object.defineProperty(globalThis, "navigator", {
+    value: { userAgent: "node-test" },
+    configurable: true,
+  });
 }
 // jobs.ts starts a 1s setInterval at module scope; unref intervals so the runner exits.
 const origSetInterval = globalThis.setInterval;
@@ -73,7 +81,11 @@ test("style tokens: no self-referential custom property definitions", async () =
   assert.deepEqual(cycles, [], `cyclic token definitions: ${cycles.join(", ")}`);
   // And the core brand palette must resolve to real colors (not var() indirection).
   for (const token of ["--bg", "--fg", "--primary", "--ok", "--warn", "--err", "--offline"]) {
-    assert.match(css, new RegExp(`${token}\\s*:\\s*#[0-9a-fA-F]{3,8}`), `${token} has a literal value`);
+    assert.match(
+      css,
+      new RegExp(`${token}\\s*:\\s*#[0-9a-fA-F]{3,8}`),
+      `${token} has a literal value`,
+    );
   }
 });
 
@@ -82,9 +94,22 @@ test("R03: an offline paired device with no sessions has an accessible credentia
   const mod = await vite.ssrLoadModule("/src/App.vue");
   const fingerprint = `sha256:${"c".repeat(64)}`;
   const device = {
-    id: "offline-box", name: "Offline box", kind: "url", transport: "tunnel", url: null,
-    source: "ui", hasToken: false, deviceUid: "fixture-uid", status: "offline",
-    pairing: { status: "paired", keyFingerprint: fingerprint, pairedAt: Date.now(), credentialGeneration: 1, rotationPending: false },
+    id: "offline-box",
+    name: "Offline box",
+    kind: "url",
+    transport: "tunnel",
+    url: null,
+    source: "ui",
+    hasToken: false,
+    deviceUid: "fixture-uid",
+    status: "offline",
+    pairing: {
+      status: "paired",
+      keyFingerprint: fingerprint,
+      pairedAt: Date.now(),
+      credentialGeneration: 1,
+      rotationPending: false,
+    },
     tunnel: { state: "disconnected", readerCount: 0 },
   };
   try {
@@ -117,7 +142,11 @@ test("R04: narrow-screen Network and Details are mutually exclusive", async () =
     assert.equal(store.ui.inspectorOverlay, false, "Network closes Details");
     assert.equal(store.ui.drawer, true);
     store.toggleTree();
-    assert.equal(store.ui.drawer || store.ui.inspectorOverlay, false, "closing the active panel returns to Chat");
+    assert.equal(
+      store.ui.drawer || store.ui.inspectorOverlay,
+      false,
+      "closing the active panel returns to Chat",
+    );
   } finally {
     store.narrow.value = wasNarrow;
     store.ui.drawer = false;

@@ -15,7 +15,10 @@ test("FE-P1: a confirmed cancel closes the wizard", async () => {
 
 test("FE-P2: a code that is already terminal is not cancelled at all", async () => {
   let calls = 0;
-  const outcome = await run(async () => { calls++; return "cancelled"; }, false);
+  const outcome = await run(async () => {
+    calls++;
+    return "cancelled";
+  }, false);
   assert.deepEqual(outcome, { closed: true, confirmed: true });
   assert.equal(calls, 0);
 });
@@ -25,7 +28,12 @@ test("FE-P3: a failed cancel still closes, unconfirmed", async () => {
 });
 
 test("FE-P4: a rejected cancel still closes, unconfirmed", async () => {
-  assert.deepEqual(await run(async () => { throw new TypeError("network down"); }), { closed: true, confirmed: false });
+  assert.deepEqual(
+    await run(async () => {
+      throw new TypeError("network down");
+    }),
+    { closed: true, confirmed: false },
+  );
 });
 
 test("FE-P5: a cancel that never settles is abandoned after the timeout", async (t) => {

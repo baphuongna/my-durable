@@ -21,7 +21,13 @@ const ADMIN_PASSWORD = "dpi-f10-admin-password";
 
 const hreq = async (
   url: string,
-  opts: { agent?: import("node:https").Agent; headers?: Record<string, string>; method?: string; body?: string; localAddress?: string } = {},
+  opts: {
+    agent?: import("node:https").Agent;
+    headers?: Record<string, string>;
+    method?: string;
+    body?: string;
+    localAddress?: string;
+  } = {},
 ) => {
   const https = await import("node:https");
   const u = new URL(url);
@@ -51,7 +57,9 @@ const hreq = async (
 test("F10 regression: two real client IPs keep separate pairing buckets; a public pairing flood never 429s the admin API", async () => {
   const ca = await makeTestCa();
   const agent = await trustedAgent(ca);
-  const adminHash = execFileSync(CADDY_BIN, ["hash-password", "--plaintext", ADMIN_PASSWORD], { encoding: "utf8" }).trim();
+  const adminHash = execFileSync(CADDY_BIN, ["hash-password", "--plaintext", ADMIN_PASSWORD], {
+    encoding: "utf8",
+  }).trim();
   const caddyPort = await freePort();
   const hub = await bootHub({ publicHost: `127.0.0.1:${caddyPort}` });
   const caddy = await bootCaddyDeploy({
@@ -64,7 +72,14 @@ test("F10 regression: two real client IPs keep separate pairing buckets; a publi
   const base = caddy.httpsBase;
   const basic = "Basic " + Buffer.from(`admin:${ADMIN_PASSWORD}`).toString("base64");
   try {
-    const mkCode = (from: string) => hreq(`${base}/api/pair/code`, { method: "POST", agent, localAddress: from, headers: { authorization: basic, "content-type": "application/json" }, body: "{}" });
+    const mkCode = (from: string) =>
+      hreq(`${base}/api/pair/code`, {
+        method: "POST",
+        agent,
+        localAddress: from,
+        headers: { authorization: basic, "content-type": "application/json" },
+        body: "{}",
+      });
     // Client A (127.0.0.1) exhausts ITS pairing code bucket (5 / 15 min).
     const a: number[] = [];
     for (let i = 0; i < 6; i++) a.push((await mkCode("127.0.0.1")).status);
@@ -72,29 +87,58 @@ test("F10 regression: two real client IPs keep separate pairing buckets; a publi
     assert.equal(a[5], 429, "A's own bucket exhausted");
     // Client B — a DIFFERENT real source IP — has its own bucket.
     const b1 = await mkCode("127.0.0.2");
-    assert.equal(b1.status, 201, `B's first code must not inherit A's bucket (got ${b1.status}: ${b1.body.slice(0, 120)})`);
+    assert.equal(
+      b1.status,
+      201,
+      `B's first code must not inherit A's bucket (got ${b1.status}: ${b1.body.slice(0, 120)})`,
+    );
 
     // B floods the PUBLIC verify endpoint (no admin auth, no valid body): the
     // admin API bucket must stay untouched — pairing is metered by its own
     // per-IP buckets, never by apiRate.
-    const garbage = JSON.stringify({ type: "pair.response", v: 1, enrollmentId: "0".repeat(36), nonce: "n".repeat(43), signature: "A".repeat(86) });
+    const garbage = JSON.stringify({
+      type: "pair.response",
+      v: 1,
+      enrollmentId: "0".repeat(36),
+      nonce: "n".repeat(43),
+      signature: "A".repeat(86),
+    });
     // The admin bucket message is exactly "Too many requests; slow down";
     // PairingService has its OWN verify buckets ("Too many verify requests…",
     // "Too many pairing failures…") — hitting those is correct S-2 behavior.
     let pairingOwn429 = false;
     for (let i = 0; i < 130; i++) {
-      const r = await hreq(`${base}/api/pair/verify`, { method: "POST", agent, localAddress: "127.0.0.2", headers: { "content-type": "application/json" }, body: garbage });
+      const r = await hreq(`${base}/api/pair/verify`, {
+        method: "POST",
+        agent,
+        localAddress: "127.0.0.2",
+        headers: { "content-type": "application/json" },
+        body: garbage,
+      });
       if (r.status === 429) {
-        if (r.body.includes("\"Too many requests; slow down\"") || (r.body.includes("rate_limited") && !/verify requests|pairing failures/.test(r.body)))
-          throw new Error(`ADMIN bucket 429 leaked onto public pairing at i=${i}: ${r.body.slice(0, 140)}`);
+        if (
+          r.body.includes('"Too many requests; slow down"') ||
+          (r.body.includes("rate_limited") && !/verify requests|pairing failures/.test(r.body))
+        )
+          throw new Error(
+            `ADMIN bucket 429 leaked onto public pairing at i=${i}: ${r.body.slice(0, 140)}`,
+          );
         pairingOwn429 = true;
         break; // pairing's own global verify cap kicked in — exactly as designed
       }
     }
     assert.ok(pairingOwn429, "the flood DID reach pairing's own verify limiter (100/min global)");
     // The admin API from another client still answers.
-    const net = await hreq(`${base}/api/network`, { agent, localAddress: "127.0.0.1", headers: { authorization: basic } });
-    assert.equal(net.status, 200, `admin API unaffected by the public flood (got ${net.status}: ${net.body.slice(0, 120)})`);
+    const net = await hreq(`${base}/api/network`, {
+      agent,
+      localAddress: "127.0.0.1",
+      headers: { authorization: basic },
+    });
+    assert.equal(
+      net.status,
+      200,
+      `admin API unaffected by the public flood (got ${net.status}: ${net.body.slice(0, 120)})`,
+    );
   } finally {
     await caddy.stop();
     await hub.stop();
@@ -105,10 +149,24 @@ test("F20 regression: a 20 KB pairing body is rejected 413 by the 16 KB ingress 
   const hub = await bootHub();
   try {
     const base = hub.base;
-    const big = { type: "pair.request", v: 1, requestId: "0".repeat(36), code: "ABC-DEF", deviceUid: "1".repeat(36), deviceName: "x".repeat(20_000), publicKey: "not-a-key", keyFingerprint: "sha256:" + "0".repeat(64), clientTime: 0 };
+    const big = {
+      type: "pair.request",
+      v: 1,
+      requestId: "0".repeat(36),
+      code: "ABC-DEF",
+      deviceUid: "1".repeat(36),
+      deviceName: "x".repeat(20_000),
+      publicKey: "not-a-key",
+      keyFingerprint: "sha256:" + "0".repeat(64),
+      clientTime: 0,
+    };
     const bytes = Buffer.byteLength(JSON.stringify(big));
     assert.ok(bytes > 16_384 && bytes < 256 * 1024, `body ${bytes}B sits between the two caps`);
-    const res = await fetch(`${base}/api/pair/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(big) });
+    const res = await fetch(`${base}/api/pair/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(big),
+    });
     assert.equal(res.status, 413, `16 KiB pairing cap enforced at ingress (got ${res.status})`);
     const text = await res.text();
     assert.ok(!text.includes("tunnelToken"), "no credential material in the error");

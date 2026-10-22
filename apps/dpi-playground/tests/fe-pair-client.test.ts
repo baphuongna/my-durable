@@ -34,35 +34,61 @@ const FINGERPRINT = `sha256:${"e".repeat(64)}`;
 function withBase(base: string): void {
   const real = globalThis.fetch.bind(globalThis);
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
-    typeof input === "string" && input.startsWith("/") ? real(new URL(input, base), init) : real(input as RequestInfo, init)) as typeof fetch;
+    typeof input === "string" && input.startsWith("/")
+      ? real(new URL(input, base), init)
+      : real(input as RequestInfo, init)) as typeof fetch;
 }
 
 async function deviceEnroll(base: string, code: string, hubOrigin: string) {
   const kp = generateKeyPairSync("ed25519");
   const pubPem = kp.publicKey.export({ type: "spki", format: "pem" }) as string;
-  const fp = `sha256:${createHash("sha256").update(kp.publicKey.export({ type: "spki", format: "der" }) as Buffer).digest("hex")}`;
+  const fp = `sha256:${createHash("sha256")
+    .update(kp.publicKey.export({ type: "spki", format: "der" }) as Buffer)
+    .digest("hex")}`;
   const uid = randomUUID();
   const post = async (path: string, body: unknown) => {
-    const r = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
     return { status: r.status, body: (await r.json()) as any };
   };
   const started = await post("/api/pair/start", {
-    type: "pair.request", v: 1, requestId: randomUUID(), code, deviceUid: uid,
-    deviceName: "fe-test", publicKey: pubPem, keyFingerprint: fp, clientTime: 0,
+    type: "pair.request",
+    v: 1,
+    requestId: randomUUID(),
+    code,
+    deviceUid: uid,
+    deviceName: "fe-test",
+    publicKey: pubPem,
+    keyFingerprint: fp,
+    clientTime: 0,
   });
   assert.equal(started.status, 200, JSON.stringify(started.body));
   const payload = pairingSigningPayload({
-    hubOrigin, hubId: started.body.hubId, enrollmentId: started.body.enrollmentId,
-    nonce: started.body.nonce, issuedAt: started.body.issuedAt, deviceUid: uid, keyFingerprint: fp,
+    hubOrigin,
+    hubId: started.body.hubId,
+    enrollmentId: started.body.enrollmentId,
+    nonce: started.body.nonce,
+    issuedAt: started.body.issuedAt,
+    deviceUid: uid,
+    keyFingerprint: fp,
   });
   const verified = await post("/api/pair/verify", {
-    type: "pair.response", v: 1, enrollmentId: started.body.enrollmentId, nonce: started.body.nonce,
+    type: "pair.response",
+    v: 1,
+    enrollmentId: started.body.enrollmentId,
+    nonce: started.body.nonce,
     signature: edSign(null, Buffer.from(payload), kp.privateKey).toString("base64url"),
   });
   assert.equal(verified.status, 202, JSON.stringify(verified.body));
   // The device's poll body (spec 03 §4.3): receipt retries present the SAME proof.
   const pollBody = {
-    type: "pair.response", v: 1, enrollmentId: started.body.enrollmentId as string, nonce: started.body.nonce as string,
+    type: "pair.response",
+    v: 1,
+    enrollmentId: started.body.enrollmentId as string,
+    nonce: started.body.nonce as string,
     signature: edSign(null, Buffer.from(payload), kp.privateKey).toString("base64url"),
   };
   return { uid, kp, fp, enrollmentId: started.body.enrollmentId as string, pollBody };
@@ -94,20 +120,32 @@ test("admin pairing flow: typed state → fingerprint approval → issued; no se
     // F02 regression: a poll without the device's proof is rejected — the
     // enrollmentId alone must never fetch a credential.
     const stolen = await fetch(`${hub.base}/api/pair/verify`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "pair.response", v: 1, enrollmentId: dev.enrollmentId, nonce: "n".repeat(43), signature: "A".repeat(86) }),
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "pair.response",
+        v: 1,
+        enrollmentId: dev.enrollmentId,
+        nonce: "n".repeat(43),
+        signature: "A".repeat(86),
+      }),
     });
     assert.equal(stolen.status, 401);
 
     // Device polls again with the SAME proof → the ONLY place a credential exists (device's own TLS response).
     const issue = await fetch(`${hub.base}/api/pair/verify`, {
-      method: "POST", headers: { "content-type": "application/json" },
+      method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(dev.pollBody),
     });
     const issueBody = (await issue.json()) as { type?: string; tunnelToken?: string };
     assert.equal(issue.status, 200);
     assert.equal(issueBody.type, "pair.token");
-    assert.match(issueBody.tunnelToken ?? "", /^dpt_[A-Za-z0-9_-]{43}$/, "credential is dpt_-scoped");
+    assert.match(
+      issueBody.tunnelToken ?? "",
+      /^dpt_[A-Za-z0-9_-]{43}$/,
+      "credential is dpt_-scoped",
+    );
 
     const issued = await pairingAdmin.codeState(created.codeId);
     assert.equal(issued.phase, "issued");
@@ -115,7 +153,11 @@ test("admin pairing flow: typed state → fingerprint approval → issued; no se
     assert.ok(!JSON.stringify(issued).includes("dpt_"), "no token in admin state");
     const network = await (await fetch(`${hub.base}/api/network`)).json();
     const device = network.devices.find((d: { id: string }) => d.id === issued.deviceId);
-    assert.equal(device?.status, "offline", "R03: issuing a new pairing starts its monitor immediately");
+    assert.equal(
+      device?.status,
+      "offline",
+      "R03: issuing a new pairing starts its monitor immediately",
+    );
     assert.equal(device?.pairing?.status, "paired");
 
     // Wrong tuple is rejected (P-8 wrong-approval → 409).
@@ -135,7 +177,9 @@ test("admin pairing flow: typed state → fingerprint approval → issued; no se
     const cancelled = await pairingAdmin.cancel(created2.codeId);
     assert.equal(cancelled.phase, "cancelled");
     void dev2;
-  } finally { await hub.cleanup(); }
+  } finally {
+    await hub.cleanup();
+  }
 });
 
 test("pollCode: terminal resolves; abort rejects AbortError; closed session stops silently; timeout is typed", async () => {
@@ -151,14 +195,20 @@ test("pollCode: terminal resolves; abort rejects AbortError; closed session stop
 
     const s2 = createPairingSession();
     s2.close();
-    assert.equal(await pollCode(s2, created.codeId, { intervalMs: 50 }), undefined, "closed session stops silently");
+    assert.equal(
+      await pollCode(s2, created.codeId, { intervalMs: 50 }),
+      undefined,
+      "closed session stops silently",
+    );
 
     const s3 = createPairingSession();
     await assert.rejects(
       pollCode(s3, created.codeId, { intervalMs: 50, timeoutMs: 120 }),
       (e) => e instanceof PollTimeout,
     );
-  } finally { await hub.cleanup(); }
+  } finally {
+    await hub.cleanup();
+  }
 });
 
 test("rotate + revoke contract: 202 accepted; double revoke is a typed 400; needsAuth pins 401 mapping", async () => {
@@ -189,13 +239,21 @@ test("rotate + revoke contract: 202 accepted; double revoke is a typed 400; need
     const rev = await pairingAdmin.revoke("dev-fe", "compromise");
     assert.equal(rev.ok, true);
     const again = await fetch(`${hub.base}/api/devices/dev-fe/revoke`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "user" }),
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "user" }),
     });
-    assert.ok([400, 404].includes(again.status), "revoking a revoked device is a typed error, not a silent ok");
+    assert.ok(
+      [400, 404].includes(again.status),
+      "revoking a revoked device is a typed error, not a silent ok",
+    );
 
     // Contract pin: only real 401s mean "authenticate again".
     assert.equal(needsAuth(new DpiError("unauthorized", "no", 401)), true);
     assert.equal(needsAuth(new DpiError("unauthorized", "no", 403)), false);
     assert.equal(needsAuth(new Error("x")), false);
-  } finally { await hub.cleanup(); await rm(dir, { recursive: true, force: true }); }
+  } finally {
+    await hub.cleanup();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -16,7 +16,10 @@ import { WebSocket as WsClient } from "ws";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
 import { Audit } from "../apps/dpi-playground-hub/src/audit.js";
 import { TunnelServer } from "../apps/dpi-playground-hub/src/tunnel.js";
-import { TunnelDispatcher, TunnelTransport } from "../apps/dpi-playground-hub/src/tunnel-transport.js";
+import {
+  TunnelDispatcher,
+  TunnelTransport,
+} from "../apps/dpi-playground-hub/src/tunnel-transport.js";
 import { DeviceMonitor } from "../apps/dpi-playground-hub/src/monitor.js";
 import { StreamMux } from "../apps/dpi-playground-hub/src/mux.js";
 import { sendChunked } from "../../dpi-sdk/src/node/chunk.js";
@@ -30,7 +33,11 @@ const DEVICE_ID = "pace-dev";
 
 interface Ctx {
   base: string;
-  device: { ws: WsClient; subs: Map<string, string>; subscribes: { subscriptionId: string; sub: string }[] };
+  device: {
+    ws: WsClient;
+    subs: Map<string, string>;
+    subscribes: { subscriptionId: string; sub: string }[];
+  };
   tunnel: TunnelServer;
   registry: NetworkRegistry;
   sendToDevice: (frame: unknown) => void;
@@ -47,7 +54,11 @@ async function setup(): Promise<Ctx> {
   const audit = new Audit(registry);
   const tunnel = new TunnelServer(registry, audit, HUB_ID);
   const dispatcher = new TunnelDispatcher(tunnel, { audit });
-  const token = "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+  const token =
+    "dpt_" +
+    Buffer.from(randomUUID() + randomUUID())
+      .toString("base64url")
+      .slice(0, 43);
   const epoch = randomUUID();
   const t0 = Date.now();
   registry.db
@@ -74,28 +85,54 @@ async function setup(): Promise<Ctx> {
   await new Promise<void>((d) => server.listen(0, "127.0.0.1", d));
   const hubPort = (server.address() as { port: number }).port;
 
-  const device: Ctx["device"] = { ws: undefined as unknown as WsClient, subs: new Map(), subscribes: [] };
+  const device: Ctx["device"] = {
+    ws: undefined as unknown as WsClient,
+    subs: new Map(),
+    subscribes: [],
+  };
   const connectDevice = async (): Promise<void> => {
-    const ws = new WsClient(`ws://127.0.0.1:${hubPort}/api/tunnel`, { headers: { authorization: `Bearer ${token}` } });
+    const ws = new WsClient(`ws://127.0.0.1:${hubPort}/api/tunnel`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
     device.ws = ws;
     await new Promise<void>((d) => ws.once("open", d));
     ws.on("message", (d) => {
       const msg = JSON.parse(d.toString());
       if (msg.type === "rest-request" && msg.path === "/v1/device") {
-        ws.send(JSON.stringify({ type: "rest-response", reqId: msg.reqId, status: 200, contentType: "application/json", body: JSON.stringify({ apiVersion: 1, uid: UID, name: "P Dev" }) }));
+        ws.send(
+          JSON.stringify({
+            type: "rest-response",
+            reqId: msg.reqId,
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ apiVersion: 1, uid: UID, name: "P Dev" }),
+          }),
+        );
         return;
       }
       if (msg.type === "control" && msg.action === "subscribe") {
         device.subs.set(msg.subscriptionId, msg.sub);
         device.subscribes.push({ subscriptionId: msg.subscriptionId, sub: msg.sub });
       }
-
     });
-    ws.send(JSON.stringify({
-      type: "pair-handshake", v: 1, deviceUid: UID, deviceId: DEVICE_ID, pairingEpoch: epoch,
-      credentialId: (registry.db.prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?").get(DEVICE_ID) as { credential_id: string }).credential_id,
-      generation: 1, apiVersion: 1, tunnelProto: 1, keyFingerprint: FINGERPRINT,
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "pair-handshake",
+        v: 1,
+        deviceUid: UID,
+        deviceId: DEVICE_ID,
+        pairingEpoch: epoch,
+        credentialId: (
+          registry.db
+            .prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?")
+            .get(DEVICE_ID) as { credential_id: string }
+        ).credential_id,
+        generation: 1,
+        apiVersion: 1,
+        tunnelProto: 1,
+        keyFingerprint: FINGERPRINT,
+      }),
+    );
     await new Promise<void>((d) => ws.once("message", () => d())); // hello
   };
   await connectDevice();
@@ -116,7 +153,9 @@ async function setup(): Promise<Ctx> {
     try {
       res.json(mux.subscribe(String(req.params.streamId), req.body?.subs));
     } catch (e) {
-      res.status((e as { status?: number }).status ?? 400).json({ error: { code: "invalid", message: (e as Error).message } });
+      res
+        .status((e as { status?: number }).status ?? 400)
+        .json({ error: { code: "invalid", message: (e as Error).message } });
     }
   });
   const apiServer = createServer(app);
@@ -125,11 +164,20 @@ async function setup(): Promise<Ctx> {
 
   const sendToDevice = (frame: unknown) => {
     for (const id of device.subs.keys())
-      device.ws.send(JSON.stringify({ type: "tunnel-data", frame: frame as Record<string, unknown>, subscriptionId: id, sub: device.subs.get(id) }));
+      device.ws.send(
+        JSON.stringify({
+          type: "tunnel-data",
+          frame: frame as Record<string, unknown>,
+          subscriptionId: id,
+          sub: device.subs.get(id),
+        }),
+      );
   };
   const broadcastChunked = (frame: unknown) => {
     for (const [id, sub] of device.subs)
-      sendChunked(frame, { kind: "tunnel-data", subscriptionId: id, sub }, (chunk) => device.ws.send(JSON.stringify(chunk)));
+      sendChunked(frame, { kind: "tunnel-data", subscriptionId: id, sub }, (chunk) =>
+        device.ws.send(JSON.stringify(chunk)),
+      );
   };
 
   const cleanup = async () => {
@@ -146,11 +194,19 @@ async function setup(): Promise<Ctx> {
   };
 
   return {
-    base, device, tunnel, registry, sendToDevice, broadcastChunked, cleanup,
+    base,
+    device,
+    tunnel,
+    registry,
+    sendToDevice,
+    broadcastChunked,
+    cleanup,
     waitOnline: async () => {
       const by = Date.now() + 15_000;
-      while (Date.now() < by && monitor.state(DEVICE_ID)?.status !== "online") await new Promise((r) => setTimeout(r, 50));
-      if (monitor.state(DEVICE_ID)?.status !== "online") throw new Error("device never online: " + JSON.stringify(monitor.state(DEVICE_ID)));
+      while (Date.now() < by && monitor.state(DEVICE_ID)?.status !== "online")
+        await new Promise((r) => setTimeout(r, 50));
+      if (monitor.state(DEVICE_ID)?.status !== "online")
+        throw new Error("device never online: " + JSON.stringify(monitor.state(DEVICE_ID)));
     },
     reconnectDevice: async () => {
       device.ws.terminate();
@@ -161,7 +217,10 @@ async function setup(): Promise<Ctx> {
 }
 
 /** Open a browser SSE tab that yields device-data frames (mux control frames skipped). */
-async function openTab(base: string, keys: string[]): Promise<{ streamId: string; frames: () => AsyncGenerator<any, any, unknown> }> {
+async function openTab(
+  base: string,
+  keys: string[],
+): Promise<{ streamId: string; frames: () => AsyncGenerator<any, any, unknown> }> {
   const res = await fetch(`${base}/api/stream`);
   assert.equal(res.status, 200);
   const reader = (res.body as ReadableStream<Uint8Array>).getReader();
@@ -226,7 +285,12 @@ test("WS backpressure: unread device buffer over 4 MB cap → close 1011, cleanu
     await f.waitOnline();
     // pause the device socket: it stops reading, hub outbound buffers grow
     (f.device.ws as unknown as { _socket: import("node:net").Socket })._socket.pause();
-    const big = { type: "tunnel-data", frame: { type: "tree", tree: { blob: "x".repeat(900_000) } }, subscriptionId: randomUUID(), sub: "s" };
+    const big = {
+      type: "tunnel-data",
+      frame: { type: "tree", tree: { blob: "x".repeat(900_000) } },
+      subscriptionId: randomUUID(),
+      sub: "s",
+    };
     for (let i = 0; i < 8; i++) f.tunnel.send(DEVICE_ID, big as never);
     await until(() => f.tunnel.activeCount() === 0, 8000, "slow consumer connection closed");
     const ev = f.registry.db
@@ -249,7 +313,8 @@ test("chunked tunnel-data e2e: 1.5 MB tree arrives intact through the mux; overs
     const tab = await openTab(f.base, [`${DEVICE_ID}/device`]);
     // device sees mux subscribe (monitor's is separate)
     const subBy = Date.now() + 10_000;
-    while (Date.now() < subBy && f.device.subscribes.length < 2) await new Promise((r) => setTimeout(r, 50));
+    while (Date.now() < subBy && f.device.subscribes.length < 2)
+      await new Promise((r) => setTimeout(r, 50));
 
     const bigTree = { type: "tree", tree: { blob: "y".repeat(1_500_000) } };
     f.broadcastChunked(bigTree);
@@ -318,7 +383,9 @@ test("backend viewer close: SSE cut mid-stream leaves the daemon fully functiona
   const dir = await mkdtemp(join(tmpdir(), "dpi-p218-be-"));
   const home = join(dir, "home");
   const startDirs = join(dir, "starts");
-  await import("node:fs/promises").then((fs) => Promise.all([fs.mkdir(home, { recursive: true }), fs.mkdir(startDirs, { recursive: true })]));
+  await import("node:fs/promises").then((fs) =>
+    Promise.all([fs.mkdir(home, { recursive: true }), fs.mkdir(startDirs, { recursive: true })]),
+  );
   const token = "dt_" + "V".repeat(40);
   const backend = await bootServer({ home, startDirs, token });
   try {
@@ -334,12 +401,18 @@ test("backend viewer close: SSE cut mid-stream leaves the daemon fully functiona
     ac.abort(); // viewer goes away mid-stream
     await new Promise((r) => setTimeout(r, 150));
     // daemon keeps serving: tree, session create, and a fresh SSE all work
-    const tree = await fetch(`http://127.0.0.1:${backend.port}/v1/tree`, { headers: { authorization: `Bearer ${token}` } });
+    const tree = await fetch(`http://127.0.0.1:${backend.port}/v1/tree`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
     assert.equal(tree.status, 200);
     const created = await fetch(`http://127.0.0.1:${backend.port}/v1/sessions`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ name: "after-close", cwd: startDirs, model: { provider: "faux", modelId: "echo" } }),
+      body: JSON.stringify({
+        name: "after-close",
+        cwd: startDirs,
+        model: { provider: "faux", modelId: "echo" },
+      }),
     });
     assert.equal(created.status, 201);
     const ac2 = new AbortController();

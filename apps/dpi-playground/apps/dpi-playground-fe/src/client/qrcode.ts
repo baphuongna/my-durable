@@ -105,7 +105,8 @@ function placeFunctionPatterns(m: boolean[][], version: number): void {
         const rr = row + r;
         const cc = col + c;
         if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
-        const inRing = r >= 0 && r <= 6 && c >= 0 && c <= 6 && (r === 0 || r === 6 || c === 0 || c === 6);
+        const inRing =
+          r >= 0 && r <= 6 && c >= 0 && c <= 6 && (r === 0 || r === 6 || c === 0 || c === 6);
         const inCore = r >= 2 && r <= 4 && c >= 2 && c <= 4;
         m[rr][cc] = inRing || inCore;
       }
@@ -192,14 +193,22 @@ function placeData(m: boolean[][], codewords: number[], version: number, mask: n
 
 function maskModule(row: number, col: number, mask: number): boolean {
   switch (mask) {
-    case 0: return (row + col) % 2 === 0;
-    case 1: return row % 2 === 0;
-    case 2: return col % 3 === 0;
-    case 3: return (row + col) % 3 === 0;
-    case 4: return (Math.floor(row / 2) + Math.floor(col / 3)) % 2 === 0;
-    case 5: return ((row * col) % 2) + ((row * col) % 3) === 0;
-    case 6: return (((row * col) % 2) + ((row * col) % 3)) % 2 === 0;
-    default: return (((row + col) % 2) + ((row * col) % 3)) % 2 === 0;
+    case 0:
+      return (row + col) % 2 === 0;
+    case 1:
+      return row % 2 === 0;
+    case 2:
+      return col % 3 === 0;
+    case 3:
+      return (row + col) % 3 === 0;
+    case 4:
+      return (Math.floor(row / 2) + Math.floor(col / 3)) % 2 === 0;
+    case 5:
+      return ((row * col) % 2) + ((row * col) % 3) === 0;
+    case 6:
+      return (((row * col) % 2) + ((row * col) % 3)) % 2 === 0;
+    default:
+      return (((row + col) % 2) + ((row * col) % 3)) % 2 === 0;
   }
 }
 
@@ -253,7 +262,11 @@ function penalty(m: boolean[][]): number {
   const matches = (get: (i: number) => boolean, len: number) => {
     for (let start = 0; start + 11 <= len; start++) {
       let ok = true;
-      for (let k = 0; k < 11; k++) if (get(start + k) !== pat[k]) { ok = false; break; }
+      for (let k = 0; k < 11; k++)
+        if (get(start + k) !== pat[k]) {
+          ok = false;
+          break;
+        }
       if (ok) score += 40;
     }
   };
@@ -304,6 +317,7 @@ export function qrSvg(text: string, pixelSize = 160): string {
   let rects = "";
   for (let r = 0; r < n; r++)
     for (let c = 0; c < n; c++)
-      if (m[r][c]) rects += `<rect x="${((c + quiet) * cell).toFixed(2)}" y="${((r + quiet) * cell).toFixed(2)}" width="${cell.toFixed(3)}" height="${cell.toFixed(3)}"/>`;
+      if (m[r][c])
+        rects += `<rect x="${((c + quiet) * cell).toFixed(2)}" y="${((r + quiet) * cell).toFixed(2)}" width="${cell.toFixed(3)}" height="${cell.toFixed(3)}"/>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${pixelSize} ${pixelSize}" shape-rendering="crispEdges"><rect width="${pixelSize}" height="${pixelSize}" fill="#fff"/><g fill="#000">${rects}</g></svg>`;
 }

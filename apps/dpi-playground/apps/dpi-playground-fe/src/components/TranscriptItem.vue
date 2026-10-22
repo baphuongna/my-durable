@@ -92,8 +92,7 @@ const entryClass = (item: TranscriptItem) =>
         <JobCard
           v-if="b.type === 'tool' && b.call.name === 'run_durable_job' && runByCall(b.call.callId)"
           :run="runByCall(b.call.callId)!"
-        /></template
-      >
+      /></template>
       <div v-if="item.streaming && !item.blocks.length" class="typing"><i /><i /><i /></div>
       <div v-if="item.error" class="message-error">{{ item.error }}</div></template
     >
@@ -121,7 +120,10 @@ const entryClass = (item: TranscriptItem) =>
         ><span>{{ item.call.status }}</span>
       </div>
       <pre v-if="item.call.output">{{ item.call.output }}</pre>
-      <JobCard v-if="item.call.name === 'run_durable_job' && runByCall(item.call.callId)" :run="runByCall(item.call.callId)!" />
+      <JobCard
+        v-if="item.call.name === 'run_durable_job' && runByCall(item.call.callId)"
+        :run="runByCall(item.call.callId)!"
+      />
     </div>
     <JobCard
       v-else-if="item.entryKind === 'demo.job' && runById((item.data as { taskId: number }).taskId)"

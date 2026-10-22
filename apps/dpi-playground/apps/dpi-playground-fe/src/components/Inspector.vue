@@ -364,7 +364,9 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
             <h2>Tools</h2>
             <span class="tag">{{ offeredTools }} / {{ detail?.tools.length ?? 0 }}</span>
           </div>
-          <p class="hint">Every tool this agent's extensions provide. Open one to see its definition.</p>
+          <p class="hint">
+            Every tool this agent's extensions provide. Open one to see its definition.
+          </p>
           <div class="hook-card">
             <div>
               <ShieldCheck :size="18" /><strong>Read only</strong
@@ -377,7 +379,9 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
                 @click="
                   configure(
                     { readOnly: !readOnly },
-                    readOnly ? 'Read only off. Every tool is back.' : 'Read only on. Tools that write are disabled.',
+                    readOnly
+                      ? 'Read only off. Every tool is back.'
+                      : 'Read only on. Tools that write are disabled.',
                   )
                 "
               >
@@ -385,8 +389,8 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
               </button>
             </div>
             <p>
-              Offers this agent only tools that read. Tools that create, update or delete leave its next request, and
-              the choice is stored with the agent.
+              Offers this agent only tools that read. Tools that create, update or delete leave its
+              next request, and the choice is stored with the agent.
             </p>
           </div>
           <details
@@ -398,7 +402,9 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
             <summary>
               <Wrench :size="18" /><strong>{{ tool.name }}</strong
               ><span v-if="!tool.offered" class="tag tool-disabled">disabled</span
-              ><span class="tag">{{ tool.replay === "safe" ? "replay safe" : "interrupt on crash" }}</span>
+              ><span class="tag">{{
+                tool.replay === "safe" ? "replay safe" : "interrupt on crash"
+              }}</span>
             </summary>
             <p>{{ tool.description }}</p>
             <pre

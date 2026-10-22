@@ -18,12 +18,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { CheckCircle2, Copy, RefreshCw, ShieldAlert, X } from "lucide-vue-next";
-import {
-  createPairingSession,
-  pairingAdmin,
-  pollCode,
-  type PairingSession,
-} from "../client/pair";
+import { createPairingSession, pairingAdmin, pollCode, type PairingSession } from "../client/pair";
 import { qrSvg } from "../client/qrcode";
 import type { PairCodeIssue, PairCodeState } from "@sdk/api";
 import { DpiError } from "@sdk/errors";
@@ -90,10 +85,14 @@ async function createCode(handoffCode?: string): Promise<void> {
   const s = createPairingSession();
   session.value = s;
   try {
-    const created = handoffCode ? await pairingAdmin.resolveCode(handoffCode) : await pairingAdmin.createCode();
+    const created = handoffCode
+      ? await pairingAdmin.resolveCode(handoffCode)
+      : await pairingAdmin.createCode();
     if (s.closed()) {
       await pairingAdmin.cancel(created.codeId).catch(() => {
-        notify("The late pairing code could not be cancelled. Check device credentials before retrying.");
+        notify(
+          "The late pairing code could not be cancelled. Check device credentials before retrying.",
+        );
       });
       return;
     }
@@ -108,7 +107,8 @@ async function createCode(handoffCode?: string): Promise<void> {
       onState: (st) => {
         state.value = st;
         if (st.phase === "awaiting_proof") step.value = "proof";
-        else if (st.phase === "awaiting_approval" || st.phase === "approved") step.value = "approve";
+        else if (st.phase === "awaiting_approval" || st.phase === "approved")
+          step.value = "approve";
         else if (st.phase === "issued" || st.phase === "connected") step.value = "issued";
         else if (st.phase === "cancelled") step.value = "cancelled";
         else if (st.phase === "expired") step.value = "expired";
@@ -166,7 +166,8 @@ async function cancelLive(keepalive: boolean): Promise<CancelResult> {
         if (session.value) session.value.state = latest;
       }
       step.value = "issued";
-      error.value = "Credential already issued. Closing does not revoke it; choose Revoke explicitly if needed.";
+      error.value =
+        "Credential already issued. Closing does not revoke it; choose Revoke explicitly if needed.";
       return "issued";
     }
     error.value = e instanceof Error ? e.message : String(e);
@@ -175,7 +176,8 @@ async function cancelLive(keepalive: boolean): Promise<CancelResult> {
 }
 const cancelCode = () => cancelLive(false);
 
-const settled = () => ["issued", "connected", "cancelled", "expired"].includes(state.value?.phase ?? "");
+const settled = () =>
+  ["issued", "connected", "cancelled", "expired"].includes(state.value?.phase ?? "");
 
 async function revokeIssued(): Promise<void> {
   const id = deviceId.value;
@@ -217,7 +219,9 @@ async function close(): Promise<void> {
     session.value?.close();
     watcher.value?.();
     if (!outcome.confirmed)
-      notify("Pairing cancellation was not confirmed. The code expires on its own; check device credentials before retrying.");
+      notify(
+        "Pairing cancellation was not confirmed. The code expires on its own; check device credentials before retrying.",
+      );
     emit("close");
   } finally {
     closing.value = false;
@@ -239,7 +243,8 @@ onBeforeUnmount(() => {
   const s = session.value;
   if (s && !s.closed() && issue.value && !settled()) {
     void cancelLive(true).then((result) => {
-      if (result !== "cancelled") notify("Pairing cancellation was not confirmed. Check device credentials before retrying.");
+      if (result !== "cancelled")
+        notify("Pairing cancellation was not confirmed. Check device credentials before retrying.");
     });
   }
   s?.close();
@@ -303,13 +308,14 @@ onBeforeUnmount(() => {
               <label v-if="state?.enrollment?.keyChanged" class="pair-confirm warn">
                 <input v-model="replaceKey" type="checkbox" />
                 <ShieldAlert :size="14" />
-                Device is already paired with a DIFFERENT key — replace the stored key
-                (replaceKey)
+                Device is already paired with a DIFFERENT key — replace the stored key (replaceKey)
               </label>
               <button
                 type="button"
                 class="primary"
-                :disabled="!confirmed || busy || (state?.enrollment?.keyChanged === true && !replaceKey)"
+                :disabled="
+                  !confirmed || busy || (state?.enrollment?.keyChanged === true && !replaceKey)
+                "
                 @click="approve"
               >
                 Approve device
@@ -368,15 +374,60 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
   color: var(--muted, #888);
 }
-.pair-wizard .pair-steps li { padding: 0.15rem 0.6rem; border: 1px solid transparent; border-radius: 999px; }
-.pair-wizard .pair-steps li.on { color: var(--fg, #eee); border-color: currentColor; }
-.pair-wizard .pair-grid { display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: start; }
-.pair-wizard .pair-code { font-size: 1.7rem; letter-spacing: 0.18em; font-family: var(--mono, monospace); margin-bottom: 0.35rem; }
-.pair-wizard .pair-qr svg { border: 1px solid var(--border, #333); border-radius: 6px; }
-.pair-wizard .pair-side { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
-.pair-wizard .fp { display: block; word-break: break-all; font-size: 0.78rem; background: var(--bg2, #222); padding: 0.4rem; border-radius: 6px; }
-.pair-wizard .pair-confirm { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem; }
-.pair-wizard .pair-confirm.warn { color: var(--warn, #e0b040); }
-.pair-wizard .spin { animation: pair-spin 1.2s linear infinite; }
-@keyframes pair-spin { to { transform: rotate(360deg); } }
+.pair-wizard .pair-steps li {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+.pair-wizard .pair-steps li.on {
+  color: var(--fg, #eee);
+  border-color: currentColor;
+}
+.pair-wizard .pair-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+.pair-wizard .pair-code {
+  font-size: 1.7rem;
+  letter-spacing: 0.18em;
+  font-family: var(--mono, monospace);
+  margin-bottom: 0.35rem;
+}
+.pair-wizard .pair-qr svg {
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+}
+.pair-wizard .pair-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.pair-wizard .fp {
+  display: block;
+  word-break: break-all;
+  font-size: 0.78rem;
+  background: var(--bg2, #222);
+  padding: 0.4rem;
+  border-radius: 6px;
+}
+.pair-wizard .pair-confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+}
+.pair-wizard .pair-confirm.warn {
+  color: var(--warn, #e0b040);
+}
+.pair-wizard .spin {
+  animation: pair-spin 1.2s linear infinite;
+}
+@keyframes pair-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 </style>

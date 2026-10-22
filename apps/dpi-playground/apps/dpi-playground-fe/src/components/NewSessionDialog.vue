@@ -72,7 +72,8 @@ async function create() {
         </button>
       </header>
       <p v-if="!devices.length" class="message-error">
-        No device is online. Start one with just backend run or just net up &lt;id&gt;, then try again.
+        No device is online. Start one with just backend run or just net up &lt;id&gt;, then try
+        again.
       </p>
       <template v-else>
         <label

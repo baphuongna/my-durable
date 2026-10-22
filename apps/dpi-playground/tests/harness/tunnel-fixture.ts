@@ -22,7 +22,11 @@ import { TunnelDispatcher } from "../../apps/dpi-playground-hub/src/tunnel-trans
 export const HUB_ID = "0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4cff";
 export const FINGERPRINT = `sha256:${"9".repeat(64)}`;
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
-export const mintToken = () => "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+export const mintToken = () =>
+  "dpt_" +
+  Buffer.from(randomUUID() + randomUUID())
+    .toString("base64url")
+    .slice(0, 43);
 
 export interface DeviceRow {
   id: string;
@@ -90,14 +94,24 @@ export async function tunnelFixture(options: FixtureOptions = {}) {
     ...(ip ? { "x-forwarded-for": ip } : {}),
   });
   const handshakeFor = (d: DeviceRow) => ({
-    type: "pair-handshake", v: 1, deviceUid: d.uid, deviceId: d.id, pairingEpoch: d.epoch,
-    credentialId: d.credentialId, generation: 1, apiVersion: 1, tunnelProto: 1, keyFingerprint: FINGERPRINT,
+    type: "pair-handshake",
+    v: 1,
+    deviceUid: d.uid,
+    deviceId: d.id,
+    pairingEpoch: d.epoch,
+    credentialId: d.credentialId,
+    generation: 1,
+    apiVersion: 1,
+    tunnelProto: 1,
+    keyFingerprint: FINGERPRINT,
   });
 
   /** Open the socket (101) without sending the application handshake. */
   const open = (d: DeviceRow, ip?: string): Promise<WebSocket> =>
     new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/tunnel`, { headers: headersFor(d.token, ip) });
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/tunnel`, {
+        headers: headersFor(d.token, ip),
+      });
       ws.once("open", () => resolve(ws));
       ws.once("error", reject);
       ws.once("unexpected-response", (_q, r) => {
@@ -117,7 +131,9 @@ export async function tunnelFixture(options: FixtureOptions = {}) {
         }
       };
       ws.on("message", on);
-      ws.once("close", (code) => reject(Object.assign(new Error(`closed before hello (${code})`), { code })));
+      ws.once("close", (code) =>
+        reject(Object.assign(new Error(`closed before hello (${code})`), { code })),
+      );
     });
     ws.send(JSON.stringify(handshakeFor(d)));
     await hello;
@@ -127,7 +143,9 @@ export async function tunnelFixture(options: FixtureOptions = {}) {
   /** Real-network upgrade that is expected to be rejected; resolves with status + JSON body. */
   const rejected = (token: string | null, ip?: string): Promise<{ status: number; body: any }> =>
     new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/tunnel`, { headers: headersFor(token, ip) });
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/tunnel`, {
+        headers: headersFor(token, ip),
+      });
       ws.once("unexpected-response", (_q, res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
@@ -153,7 +171,11 @@ export async function tunnelFixture(options: FixtureOptions = {}) {
    * Synchronous in-process upgrade attempt (no network) from `ip`. Exceptions
    * from handleUpgrade propagate to the caller on purpose.
    */
-  const attempt = (ip: string, token: string | null = mintToken(), extraHeaders: Record<string, string> = {}) => {
+  const attempt = (
+    ip: string,
+    token: string | null = mintToken(),
+    extraHeaders: Record<string, string> = {},
+  ) => {
     const socket = new ResponseSocket();
     const req = {
       method: "GET",
@@ -173,9 +195,13 @@ export async function tunnelFixture(options: FixtureOptions = {}) {
   };
 
   const eventCount = (...actions: string[]): number =>
-    (registry.db
-      .prepare(`SELECT COUNT(*) c FROM events WHERE action IN (${actions.map(() => "?").join(",")})`)
-      .get(...actions) as { c: number }).c;
+    (
+      registry.db
+        .prepare(
+          `SELECT COUNT(*) c FROM events WHERE action IN (${actions.map(() => "?").join(",")})`,
+        )
+        .get(...actions) as { c: number }
+    ).c;
 
   const cleanup = async () => {
     dispatcher.close();
@@ -185,7 +211,21 @@ export async function tunnelFixture(options: FixtureOptions = {}) {
     registry.close();
     await rm(dir, { recursive: true, force: true });
   };
-  return { dir, registry, audit, tunnel, dispatcher, addDevice, open, connect, rejected, attempt, eventCount, cleanup, port };
+  return {
+    dir,
+    registry,
+    audit,
+    tunnel,
+    dispatcher,
+    addDevice,
+    open,
+    connect,
+    rejected,
+    attempt,
+    eventCount,
+    cleanup,
+    port,
+  };
 }
 
 export type TunnelFixture = Awaited<ReturnType<typeof tunnelFixture>>;

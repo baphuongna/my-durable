@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { barePairHome, readPairHandoff } from "../apps/dpi-playground-fe/src/client/pair-handoff.js";
+import {
+  barePairHome,
+  readPairHandoff,
+} from "../apps/dpi-playground-fe/src/client/pair-handoff.js";
 
 test("R08: pairing handoffs reject ambiguous or foreign inputs without echoing the code", () => {
   for (const query of [
@@ -15,7 +18,10 @@ test("R08: pairing handoffs reject ambiguous or foreign inputs without echoing t
     assert.ok(value && "error" in value, "invalid handoffs cannot start a pairing lookup");
     assert.equal(JSON.stringify(value).includes("ABCD2345"), false);
   }
-  assert.deepEqual(readPairHandoff(new URL("https://hub.example/pair?code=ABCD2345&v=1")), { code: "ABCD2345", origin: "https://hub.example" });
+  assert.deepEqual(readPairHandoff(new URL("https://hub.example/pair?code=ABCD2345&v=1")), {
+    code: "ABCD2345",
+    origin: "https://hub.example",
+  });
   assert.equal(readPairHandoff(new URL("https://hub.example/other?code=ABCD2345&v=1")), undefined);
 });
 

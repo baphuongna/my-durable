@@ -48,30 +48,47 @@ async function pairFixture(): Promise<PairFx> {
   const audit = new Audit(registry);
   const clock = { now: 1_760_000_000_000 };
   const service = new PairingService({
-    registry, audit, hubOrigin: HUB_ORIGIN, hubId: HUB_ID,
+    registry,
+    audit,
+    hubOrigin: HUB_ORIGIN,
+    hubId: HUB_ID,
     now: () => clock.now,
     issue: async (e) => ({
-      type: "pair.token", v: 1, enrollmentId: e.enrollmentId, deviceUid: e.deviceUid,
-      deviceId: "dev-x", pairingEpoch: randomUUID(), credentialId: randomUUID(), generation: 1,
-      hubId: HUB_ID, hubOrigin: HUB_ORIGIN, hubUrl: `${HUB_ORIGIN}/api/tunnel`,
-      tunnelToken: `dpt_${"G".repeat(43)}`, issuedAt: clock.now, expiresAt: null,
+      type: "pair.token",
+      v: 1,
+      enrollmentId: e.enrollmentId,
+      deviceUid: e.deviceUid,
+      deviceId: "dev-x",
+      pairingEpoch: randomUUID(),
+      credentialId: randomUUID(),
+      generation: 1,
+      hubId: HUB_ID,
+      hubOrigin: HUB_ORIGIN,
+      hubUrl: `${HUB_ORIGIN}/api/tunnel`,
+      tunnelToken: `dpt_${"G".repeat(43)}`,
+      issuedAt: clock.now,
+      expiresAt: null,
     }),
   });
   return { registry, service, clock, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
 const deviceKey = () => generateKeyPairSync("ed25519");
-const pubPem = (kp: ReturnType<typeof deviceKey>) => kp.publicKey.export({ type: "spki", format: "pem" }) as string;
+const pubPem = (kp: ReturnType<typeof deviceKey>) =>
+  kp.publicKey.export({ type: "spki", format: "pem" }) as string;
 const fingerprintOf = (kp: ReturnType<typeof deviceKey>) =>
-  `sha256:${createHash("sha256").update(kp.publicKey.export({ type: "spki", format: "der" }) as Buffer).digest("hex")}`;
+  `sha256:${createHash("sha256")
+    .update(kp.publicKey.export({ type: "spki", format: "der" }) as Buffer)
+    .digest("hex")}`;
 
 test("S-1/S-2: pairing failure window is per-IP, identity-churn resistant, valid-poll clean", async () => {
   const fx = await pairFixture();
   try {
-    const lost = () => fx.service.verify(
-      { type: "pair.response", v: 1, enrollmentId: randomUUID(), nonce: NONCE, signature: SIG }, // fresh identity every time
-      ATTACK_IP,
-    );
+    const lost = () =>
+      fx.service.verify(
+        { type: "pair.response", v: 1, enrollmentId: randomUUID(), nonce: NONCE, signature: SIG }, // fresh identity every time
+        ATTACK_IP,
+      );
     // 99 failures (each with a DIFFERENT enrollmentId → identity churn does not reset the quota)
     for (let i = 0; i < PAIR_RATE_LIMITS.verifyFails.perWindow - 1; i++) {
       const r = await lost();
@@ -83,19 +100,37 @@ test("S-1/S-2: pairing failure window is per-IP, identity-churn resistant, valid
     const created = fx.service.createCode("admin-ip");
     assert.ok(created.ok);
     const started = fx.service.start(
-      { type: "pair.request", v: 1, requestId: randomUUID(), code: created.value.code, deviceUid: theUid,
-        deviceName: "d", publicKey: pubPem(kp), keyFingerprint: fingerprintOf(kp), clientTime: 0 },
+      {
+        type: "pair.request",
+        v: 1,
+        requestId: randomUUID(),
+        code: created.value.code,
+        deviceUid: theUid,
+        deviceName: "d",
+        publicKey: pubPem(kp),
+        keyFingerprint: fingerprintOf(kp),
+        clientTime: 0,
+      },
       ATTACK_IP,
     );
     assert.ok(started.ok, "start must not be blocked below the failure limit");
     const payload = pairingSigningPayload({
-      hubOrigin: HUB_ORIGIN, hubId: HUB_ID, enrollmentId: started.value.enrollmentId,
-      nonce: started.value.nonce, issuedAt: started.value.issuedAt,
-      deviceUid: theUid, keyFingerprint: fingerprintOf(kp),
+      hubOrigin: HUB_ORIGIN,
+      hubId: HUB_ID,
+      enrollmentId: started.value.enrollmentId,
+      nonce: started.value.nonce,
+      issuedAt: started.value.issuedAt,
+      deviceUid: theUid,
+      keyFingerprint: fingerprintOf(kp),
     });
     const valid = await fx.service.verify(
-      { type: "pair.response", v: 1, enrollmentId: started.value.enrollmentId, nonce: started.value.nonce,
-        signature: edSign(null, Buffer.from(payload), kp.privateKey).toString("base64url") },
+      {
+        type: "pair.response",
+        v: 1,
+        enrollmentId: started.value.enrollmentId,
+        nonce: started.value.nonce,
+        signature: edSign(null, Buffer.from(payload), kp.privateKey).toString("base64url"),
+      },
       ATTACK_IP,
     );
     if (!(valid.ok && valid.status === 202)) console.error("VALID RESULT:", JSON.stringify(valid));
@@ -104,22 +139,44 @@ test("S-1/S-2: pairing failure window is per-IP, identity-churn resistant, valid
     const nth = await lost();
     assert.ok(!nth.ok && nth.error.code === "enrollment_lost");
     const blockedVerify = await fx.service.verify(
-      { type: "pair.response", v: 1, enrollmentId: randomUUID(), nonce: NONCE, signature: SIG }, ATTACK_IP,
-    );
-    assert.ok(!blockedVerify.ok && blockedVerify.error.code === "rate_limited", "verify fail-closed at limit");
-    const blockedStart = fx.service.start(
-      { type: "pair.request", v: 1, requestId: randomUUID(), code: "000000", deviceUid: randomUUID(),
-        deviceName: "d", publicKey: pubPem(deviceKey()), keyFingerprint: `sha256:${"b".repeat(64)}`, clientTime: 0 },
+      { type: "pair.response", v: 1, enrollmentId: randomUUID(), nonce: NONCE, signature: SIG },
       ATTACK_IP,
     );
-    assert.ok(!blockedStart.ok && blockedStart.error.code === "rate_limited", "start fail-closed for the same IP");
+    assert.ok(
+      !blockedVerify.ok && blockedVerify.error.code === "rate_limited",
+      "verify fail-closed at limit",
+    );
+    const blockedStart = fx.service.start(
+      {
+        type: "pair.request",
+        v: 1,
+        requestId: randomUUID(),
+        code: "000000",
+        deviceUid: randomUUID(),
+        deviceName: "d",
+        publicKey: pubPem(deviceKey()),
+        keyFingerprint: `sha256:${"b".repeat(64)}`,
+        clientTime: 0,
+      },
+      ATTACK_IP,
+    );
+    assert.ok(
+      !blockedStart.ok && blockedStart.error.code === "rate_limited",
+      "start fail-closed for the same IP",
+    );
     // Window expiry (15 min) restores access.
     fx.clock.now += PAIR_RATE_LIMITS.verifyFails.windowMinutes * 60_000 + 1;
     const afterWindow = await fx.service.verify(
-      { type: "pair.response", v: 1, enrollmentId: randomUUID(), nonce: NONCE, signature: SIG }, ATTACK_IP,
+      { type: "pair.response", v: 1, enrollmentId: randomUUID(), nonce: NONCE, signature: SIG },
+      ATTACK_IP,
     );
-    assert.ok(!afterWindow.ok && afterWindow.error.code === "enrollment_lost", "window expired → counting restarts");
-  } finally { await fx.cleanup(); }
+    assert.ok(
+      !afterWindow.ok && afterWindow.error.code === "enrollment_lost",
+      "window expired → counting restarts",
+    );
+  } finally {
+    await fx.cleanup();
+  }
 });
 
 // -- hub REST token bucket ----------------------------------------------------
@@ -139,8 +196,14 @@ test("API bucket: 121st burst → 429; healthz exempt; stable forged XFF does no
     assert.equal(await hit("/healthz"), 200, "healthz exempt from the API bucket");
     // A loopback peer IS the TLS proxy, and the proxy's XFF names the client: a different client has
     // its own bucket (Caddy overwrites XFF from the real connection in deployment).
-    assert.equal(await hit("/api/network", { "x-forwarded-for": "9.9.9.10" }), 200, "another client address is another identity");
-  } finally { await hub.cleanup(); }
+    assert.equal(
+      await hit("/api/network", { "x-forwarded-for": "9.9.9.10" }),
+      200,
+      "another client address is another identity",
+    );
+  } finally {
+    await hub.cleanup();
+  }
 });
 
 test("API bucket: every address of one IPv6 /64 draws on the same bucket; the next /64 and the IPv4 form are not penalised", async () => {
@@ -152,14 +215,26 @@ test("API bucket: every address of one IPv6 /64 draws on the same bucket; the ne
       return r.status;
     };
     // 120 requests, each from a different address of 2001:db8:5:5::/64.
-    for (let i = 1; i <= 120; i++) assert.equal(await hit(`2001:db8:5:5::${i.toString(16)}`), 200, `request ${i}`);
-    assert.equal(await hit("2001:db8:5:5:abcd::1"), 429, "the 121st address of the block shares the spent bucket");
+    for (let i = 1; i <= 120; i++)
+      assert.equal(await hit(`2001:db8:5:5::${i.toString(16)}`), 200, `request ${i}`);
+    assert.equal(
+      await hit("2001:db8:5:5:abcd::1"),
+      429,
+      "the 121st address of the block shares the spent bucket",
+    );
     assert.equal(await hit("2001:db8:5:6::1"), 200, "the next /64 is another source");
 
     // The IPv4 client of a dual-stack listener is the same source in either spelling.
-    for (let i = 0; i < 120; i++) assert.equal(await hit(i % 2 ? "::ffff:198.51.100.7" : "198.51.100.7"), 200, `mapped ${i}`);
-    assert.equal(await hit("::ffff:c633:6407"), 429, "198.51.100.7 in hex form is the same spent bucket");
-  } finally { await hub.cleanup(); }
+    for (let i = 0; i < 120; i++)
+      assert.equal(await hit(i % 2 ? "::ffff:198.51.100.7" : "198.51.100.7"), 200, `mapped ${i}`);
+    assert.equal(
+      await hit("::ffff:c633:6407"),
+      429,
+      "198.51.100.7 in hex form is the same spent bucket",
+    );
+  } finally {
+    await hub.cleanup();
+  }
 });
 
 // -- tunnel WS counters release ----------------------------------------------
@@ -179,13 +254,21 @@ async function tunnFixture(): Promise<TunnFx> {
   const registry = new NetworkRegistry(join(dir, "net.sqlite"));
   registry.clearTunnelState();
   const audit = new Audit(registry);
-  const tunnel = new TunnelServer(registry, audit, HUB_ID, {}, { ipPerMinute: 1_000, ipCapacity: 1_000, globalPerMinute: 1_000 });
+  const tunnel = new TunnelServer(
+    registry,
+    audit,
+    HUB_ID,
+    {},
+    { ipPerMinute: 1_000, ipCapacity: 1_000, globalPerMinute: 1_000 },
+  );
   const server = createServer((_req, res) => res.writeHead(404).end());
   server.on("upgrade", (req, socket, head) => tunnel.handleUpgrade(req, socket, head));
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   const port = (server.address() as { port: number }).port;
   return {
-    registry, tunnel, port,
+    registry,
+    tunnel,
+    port,
     cleanup: async () => {
       tunnel.close();
       server.close();
@@ -199,7 +282,11 @@ async function tunnFixture(): Promise<TunnFx> {
 function seed(fx: TunnFx, deviceId: string, uid: string) {
   const epoch = randomUUID();
   const credentialId = randomUUID();
-  const token = "dpt_" + Buffer.from(randomUUID() + randomUUID(), "utf8").toString("base64url").slice(0, 43);
+  const token =
+    "dpt_" +
+    Buffer.from(randomUUID() + randomUUID(), "utf8")
+      .toString("base64url")
+      .slice(0, 43);
   const t = Date.now();
   fx.registry.db
     .prepare(`INSERT INTO devices(id,name,kind,url,token,source,position,device_uid,last_status,created_at,updated_at,transport)
@@ -234,7 +321,9 @@ test("WS counters release: bad-token flood never allocates; close and handshake-
     // 40 bad-token upgrades: all denied pre-101, nothing allocated.
     for (let i = 0; i < 40; i++) {
       const status = await new Promise<number>((done) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${fx.port}/api/tunnel`, { headers: { authorization: "Bearer dpt_zzz" } });
+        const ws = new WebSocket(`ws://127.0.0.1:${fx.port}/api/tunnel`, {
+          headers: { authorization: "Bearer dpt_zzz" },
+        });
         ws.once("unexpected-response", (_q, res) => done(res.statusCode));
         ws.once("open", () => done(101));
         ws.once("error", () => done(-1));
@@ -244,18 +333,31 @@ test("WS counters release: bad-token flood never allocates; close and handshake-
     assert.equal(fx.tunnel.activeCount(), 0, "flood allocated nothing");
     assert.equal(fx.tunnel.pendingHandshakeCount(), 0);
     // Good connection → active 1 → close → baseline.
-    const ws = new WebSocket(`ws://127.0.0.1:${fx.port}/api/tunnel`, { headers: { authorization: `Bearer ${cred.token}` } });
+    const ws = new WebSocket(`ws://127.0.0.1:${fx.port}/api/tunnel`, {
+      headers: { authorization: `Bearer ${cred.token}` },
+    });
     await new Promise<void>((done, rej) => {
       ws.once("open", () => done());
       ws.once("unexpected-response", (_q, r) => rej(Error(`upgrade ${r.statusCode}`)));
       ws.once("error", rej);
     });
-    const hello = new Promise<any>((done) => ws.once("message", (d) => done(JSON.parse(d.toString()))));
-    ws.send(JSON.stringify({
-      type: "pair-handshake", v: 1, deviceUid: uid, deviceId: "dev-g",
-      pairingEpoch: cred.epoch, credentialId: cred.credentialId, generation: 1, apiVersion: 1, tunnelProto: 1,
-      keyFingerprint: FINGERPRINT,
-    }));
+    const hello = new Promise<any>((done) =>
+      ws.once("message", (d) => done(JSON.parse(d.toString()))),
+    );
+    ws.send(
+      JSON.stringify({
+        type: "pair-handshake",
+        v: 1,
+        deviceUid: uid,
+        deviceId: "dev-g",
+        pairingEpoch: cred.epoch,
+        credentialId: cred.credentialId,
+        generation: 1,
+        apiVersion: 1,
+        tunnelProto: 1,
+        keyFingerprint: FINGERPRINT,
+      }),
+    );
     const h = await hello;
     if (h.type !== "hello") console.error("HANDSHAKE FAULT:", JSON.stringify(h));
     assert.equal(h.type, "hello");
@@ -263,18 +365,30 @@ test("WS counters release: bad-token flood never allocates; close and handshake-
     ws.close();
     await until(() => fx.tunnel.activeCount() === 0, 3_000, "close releases");
     // Abandoned pre-handshake socket is reaped by the 5s handshake deadline.
-    const ws2 = new WebSocket(`ws://127.0.0.1:${fx.port}/api/tunnel`, { headers: { authorization: `Bearer ${cred.token}` } });
+    const ws2 = new WebSocket(`ws://127.0.0.1:${fx.port}/api/tunnel`, {
+      headers: { authorization: `Bearer ${cred.token}` },
+    });
     await new Promise<void>((done, rej) => {
       ws2.once("open", () => done());
       ws2.once("unexpected-response", (_q, r) => rej(Error(`upgrade ${r.statusCode}`)));
       ws2.once("error", rej);
     });
     // never handshake…
-    await until(() => fx.tunnel.activeCount() === 0, 8_000, "handshake deadline reaps abandoned socket");
+    await until(
+      () => fx.tunnel.activeCount() === 0,
+      8_000,
+      "handshake deadline reaps abandoned socket",
+    );
     ws2.terminate();
     // F13: the reservation frees when the dead socket is torn down — wait for
     // the close event to land before reading the counter.
-    await until(() => fx.tunnel.pendingHandshakeCount() === 0, 3_000, "pending reservation released on socket death");
+    await until(
+      () => fx.tunnel.pendingHandshakeCount() === 0,
+      3_000,
+      "pending reservation released on socket death",
+    );
     assert.equal(fx.tunnel.pendingHandshakeCount(), 0);
-  } finally { await fx.cleanup(); }
+  } finally {
+    await fx.cleanup();
+  }
 });

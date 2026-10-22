@@ -9,7 +9,10 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { ByteBudget, sendChunked } from "../../dpi-sdk/src/node/chunk.js";
-import { CONNECTION_BUFFER_BUDGET_BYTES, HUB_BUFFER_BUDGET_BYTES } from "../../dpi-sdk/src/protocol/limits.js";
+import {
+  CONNECTION_BUFFER_BUDGET_BYTES,
+  HUB_BUFFER_BUDGET_BYTES,
+} from "../../dpi-sdk/src/protocol/limits.js";
 import { TunnelTransport } from "../apps/dpi-playground-hub/src/tunnel-transport.js";
 import { DEFAULT_TUNNEL_POLICY } from "../apps/dpi-playground-hub/src/tunnel.js";
 import { mintToken, tunnelFixture } from "./harness/tunnel-fixture.js";
@@ -33,7 +36,10 @@ test("GA-02: a flood of rejected upgrades is audited as O(1) rows, not one synch
   try {
     const statuses = new Set<number>();
     for (let i = 0; i < 150; i++) statuses.add(f.attempt("203.0.113.50").status);
-    assert.ok(statuses.has(401) && statuses.has(429), `both denial paths were exercised (${[...statuses]})`);
+    assert.ok(
+      statuses.has(401) && statuses.has(429),
+      `both denial paths were exercised (${[...statuses]})`,
+    );
     const rows = f.eventCount("auth.denied", "rate_limited");
     // One row per (action, ip, 1-minute window); allow one window rollover mid-test.
     assert.ok(rows <= 4, `150 refused upgrades wrote ${rows} audit rows`);
@@ -48,10 +54,16 @@ test("GA-02: revoked-credential replays and unknown tokens from one IP stay dist
   const f = await tunnelFixture();
   try {
     const dev = f.addDevice("ga02-revoked");
-    f.registry.db.prepare("UPDATE tunnel_credentials SET status='revoked', revoked_at=? WHERE device_id=?").run(Date.now(), dev.id);
+    f.registry.db
+      .prepare("UPDATE tunnel_credentials SET status='revoked', revoked_at=? WHERE device_id=?")
+      .run(Date.now(), dev.id);
     for (let i = 0; i < 5; i++) f.attempt("203.0.113.51");
     for (let i = 0; i < 5; i++) f.attempt("203.0.113.51", dev.token);
-    const detail = (f.registry.db.prepare("SELECT detail_json FROM events WHERE action='auth.denied'").all() as { detail_json: string }[])
+    const detail = (
+      f.registry.db.prepare("SELECT detail_json FROM events WHERE action='auth.denied'").all() as {
+        detail_json: string;
+      }[]
+    )
       .map((r) => r.detail_json)
       .join("\n");
     assert.match(detail, /token_unknown/);
@@ -63,14 +75,21 @@ test("GA-02: revoked-credential replays and unknown tokens from one IP stay dist
 
 test("GA-02: an audit write failure on a refusal never escapes handleUpgrade; the client still gets the refusal", async () => {
   const hooks = { failAppend: true };
-  const f = await tunnelFixture({ audit: hooks, policy: { ipPerMinute: 2, globalPerMinute: 1_000 } });
+  const f = await tunnelFixture({
+    audit: hooks,
+    policy: { ipPerMinute: 2, globalPerMinute: 1_000 },
+  });
   try {
     const results: number[] = [];
     for (let i = 0; i < 4; i++) {
       assert.doesNotThrow(() => results.push(f.attempt("203.0.113.52").status));
     }
     assert.deepEqual(results, [401, 401, 429, 429]);
-    assert.equal(f.eventCount("auth.denied", "rate_limited"), 0, "nothing was persisted while the audit was failing");
+    assert.equal(
+      f.eventCount("auth.denied", "rate_limited"),
+      0,
+      "nothing was persisted while the audit was failing",
+    );
   } finally {
     await f.cleanup();
   }
@@ -106,7 +125,11 @@ test("GA-02: an audit fault while a device disconnects does not crash the hub an
     assert.ok(f.tunnel.hasConnection(dev.id));
     hooks.failAppend = true;
     ws.terminate();
-    await until(() => !f.tunnel.hasConnection(dev.id) && f.tunnel.activeCount() === 0, 2_000, "deregistration after the disconnect");
+    await until(
+      () => !f.tunnel.hasConnection(dev.id) && f.tunnel.activeCount() === 0,
+      2_000,
+      "deregistration after the disconnect",
+    );
     assert.equal(f.tunnel.hasConnection(dev.id), false, "the connection was deregistered");
     assert.equal(f.tunnel.activeCount(), 0);
     hooks.failAppend = false;
@@ -125,16 +148,29 @@ test("GA-02: if the connect cannot be audited the connection is refused (fail cl
     const dev = f.addDevice("ga02-connect");
     const ws = await f.open(dev);
     const closed = once(ws, "close");
-    ws.send(JSON.stringify({
-      type: "pair-handshake", v: 1, deviceUid: dev.uid, deviceId: dev.id, pairingEpoch: dev.epoch,
-      credentialId: dev.credentialId, generation: 1, apiVersion: 1, tunnelProto: 1,
-      keyFingerprint: `sha256:${"9".repeat(64)}`,
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "pair-handshake",
+        v: 1,
+        deviceUid: dev.uid,
+        deviceId: dev.id,
+        pairingEpoch: dev.epoch,
+        credentialId: dev.credentialId,
+        generation: 1,
+        apiVersion: 1,
+        tunnelProto: 1,
+        keyFingerprint: `sha256:${"9".repeat(64)}`,
+      }),
+    );
     const [code] = await closed;
     assert.equal(code, 1011);
     assert.equal(f.tunnel.hasConnection(dev.id), false);
     assert.equal(f.tunnel.activeCount(), 0);
-    assert.equal(f.registry.db.prepare("SELECT COUNT(*) c FROM tunnel_state").get().c, 0, "no tunnel_state row is left behind");
+    assert.equal(
+      f.registry.db.prepare("SELECT COUNT(*) c FROM tunnel_state").get().c,
+      0,
+      "no tunnel_state row is left behind",
+    );
     hooks.failAppend = false;
     const ok = await f.connect(dev);
     assert.ok(f.tunnel.hasConnection(dev.id));
@@ -188,13 +224,23 @@ test("RR: refused credentials from any number of addresses never spend the hub-w
     const dev = f.addDevice("rr-global-victim");
     for (let host = 1; host <= 40; host++)
       for (let attempt = 0; attempt < 3; attempt++)
-        assert.equal(f.attempt(`198.51.100.${host}`).status, 401, `host ${host} attempt ${attempt}`);
+        assert.equal(
+          f.attempt(`198.51.100.${host}`).status,
+          401,
+          `host ${host} attempt ${attempt}`,
+        );
     const revoked = f.addDevice("rr-global-revoked");
-    f.registry.db.prepare("UPDATE tunnel_credentials SET status='revoked', revoked_at=? WHERE device_id=?").run(Date.now(), revoked.id);
-    for (let host = 41; host <= 80; host++) assert.equal(f.attempt(`198.51.100.${host}`, revoked.token).status, 401, `revoked ${host}`);
+    f.registry.db
+      .prepare("UPDATE tunnel_credentials SET status='revoked', revoked_at=? WHERE device_id=?")
+      .run(Date.now(), revoked.id);
+    for (let host = 41; host <= 80; host++)
+      assert.equal(f.attempt(`198.51.100.${host}`, revoked.token).status, 401, `revoked ${host}`);
 
     const ws = await f.connect(dev, "203.0.113.200");
-    assert.ok(f.tunnel.hasConnection(dev.id), "120 refused attempts did not consume the hub-wide budget");
+    assert.ok(
+      f.tunnel.hasConnection(dev.id),
+      "120 refused attempts did not consume the hub-wide budget",
+    );
     ws.terminate();
   } finally {
     await f.cleanup();
@@ -202,12 +248,18 @@ test("RR: refused credentials from any number of addresses never spend the hub-w
 });
 
 test("RR: the hub-at-capacity refusal is not sent to a caller that has not shown a valid credential", async () => {
-  const f = await tunnelFixture({ policy: { maxPendingHandshakes: 1, ipPerMinute: 30, globalPerMinute: 1_000 } });
+  const f = await tunnelFixture({
+    policy: { maxPendingHandshakes: 1, ipPerMinute: 30, globalPerMinute: 1_000 },
+  });
   try {
     const holder = f.addDevice("rr-capacity-holder");
     const held = await f.open(holder, "203.0.113.201"); // takes the only pending slot
     const stranger = f.attempt("203.0.113.202");
-    assert.equal(stranger.status, 401, "a stranger is told its credential is unknown, not that the hub is full");
+    assert.equal(
+      stranger.status,
+      401,
+      "a stranger is told its credential is unknown, not that the hub is full",
+    );
     assert.equal(stranger.body.code, "token_unknown");
     const other = f.addDevice("rr-capacity-other");
     const refused = await f.rejected(other.token, "203.0.113.203");
@@ -225,9 +277,15 @@ test("RR: the hub-at-capacity refusal is not sent to a caller that has not shown
 test("RR: addresses inside one IPv6 /64 share one upgrade bucket; the next /64 has its own", async () => {
   const f = await tunnelFixture({ policy: { ipPerMinute: 3, globalPerMinute: 1_000 } });
   try {
-    const sameBlock = [1, 2, 3, 4, 5].map((n) => f.attempt(`2001:db8:1:2::${n.toString(16)}`).status);
+    const sameBlock = [1, 2, 3, 4, 5].map(
+      (n) => f.attempt(`2001:db8:1:2::${n.toString(16)}`).status,
+    );
     assert.deepEqual(sameBlock, [401, 401, 401, 429, 429]);
-    assert.equal(f.attempt("2001:db8:1:2:ffff:ffff:ffff:ffff").status, 429, "any other address of the block is limited too");
+    assert.equal(
+      f.attempt("2001:db8:1:2:ffff:ffff:ffff:ffff").status,
+      429,
+      "any other address of the block is limited too",
+    );
     assert.equal(f.attempt("2001:db8:1:3::1").status, 401, "a different /64 is a different source");
   } finally {
     await f.cleanup();
@@ -237,15 +295,26 @@ test("RR: addresses inside one IPv6 /64 share one upgrade bucket; the next /64 h
 test("RR: an IPv4 client of a dual-stack listener is one source whichever way its address is written", async () => {
   const f = await tunnelFixture({ policy: { ipPerMinute: 3, globalPerMinute: 1_000 } });
   try {
-    const spellings = ["203.0.113.150", "::ffff:203.0.113.150", "::ffff:cb00:7196", "203.0.113.150", "::FFFF:203.0.113.150"];
-    assert.deepEqual(spellings.map((ip) => f.attempt(ip).status), [401, 401, 401, 429, 429]);
+    const spellings = [
+      "203.0.113.150",
+      "::ffff:203.0.113.150",
+      "::ffff:cb00:7196",
+      "203.0.113.150",
+      "::FFFF:203.0.113.150",
+    ];
+    assert.deepEqual(
+      spellings.map((ip) => f.attempt(ip).status),
+      [401, 401, 401, 429, 429],
+    );
   } finally {
     await f.cleanup();
   }
 });
 
 test("RR: the per-address connection cap counts a whole IPv6 /64, not each address in it", async () => {
-  const f = await tunnelFixture({ policy: { maxConnectionsPerIp: 2, ipPerMinute: 100, globalPerMinute: 1_000 } });
+  const f = await tunnelFixture({
+    policy: { maxConnectionsPerIp: 2, ipPerMinute: 100, globalPerMinute: 1_000 },
+  });
   try {
     const [a, b, c, d] = ["a", "b", "c", "d"].map((n) => f.addDevice(`rr-v6-${n}`));
     const sockets = [await f.open(a, "2001:db8:5:5::1"), await f.open(b, "2001:db8:5:5::2")];
@@ -269,7 +338,10 @@ test("RR: rotating addresses inside a /64 cannot buy a fresh audit row, or a fre
     }
     assert.equal(statuses.get(401), 5, "the whole block got exactly one bucket");
     assert.equal(statuses.get(429), 195);
-    assert.ok(f.eventCount("auth.denied", "rate_limited") <= 4, `200 refused upgrades wrote ${f.eventCount("auth.denied", "rate_limited")} audit rows`);
+    assert.ok(
+      f.eventCount("auth.denied", "rate_limited") <= 4,
+      `200 refused upgrades wrote ${f.eventCount("auth.denied", "rate_limited")} audit rows`,
+    );
   } finally {
     await f.cleanup();
   }
@@ -279,8 +351,14 @@ test("RR: rotating addresses inside a /64 cannot buy a fresh audit row, or a fre
 
 const FIRST_CHUNK_TOTAL = 255 * 65_536 + 1; // 256 chunks → ≈16 MiB advertised by a 64 KiB first chunk
 const firstChunk = (reqId: string) => ({
-  type: "tunnel-chunk", v: 1, kind: "rest-response", reqId,
-  messageId: randomUUID(), index: 0, count: 256, totalBytes: FIRST_CHUNK_TOTAL,
+  type: "tunnel-chunk",
+  v: 1,
+  kind: "rest-response",
+  reqId,
+  messageId: randomUUID(),
+  index: 0,
+  count: 256,
+  totalBytes: FIRST_CHUNK_TOTAL,
   data: Buffer.alloc(65_536, 0x61).toString("base64"),
 });
 
@@ -302,12 +380,26 @@ test("GA-04: one connection can hold at most 32 MiB of reassembly; the hub budge
         pathOf.set(m.reqId, m.path);
       }
     });
-    const attackerTransport = new TunnelTransport({ id: attacker.id, transport: "tunnel" }, f.dispatcher);
-    interface Outcome { i: number; status: number; body: { error?: { code?: string } } }
+    const attackerTransport = new TunnelTransport(
+      { id: attacker.id, transport: "tunnel" },
+      f.dispatcher,
+    );
+    interface Outcome {
+      i: number;
+      status: number;
+      body: { error?: { code?: string } };
+    }
     const settled = [0, 1, 2, 3].map((i) =>
       attackerTransport
         .request({ method: "GET", path: `/v1/tree?n=${i}` }, AbortSignal.timeout(15_000))
-        .then((r) => ({ i, status: r.status, body: r.body as { error?: { code?: string } } }), (e: { status?: number }) => ({ i, status: e.status ?? 0, body: {} as { error?: { code?: string } } })),
+        .then(
+          (r) => ({ i, status: r.status, body: r.body as { error?: { code?: string } } }),
+          (e: { status?: number }) => ({
+            i,
+            status: e.status ?? 0,
+            body: {} as { error?: { code?: string } },
+          }),
+        ),
     );
     const iOf = (reqId: string) => Number(pathOf.get(reqId)?.split("n=")[1]);
     for (let i = 0; i < 100 && reqIds.length < 4; i++) await sleep(20);
@@ -328,15 +420,34 @@ test("GA-04: one connection can hold at most 32 MiB of reassembly; the hub budge
     // MUST be resident. A tighter (broken) per-connection cap (0, 16 MiB) fails here
     // instead of hiding behind "the rest were refused" — if all four assemblies were
     // refused, used would sit near zero and this assertion catches it.
-    assert.ok(hub.used >= 2 * FIRST_CHUNK_TOTAL, `two admitted assemblies hold ${hub.used} B of the hub budget; expected at least ${2 * FIRST_CHUNK_TOTAL} B (2 × first-chunk total)`);
-    assert.ok(hub.used <= CONNECTION_BUFFER_BUDGET_BYTES, `one connection holds ${hub.used} B of the hub budget (cap ${CONNECTION_BUFFER_BUDGET_BYTES})`);
-    const refused = (await Promise.race([Promise.all(refusedIds.map((id) => settled[iOf(id)])), sleep(2_000).then(() => "pending" as const)]));
-    assert.notEqual(refused, "pending", "assemblies beyond the connection cap are refused immediately");
-    assert.deepEqual((refused as Outcome[]).map((r) => r.status), [502, 502]);
+    assert.ok(
+      hub.used >= 2 * FIRST_CHUNK_TOTAL,
+      `two admitted assemblies hold ${hub.used} B of the hub budget; expected at least ${2 * FIRST_CHUNK_TOTAL} B (2 × first-chunk total)`,
+    );
+    assert.ok(
+      hub.used <= CONNECTION_BUFFER_BUDGET_BYTES,
+      `one connection holds ${hub.used} B of the hub budget (cap ${CONNECTION_BUFFER_BUDGET_BYTES})`,
+    );
+    const refused = await Promise.race([
+      Promise.all(refusedIds.map((id) => settled[iOf(id)])),
+      sleep(2_000).then(() => "pending" as const),
+    ]);
+    assert.notEqual(
+      refused,
+      "pending",
+      "assemblies beyond the connection cap are refused immediately",
+    );
+    assert.deepEqual(
+      (refused as Outcome[]).map((r) => r.status),
+      [502, 502],
+    );
     assert.equal((refused as Outcome[])[0].body.error?.code, "response_too_large");
 
     // A different device can still complete a chunked response while the attacker holds its 32 MiB.
-    const victimTransport = new TunnelTransport({ id: victim.id, transport: "tunnel" }, f.dispatcher);
+    const victimTransport = new TunnelTransport(
+      { id: victim.id, transport: "tunnel" },
+      f.dispatcher,
+    );
     vws.once("message", (buf: Buffer) => {
       const req = JSON.parse(buf.toString());
       const out = sendChunked(
@@ -346,7 +457,10 @@ test("GA-04: one connection can hold at most 32 MiB of reassembly; the hub budge
       );
       assert.ok(out.ok);
     });
-    const answer = await victimTransport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(10_000));
+    const answer = await victimTransport.request(
+      { method: "GET", path: "/v1/tree" },
+      AbortSignal.timeout(10_000),
+    );
     assert.equal(answer.status, 200, "the victim's 128 KiB response is admitted");
 
     aws.terminate();
@@ -360,7 +474,11 @@ test("GA-04: one connection can hold at most 32 MiB of reassembly; the hub budge
     const finalOutcomes = (await Promise.all(settled)) as Outcome[];
     for (const id of admittedIds) {
       const r = finalOutcomes[iOf(id)];
-      assert.notEqual(r.status, 502, `the assembly for ${pathOf.get(id)} was admitted under the cap and must not be refused as response_too_large (got ${r.status})`);
+      assert.notEqual(
+        r.status,
+        502,
+        `the assembly for ${pathOf.get(id)} was admitted under the cap and must not be refused as response_too_large (got ${r.status})`,
+      );
     }
   } finally {
     await f.cleanup();
@@ -379,7 +497,9 @@ test("GA-04: a partial assembly is accounted against the budget and released whe
       if (m.type === "rest-request") seen.push(m.reqId);
     });
     const transport = new TunnelTransport({ id: dev.id, transport: "tunnel" }, f.dispatcher);
-    const pending = transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(10_000)).catch((e: { status?: number }) => e.status);
+    const pending = transport
+      .request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(10_000))
+      .catch((e: { status?: number }) => e.status);
     for (let i = 0; i < 100 && seen.length < 1; i++) await sleep(20);
     ws.send(JSON.stringify(firstChunk(seen[0])));
     const pong = once(ws, "pong");
@@ -388,7 +508,11 @@ test("GA-04: a partial assembly is accounted against the budget and released whe
     assert.ok(hub.used > 16_000_000, "the partial assembly is accounted");
     ws.terminate();
     assert.equal(await pending, 503);
-    await until(() => hub.used === 0, 2_000, "the partial assembly's reservation to be released on close");
+    await until(
+      () => hub.used === 0,
+      2_000,
+      "the partial assembly's reservation to be released on close",
+    );
     assert.equal(hub.used, 0, "closing the connection releases the partial assembly");
   } finally {
     await f.cleanup();
@@ -406,18 +530,30 @@ test("GA-09: the default tunnel policy is the S-10 allocation (30/min with a bur
       maxPendingHandshakes: DEFAULT_TUNNEL_POLICY.maxPendingHandshakes,
       maxAuthenticated: DEFAULT_TUNNEL_POLICY.maxAuthenticated,
     },
-    { ipPerMinute: 30, ipCapacity: 10, maxConnectionsPerIp: 5, maxPendingHandshakes: 100, maxAuthenticated: 1_000 },
+    {
+      ipPerMinute: 30,
+      ipCapacity: 10,
+      maxConnectionsPerIp: 5,
+      maxPendingHandshakes: 100,
+      maxAuthenticated: 1_000,
+    },
   );
 });
 
 test("GA-09: one address gets a burst of 10 upgrade attempts, then 429 until tokens refill at 30/min", async () => {
   const clock = { t: 1_760_000_000_000 };
-  const f = await tunnelFixture({ policy: { globalPerMinute: 1_000_000 }, hooks: { now: () => clock.t } });
+  const f = await tunnelFixture({
+    policy: { globalPerMinute: 1_000_000 },
+    hooks: { now: () => clock.t },
+  });
   try {
     const statuses = Array.from({ length: 12 }, () => f.attempt("203.0.113.90").status);
     assert.deepEqual(statuses, [...Array(10).fill(401), 429, 429]);
     const limited = f.attempt("203.0.113.90");
-    assert.ok(limited.body.retryAfterMs > 0 && limited.body.retryAfterMs <= 2_000, `retry hint ${limited.body.retryAfterMs} ms (one token per 2 s)`);
+    assert.ok(
+      limited.body.retryAfterMs > 0 && limited.body.retryAfterMs <= 2_000,
+      `retry hint ${limited.body.retryAfterMs} ms (one token per 2 s)`,
+    );
     clock.t += 2_000;
     assert.equal(f.attempt("203.0.113.90").status, 401, "one token refilled after 2 s");
     assert.equal(f.attempt("203.0.113.90").status, 429);
@@ -453,7 +589,11 @@ test("GA-09: at most 5 pending or live connections per address are admitted, ref
     // teardown() releases the per-address slot and deregisters the device in the
     // same synchronous block, so "no connection for devices[4]" IS the
     // slot-released signal — poll it instead of guessing a fixed delay.
-    await until(() => !f.tunnel.hasConnection(devices[4].id), 2_000, "the per-address slot of the closed connection to be released");
+    await until(
+      () => !f.tunnel.hasConnection(devices[4].id),
+      2_000,
+      "the per-address slot of the closed connection to be released",
+    );
     const again = await f.connect(devices[6], ip);
     assert.ok(f.tunnel.hasConnection(devices[6].id), "a released slot is reusable");
     for (const s of [...sockets, elsewhere, again]) s.terminate();
@@ -474,11 +614,23 @@ test("GA-09: a request carrying any Origin is refused with 403 before auth and w
       assert.equal(r.status, 403, origin);
       assert.equal(r.body.error.code, "origin_forbidden");
     }
-    for (let i = 0; i < 40; i++) assert.equal(f.attempt("203.0.113.94", dev.token, { origin: "https://evil.example" }).status, 403);
-    assert.equal(f.attempt("203.0.113.94", mintToken()).status, 401, "origin refusals did not drain the address's burst");
+    for (let i = 0; i < 40; i++)
+      assert.equal(
+        f.attempt("203.0.113.94", dev.token, { origin: "https://evil.example" }).status,
+        403,
+      );
+    assert.equal(
+      f.attempt("203.0.113.94", mintToken()).status,
+      401,
+      "origin refusals did not drain the address's burst",
+    );
     // Deterministic under the frozen clock: one coalesced row for the 43 origin_forbidden
     // denials + one for the final token_unknown denial (its own kind) — no window luck.
-    assert.equal(f.eventCount("auth.denied"), 2, "43 Origin refusals coalesce to one audit row plus one token_unknown row");
+    assert.equal(
+      f.eventCount("auth.denied"),
+      2,
+      "43 Origin refusals coalesce to one audit row plus one token_unknown row",
+    );
 
     const ok = await f.connect(dev, "203.0.113.94");
     assert.ok(f.tunnel.hasConnection(dev.id), "a connector (no Origin header) still connects");
@@ -490,7 +642,10 @@ test("GA-09: a request carrying any Origin is refused with 403 before auth and w
 
 test("GA-09: the per-address table holds 10.000 addresses; when full it refuses NEW addresses and keeps limiting the old ones", async () => {
   const clock = { t: 1_760_000_000_000 };
-  const f = await tunnelFixture({ policy: { globalPerMinute: 10_000_000 }, hooks: { now: () => clock.t } });
+  const f = await tunnelFixture({
+    policy: { globalPerMinute: 10_000_000 },
+    hooks: { now: () => clock.t },
+  });
   try {
     const ipOf = (i: number) => `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`;
     for (let i = 0; i < 10; i++) f.attempt(ipOf(0)); // address 0 drains its burst
@@ -498,10 +653,18 @@ test("GA-09: the per-address table holds 10.000 addresses; when full it refuses 
     for (let i = 1; i < 10_000; i++) assert.equal(f.attempt(ipOf(i)).status, 401, `address ${i}`);
     const overflow = f.attempt(ipOf(10_000));
     assert.equal(overflow.status, 429, "the table is full of live counters");
-    assert.equal(f.attempt(ipOf(0)).status, 429, "the drained address was not evicted to make room");
+    assert.equal(
+      f.attempt(ipOf(0)).status,
+      429,
+      "the drained address was not evicted to make room",
+    );
 
     clock.t += 15 * 60_000 + 1;
-    assert.equal(f.attempt(ipOf(10_000)).status, 401, "after the 15 minute idle TTL there is room again");
+    assert.equal(
+      f.attempt(ipOf(10_000)).status,
+      401,
+      "after the 15 minute idle TTL there is room again",
+    );
   } finally {
     await f.cleanup();
   }
@@ -509,15 +672,31 @@ test("GA-09: the per-address table holds 10.000 addresses; when full it refuses 
 
 // -- GA-11 (T-7) ---------------------------------------------------------
 
-const dataFrame = (subscriptionId: string, sub = "/v1/tree") => ({ type: "tunnel-data", frame: { type: "activity" }, subscriptionId, sub });
+const dataFrame = (subscriptionId: string, sub = "/v1/tree") => ({
+  type: "tunnel-data",
+  frame: { type: "activity" },
+  subscriptionId,
+  sub,
+});
 const dataChunk = (subscriptionId: string, sub = "/v1/tree") => ({
-  type: "tunnel-chunk", v: 1, kind: "tunnel-data", subscriptionId, sub,
-  messageId: randomUUID(), index: 0, count: 4, totalBytes: 4 * 65_536,
+  type: "tunnel-chunk",
+  v: 1,
+  kind: "tunnel-data",
+  subscriptionId,
+  sub,
+  messageId: randomUUID(),
+  index: 0,
+  count: 4,
+  totalBytes: 4 * 65_536,
   data: Buffer.alloc(65_536, 0x61).toString("base64"),
 });
 
 /** Start a hub-side watch on `dev` and resolve once the device has been told to subscribe. */
-async function watching(f: Awaited<ReturnType<typeof tunnelFixture>>, dev: { id: string }, ws: import("ws").WebSocket) {
+async function watching(
+  f: Awaited<ReturnType<typeof tunnelFixture>>,
+  dev: { id: string },
+  ws: import("ws").WebSocket,
+) {
   const seen = new Promise<string>((resolve) => {
     const on = (buf: Buffer) => {
       const m = JSON.parse(buf.toString());
@@ -533,16 +712,32 @@ async function watching(f: Awaited<ReturnType<typeof tunnelFixture>>, dev: { id:
   const transport = new TunnelTransport({ id: dev.id, transport: "tunnel" }, f.dispatcher);
   const reader = (async () => {
     try {
-      for await (const frame of transport.watch({ path: "/v1/tree", consumerId: "ga11" }, ac.signal)) frames.push(frame);
+      for await (const frame of transport.watch(
+        { path: "/v1/tree", consumerId: "ga11" },
+        ac.signal,
+      ))
+        frames.push(frame);
     } catch {
       /* the reader ends when the connection or the consumer does */
     }
   })();
-  return { subscriptionId: await seen, frames, stop: async () => { ac.abort(); await reader; } };
+  return {
+    subscriptionId: await seen,
+    frames,
+    stop: async () => {
+      ac.abort();
+      await reader;
+    },
+  };
 }
 
 const within = <T>(promise: Promise<T>, ms: number, what: string): Promise<T> =>
-  Promise.race([promise, sleep(ms).then((): never => { throw new Error(`timed out waiting for ${what}`); })]);
+  Promise.race([
+    promise,
+    sleep(ms).then((): never => {
+      throw new Error(`timed out waiting for ${what}`);
+    }),
+  ]);
 
 const barrier = async (ws: import("ws").WebSocket) => {
   const pong = once(ws, "pong");
@@ -551,7 +746,9 @@ const barrier = async (ws: import("ws").WebSocket) => {
 };
 
 const deniedRows = (f: Awaited<ReturnType<typeof tunnelFixture>>) =>
-  (f.registry.db.prepare("SELECT actor, detail_json FROM events WHERE action='auth.denied'").all() as { actor: string; detail_json: string }[]);
+  f.registry.db
+    .prepare("SELECT actor, detail_json FROM events WHERE action='auth.denied'")
+    .all() as { actor: string; detail_json: string }[];
 
 test("GA-11: tunnel-data for a subscription the hub never issued is denied, audited, and closes only that connection", async () => {
   const f = await tunnelFixture();
@@ -589,7 +786,12 @@ test("GA-11: tunnel-data aimed at ANOTHER device's live subscription is denied a
     const [code] = await within(closed, 3_000, "the hub to cut the intruder");
     assert.equal(code, 1008);
     assert.deepEqual(watch.frames, [], "the owner's reader saw nothing from the intruder");
-    assert.match(deniedRows(f).map((r) => r.detail_json).join("\n"), /foreign_subscription/);
+    assert.match(
+      deniedRows(f)
+        .map((r) => r.detail_json)
+        .join("\n"),
+      /foreign_subscription/,
+    );
 
     aws.send(JSON.stringify(dataFrame(watch.subscriptionId)));
     await barrier(aws);
@@ -617,11 +819,16 @@ test("GA-11: chunked tunnel-data for an unknown or foreign subscription is denie
     // defect would still be live and visible here.
     const usedAtDenial: number[] = [];
     const realAppend = f.audit.append.bind(f.audit);
-    (f.audit as { append: (event: { action?: string; detail?: { code?: string } }) => void }).append = (event) => {
+    (
+      f.audit as { append: (event: { action?: string; detail?: { code?: string } }) => void }
+    ).append = (event) => {
       if (event.detail?.code === "foreign_subscription") usedAtDenial.push(hub.used);
       realAppend(event as never);
     };
-    for (const [label, id] of [["unknown", randomUUID()], ["foreign", watch.subscriptionId]] as const) {
+    for (const [label, id] of [
+      ["unknown", randomUUID()],
+      ["foreign", watch.subscriptionId],
+    ] as const) {
       const intruder = f.addDevice(`ga11-chunk-${label}`);
       const ws = await f.connect(intruder, `203.0.113.${label === "unknown" ? 105 : 106}`);
       const closed = once(ws, "close");
@@ -632,7 +839,11 @@ test("GA-11: chunked tunnel-data for an unknown or foreign subscription is denie
     }
     assert.equal(deniedRows(f).filter((r) => /foreign_subscription/.test(r.detail_json)).length, 2);
     assert.equal(usedAtDenial.length, 2, "both denials were observed at the pre-close audit hook");
-    assert.deepEqual(usedAtDenial, [0, 0], "at the instant of each denial (sender socket still open) no reassembly budget had been taken");
+    assert.deepEqual(
+      usedAtDenial,
+      [0, 0],
+      "at the instant of each denial (sender socket still open) no reassembly budget had been taken",
+    );
     await watch.stop();
     aws.terminate();
   } finally {
@@ -657,7 +868,11 @@ test("GA-11: late frames for the connection's OWN just-closed subscription are d
     ws.send(JSON.stringify(dataFrame(watch.subscriptionId)));
     ws.send(JSON.stringify(dataChunk(watch.subscriptionId)));
     await barrier(ws);
-    assert.equal(f.tunnel.hasConnection(a.id), true, "a benign in-flight frame must not cut the device");
+    assert.equal(
+      f.tunnel.hasConnection(a.id),
+      true,
+      "a benign in-flight frame must not cut the device",
+    );
     assert.equal(deniedRows(f).length, 0);
     ws.terminate();
   } finally {

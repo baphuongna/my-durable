@@ -45,7 +45,12 @@ export interface HubHandle {
 }
 
 export async function bootHub(
-  opts: { port?: number; publicHost?: string; healthTimeoutMs?: number; env?: Record<string, string> } = {},
+  opts: {
+    port?: number;
+    publicHost?: string;
+    healthTimeoutMs?: number;
+    env?: Record<string, string>;
+  } = {},
 ): Promise<HubHandle> {
   const port = opts.port ?? (await freePort());
   const home = await mkdtemp(join(tmpdir(), "dpi-hub-"));
@@ -64,7 +69,8 @@ export async function bootHub(
     child.stderr?.on("data", (x) => log.push(String(x)));
     const deadline = Date.now() + (opts.healthTimeoutMs ?? 20_000);
     for (;;) {
-      if (child.exitCode !== null) throw new Error(`hub child exited early (${child.exitCode}):\n${log.tail(40)}`);
+      if (child.exitCode !== null)
+        throw new Error(`hub child exited early (${child.exitCode}):\n${log.tail(40)}`);
       if (Date.now() > deadline) {
         const gone = once(child, "exit");
         child.kill("SIGKILL");

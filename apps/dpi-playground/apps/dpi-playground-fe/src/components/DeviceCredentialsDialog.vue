@@ -11,14 +11,26 @@ const device = computed(() => network.devices.value.find((d) => d.id === props.d
 
 <template>
   <div class="modal-backdrop" @click.self="emit('close')">
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="device-credentials-title">
+    <section
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="device-credentials-title"
+    >
       <header>
         <h2 id="device-credentials-title">Device credentials</h2>
-        <button class="icon-button" aria-label="Close device credentials" @click="emit('close')"><X :size="18" /></button>
+        <button class="icon-button" aria-label="Close device credentials" @click="emit('close')">
+          <X :size="18" />
+        </button>
       </header>
       <template v-if="device">
-        <p>{{ device.name }} <code>{{ device.id }}</code></p>
-        <p class="hint">{{ device.status }} · tunnel {{ device.tunnel?.state ?? "disconnected" }} · {{ device.tunnel?.readerCount ?? 0 }} readers</p>
+        <p>
+          {{ device.name }} <code>{{ device.id }}</code>
+        </p>
+        <p class="hint">
+          {{ device.status }} · tunnel {{ device.tunnel?.state ?? "disconnected" }} ·
+          {{ device.tunnel?.readerCount ?? 0 }} readers
+        </p>
         <TokenManager :device="device" />
       </template>
       <p v-else class="hint">This device is no longer in the registry.</p>

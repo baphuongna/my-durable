@@ -78,10 +78,17 @@ export class LanTransport implements DeviceTransport {
       throw new DpiError("offline", `Cannot reach ${this.client.baseUrl}`, 0, { cause });
     }
     const text = await response.text();
-    return { status: response.status, contentType: response.headers.get("content-type") ?? undefined, body: text };
+    return {
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? undefined,
+      body: text,
+    };
   }
 
-  async *watch(input: { path: string; consumerId: string }, signal: AbortSignal): AsyncIterable<Frame> {
+  async *watch(
+    input: { path: string; consumerId: string },
+    signal: AbortSignal,
+  ): AsyncIterable<Frame> {
     if (!this.available) throw new DpiError("unauthorized", "LAN device has no URL/token", 0);
     yield* this.client.stream(input.path, signal);
   }
@@ -92,7 +99,10 @@ export class LanTransport implements DeviceTransport {
  * hub's live-connection dispatcher (P2-15); without one callers report "no
  * tunnel connection" — they NEVER fall back to the LAN URL.
  */
-export function transportFor(row: DeviceRow, tunnel?: { dispatcherFor(row: DeviceRow): DeviceTransport }): DeviceTransport | undefined {
+export function transportFor(
+  row: DeviceRow,
+  tunnel?: { dispatcherFor(row: DeviceRow): DeviceTransport },
+): DeviceTransport | undefined {
   if (row.transport === "tunnel") return tunnel ? tunnel.dispatcherFor(row) : undefined;
   return new LanTransport(row);
 }

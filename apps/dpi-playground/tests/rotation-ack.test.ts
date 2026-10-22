@@ -29,7 +29,10 @@ const until = async (fn: () => boolean, timeout = 2000, what = "cond") => {
   throw Error(`timeout: ${what}`);
 };
 
-interface Sent { connectionId: string; frame: Record<string, unknown> }
+interface Sent {
+  connectionId: string;
+  frame: Record<string, unknown>;
+}
 
 /** Just the part of TunnelServer a RotationService talks to. */
 class FakeTunnel {
@@ -37,10 +40,18 @@ class FakeTunnel {
   readonly sent: Sent[] = [];
   private readonly openers: Array<(c: unknown) => void> = [];
   private readonly framers: Array<(c: unknown, f: unknown) => void> = [];
-  addOpenListener(fn: (c: unknown) => void) { this.openers.push(fn); }
-  addDeviceFrameListener(fn: (c: unknown, f: unknown) => void) { this.framers.push(fn); }
-  hasConnection() { return this.connectionId !== undefined; }
-  connectionIdOf() { return this.connectionId; }
+  addOpenListener(fn: (c: unknown) => void) {
+    this.openers.push(fn);
+  }
+  addDeviceFrameListener(fn: (c: unknown, f: unknown) => void) {
+    this.framers.push(fn);
+  }
+  hasConnection() {
+    return this.connectionId !== undefined;
+  }
+  connectionIdOf() {
+    return this.connectionId;
+  }
   send(_deviceId: string, frame: Record<string, unknown>) {
     if (!this.connectionId) return false;
     this.sent.push({ connectionId: this.connectionId, frame });
@@ -49,12 +60,17 @@ class FakeTunnel {
   /** The device (re)connects on `connectionId`, presenting the credential it holds. */
   connect(connectionId: string, credentialId: string, generation: number) {
     this.connectionId = connectionId;
-    for (const fn of this.openers) fn({ deviceId: DEVICE_ID, connectionId, credentialId, generation });
+    for (const fn of this.openers)
+      fn({ deviceId: DEVICE_ID, connectionId, credentialId, generation });
   }
   ack(connectionId: string, token: Record<string, unknown>) {
     const frame = {
-      type: "control", action: "token-rotate-ack",
-      rotationId: token.rotationId, credentialId: token.credentialId, generation: token.generation, pairingEpoch: token.pairingEpoch,
+      type: "control",
+      action: "token-rotate-ack",
+      rotationId: token.rotationId,
+      credentialId: token.credentialId,
+      generation: token.generation,
+      pairingEpoch: token.pairingEpoch,
     };
     for (const fn of this.framers) fn({ deviceId: DEVICE_ID, connectionId }, frame);
   }
@@ -65,7 +81,9 @@ async function setup(opts: { cacheTtlMs?: number } = {}) {
   const registry = new NetworkRegistry(join(dir, "net.sqlite"));
   const audit = new Audit(registry);
   const tunnel = new FakeTunnel();
-  const rotation = new RotationService(registry, audit, tunnel as unknown as TunnelServer, { cacheTtlMs: opts.cacheTtlMs });
+  const rotation = new RotationService(registry, audit, tunnel as unknown as TunnelServer, {
+    cacheTtlMs: opts.cacheTtlMs,
+  });
   const epoch = randomUUID();
   const g1 = randomUUID();
   const t0 = Date.now();
@@ -89,15 +107,34 @@ async function setup(opts: { cacheTtlMs?: number } = {}) {
     .run(g1, DEVICE_ID, epoch, sha(newTunnelToken()), t0, t0);
 
   const state = () => ({
-    pending: (registry.db.prepare("SELECT rotation_id FROM pairings WHERE device_id=?").get(DEVICE_ID) as { rotation_id: string | null }).rotation_id,
+    pending: (
+      registry.db.prepare("SELECT rotation_id FROM pairings WHERE device_id=?").get(DEVICE_ID) as {
+        rotation_id: string | null;
+      }
+    ).rotation_id,
     statuses: Object.fromEntries(
-      (registry.db.prepare("SELECT generation, status FROM tunnel_credentials WHERE device_id=?").all(DEVICE_ID) as { generation: number; status: string }[]).map((r) => [r.generation, r.status]),
+      (
+        registry.db
+          .prepare("SELECT generation, status FROM tunnel_credentials WHERE device_id=?")
+          .all(DEVICE_ID) as { generation: number; status: string }[]
+      ).map((r) => [r.generation, r.status]),
     ),
-    completed: (registry.db.prepare("SELECT count(*) AS n FROM events WHERE action='token.rotate_completed'").get() as { n: number }).n,
+    completed: (
+      registry.db
+        .prepare("SELECT count(*) AS n FROM events WHERE action='token.rotate_completed'")
+        .get() as { n: number }
+    ).n,
   });
   return {
-    tunnel, rotation, state, g1,
-    cleanup: async () => { rotation.close(); registry.close(); await rm(dir, { recursive: true, force: true }); },
+    tunnel,
+    rotation,
+    state,
+    g1,
+    cleanup: async () => {
+      rotation.close();
+      registry.close();
+      await rm(dir, { recursive: true, force: true });
+    },
   };
 }
 
@@ -151,10 +188,18 @@ test("GA-15: the delivery connection stays authoritative after the plaintext cac
     f.tunnel.connect("conn-A", f.g1, 1);
     f.rotation.startRotation(DEVICE_ID, "admin:test");
     const token = f.tunnel.sent.at(-1)!.frame;
-    await until(() => !f.rotation.plaintextCacheHas(String(token.rotationId)), 2000, "cache forgot the token");
+    await until(
+      () => !f.rotation.plaintextCacheHas(String(token.rotationId)),
+      2000,
+      "cache forgot the token",
+    );
 
     f.tunnel.ack("conn-A", token);
-    assert.equal(f.state().pending, null, "a slow device that persisted the token is still acknowledged");
+    assert.equal(
+      f.state().pending,
+      null,
+      "a slow device that persisted the token is still acknowledged",
+    );
     assert.equal(f.state().completed, 1);
   } finally {
     await f.cleanup();

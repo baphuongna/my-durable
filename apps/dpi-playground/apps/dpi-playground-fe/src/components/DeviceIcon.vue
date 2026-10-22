@@ -12,7 +12,9 @@ const kind = computed(() => {
   return d?.kind === "local" ? "laptop" : "server";
 });
 const label = computed(() => {
-  const base = ({ exe: "exe.dev VM", apple: "macOS", laptop: "This computer", server: "Server" })[kind.value];
+  const base = { exe: "exe.dev VM", apple: "macOS", laptop: "This computer", server: "Server" }[
+    kind.value
+  ];
   return props.device?.transport === "tunnel" ? `${base} (tunnel)` : base;
 });
 </script>

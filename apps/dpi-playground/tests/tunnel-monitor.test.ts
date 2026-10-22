@@ -15,7 +15,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
 import { Audit } from "../apps/dpi-playground-hub/src/audit.js";
 import { TunnelServer } from "../apps/dpi-playground-hub/src/tunnel.js";
-import { TunnelDispatcher, TunnelTransport } from "../apps/dpi-playground-hub/src/tunnel-transport.js";
+import {
+  TunnelDispatcher,
+  TunnelTransport,
+} from "../apps/dpi-playground-hub/src/tunnel-transport.js";
 import { DeviceMonitor } from "../apps/dpi-playground-hub/src/monitor.js";
 import { bootServer, until } from "../../dpi-backend/tests/helpers.js";
 import { Store } from "../../dpi-backend/src/store.js";
@@ -50,7 +53,11 @@ test("T-11/T-3/T-12: tunnel device (null url/token, hasToken=false) probes onlin
   const deviceId = "tunnel-dev";
   const epoch = randomUUID();
   const credentialId = randomUUID();
-  const token = "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+  const token =
+    "dpt_" +
+    Buffer.from(randomUUID() + randomUUID())
+      .toString("base64url")
+      .slice(0, 43);
   const t0 = Date.now();
   registry.db
     .prepare(
@@ -123,7 +130,11 @@ test("T-11/T-3/T-12: tunnel device (null url/token, hasToken=false) probes onlin
     await until(
       () => monitor.state(deviceId)?.status === "online",
       25000,
-      "tunnel device online (backend: " + backend.output().slice(-500) + ", state: " + JSON.stringify(monitor.state(deviceId)?.status) + ")",
+      "tunnel device online (backend: " +
+        backend.output().slice(-500) +
+        ", state: " +
+        JSON.stringify(monitor.state(deviceId)?.status) +
+        ")",
     );
     const state = monitor.state(deviceId)!;
     assert.equal(state.info?.uid, direct.uid);
@@ -142,11 +153,18 @@ test("T-11/T-3/T-12: tunnel device (null url/token, hasToken=false) probes onlin
     const created = await fetch(`http://127.0.0.1:${backend.port}/v1/sessions`, {
       method: "POST",
       headers: { authorization: `Bearer ${DEVICE_TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ name: "s1", cwd: startDirs, model: { provider: "faux", modelId: "echo" } }),
+      body: JSON.stringify({
+        name: "s1",
+        cwd: startDirs,
+        model: { provider: "faux", modelId: "echo" },
+      }),
     });
     assert.equal(created.status, 201);
     await until(
-      () => (monitor.state(deviceId)?.tree?.sessions ?? []).some((s: { name: string }) => s.name === "s1"),
+      () =>
+        (monitor.state(deviceId)?.tree?.sessions ?? []).some(
+          (s: { name: string }) => s.name === "s1",
+        ),
       20000,
       "session tree frame through tunnel",
     );
@@ -155,9 +173,14 @@ test("T-11/T-3/T-12: tunnel device (null url/token, hasToken=false) probes onlin
     // must not pin it), connector reconnects, monitor returns online with a
     // NEW subscription (fresh identity, no reuse).
     const subCountBefore = dispatcher.subscriptionCount();
-    for (const client of (tunnel as unknown as { wss: { clients: Set<WebSocketLike> } }).wss.clients)
+    for (const client of (tunnel as unknown as { wss: { clients: Set<WebSocketLike> } }).wss
+      .clients)
       client.terminate();
-    await until(() => monitor.state(deviceId)?.status !== "online", 15000, "offline after tunnel drop");
+    await until(
+      () => monitor.state(deviceId)?.status !== "online",
+      15000,
+      "offline after tunnel drop",
+    );
     await until(
       () => monitor.state(deviceId)?.status === "online",
       30000,

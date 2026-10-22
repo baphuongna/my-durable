@@ -1,7 +1,16 @@
 // A tool's JSON Schema as a TypeScript function declaration, already split into highlight tokens.
 // We generate the code, so we know every token's kind without a highlighter.
 
-export type TokenKind = "keyword" | "function" | "property" | "type" | "string" | "number" | "comment" | "punct" | "text";
+export type TokenKind =
+  | "keyword"
+  | "function"
+  | "property"
+  | "type"
+  | "string"
+  | "number"
+  | "comment"
+  | "punct"
+  | "text";
 export interface Token {
   text: string;
   kind: TokenKind;
@@ -48,9 +57,19 @@ export function toolSignature(name: string, parameters: unknown): Token[] {
 function type(s: Schema | undefined, depth: number, emit: Emit) {
   if (!s || typeof s !== "object") return emit("unknown", "type");
   if ("const" in s) return literal(s.const, emit);
-  if (s.enum) return union(s.enum.map((value) => ({ const: value })), depth, emit);
+  if (s.enum)
+    return union(
+      s.enum.map((value) => ({ const: value })),
+      depth,
+      emit,
+    );
   if (s.anyOf ?? s.oneOf) return union((s.anyOf ?? s.oneOf)!, depth, emit);
-  if (Array.isArray(s.type)) return union(s.type.map((t) => ({ ...s, type: t })), depth, emit);
+  if (Array.isArray(s.type))
+    return union(
+      s.type.map((t) => ({ ...s, type: t })),
+      depth,
+      emit,
+    );
   switch (s.type) {
     case "string":
     case "boolean":

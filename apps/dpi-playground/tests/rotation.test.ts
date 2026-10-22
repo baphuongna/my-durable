@@ -24,13 +24,21 @@ const UID = randomUUID();
 const DEVICE_ID = "rot-dev";
 const rotations = (registry: NetworkRegistry, action?: string) =>
   registry.db
-    .prepare(`SELECT action, detail_json FROM events WHERE action LIKE 'token.rotate%'${action ? " AND action=?" : ""}`)
+    .prepare(
+      `SELECT action, detail_json FROM events WHERE action LIKE 'token.rotate%'${action ? " AND action=?" : ""}`,
+    )
     .all(...(action ? [action] : [])) as { action: string; detail_json: string }[];
 
 interface Device {
   ws: WsClient;
   file: { pairingEpoch: string; credentialId: string; generation: number; tunnelToken: string };
-  rotationsReceived: { rotationId: string; credentialId: string; generation: number; tunnelToken: string; pairingEpoch: string }[];
+  rotationsReceived: {
+    rotationId: string;
+    credentialId: string;
+    generation: number;
+    tunnelToken: string;
+    pairingEpoch: string;
+  }[];
   applyRotations: boolean;
 }
 
@@ -40,7 +48,10 @@ async function setup(opts: { cacheTtlMs?: number; now?: () => number } = {}) {
   registry.clearTunnelState();
   const audit = new Audit(registry);
   const tunnel = new TunnelServer(registry, audit, HUB_ID);
-  const rotation = new RotationService(registry, audit, tunnel, { cacheTtlMs: opts.cacheTtlMs, now: opts.now });
+  const rotation = new RotationService(registry, audit, tunnel, {
+    cacheTtlMs: opts.cacheTtlMs,
+    now: opts.now,
+  });
   const epoch = randomUUID();
   const t0 = Date.now();
   registry.db
@@ -55,7 +66,11 @@ async function setup(opts: { cacheTtlMs?: number; now?: () => number } = {}) {
        VALUES(?,?,?,?,'paired',1,?,?,?)`,
     )
     .run(DEVICE_ID, epoch, "pub", FINGERPRINT, t0, t0, t0);
-  const g1Token = "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+  const g1Token =
+    "dpt_" +
+    Buffer.from(randomUUID() + randomUUID())
+      .toString("base64url")
+      .slice(0, 43);
   registry.db
     .prepare(
       `INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at,confirmed_at)
@@ -76,7 +91,9 @@ async function setup(opts: { cacheTtlMs?: number; now?: () => number } = {}) {
   };
 
   const connectDevice = async (): Promise<void> => {
-    const ws = new WsClient(`ws://127.0.0.1:${hubPort}/api/tunnel`, { headers: { authorization: `Bearer ${device.file.tunnelToken}` } });
+    const ws = new WsClient(`ws://127.0.0.1:${hubPort}/api/tunnel`, {
+      headers: { authorization: `Bearer ${device.file.tunnelToken}` },
+    });
     device.ws = ws;
     await new Promise<void>((d, rej) => {
       ws.once("open", d);
@@ -85,14 +102,26 @@ async function setup(opts: { cacheTtlMs?: number; now?: () => number } = {}) {
     ws.on("message", (d) => {
       const msg = JSON.parse(d.toString());
       if (msg.type === "rest-request" && msg.path === "/v1/device") {
-        ws.send(JSON.stringify({ type: "rest-response", reqId: msg.reqId, status: 200, contentType: "application/json", body: JSON.stringify({ apiVersion: 1, uid: UID, name: "Rot Dev" }) }));
+        ws.send(
+          JSON.stringify({
+            type: "rest-response",
+            reqId: msg.reqId,
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ apiVersion: 1, uid: UID, name: "Rot Dev" }),
+          }),
+        );
         return;
       }
       if (msg.type === "control" && msg.action === "token-rotate") {
         device.rotationsReceived.push(msg);
         // The REAL connector guard: only the next generation of the CURRENT
         // pairing is applied; anything else is ignored without an ack.
-        if (msg.pairingEpoch !== device.file.pairingEpoch || msg.generation <= device.file.generation) return;
+        if (
+          msg.pairingEpoch !== device.file.pairingEpoch ||
+          msg.generation <= device.file.generation
+        )
+          return;
         if (!device.applyRotations) return;
         // device behavior: persist (simulated), adopt, ack
         device.file = {
@@ -101,14 +130,16 @@ async function setup(opts: { cacheTtlMs?: number; now?: () => number } = {}) {
           generation: msg.generation,
           tunnelToken: msg.tunnelToken,
         };
-        ws.send(JSON.stringify({
-          type: "control",
-          action: "token-rotate-ack",
-          rotationId: msg.rotationId,
-          credentialId: msg.credentialId,
-          generation: msg.generation,
-          pairingEpoch: msg.pairingEpoch,
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "control",
+            action: "token-rotate-ack",
+            rotationId: msg.rotationId,
+            credentialId: msg.credentialId,
+            generation: msg.generation,
+            pairingEpoch: msg.pairingEpoch,
+          }),
+        );
       }
     });
     const current = registry.db
@@ -116,22 +147,40 @@ async function setup(opts: { cacheTtlMs?: number; now?: () => number } = {}) {
       .get(sha(device.file.tunnelToken)) as { credential_id: string } | undefined;
     device.file.credentialId = current?.credential_id ?? device.file.credentialId;
     const hsMsg = JSON.stringify({
-      type: "pair-handshake", v: 1, deviceUid: UID, deviceId: DEVICE_ID, pairingEpoch: device.file.pairingEpoch,
-      credentialId: device.file.credentialId, generation: device.file.generation, apiVersion: 1, tunnelProto: 1,
+      type: "pair-handshake",
+      v: 1,
+      deviceUid: UID,
+      deviceId: DEVICE_ID,
+      pairingEpoch: device.file.pairingEpoch,
+      credentialId: device.file.credentialId,
+      generation: device.file.generation,
+      apiVersion: 1,
+      tunnelProto: 1,
       keyFingerprint: FINGERPRINT,
     });
     ws.send(hsMsg);
-    const first = await new Promise<any>((d) => ws.once("message", (x) => d(JSON.parse(x.toString())))); // hello?
+    const first = await new Promise<any>((d) =>
+      ws.once("message", (x) => d(JSON.parse(x.toString()))),
+    ); // hello?
   };
   await connectDevice();
 
   const rows = () => {
     const creds = registry.db
-      .prepare("SELECT credential_id, generation, status FROM tunnel_credentials WHERE device_id=? ORDER BY generation")
+      .prepare(
+        "SELECT credential_id, generation, status FROM tunnel_credentials WHERE device_id=? ORDER BY generation",
+      )
       .all(DEVICE_ID) as { credential_id: string; generation: number; status: string }[];
     const p = registry.db
-      .prepare("SELECT credential_generation, rotation_id, rotation_target_credential_id, rotation_requested_at FROM pairings WHERE device_id=?")
-      .get(DEVICE_ID) as { credential_generation: number; rotation_id: string | null; rotation_target_credential_id: string | null; rotation_requested_at: number | null };
+      .prepare(
+        "SELECT credential_generation, rotation_id, rotation_target_credential_id, rotation_requested_at FROM pairings WHERE device_id=?",
+      )
+      .get(DEVICE_ID) as {
+      credential_generation: number;
+      rotation_id: string | null;
+      rotation_target_credential_id: string | null;
+      rotation_requested_at: number | null;
+    };
     return { creds, p };
   };
 
@@ -145,7 +194,17 @@ async function setup(opts: { cacheTtlMs?: number; now?: () => number } = {}) {
   };
 
   const originalG1Token = g1Token;
-  return { registry, rotation, tunnel, device, rows, connectDevice, cleanup, server, originalG1Token };
+  return {
+    registry,
+    rotation,
+    tunnel,
+    device,
+    rows,
+    connectDevice,
+    cleanup,
+    server,
+    originalG1Token,
+  };
 }
 
 const until = async (fn: () => boolean, timeout = 6000, what = "cond") => {
@@ -163,10 +222,18 @@ test("P-11 online rotation: deliver → ack → previous retired, rotation clear
     const r = f.rotation.startRotation(DEVICE_ID, "admin:test");
     assert.ok(r.ok && r.mode === "online", JSON.stringify(r));
     await until(() => f.device.rotationsReceived.length === 1, 5000, "token-rotate delivered");
-    await until(() => {
-      const { p, creds } = f.rows();
-      return !p.rotation_id && creds.find((c) => c.generation === 1)?.status === "retired" && creds.find((c) => c.generation === 2)?.status === "current";
-    }, 5000, "rotation completed via ack");
+    await until(
+      () => {
+        const { p, creds } = f.rows();
+        return (
+          !p.rotation_id &&
+          creds.find((c) => c.generation === 1)?.status === "retired" &&
+          creds.find((c) => c.generation === 2)?.status === "current"
+        );
+      },
+      5000,
+      "rotation completed via ack",
+    );
     assert.ok(rotations(f.registry, "token.rotate_completed").length === 1);
     // sentinel: plaintext only in RAM cache, and it is dropped after completion
     await until(() => f.rotation.cacheSize() === 0, 3000, "cache dropped");
@@ -175,10 +242,19 @@ test("P-11 online rotation: deliver → ack → previous retired, rotation clear
     assert.equal(oldToken.generation, 2);
     await f.device.ws.terminate();
     const oldUpgrade = new Promise<number>((done) => {
-      const ws = new WsClient(`ws://127.0.0.1:${(f.server.address() as { port: number }).port}/api/tunnel`, { headers: { authorization: `Bearer ${f.originalG1Token}` } });
+      const ws = new WsClient(
+        `ws://127.0.0.1:${(f.server.address() as { port: number }).port}/api/tunnel`,
+        { headers: { authorization: `Bearer ${f.originalG1Token}` } },
+      );
       ws.on("error", () => {}); // rejected upgrade noise; the status is what matters
-      ws.once("unexpected-response", (_q, res) => { done(res.statusCode ?? 0); ws.close(); });
-      ws.once("open", () => { done(101); ws.close(); });
+      ws.once("unexpected-response", (_q, res) => {
+        done(res.statusCode ?? 0);
+        ws.close();
+      });
+      ws.once("open", () => {
+        done(101);
+        ws.close();
+      });
     });
     assert.equal(await oldUpgrade, 401);
     await f.connectDevice(); // new token
@@ -199,11 +275,19 @@ test("P-11 implicit ack: silent device reconnects on the TARGET credential → r
     await f.device.ws.terminate();
     adoptLastRotation(f.device);
     await f.connectDevice();
-    await until(() => {
-      const { p, creds } = f.rows();
-      return !p.rotation_id && creds.find((c) => c.generation === 1)?.status === "retired";
-    }, 5000, "implicit ack completed");
-    assert.ok(rotations(f.registry, "token.rotate_completed").some((e) => e.detail_json.includes('"via":"implicit_ack"')));
+    await until(
+      () => {
+        const { p, creds } = f.rows();
+        return !p.rotation_id && creds.find((c) => c.generation === 1)?.status === "retired";
+      },
+      5000,
+      "implicit ack completed",
+    );
+    assert.ok(
+      rotations(f.registry, "token.rotate_completed").some((e) =>
+        e.detail_json.includes('"via":"implicit_ack"'),
+      ),
+    );
   } finally {
     await f.cleanup();
   }
@@ -220,12 +304,20 @@ test("P-11 resend: device ignores rotation, reconnects on previous → same rota
     f.device.applyRotations = true; // device applies the resend when it arrives → acks
     await f.connectDevice(); // still G1 (previous)
     await until(() => f.device.rotationsReceived.length === 2, 5000, "resent");
-    assert.equal(f.device.rotationsReceived[1].rotationId, firstId, "SAME rotationId resent from cache");
+    assert.equal(
+      f.device.rotationsReceived[1].rotationId,
+      firstId,
+      "SAME rotationId resent from cache",
+    );
     // now the device applies → acks → completes
-    await until(() => {
-      const { p, creds } = f.rows();
-      return !p.rotation_id && creds.find((c) => c.generation === 1)?.status === "retired";
-    }, 5000, "completed after resend");
+    await until(
+      () => {
+        const { p, creds } = f.rows();
+        return !p.rotation_id && creds.find((c) => c.generation === 1)?.status === "retired";
+      },
+      5000,
+      "completed after resend",
+    );
   } finally {
     await f.cleanup();
   }
@@ -243,11 +335,19 @@ test("P-11 cache loss: reconnect on previous with empty cache → unconfirmed cu
     f.rotation.startRotation(DEVICE_ID, "admin:test");
     await until(() => f.device.rotationsReceived.length === 1, 5000, "first delivery");
     const firstId = f.device.rotationsReceived[0].rotationId;
-    await until(() => !f.rotation.plaintextCacheHas(firstId), 2_000, "TTL expiry (setup used 40 ms)");
+    await until(
+      () => !f.rotation.plaintextCacheHas(firstId),
+      2_000,
+      "TTL expiry (setup used 40 ms)",
+    );
     await f.device.ws.terminate();
     f.device.applyRotations = true; // apply + ack the regenerated rotation when it arrives
     await f.connectDevice(); // device on G1 (previous); new instance has no cache
-    await until(() => f.device.rotationsReceived.length === 2, 5000, "regenerated rotation delivered");
+    await until(
+      () => f.device.rotationsReceived.length === 2,
+      5000,
+      "regenerated rotation delivered",
+    );
     const second = f.device.rotationsReceived[1];
     assert.notEqual(second.rotationId, firstId);
     assert.equal(second.generation, 3, "recovery mints the next FREE generation for the epoch");
@@ -256,7 +356,11 @@ test("P-11 cache loss: reconnect on previous with empty cache → unconfirmed cu
     await until(() => !f.rows().p.rotation_id, 8000, "completed");
     const after = f.rows();
     assert.equal(after.creds.find((c) => c.generation === 1)?.status, "retired");
-    assert.equal(after.creds.find((c) => c.generation === 2)?.status, "retired", "unconfirmed G2 retired");
+    assert.equal(
+      after.creds.find((c) => c.generation === 2)?.status,
+      "retired",
+      "unconfirmed G2 retired",
+    );
     assert.equal(after.creds.find((c) => c.generation === 3)?.status, "current", "G3 current");
     void creds;
     assert.ok(rotations(f.registry, "token.rotate_regenerated").length === 1);
@@ -278,8 +382,16 @@ test("P-11 offline request: rotation_requested_at only; reconnect triggers the o
     assert.equal(f.rotation.cacheSize(), 0, "no plaintext minted while offline");
     // device reconnects → hub starts the rotation online automatically
     await f.connectDevice();
-    await until(() => f.device.rotationsReceived.length === 1, 5000, "rotation started on reconnect");
-    assert.equal(f.rows().p.rotation_requested_at, null, "request flag cleared by the online start");
+    await until(
+      () => f.device.rotationsReceived.length === 1,
+      5000,
+      "rotation started on reconnect",
+    );
+    assert.equal(
+      f.rows().p.rotation_requested_at,
+      null,
+      "request flag cleared by the online start",
+    );
   } finally {
     await f.cleanup();
   }
@@ -297,10 +409,16 @@ test("P-11 stale/duplicate ack and already-held rotate are ignored", async () =>
     // frames in order and tunnel.onFrame runs the listeners synchronously), so the
     // pong proves the replayed ack was PROCESSED and ignored — not merely sent.
     const ackProcessed = once(f.device.ws, "pong");
-    f.device.ws.send(JSON.stringify({
-      type: "control", action: "token-rotate-ack", rotationId: msg.rotationId,
-      credentialId: msg.credentialId, generation: msg.generation, pairingEpoch: msg.pairingEpoch,
-    }));
+    f.device.ws.send(
+      JSON.stringify({
+        type: "control",
+        action: "token-rotate-ack",
+        rotationId: msg.rotationId,
+        credentialId: msg.credentialId,
+        generation: msg.generation,
+        pairingEpoch: msg.pairingEpoch,
+      }),
+    );
     f.device.ws.ping();
     await ackProcessed;
     const { creds } = f.rows();
@@ -320,8 +438,16 @@ test("P-11 stale/duplicate ack and already-held rotate are ignored", async () =>
     // The scripted device records EVERY token-rotate it receives before its guard
     // decides to ignore it, so the second arrival is the observable that the
     // re-delivered rotate reached the device and was processed — no guessed delay.
-    await until(() => f.device.rotationsReceived.length === 2, 2_000, "the already-held rotate to reach the device");
-    assert.equal(f.device.file.generation, 2, "device file untouched by an already-held generation");
+    await until(
+      () => f.device.rotationsReceived.length === 2,
+      2_000,
+      "the already-held rotate to reach the device",
+    );
+    assert.equal(
+      f.device.file.generation,
+      2,
+      "device file untouched by an already-held generation",
+    );
     const completedBefore = rotations(f.registry, "token.rotate_completed").length;
     // The real next rotation goes through the full cycle and completes.
     f.rotation.startRotation(DEVICE_ID, "admin:test");
@@ -332,16 +458,30 @@ test("P-11 stale/duplicate ack and already-held rotate are ignored", async () =>
   }
 });
 
-const msg2ack = (m: { rotationId: string; credentialId: string; generation: number; pairingEpoch: string }) => ({
-  type: "control", action: "token-rotate-ack", rotationId: m.rotationId,
-  credentialId: m.credentialId, generation: m.generation, pairingEpoch: m.pairingEpoch,
+const msg2ack = (m: {
+  rotationId: string;
+  credentialId: string;
+  generation: number;
+  pairingEpoch: string;
+}) => ({
+  type: "control",
+  action: "token-rotate-ack",
+  rotationId: m.rotationId,
+  credentialId: m.credentialId,
+  generation: m.generation,
+  pairingEpoch: m.pairingEpoch,
 });
 const deviceSilent = (d: Device) => {
   d.applyRotations = false;
 };
 const adoptLastRotation = (d: Device) => {
   const last = d.rotationsReceived.at(-1)!;
-  d.file = { pairingEpoch: last.pairingEpoch, credentialId: last.credentialId, generation: last.generation, tunnelToken: last.tunnelToken };
+  d.file = {
+    pairingEpoch: last.pairingEpoch,
+    credentialId: last.credentialId,
+    generation: last.generation,
+    tunnelToken: last.tunnelToken,
+  };
 };
 
 test("GA-12: the 90-day window restarts at every confirmed rotation — a later reconnect does not rotate again", async () => {
@@ -386,7 +526,11 @@ test("GA-13: every rotation token is 32 random bytes (43 base64url chars), on bo
     deviceSilent(f.device);
     f.rotation.startRotation(DEVICE_ID, "admin:test"); // rotateOnline
     await until(() => f.device.rotationsReceived.length === 1, 5000, "first delivery");
-    await until(() => !f.rotation.plaintextCacheHas(f.device.rotationsReceived[0].rotationId), 2_000, "the 40 ms cache TTL to forget the first token");
+    await until(
+      () => !f.rotation.plaintextCacheHas(f.device.rotationsReceived[0].rotationId),
+      2_000,
+      "the 40 ms cache TTL to forget the first token",
+    );
     f.device.ws.terminate();
     await until(() => f.tunnel.activeCount() === 0, 5000, "offline");
     await f.connectDevice(); // device still on G1 → recoverFromCacheLoss mints again
@@ -402,7 +546,10 @@ test("GA-13: every rotation token is 32 random bytes (43 base64url chars), on bo
     });
     // A token cut from UUID text has only ASCII bytes drawn from [0-9a-f-]; random bytes are not so confined.
     const all = Buffer.concat(bytes);
-    assert.ok(all.some((b) => b >= 0x80), "token bytes are not confined to ASCII");
+    assert.ok(
+      all.some((b) => b >= 0x80),
+      "token bytes are not confined to ASCII",
+    );
     assert.ok(new Set(all).size > 17, "token bytes are not confined to the UUID alphabet");
   } finally {
     await f.cleanup();
@@ -416,9 +563,16 @@ test("GA-15: a cached plaintext token leaves RAM when its TTL ends, without anyo
     f.rotation.startRotation(DEVICE_ID, "admin:test");
     await until(() => f.device.rotationsReceived.length === 1, 5000, "delivered");
     const { rotationId } = f.device.rotationsReceived[0];
-    assert.ok(f.rotation.plaintextCacheHas(rotationId), "premise: the token is cached right after delivery");
+    assert.ok(
+      f.rotation.plaintextCacheHas(rotationId),
+      "premise: the token is cached right after delivery",
+    );
 
-    await until(() => !f.rotation.plaintextCacheHas(rotationId), 2000, "plaintext forgotten on its own");
+    await until(
+      () => !f.rotation.plaintextCacheHas(rotationId),
+      2000,
+      "plaintext forgotten on its own",
+    );
     assert.equal(f.rotation.cacheSize(), 0);
 
     // Forgetting is a RAM matter only: the rotation is still pending and no credential changed state.

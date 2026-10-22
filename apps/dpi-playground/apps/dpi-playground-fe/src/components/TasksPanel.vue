@@ -16,7 +16,16 @@ import type { TaskNode, TaskOutcome } from "@sdk/api";
 import { jobRunDone } from "@sdk/jobs";
 import { message } from "../client/hub";
 import { agentHandle, sessionHandle, tasks } from "../client/store";
-import { decide, jobDef, jobDefs, jobRuns, openAgent, pending, revealRun, startJob } from "../client/jobs";
+import {
+  decide,
+  jobDef,
+  jobDefs,
+  jobRuns,
+  openAgent,
+  pending,
+  revealRun,
+  startJob,
+} from "../client/jobs";
 
 const error = ref("");
 const stopping = ref(false);
@@ -37,7 +46,9 @@ const status = (value: string) =>
   })[value] ?? value;
 
 /** The newest run of each job, for its row in the list. */
-const latest = computed(() => new Map(jobDefs.value.map((d) => [d.id, jobRuns.value.find((r) => r.job === d.id)])));
+const latest = computed(
+  () => new Map(jobDefs.value.map((d) => [d.id, jobRuns.value.find((r) => r.job === d.id)])),
+);
 
 // ------------------------------------------------------------------ the live task tree
 
@@ -68,14 +79,20 @@ const kindOf = (t: TaskNode) =>
       : t.kind === "pi.compaction"
         ? { icon: Layers, name: "Compaction", what: "compaction" }
         : t.kind.startsWith("demo.job.")
-          ? { icon: Workflow, name: t.label ?? jobDef(t.kind.slice(9))?.title ?? t.kind, what: "durable job" }
+          ? {
+              icon: Workflow,
+              name: t.label ?? jobDef(t.kind.slice(9))?.title ?? t.kind,
+              what: "durable job",
+            }
           : t.kind === "demo.job-approval"
             ? { icon: ShieldCheck, name: "Approval", what: "waits for you" }
             : { icon: Activity, name: t.label ?? t.kind, what: t.kind };
 const phaseOf = (t: TaskNode) => {
   if (!t.state.phase) return "";
   if (t.kind.startsWith("demo.job."))
-    return jobDef(t.kind.slice(9))?.phases.find((p) => p.id === t.state.phase)?.label ?? t.state.phase;
+    return (
+      jobDef(t.kind.slice(9))?.phases.find((p) => p.id === t.state.phase)?.label ?? t.state.phase
+    );
   return t.state.phase;
 };
 
@@ -123,11 +140,14 @@ const outcomes = computed(() =>
     <section class="task-section" aria-label="Durable jobs">
       <h3><Repeat :size="18" />Durable jobs</h3>
       <p class="hint">
-        Repeatable workflows with named phases. Every run follows the same phases and saves a checkpoint after each one.
-        Start one here, or ask your agent: it finds these with <code>list_durable_jobs</code>, starts them with
-        <code>run_durable_job</code> and checks them with <code>check_durable_job</code>. Runs play out live in the chat.
+        Repeatable workflows with named phases. Every run follows the same phases and saves a
+        checkpoint after each one. Start one here, or ask your agent: it finds these with
+        <code>list_durable_jobs</code>, starts them with <code>run_durable_job</code> and checks
+        them with <code>check_durable_job</code>. Runs play out live in the chat.
       </p>
-      <p v-if="!jobDefs.length" class="task-empty">This device has no durable jobs. Deploy the latest backend to it.</p>
+      <p v-if="!jobDefs.length" class="task-empty">
+        This device has no durable jobs. Deploy the latest backend to it.
+      </p>
       <article v-for="def in jobDefs" :key="def.id" class="job-def" :data-job="def.id">
         <div class="job-def-head">
           <Workflow :size="18" />
@@ -138,31 +158,57 @@ const outcomes = computed(() =>
         <p>{{ def.summary }}</p>
         <ol class="job-chain" :aria-label="`${def.title} phases`">
           <li v-for="(phase, i) in def.phases" :key="phase.id" :title="phase.summary">
-            <span>{{ i + 1 }}</span>{{ phase.label }}<Repeat v-if="phase.kind === 'repeat'" :size="13" /><ShieldCheck
+            <span>{{ i + 1 }}</span
+            >{{ phase.label }}<Repeat v-if="phase.kind === 'repeat'" :size="13" /><ShieldCheck
               v-if="phase.kind === 'approval'"
               :size="13"
             />
           </li>
         </ol>
         <div class="job-def-meta">
-          <code v-for="input in def.inputs" :key="input.name" :title="input.description">{{ input.name }}={{ input.default }}</code>
-          <code :title="`Each run saves its result to App State ${def.resultPath}`">→ {{ def.resultPath }}</code>
+          <code v-for="input in def.inputs" :key="input.name" :title="input.description"
+            >{{ input.name }}={{ input.default }}</code
+          >
+          <code :title="`Each run saves its result to App State ${def.resultPath}`"
+            >→ {{ def.resultPath }}</code
+          >
         </div>
         <div v-if="latest.get(def.id)" class="job-def-last">
           <span
             >Run #{{ latest.get(def.id)!.run }}:
             <strong>{{ status(latest.get(def.id)!.status) }}</strong
             ><template v-if="!jobRunDone(latest.get(def.id)!)">
-              in {{ latest.get(def.id)!.phases.find((p) => p.id === latest.get(def.id)!.phase)?.label }}</template
+              in
+              {{
+                latest.get(def.id)!.phases.find((p) => p.id === latest.get(def.id)!.phase)?.label
+              }}</template
             ></span
           >
-          <button class="text-button" @click="revealRun(latest.get(def.id)!.id)">Show in chat</button>
+          <button class="text-button" @click="revealRun(latest.get(def.id)!.id)">
+            Show in chat
+          </button>
           <template v-if="latest.get(def.id)!.approval === 'pending'">
-            <button class="primary small" :disabled="!!pending" @click="decide(latest.get(def.id)!, true)">Approve</button>
-            <button class="secondary" :disabled="!!pending" @click="decide(latest.get(def.id)!, false)">Decline</button>
+            <button
+              class="primary small"
+              :disabled="!!pending"
+              @click="decide(latest.get(def.id)!, true)"
+            >
+              Approve
+            </button>
+            <button
+              class="secondary"
+              :disabled="!!pending"
+              @click="decide(latest.get(def.id)!, false)"
+            >
+              Decline
+            </button>
           </template>
         </div>
-        <button class="secondary job-def-run" :disabled="!!pending || !agentHandle" @click="startJob(def)">
+        <button
+          class="secondary job-def-run"
+          :disabled="!!pending || !agentHandle"
+          @click="startJob(def)"
+        >
           <Play :size="16" />Run {{ def.title }}
         </button>
       </article>
@@ -174,8 +220,8 @@ const outcomes = computed(() =>
         <Activity :size="18" />
       </div>
       <p class="hint">
-        Every model response and every tool call is its own durable task with an id, an owner and a checkpoint. Follow
-        them live here; after a restart each one resumes or reports how it ended.
+        Every model response and every tool call is its own durable task with an id, an owner and a
+        checkpoint. Follow them live here; after a restart each one resumes or reports how it ended.
       </p>
       <p v-if="!rows.length" class="task-empty">Nothing running. Send a message or run a job.</p>
       <ul v-else class="task-tree">
@@ -194,12 +240,20 @@ const outcomes = computed(() =>
             >#{{ task.id }} {{ kindOf(task).what }}, agent #{{ task.conversationId
             }}{{ task.effectiveBackground ? ", background" : "" }}</small
           >
-          <button v-for="cid in task.conversations" :key="cid" class="text-button" @click="openAgent(cid)">
+          <button
+            v-for="cid in task.conversations"
+            :key="cid"
+            class="text-button"
+            @click="openAgent(cid)"
+          >
             Open agent #{{ cid }}
           </button>
         </li>
       </ul>
-      <p class="hint">Interrupt or Esc stops foreground work and what it owns. Stop all also stops background runs.</p>
+      <p class="hint">
+        Interrupt or Esc stops foreground work and what it owns. Stop all also stops background
+        runs.
+      </p>
       <button class="secondary danger" :disabled="!tasks.length || stopping" @click="stopAll">
         <Octagon :size="18" />Stop all
       </button>
@@ -207,10 +261,13 @@ const outcomes = computed(() =>
 
     <details class="raw task-section" @toggle="loadRuntime">
       <summary><Clock3 :size="18" />Runtime details</summary>
-      <p class="hint">Recent task results and recovery records, read from the device when opened.</p>
+      <p class="hint">
+        Recent task results and recovery records, read from the device when opened.
+      </p>
       <details v-for="task in outcomes" :key="task.id" class="raw">
         <summary>
-          {{ task.kind }} #{{ task.id }}<span>{{ status(task.state.outcome?.status ?? task.state.status) }}</span>
+          {{ task.kind }} #{{ task.id
+          }}<span>{{ status(task.state.outcome?.status ?? task.state.status) }}</span>
         </summary>
         <pre>{{ JSON.stringify(task.state.outcome, null, 2) }}</pre>
       </details>

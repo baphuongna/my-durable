@@ -12,12 +12,42 @@ import { errorMiddleware, safe } from "../apps/dpi-playground-hub/src/http-error
 
 async function serve(): Promise<{ base: string; server: Server }> {
   const app = express();
-  app.get("/fault", safe(() => { throw new Error("SQLITE_BUSY: database is locked (/home/ops/.dpi/network.sqlite)"); }));
-  app.get("/rejects", safe(async () => { throw new Error("EACCES: permission denied, open '/home/ops/.dpi/secret'"); }));
-  app.get("/deliberate", safe(() => { throw Object.assign(new Error("No device box"), { status: 404 }); }));
-  app.get("/invalid", safe(() => { throw Object.assign(new Error("subs must be a list of up to 20 keys"), { status: 400 }); }));
-  app.get("/audit", safe(() => { throw new AuditUnavailableError("audit: 3 bytes free on the registry volume (floor 33554432)"); }));
-  app.get("/fine", safe((_req, res) => res.json({ ok: true })));
+  app.get(
+    "/fault",
+    safe(() => {
+      throw new Error("SQLITE_BUSY: database is locked (/home/ops/.dpi/network.sqlite)");
+    }),
+  );
+  app.get(
+    "/rejects",
+    safe(async () => {
+      throw new Error("EACCES: permission denied, open '/home/ops/.dpi/secret'");
+    }),
+  );
+  app.get(
+    "/deliberate",
+    safe(() => {
+      throw Object.assign(new Error("No device box"), { status: 404 });
+    }),
+  );
+  app.get(
+    "/invalid",
+    safe(() => {
+      throw Object.assign(new Error("subs must be a list of up to 20 keys"), { status: 400 });
+    }),
+  );
+  app.get(
+    "/audit",
+    safe(() => {
+      throw new AuditUnavailableError(
+        "audit: 3 bytes free on the registry volume (floor 33554432)",
+      );
+    }),
+  );
+  app.get(
+    "/fine",
+    safe((_req, res) => res.json({ ok: true })),
+  );
   app.use(errorMiddleware);
   const server = createServer(app);
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
@@ -26,7 +56,10 @@ async function serve(): Promise<{ base: string; server: Server }> {
 
 const get = async (base: string, path: string) => {
   const res = await fetch(`${base}${path}`);
-  return { status: res.status, body: (await res.json()) as { error?: { code: string; message: string }; ok?: boolean } };
+  return {
+    status: res.status,
+    body: (await res.json()) as { error?: { code: string; message: string }; ok?: boolean },
+  };
 };
 
 test("safe: an unexpected fault is a generic 500 and none of its text reaches the client", async () => {
@@ -46,8 +79,14 @@ test("safe: an unexpected fault is a generic 500 and none of its text reaches th
 test("safe: a failure the handler raised on purpose keeps its status and its short message", async () => {
   const { base, server } = await serve();
   try {
-    assert.deepEqual(await get(base, "/deliberate"), { status: 404, body: { error: { code: "not_found", message: "No device box" } } });
-    assert.deepEqual(await get(base, "/invalid"), { status: 400, body: { error: { code: "invalid", message: "subs must be a list of up to 20 keys" } } });
+    assert.deepEqual(await get(base, "/deliberate"), {
+      status: 404,
+      body: { error: { code: "not_found", message: "No device box" } },
+    });
+    assert.deepEqual(await get(base, "/invalid"), {
+      status: 400,
+      body: { error: { code: "invalid", message: "subs must be a list of up to 20 keys" } },
+    });
     assert.equal((await get(base, "/fine")).status, 200);
   } finally {
     server.close();

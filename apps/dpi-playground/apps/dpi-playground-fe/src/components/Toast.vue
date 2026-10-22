@@ -6,8 +6,6 @@ import { ui } from "../client/store";
 
 <template>
   <Transition name="toast">
-    <div v-if="ui.toast" class="toast" role="status">
-      <Check :size="18" />{{ ui.toast }}
-    </div>
+    <div v-if="ui.toast" class="toast" role="status"><Check :size="18" />{{ ui.toast }}</div>
   </Transition>
 </template>

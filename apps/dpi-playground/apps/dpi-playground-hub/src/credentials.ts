@@ -57,15 +57,23 @@ export class CredentialService {
    * for duplicate UID rows or non-canonical UIDs (operator resolves manually).
    */
   private preflight(deviceUid: string): { existingRowId?: string; newId: string } {
-    if (!UUID_CANONICAL.test(deviceUid)) throw Object.assign(new Error(`non-canonical deviceUid ${deviceUid}`), { code: "identity_conflict" });
+    if (!UUID_CANONICAL.test(deviceUid))
+      throw Object.assign(new Error(`non-canonical deviceUid ${deviceUid}`), {
+        code: "identity_conflict",
+      });
     const rows = this.registry.db
       .prepare("SELECT id FROM devices WHERE device_uid=?")
       .all(deviceUid) as { id: string }[];
     if (rows.length > 1)
-      throw Object.assign(new Error(`device_uid ${deviceUid} maps to ${rows.length} rows; operator must resolve`), { code: "identity_conflict" });
+      throw Object.assign(
+        new Error(`device_uid ${deviceUid} maps to ${rows.length} rows; operator must resolve`),
+        { code: "identity_conflict" },
+      );
     const newId = randomUUID().replace(/-/g, "");
     if (this.registry.get(newId))
-      throw Object.assign(new Error(`registry id collision on ${newId}`), { code: "identity_conflict" });
+      throw Object.assign(new Error(`registry id collision on ${newId}`), {
+        code: "identity_conflict",
+      });
     return { existingRowId: rows[0]?.id, newId };
   }
 
@@ -90,11 +98,19 @@ export class CredentialService {
       // GA-05: judged inside the write lock, against what the operator actually approved.
       const current = observeIdentity(this.registry, input.deviceUid);
       if (input.expectedIdentity !== undefined && input.expectedIdentity !== current.stamp)
-        throw Object.assign(new Error("device identity changed since approval; a new approval is required"), { code: "identity_changed" });
+        throw Object.assign(
+          new Error("device identity changed since approval; a new approval is required"),
+          { code: "identity_changed" },
+        );
       const replacedKeyFingerprint =
-        current.storedFingerprint && current.storedFingerprint !== input.keyFingerprint ? current.storedFingerprint : undefined;
+        current.storedFingerprint && current.storedFingerprint !== input.keyFingerprint
+          ? current.storedFingerprint
+          : undefined;
       if (replacedKeyFingerprint && !input.replaceKey)
-        throw Object.assign(new Error("a different key is on record for this device; replaceKey is required"), { code: "key_replacement_required" });
+        throw Object.assign(
+          new Error("a different key is on record for this device; replaceKey is required"),
+          { code: "key_replacement_required" },
+        );
 
       if (identity.existingRowId) {
         const row = this.registry.get(identity.existingRowId)!;
@@ -110,7 +126,9 @@ export class CredentialService {
             )
             .run(now, identity.existingRowId);
           this.registry.db
-            .prepare(`UPDATE pairings SET status='revoked', updated_at=? WHERE device_id=? AND status='paired'`)
+            .prepare(
+              `UPDATE pairings SET status='revoked', updated_at=? WHERE device_id=? AND status='paired'`,
+            )
             .run(now, identity.existingRowId);
         }
         this.registry.db
@@ -219,7 +237,9 @@ export class CredentialService {
    * current/previous AND its epoch is the active pairing. Never return a
    * revoked or superseded secret just because the receipt TTL is still open.
    */
-  receiptStillValid(tokenIssue: Pick<TokenIssue, "credentialId" | "pairingEpoch" | "deviceId">): boolean {
+  receiptStillValid(
+    tokenIssue: Pick<TokenIssue, "credentialId" | "pairingEpoch" | "deviceId">,
+  ): boolean {
     const cred = this.registry.db
       .prepare("SELECT status FROM tunnel_credentials WHERE credential_id=?")
       .get(tokenIssue.credentialId) as { status: string } | undefined;
@@ -227,11 +247,15 @@ export class CredentialService {
     const pairing = this.registry.db
       .prepare("SELECT status, pairing_epoch FROM pairings WHERE device_id=?")
       .get(tokenIssue.deviceId) as { status: string; pairing_epoch: string } | undefined;
-    return !!pairing && pairing.status === "paired" && pairing.pairing_epoch === tokenIssue.pairingEpoch;
+    return (
+      !!pairing && pairing.status === "paired" && pairing.pairing_epoch === tokenIssue.pairingEpoch
+    );
   }
 
   /** Which failure to surface for a stale receipt. */
-  receiptFailure(tokenIssue: Pick<TokenIssue, "pairingEpoch" | "deviceId">): "paired_elsewhere" | "invalid" {
+  receiptFailure(
+    tokenIssue: Pick<TokenIssue, "pairingEpoch" | "deviceId">,
+  ): "paired_elsewhere" | "invalid" {
     const pairing = this.registry.db
       .prepare("SELECT status, pairing_epoch FROM pairings WHERE device_id=?")
       .get(tokenIssue.deviceId) as { status: string; pairing_epoch: string } | undefined;

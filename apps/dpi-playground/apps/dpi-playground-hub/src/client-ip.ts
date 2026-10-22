@@ -33,7 +33,9 @@ function ipv6Groups(address: string): number[] {
   const [head, rest] = text.split("::");
   const front = head ? head.split(":") : [];
   const back = rest ? rest.split(":") : [];
-  const gap = text.includes("::") ? new Array<string>(8 - front.length - back.length).fill("0") : [];
+  const gap = text.includes("::")
+    ? new Array<string>(8 - front.length - back.length).fill("0")
+    : [];
   return [...front, ...gap, ...back].map((group) => parseInt(group, 16));
 }
 
@@ -50,7 +52,10 @@ export function ipKey(address: string): string {
   const g = ipv6Groups(literal);
   if (g.slice(0, 5).every((group) => group === 0) && g[5] === 0xffff)
     return `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
-  return `${g.slice(0, 4).map((group) => group.toString(16)).join(":")}::/64`;
+  return `${g
+    .slice(0, 4)
+    .map((group) => group.toString(16))
+    .join(":")}::/64`;
 }
 
 /** Also used for upgrades, which never pass through Express's req.ip getter. */

@@ -126,10 +126,16 @@ try {
   // Tools tab: read only disables the tools that write, then restores them.
   await tab("Tools");
   await page.getByRole("switch", { name: "Read only" }).click();
-  await expect(page.getByRole("switch", { name: "Read only" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("switch", { name: "Read only" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
   await expect(page.locator(".tool-row.disabled").first()).toContainText("disabled");
   await page.getByRole("switch", { name: "Read only" }).click();
-  await expect(page.getByRole("switch", { name: "Read only" })).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByRole("switch", { name: "Read only" })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
   await expect(page.locator(".tool-row.disabled")).toHaveCount(0);
   pass("read only toggle");
 

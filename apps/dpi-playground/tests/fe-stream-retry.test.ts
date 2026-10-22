@@ -17,14 +17,26 @@ class Source {
     Source.latest = this;
     Source.all.push(this);
   }
-  close() { this.readyState = Source.CLOSED; }
-  emit(sub: string, frame: unknown) { this.onmessage?.({ data: JSON.stringify({ sub, frame }) }); }
-  hello(streamId: string) { this.emit("hello", { type: "stream", streamId }); }
-  die() { this.readyState = Source.CLOSED; this.onerror?.(); }
+  close() {
+    this.readyState = Source.CLOSED;
+  }
+  emit(sub: string, frame: unknown) {
+    this.onmessage?.({ data: JSON.stringify({ sub, frame }) });
+  }
+  hello(streamId: string) {
+    this.emit("hello", { type: "stream", streamId });
+  }
+  die() {
+    this.readyState = Source.CLOSED;
+    this.onerror?.();
+  }
 }
 
 type Reply = { status: number; retryAfter?: string } | "throw";
-interface Call { url: string; subs: string[] }
+interface Call {
+  url: string;
+  subs: string[];
+}
 
 function setup(t: TestContext, replies: Reply[]) {
   const originalSource = globalThis.EventSource;
@@ -41,7 +53,10 @@ function setup(t: TestContext, replies: Reply[]) {
     return {
       ok: reply.status >= 200 && reply.status < 300,
       status: reply.status,
-      headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? (reply.retryAfter ?? null) : null) },
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "retry-after" ? (reply.retryAfter ?? null) : null,
+      },
       text: async () => "rejected",
     };
   }) as never;
@@ -54,13 +69,22 @@ function setup(t: TestContext, replies: Reply[]) {
     console.warn = originalWarn;
   });
   const settle = () => new Promise((done) => setImmediate(done));
-  const tick = async (ms: number) => { t.mock.timers.tick(ms); await settle(); await settle(); };
+  const tick = async (ms: number) => {
+    t.mock.timers.tick(ms);
+    await settle();
+    await settle();
+  };
   return { stream, calls, tick, settle };
 }
 
 test("FE-S1: backoff is 1 s doubling to a 30 s cap; Retry-After seconds are honoured within the cap", () => {
-  const { retryDelay } = streamModule as unknown as { retryDelay(failures: number, retryAfter?: string | null): number };
-  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 20].map((n) => retryDelay(n)), [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  const { retryDelay } = streamModule as unknown as {
+    retryDelay(failures: number, retryAfter?: string | null): number;
+  };
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 6, 20].map((n) => retryDelay(n)),
+    [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000],
+  );
   assert.equal(retryDelay(0, "5"), 5000);
   assert.equal(retryDelay(3, "5"), 5000);
   assert.equal(retryDelay(0, "600"), 30000);
@@ -71,7 +95,10 @@ test("FE-S1: backoff is 1 s doubling to a 30 s cap; Retry-After seconds are hono
 
 test("FE-S2: reconnect delay is 2 s doubling to a 30 s cap", () => {
   const { reconnectDelay } = streamModule as unknown as { reconnectDelay(attempt: number): number };
-  assert.deepEqual([0, 1, 2, 3, 4, 5, 9].map((n) => reconnectDelay(n)), [2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 9].map((n) => reconnectDelay(n)),
+    [2000, 4000, 8000, 16000, 30000, 30000, 30000],
+  );
 });
 
 test("FE-S3: a 429 on the subscription PUT is retried until it is applied", async (t) => {
@@ -87,7 +114,10 @@ test("FE-S3: a 429 on the subscription PUT is retried until it is applied", asyn
   assert.equal(calls.length, 2, "second retry waits for the doubled delay");
   await tick(1);
   assert.equal(calls.length, 3);
-  assert.deepEqual(calls.map((c) => c.subs), [["k"], ["k"], ["k"]]);
+  assert.deepEqual(
+    calls.map((c) => c.subs),
+    [["k"], ["k"], ["k"]],
+  );
   await tick(60_000);
   assert.equal(calls.length, 3, "applied: nothing more is sent");
 });
@@ -148,7 +178,10 @@ test("FE-S7: a retry for a superseded stream is dropped and the new hello subscr
   await tick(1);
   assert.equal(calls[1].url, "/api/stream/new");
   await tick(60_000);
-  assert.deepEqual(calls.map((c) => c.url), ["/api/stream/old", "/api/stream/new"]);
+  assert.deepEqual(
+    calls.map((c) => c.url),
+    ["/api/stream/old", "/api/stream/new"],
+  );
 });
 
 test("FE-S8: a thrown fetch backs off instead of retrying every second", async (t) => {
@@ -165,7 +198,12 @@ test("FE-S8: a thrown fetch backs off instead of retrying every second", async (
 });
 
 test("FE-S9: a re-selected key whose reopen request failed is reopened by the retry", async (t) => {
-  const { stream, calls, tick } = setup(t, [{ status: 200 }, { status: 429 }, { status: 200 }, { status: 200 }]);
+  const { stream, calls, tick } = setup(t, [
+    { status: 200 },
+    { status: 429 },
+    { status: 200 },
+    { status: 200 },
+  ]);
   stream.set("agent", "k");
   stream.start();
   Source.latest.hello("s1");
@@ -176,7 +214,11 @@ test("FE-S9: a re-selected key whose reopen request failed is reopened by the re
   assert.equal(calls.length, 2, "request without the key failed");
   assert.deepEqual(calls[1].subs, []);
   await tick(1000);
-  assert.deepEqual(calls.slice(2).map((c) => c.subs), [[], ["k"]], "the key is dropped and re-added once more");
+  assert.deepEqual(
+    calls.slice(2).map((c) => c.subs),
+    [[], ["k"]],
+    "the key is dropped and re-added once more",
+  );
 });
 
 test("FE-S10: stop() cancels a pending reconnect; no EventSource is opened afterwards", async (t) => {
@@ -225,10 +267,16 @@ function gatedFirstPut(outcome: "ok" | "429" | "throw") {
   const urls: string[] = [];
   globalThis.fetch = (async (url: string) => {
     urls.push(url);
-    if (urls.length > 1) return { ok: true, status: 200, headers: { get: () => null }, text: async () => "" };
+    if (urls.length > 1)
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => "" };
     await gate;
     if (outcome === "throw") throw new TypeError("network down");
-    return { ok: outcome === "ok", status: outcome === "ok" ? 200 : 429, headers: { get: () => null }, text: async () => "" };
+    return {
+      ok: outcome === "ok",
+      status: outcome === "ok" ? 200 : 429,
+      headers: { get: () => null },
+      text: async () => "",
+    };
   }) as never;
   return { urls, release };
 }
@@ -250,7 +298,13 @@ for (const outcome of ["ok", "429", "throw"] as const)
   });
 
 test("FE-S14: the retry delay starts over after a PUT succeeds", async (t) => {
-  const { stream, calls, tick } = setup(t, [{ status: 429 }, { status: 429 }, { status: 200 }, { status: 429 }, { status: 200 }]);
+  const { stream, calls, tick } = setup(t, [
+    { status: 429 },
+    { status: 429 },
+    { status: 200 },
+    { status: 429 },
+    { status: 200 },
+  ]);
   stream.set("agent", "k");
   stream.start();
   Source.latest.hello("s1");

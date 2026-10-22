@@ -65,11 +65,17 @@ const emit = defineEmits<{ newSession: [] }>();
     <span class="topbar-sep" aria-hidden="true"></span>
     <div class="daemon" data-testid="topbar-stats">
       <span class="dot" :class="{ off: !onlineCount }" aria-hidden="true"></span>
-      <span class="network-summary" :title="`${onlineCount} of ${network.devices.value.length} devices online`"
+      <span
+        class="network-summary"
+        :title="`${onlineCount} of ${network.devices.value.length} devices online`"
         ><Network :size="16" />{{ onlineCount }} of {{ network.devices.value.length }} online</span
       ><span class="sep" aria-hidden="true">·</span
-      ><span><b>{{ sessionCount }}</b> sessions</span><span class="sep" aria-hidden="true">·</span
-      ><span><b>{{ agentCount }}</b> agents</span>
+      ><span
+        ><b>{{ sessionCount }}</b> sessions</span
+      ><span class="sep" aria-hidden="true">·</span
+      ><span
+        ><b>{{ agentCount }}</b> agents</span
+      >
     </div>
     <div class="top-actions">
       <span class="chip connection" :class="{ accent: streamState === 'live' }"

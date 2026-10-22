@@ -15,7 +15,10 @@ import type { WebSocket as WsSocket } from "ws";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
 import { Audit } from "../apps/dpi-playground-hub/src/audit.js";
 import { TunnelServer } from "../apps/dpi-playground-hub/src/tunnel.js";
-import { TunnelDispatcher, TunnelTransport } from "../apps/dpi-playground-hub/src/tunnel-transport.js";
+import {
+  TunnelDispatcher,
+  TunnelTransport,
+} from "../apps/dpi-playground-hub/src/tunnel-transport.js";
 import { DeviceMonitor } from "../apps/dpi-playground-hub/src/monitor.js";
 import { StreamMux } from "../apps/dpi-playground-hub/src/mux.js";
 
@@ -40,7 +43,11 @@ async function setup() {
   const audit = new Audit(registry);
   const tunnel = new TunnelServer(registry, audit, HUB_ID);
   const dispatcher = new TunnelDispatcher(tunnel, { audit });
-  const token = "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+  const token =
+    "dpt_" +
+    Buffer.from(randomUUID() + randomUUID())
+      .toString("base64url")
+      .slice(0, 43);
   const epoch = randomUUID();
   const t0 = Date.now();
   registry.db
@@ -77,7 +84,9 @@ async function setup() {
   };
   const connectDevice = async (): Promise<void> => {
     const { WebSocket } = await import("ws");
-    const ws = new WebSocket(`ws://127.0.0.1:${hubPort}/api/tunnel`, { headers: { authorization: `Bearer ${token}` } }) as WsSocket;
+    const ws = new WebSocket(`ws://127.0.0.1:${hubPort}/api/tunnel`, {
+      headers: { authorization: `Bearer ${token}` },
+    }) as WsSocket;
     device.ws = ws;
     // A device's subscriptions belong to one connection: a reconnect starts with none (T-7 cuts a sender that names the old ones).
     device.subs.clear();
@@ -85,7 +94,15 @@ async function setup() {
     ws.on("message", (d) => {
       const msg = JSON.parse(d.toString());
       if (msg.type === "rest-request" && msg.path === "/v1/device") {
-        ws.send(JSON.stringify({ type: "rest-response", reqId: msg.reqId, status: 200, contentType: "application/json", body: JSON.stringify({ apiVersion: 1, uid: UID, name: "R Dev" }) }));
+        ws.send(
+          JSON.stringify({
+            type: "rest-response",
+            reqId: msg.reqId,
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ apiVersion: 1, uid: UID, name: "R Dev" }),
+          }),
+        );
         return;
       }
       if (msg.type === "control" && msg.action === "subscribe") {
@@ -100,13 +117,33 @@ async function setup() {
     });
     device.broadcast = (frame) => {
       for (const id of device.subs.keys())
-        ws.send(JSON.stringify({ type: "tunnel-data", frame: frame as Record<string, unknown>, subscriptionId: id, sub: device.subs.get(id) }));
+        ws.send(
+          JSON.stringify({
+            type: "tunnel-data",
+            frame: frame as Record<string, unknown>,
+            subscriptionId: id,
+            sub: device.subs.get(id),
+          }),
+        );
     };
-    ws.send(JSON.stringify({
-      type: "pair-handshake", v: 1, deviceUid: UID, deviceId: DEVICE_ID, pairingEpoch: epoch,
-      credentialId: (registry.db.prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?").get(DEVICE_ID) as { credential_id: string }).credential_id,
-      generation: 1, apiVersion: 1, tunnelProto: 1, keyFingerprint: FINGERPRINT,
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "pair-handshake",
+        v: 1,
+        deviceUid: UID,
+        deviceId: DEVICE_ID,
+        pairingEpoch: epoch,
+        credentialId: (
+          registry.db
+            .prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?")
+            .get(DEVICE_ID) as { credential_id: string }
+        ).credential_id,
+        generation: 1,
+        apiVersion: 1,
+        tunnelProto: 1,
+        keyFingerprint: FINGERPRINT,
+      }),
+    );
     await new Promise<void>((d) => ws.once("message", () => d())); // hello
   };
   await connectDevice();
@@ -128,7 +165,9 @@ async function setup() {
     try {
       res.json(mux.subscribe(String(req.params.streamId), req.body?.subs));
     } catch (e) {
-      res.status((e as { status?: number }).status ?? 400).json({ error: { code: "invalid", message: (e as Error).message } });
+      res
+        .status((e as { status?: number }).status ?? 400)
+        .json({ error: { code: "invalid", message: (e as Error).message } });
     }
   });
   const apiServer = createServer(app);
@@ -150,14 +189,18 @@ async function setup() {
 
   // Monitor must be online before mux readers attach (they wait for online).
   const onlineBy = Date.now() + 15_000;
-  while (Date.now() < onlineBy && monitor.state(DEVICE_ID)?.status !== "online") await new Promise((r) => setTimeout(r, 50));
-  if (monitor.state(DEVICE_ID)?.status !== "online") throw new Error("fake device never online: " + JSON.stringify(monitor.state(DEVICE_ID)));
+  while (Date.now() < onlineBy && monitor.state(DEVICE_ID)?.status !== "online")
+    await new Promise((r) => setTimeout(r, 50));
+  if (monitor.state(DEVICE_ID)?.status !== "online")
+    throw new Error("fake device never online: " + JSON.stringify(monitor.state(DEVICE_ID)));
 
   return { base, registry, device, mux, dispatcher, monitor, connectDevice, cleanup };
 }
 
 /** Open a browser SSE tab; returns streamId + an async frame iterator. */
-async function openTab(base: string): Promise<{ streamId: string; frames: () => AsyncGenerator<any, any, unknown> }> {
+async function openTab(
+  base: string,
+): Promise<{ streamId: string; frames: () => AsyncGenerator<any, any, unknown> }> {
   const res = await fetch(`${base}/api/stream`);
   assert.equal(res.status, 200);
   const reader = (res.body as ReadableStream<Uint8Array>).getReader();
@@ -174,7 +217,7 @@ async function openTab(base: string): Promise<{ streamId: string; frames: () => 
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, { stream: true });
         let idx: number;
         while ((idx = buffer.indexOf("\n\n")) >= 0) {
           const block = buffer.slice(0, idx);
@@ -223,7 +266,8 @@ test("multi-tab: own upstream per tab, late join gets its own snapshot first, un
     });
     // device now sees monitor + tab A subscriptions
     const subBy = Date.now() + 10_000;
-    while (Date.now() < subBy && f.device.subscribes.length < 2) await new Promise((r) => setTimeout(r, 50));
+    while (Date.now() < subBy && f.device.subscribes.length < 2)
+      await new Promise((r) => setTimeout(r, 50));
     assert.equal(f.device.subscribes.length, 2); // monitor /v1/events + tab A
     f.device.broadcast({ type: "tree", tree: { v: 1 } });
 
@@ -235,7 +279,8 @@ test("multi-tab: own upstream per tab, late join gets its own snapshot first, un
       body: JSON.stringify({ subs: [`${DEVICE_ID}/device`] }),
     });
     const threeBy = Date.now() + 10_000;
-    while (Date.now() < threeBy && f.device.subscribes.length < 3) await new Promise((r) => setTimeout(r, 50));
+    while (Date.now() < threeBy && f.device.subscribes.length < 3)
+      await new Promise((r) => setTimeout(r, 50));
     assert.equal(f.device.subscribes.length, 3);
     // new subscriptionId (never reused)
     assert.notEqual(f.device.subscribes[2].subscriptionId, f.device.subscribes[1].subscriptionId);
@@ -260,7 +305,8 @@ test("multi-tab: own upstream per tab, late join gets its own snapshot first, un
       body: JSON.stringify({ subs: [] }),
     });
     const unsubBy = Date.now() + 5000;
-    while (Date.now() < unsubBy && f.device.unsubscribes.length < 1) await new Promise((r) => setTimeout(r, 30));
+    while (Date.now() < unsubBy && f.device.unsubscribes.length < 1)
+      await new Promise((r) => setTimeout(r, 30));
     assert.equal(f.device.unsubscribes.length, 1);
     f.device.broadcast({ type: "tree", tree: { v: 3 } });
     const bIter2 = b.frames();
@@ -296,7 +342,8 @@ test("tunnel reconnect: browser streamId kept, fresh subscriptionId on the new c
     // reconnect a NEW fake device connection (the device daemon reconnects)
     await f.connectDevice();
     const reconnectBy = Date.now() + 10_000;
-    while (Date.now() < reconnectBy && f.device.subscribes.length <= 2) await new Promise((r) => setTimeout(r, 50));
+    while (Date.now() < reconnectBy && f.device.subscribes.length <= 2)
+      await new Promise((r) => setTimeout(r, 50));
     const secondSub = f.device.subscribes.at(-1)!.subscriptionId;
     assert.notEqual(secondSub, firstSub, "new subscriptionId per lifecycle");
     // data flows again to the SAME browser stream (skip any disconnected note)
@@ -323,7 +370,9 @@ test("reader caps: >20 keys rejected 400; 128th device reader faulted alone, exi
     const tooMany = await fetch(`${f.base}/api/stream/${tab.streamId}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ subs: Array.from({ length: 21 }, (_, i) => `${DEVICE_ID}/session/s${i}`) }),
+      body: JSON.stringify({
+        subs: Array.from({ length: 21 }, (_, i) => `${DEVICE_ID}/session/s${i}`),
+      }),
     });
     assert.equal(tooMany.status, 400);
 
@@ -369,7 +418,10 @@ test("reader caps: >20 keys rejected 400; 128th device reader faulted alone, exi
       new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 3000)),
     ]);
     assert.notEqual(kept, "timeout", "existing readers must survive a cap rejection");
-    assert.equal((kept as { value: { frame: { frame: { tree: { v: number } } } } }).value.frame.tree.v, 42);
+    assert.equal(
+      (kept as { value: { frame: { frame: { tree: { v: number } } } } }).value.frame.tree.v,
+      42,
+    );
   } finally {
     await f.cleanup();
   }

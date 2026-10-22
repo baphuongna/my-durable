@@ -35,24 +35,52 @@ test("LanTransport.request: 200 JSON, 401 passthrough, offline for dead URL, una
   const token = newToken();
   const device = await bootServer({ home, startDirs: join(home, "work"), token });
   try {
-    const ok = new LanTransport({ ...lanRow({ url: device.base, token }), transport: "lan" } as never);
-    const probe = await ok.request({ method: "GET", path: "/v1/device" }, new AbortController().signal);
+    const ok = new LanTransport({
+      ...lanRow({ url: device.base, token }),
+      transport: "lan",
+    } as never);
+    const probe = await ok.request(
+      { method: "GET", path: "/v1/device" },
+      new AbortController().signal,
+    );
     assert.equal(probe.status, 200);
     const info = JSON.parse(probe.body as string);
     assert.equal(info.apiVersion, 1);
 
     // wrong token → device answers 401; transport passes the status through
-    const wrong = new LanTransport({ id: "x", transport: "lan", url: device.base, token: newToken() } as never);
-    const unauth = await wrong.request({ method: "GET", path: "/v1/device" }, new AbortController().signal);
+    const wrong = new LanTransport({
+      id: "x",
+      transport: "lan",
+      url: device.base,
+      token: newToken(),
+    } as never);
+    const unauth = await wrong.request(
+      { method: "GET", path: "/v1/device" },
+      new AbortController().signal,
+    );
     assert.equal(unauth.status, 401);
 
     // dead URL → DpiError offline (monitor's offline mapping input)
-    const dead = new LanTransport({ ...lanRow({ url: "http://127.0.0.1:9" }), transport: "lan" } as never);
-    await assert.rejects(dead.request({ method: "GET", path: "/v1/device" }, new AbortController().signal), (e: unknown) => (e as DpiError).code === "offline");
+    const dead = new LanTransport({
+      ...lanRow({ url: "http://127.0.0.1:9" }),
+      transport: "lan",
+    } as never);
+    await assert.rejects(
+      dead.request({ method: "GET", path: "/v1/device" }, new AbortController().signal),
+      (e: unknown) => (e as DpiError).code === "offline",
+    );
 
     // unavailable → unauthorized signal, not offline
-    const noTok = new LanTransport({ id: "x", transport: "lan", url: device.base, token: null } as never);
-    await assert.rejects(noTok.request({ method: "GET", path: "/v1/device" }, new AbortController().signal), (e: unknown) => (e as DpiError).code === "unauthorized");
+    const noTok = new LanTransport({
+      id: "x",
+      transport: "lan",
+      url: device.base,
+      token: null,
+    } as never);
+    await assert.rejects(
+      noTok.request({ method: "GET", path: "/v1/device" }, new AbortController().signal),
+      (e: unknown) => (e as DpiError).code === "unauthorized",
+    );
   } finally {
     await device.stop();
     await rm(home, { recursive: true, force: true });
@@ -64,12 +92,25 @@ test("LanTransport.request forwards body + idempotency-key (backend dedupes)", a
   const token = newToken();
   const device = await bootServer({ home, startDirs: join(home, "work"), token });
   try {
-    const t = new LanTransport({ ...lanRow({ url: device.base, token }), transport: "lan" } as never);
+    const t = new LanTransport({
+      ...lanRow({ url: device.base, token }),
+      transport: "lan",
+    } as never);
     const ctl = new AbortController();
     const key = `idem-${Date.now()}`;
-    const body = { name: "tr-adapter", cwd: join(home, "work"), model: { provider: "faux", modelId: "echo" } };
-    const a = await t.request({ method: "POST", path: "/v1/sessions", body, idempotencyKey: key }, ctl.signal);
-    const b = await t.request({ method: "POST", path: "/v1/sessions", body, idempotencyKey: key }, ctl.signal);
+    const body = {
+      name: "tr-adapter",
+      cwd: join(home, "work"),
+      model: { provider: "faux", modelId: "echo" },
+    };
+    const a = await t.request(
+      { method: "POST", path: "/v1/sessions", body, idempotencyKey: key },
+      ctl.signal,
+    );
+    const b = await t.request(
+      { method: "POST", path: "/v1/sessions", body, idempotencyKey: key },
+      ctl.signal,
+    );
     assert.equal(a.status, 201);
     assert.equal(b.status, 201);
     assert.deepEqual(JSON.parse(a.body as string).id, JSON.parse(b.body as string).id); // idempotent dedupe
@@ -85,7 +126,10 @@ test("LanTransport.watch yields hello then frames; unavailable throws unauthoriz
   const token = newToken();
   const device = await bootServer({ home, startDirs: join(home, "work"), token });
   try {
-    const t = new LanTransport({ ...lanRow({ url: device.base, token }), transport: "lan" } as never);
+    const t = new LanTransport({
+      ...lanRow({ url: device.base, token }),
+      transport: "lan",
+    } as never);
     const ctl = new AbortController();
     const iter = t.watch({ path: "/v1/events", consumerId: "test" }, ctl.signal);
     const first = await iter.next();
@@ -93,10 +137,19 @@ test("LanTransport.watch yields hello then frames; unavailable throws unauthoriz
     ctl.abort();
     await iter.return?.(undefined as never);
 
-    const noTok = new LanTransport({ id: "x", transport: "lan", url: device.base, token: null } as never);
+    const noTok = new LanTransport({
+      id: "x",
+      transport: "lan",
+      url: device.base,
+      token: null,
+    } as never);
     await assert.rejects(
       (async () => {
-        for await (const _ of noTok.watch({ path: "/v1/events", consumerId: "test" }, new AbortController().signal)) void _;
+        for await (const _ of noTok.watch(
+          { path: "/v1/events", consumerId: "test" },
+          new AbortController().signal,
+        ))
+          void _;
       })(),
       (e: unknown) => (e as DpiError).code === "unauthorized",
     );

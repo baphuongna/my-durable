@@ -43,7 +43,11 @@ async function setup() {
        VALUES(?,?,?,?,'paired',1,?,?,?)`,
     )
     .run(DEVICE_ID, epoch, "pub", FINGERPRINT, t0, t0, t0);
-  const g1Token = "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+  const g1Token =
+    "dpt_" +
+    Buffer.from(randomUUID() + randomUUID())
+      .toString("base64url")
+      .slice(0, 43);
   registry.db
     .prepare(
       `INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at,confirmed_at)
@@ -59,23 +63,39 @@ async function setup() {
   const notices: any[] = [];
   let deviceWs: WsClient | undefined;
   const connectDevice = async (token: string, credEpoch: string): Promise<void> => {
-    const ws = new WsClient(`ws://127.0.0.1:${port}/api/tunnel`, { headers: { authorization: `Bearer ${token}` } });
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/tunnel`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
     deviceWs = ws;
     await new Promise<void>((d, rej) => {
       ws.once("open", d);
-      ws.once("unexpected-response", (_q, res) => rej(Object.assign(new Error(`upgrade ${res.statusCode}`), { status: res.statusCode })));
+      ws.once("unexpected-response", (_q, res) =>
+        rej(Object.assign(new Error(`upgrade ${res.statusCode}`), { status: res.statusCode })),
+      );
     });
     ws.on("message", (d) => {
       const msg = JSON.parse(d.toString());
       if (msg.type === "control" && msg.action === "revoked") notices.push(msg.notice);
     });
     const credId = (
-      registry.db.prepare("SELECT credential_id FROM tunnel_credentials WHERE token_hash=?").get(sha(token)) as { credential_id: string }
+      registry.db
+        .prepare("SELECT credential_id FROM tunnel_credentials WHERE token_hash=?")
+        .get(sha(token)) as { credential_id: string }
     ).credential_id;
-    ws.send(JSON.stringify({
-      type: "pair-handshake", v: 1, deviceUid: UID, deviceId: DEVICE_ID, pairingEpoch: credEpoch,
-      credentialId: credId, generation: 1, apiVersion: 1, tunnelProto: 1, keyFingerprint: FINGERPRINT,
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "pair-handshake",
+        v: 1,
+        deviceUid: UID,
+        deviceId: DEVICE_ID,
+        pairingEpoch: credEpoch,
+        credentialId: credId,
+        generation: 1,
+        apiVersion: 1,
+        tunnelProto: 1,
+        keyFingerprint: FINGERPRINT,
+      }),
+    );
     await new Promise<void>((d) => ws.once("message", () => d()));
   };
   await connectDevice(g1Token, epoch);
@@ -83,7 +103,11 @@ async function setup() {
   /** Mint a fresh pairing epoch + credential directly (re-pair). */
   const repair = (): string => {
     const newEpoch = randomUUID();
-    const token = "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+    const token =
+      "dpt_" +
+      Buffer.from(randomUUID() + randomUUID())
+        .toString("base64url")
+        .slice(0, 43);
     const t = Date.now();
     registry.db
       .prepare(
@@ -111,24 +135,60 @@ async function setup() {
   };
 
   /** What main.ts does after a committed revoke: notice + immediate cut. */
-  const deliverRevoke = (deviceId: string, epoch: string, reason: "user" | "compromise" = "user") => {
+  const deliverRevoke = (
+    deviceId: string,
+    epoch: string,
+    reason: "user" | "compromise" = "user",
+  ) => {
     tunnel.send(deviceId, {
       type: "control",
       action: "revoked",
-      notice: { type: "pair.revoke", v: 1, deviceId, pairingEpoch: epoch, reason, revokedAt: Date.now() },
+      notice: {
+        type: "pair.revoke",
+        v: 1,
+        deviceId,
+        pairingEpoch: epoch,
+        reason,
+        revokedAt: Date.now(),
+      },
     });
     tunnel.closeConnection(deviceId, 1000, "pairing revoked");
   };
 
   const upgradeStatus = (token: string) =>
     new Promise<number>((done) => {
-      const ws = new WsClient(`ws://127.0.0.1:${port}/api/tunnel`, { headers: { authorization: `Bearer ${token}` } });
+      const ws = new WsClient(`ws://127.0.0.1:${port}/api/tunnel`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
       ws.on("error", () => {});
-      ws.once("unexpected-response", (_q, res) => { done(res.statusCode ?? 0); ws.close(); });
-      ws.once("open", () => { done(101); ws.close(); });
+      ws.once("unexpected-response", (_q, res) => {
+        done(res.statusCode ?? 0);
+        ws.close();
+      });
+      ws.once("open", () => {
+        done(101);
+        ws.close();
+      });
     });
 
-  return { registry, credentials, tunnel, device: { get ws() { return deviceWs!; } }, notices, connectDevice, repair, cleanup, upgradeStatus, deliverRevoke, epoch, g1Token };
+  return {
+    registry,
+    credentials,
+    tunnel,
+    device: {
+      get ws() {
+        return deviceWs!;
+      },
+    },
+    notices,
+    connectDevice,
+    repair,
+    cleanup,
+    upgradeStatus,
+    deliverRevoke,
+    epoch,
+    g1Token,
+  };
 }
 
 const until = async (fn: () => boolean, timeout = 6000, what = "cond") => {
@@ -151,11 +211,18 @@ test("revoke: durable tx kills every hash + pairing; notice delivered for the ep
       f.registry.db
         .prepare("SELECT status FROM tunnel_credentials WHERE device_id=? ORDER BY generation")
         .all(DEVICE_ID) as { status: string }[];
-    assert.ok(rows().every((c) => c.status === "revoked"), "every hash revoked");
-    const pairingRow = f.registry.db.prepare("SELECT status FROM pairings WHERE device_id=?").get(DEVICE_ID) as { status: string };
+    assert.ok(
+      rows().every((c) => c.status === "revoked"),
+      "every hash revoked",
+    );
+    const pairingRow = f.registry.db
+      .prepare("SELECT status FROM pairings WHERE device_id=?")
+      .get(DEVICE_ID) as { status: string };
     assert.equal(pairingRow.status, "revoked");
     // audit row
-    const ev = f.registry.db.prepare("SELECT detail_json FROM events WHERE action='pair.revoke'").all() as { detail_json: string }[];
+    const ev = f.registry.db
+      .prepare("SELECT detail_json FROM events WHERE action='pair.revoke'")
+      .all() as { detail_json: string }[];
     assert.equal(ev.length, 1);
     // live transport cut within 1s + notice delivered BEFORE the cut
     await until(() => f.tunnel.activeCount() === 0, 1000, "transport cut");
@@ -178,7 +245,16 @@ test("revoke: durable tx kills every hash + pairing; notice delivered for the ep
     // old token STILL revoked after re-pair
     assert.equal(await f.upgradeStatus(f.g1Token), 401);
     // new token works
-    await f.connectDevice(newToken, randomUUID() === "" ? "" : (f.registry.db.prepare("SELECT pairing_epoch FROM pairings WHERE device_id=?").get(DEVICE_ID) as { pairing_epoch: string }).pairing_epoch);
+    await f.connectDevice(
+      newToken,
+      randomUUID() === ""
+        ? ""
+        : (
+            f.registry.db
+              .prepare("SELECT pairing_epoch FROM pairings WHERE device_id=?")
+              .get(DEVICE_ID) as { pairing_epoch: string }
+          ).pairing_epoch,
+    );
     assert.equal(f.tunnel.activeCount(), 1);
   } finally {
     await f.cleanup();
@@ -196,11 +272,22 @@ test("stale notice guard: a notice for a superseded epoch never affects the new 
     f.credentials.revoke(DEVICE_ID, "user", "admin:test");
     f.deliverRevoke(DEVICE_ID, oldEpoch);
     const newToken = f.repair();
-    await f.connectDevice(newToken, (f.registry.db.prepare("SELECT pairing_epoch FROM pairings WHERE device_id=?").get(DEVICE_ID) as { pairing_epoch: string }).pairing_epoch);
+    await f.connectDevice(
+      newToken,
+      (
+        f.registry.db
+          .prepare("SELECT pairing_epoch FROM pairings WHERE device_id=?")
+          .get(DEVICE_ID) as { pairing_epoch: string }
+      ).pairing_epoch,
+    );
     await until(() => f.notices.length === 1, 1000, "first notice");
     assert.equal(f.notices[0].pairingEpoch, oldEpoch, "only the revoked epoch got a notice");
     // revoke AGAIN (the new pairing) → notice for the NEW epoch
-    const newEpoch2 = (f.registry.db.prepare("SELECT pairing_epoch FROM pairings WHERE device_id=?").get(DEVICE_ID) as { pairing_epoch: string }).pairing_epoch;
+    const newEpoch2 = (
+      f.registry.db
+        .prepare("SELECT pairing_epoch FROM pairings WHERE device_id=?")
+        .get(DEVICE_ID) as { pairing_epoch: string }
+    ).pairing_epoch;
     f.credentials.revoke(DEVICE_ID, "compromise", "admin:test");
     f.deliverRevoke(DEVICE_ID, newEpoch2, "compromise");
     await until(() => f.tunnel.activeCount() === 0, 1000, "cut");
@@ -219,7 +306,9 @@ test("offline revoke: no live transport needed — rows revoked, old bearer 401 
     await until(() => f.tunnel.activeCount() === 0, 3000, "offline");
     f.credentials.revoke(DEVICE_ID, "user", "admin:test");
     assert.equal(await f.upgradeStatus(f.g1Token), 401);
-    const pairingRow = f.registry.db.prepare("SELECT status FROM pairings WHERE device_id=?").get(DEVICE_ID) as { status: string };
+    const pairingRow = f.registry.db
+      .prepare("SELECT status FROM pairings WHERE device_id=?")
+      .get(DEVICE_ID) as { status: string };
     assert.equal(pairingRow.status, "revoked");
     // double revoke → clean 404, no crash, tombstones intact
     assert.throws(() => f.credentials.revoke(DEVICE_ID, "user", "admin:test"), /No active pairing/);
@@ -237,11 +326,23 @@ test("cancel/issue race: cancelling an approved code answers 410 on verify (neve
     const tokenIssue = {
       deviceId: DEVICE_ID,
       pairingEpoch: f.epoch,
-      credentialId: (f.registry.db.prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?").get(DEVICE_ID) as { credential_id: string }).credential_id,
+      credentialId: (
+        f.registry.db
+          .prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?")
+          .get(DEVICE_ID) as { credential_id: string }
+      ).credential_id,
     };
-    assert.equal(f.credentials.receiptStillValid(tokenIssue), true, "pre-revoke the receipt is valid");
+    assert.equal(
+      f.credentials.receiptStillValid(tokenIssue),
+      true,
+      "pre-revoke the receipt is valid",
+    );
     f.credentials.revoke(DEVICE_ID, "user", "admin:test");
-    assert.equal(f.credentials.receiptStillValid(tokenIssue), false, "revoked pairing invalidates the cached receipt");
+    assert.equal(
+      f.credentials.receiptStillValid(tokenIssue),
+      false,
+      "revoked pairing invalidates the cached receipt",
+    );
     assert.equal(f.credentials.receiptFailure(tokenIssue), "invalid");
   } finally {
     await f.cleanup();

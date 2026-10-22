@@ -97,7 +97,10 @@ export class RotationService {
    * A second, earlier timer is the ONE reminder a still-pending rotation gets on a live
    * connection before its plaintext is forgotten.
    */
-  private cachePut(rotationId: string, entry: Omit<CacheEntry, "expiresAt" | "timer" | "reminder">): void {
+  private cachePut(
+    rotationId: string,
+    entry: Omit<CacheEntry, "expiresAt" | "timer" | "reminder">,
+  ): void {
     this.cacheForget(rotationId);
     const cap = this.hooks.cacheCapacity ?? 256;
     while (this.cache.size >= cap) {
@@ -108,7 +111,10 @@ export class RotationService {
     const ttl = this.hooks.cacheTtlMs ?? 120_000;
     const timer = setTimeout(() => this.cacheForget(rotationId), ttl);
     timer.unref();
-    const reminder = setTimeout(() => this.redeliverIfPending(rotationId), Math.max(250, ttl - 5_000));
+    const reminder = setTimeout(
+      () => this.redeliverIfPending(rotationId),
+      Math.max(250, ttl - 5_000),
+    );
     reminder.unref();
     this.cache.set(rotationId, { ...entry, expiresAt: this.now() + ttl, timer, reminder });
   }
@@ -144,7 +150,14 @@ export class RotationService {
       .get(entry.deviceId) as { rotation_id: string | null } | undefined;
     if (row?.rotation_id !== rotationId) return; // acked, replaced or revoked meanwhile
     if (!this.server.hasConnection(entry.deviceId)) return; // offline: the handshake path owns recovery
-    this.deliver(entry.deviceId, rotationId, entry.credentialId, entry.generation, entry.epoch, entry.token);
+    this.deliver(
+      entry.deviceId,
+      rotationId,
+      entry.credentialId,
+      entry.generation,
+      entry.epoch,
+      entry.token,
+    );
   }
 
   /** Hub shutdown: drop every cached plaintext and its timer. */
@@ -169,20 +182,29 @@ export class RotationService {
    * rotation_requested_at — no plaintext is minted until a connection is live
    * (the start happens on its next handshake).
    */
-  startRotation(deviceId: string, actor: string): { ok: true; mode: "online" | "requested" } | { ok: false; code: RotationRefusal; error: string } {
+  startRotation(
+    deviceId: string,
+    actor: string,
+  ):
+    | { ok: true; mode: "online" | "requested" }
+    | { ok: false; code: RotationRefusal; error: string } {
     const device = this.registry.get(deviceId);
     if (!device) return { ok: false, code: "unknown_device", error: `No device ${deviceId}` };
-    if (device.transport !== "tunnel") return { ok: false, code: "not_tunnel", error: `${deviceId} is not a tunnel device` };
+    if (device.transport !== "tunnel")
+      return { ok: false, code: "not_tunnel", error: `${deviceId} is not a tunnel device` };
     if (!this.server.hasConnection(deviceId)) {
       // "Requested while offline" is recorded against a live pairing only — an unpaired
       // device has nothing to rotate, and an ok:true would be a lie about what happened.
       const paired = this.registry.db
         .prepare("SELECT 1 AS x FROM pairings WHERE device_id=? AND status='paired'")
         .get(deviceId) as { x: 1 } | undefined;
-      if (!paired) return { ok: false, code: "no_pairing", error: `${deviceId} has no active pairing` };
+      if (!paired)
+        return { ok: false, code: "no_pairing", error: `${deviceId} has no active pairing` };
       this.audit.withTransaction(() => {
         this.registry.db
-          .prepare("UPDATE pairings SET rotation_requested_at=? WHERE device_id=? AND status='paired'")
+          .prepare(
+            "UPDATE pairings SET rotation_requested_at=? WHERE device_id=? AND status='paired'",
+          )
           .run(this.now(), deviceId);
         this.audit.append({
           actor,
@@ -198,12 +220,25 @@ export class RotationService {
   }
 
   /** Mint G+1, swap current→previous, remember the rotation, deliver. */
-  private rotateOnline(deviceId: string, actor: string): { ok: true; mode: "online" } | { ok: false; code: RotationRefusal; error: string } {
+  private rotateOnline(
+    deviceId: string,
+    actor: string,
+  ): { ok: true; mode: "online" } | { ok: false; code: RotationRefusal; error: string } {
     const pairing = this.registry.db
-      .prepare("SELECT pairing_epoch, credential_generation, rotation_id FROM pairings WHERE device_id=? AND status='paired'")
-      .get(deviceId) as { pairing_epoch: string; credential_generation: number; rotation_id: string | null } | undefined;
-    if (!pairing) return { ok: false, code: "no_pairing", error: `${deviceId} has no active pairing` };
-    if (pairing.rotation_id) return { ok: false, code: "in_flight", error: `${deviceId} already has a rotation in flight` };
+      .prepare(
+        "SELECT pairing_epoch, credential_generation, rotation_id FROM pairings WHERE device_id=? AND status='paired'",
+      )
+      .get(deviceId) as
+      | { pairing_epoch: string; credential_generation: number; rotation_id: string | null }
+      | undefined;
+    if (!pairing)
+      return { ok: false, code: "no_pairing", error: `${deviceId} has no active pairing` };
+    if (pairing.rotation_id)
+      return {
+        ok: false,
+        code: "in_flight",
+        error: `${deviceId} already has a rotation in flight`,
+      };
     const generation = pairing.credential_generation + 1;
     const credentialId = randomUUID();
     const rotationId = randomUUID();
@@ -212,7 +247,9 @@ export class RotationService {
     const now = this.now();
     this.audit.withTransaction(() => {
       this.registry.db
-        .prepare("UPDATE tunnel_credentials SET status='previous', retired_at=NULL WHERE device_id=? AND status='current'")
+        .prepare(
+          "UPDATE tunnel_credentials SET status='previous', retired_at=NULL WHERE device_id=? AND status='current'",
+        )
         .run(deviceId);
       this.registry.db
         .prepare(
@@ -232,7 +269,13 @@ export class RotationService {
         detail: { deviceId, rotationId, credentialId, generation },
       });
     });
-    this.cachePut(rotationId, { deviceId, token, credentialId, generation, epoch: pairing.pairing_epoch });
+    this.cachePut(rotationId, {
+      deviceId,
+      token,
+      credentialId,
+      generation,
+      epoch: pairing.pairing_epoch,
+    });
     this.hooks.onChange?.();
     // A refused send is not fatal: the pre-TTL reminder (cachePut) redelivers while the
     // connection stays live, and the reconnect path owns everything after that.
@@ -240,7 +283,14 @@ export class RotationService {
     return { ok: true, mode: "online" };
   }
 
-  private deliver(deviceId: string, rotationId: string, credentialId: string, generation: number, epoch: string, token: string): boolean {
+  private deliver(
+    deviceId: string,
+    rotationId: string,
+    credentialId: string,
+    generation: number,
+    epoch: string,
+    token: string,
+  ): boolean {
     const connectionId = this.server.connectionIdOf(deviceId); // read first: a failed send may tear the connection down
     const sent = this.server.send(deviceId, {
       type: "control",
@@ -309,7 +359,10 @@ export class RotationService {
             actor: "hub",
             action: "rotation.stale_cleared",
             outcome: "ok",
-            detail: { deviceId: conn.deviceId, reason: "rotation target predates the current pairing epoch" },
+            detail: {
+              deviceId: conn.deviceId,
+              reason: "rotation target predates the current pairing epoch",
+            },
           });
         });
         this.cacheForget(pairing.rotation_id);
@@ -329,8 +382,16 @@ export class RotationService {
     if (!pairing.rotation_id || !pairing.rotation_target_credential_id) return;
 
     // IMPLICIT ACK: the device came back speaking the TARGET credential.
-    if (conn.credentialId === pairing.rotation_target_credential_id && conn.generation === pairing.credential_generation) {
-      this.completeRotation(conn.deviceId, pairing.rotation_id, pairing.rotation_target_credential_id, "implicit_ack");
+    if (
+      conn.credentialId === pairing.rotation_target_credential_id &&
+      conn.generation === pairing.credential_generation
+    ) {
+      this.completeRotation(
+        conn.deviceId,
+        pairing.rotation_id,
+        pairing.rotation_target_credential_id,
+        "implicit_ack",
+      );
       return;
     }
 
@@ -339,11 +400,22 @@ export class RotationService {
     // the next generation (previous stays previous — the device lives on it).
     const cached = pairing.rotation_id ? this.cacheGet(pairing.rotation_id) : undefined;
     if (cached) {
-      this.deliver(conn.deviceId, pairing.rotation_id, cached.credentialId, cached.generation, cached.epoch, cached.token);
+      this.deliver(
+        conn.deviceId,
+        pairing.rotation_id,
+        cached.credentialId,
+        cached.generation,
+        cached.epoch,
+        cached.token,
+      );
       return;
     }
     if (conn.credentialId !== pairing.rotation_target_credential_id) {
-      this.recoverFromCacheLoss(conn.deviceId, pairing.rotation_id, pairing.rotation_target_credential_id);
+      this.recoverFromCacheLoss(
+        conn.deviceId,
+        pairing.rotation_id,
+        pairing.rotation_target_credential_id,
+      );
     }
   }
 
@@ -353,10 +425,15 @@ export class RotationService {
    * every reconnect after day 90 rotate again. `confirmed_at` is written when a rotation completes;
    * a credential minted before that column was maintained falls back to its creation time.
    */
-  private rotationDue(deviceId: string, pairing: { pairing_epoch: string; paired_at: number; rotation_requested_at: number | null }): boolean {
+  private rotationDue(
+    deviceId: string,
+    pairing: { pairing_epoch: string; paired_at: number; rotation_requested_at: number | null },
+  ): boolean {
     if (pairing.rotation_requested_at !== null) return true;
     const current = this.registry.db
-      .prepare("SELECT COALESCE(confirmed_at, created_at) AS held_since FROM tunnel_credentials WHERE device_id=? AND pairing_epoch=? AND status='current'")
+      .prepare(
+        "SELECT COALESCE(confirmed_at, created_at) AS held_since FROM tunnel_credentials WHERE device_id=? AND pairing_epoch=? AND status='current'",
+      )
       .get(deviceId, pairing.pairing_epoch) as { held_since: number } | undefined;
     const windowStart = Math.max(pairing.paired_at, current?.held_since ?? 0);
     return this.now() - windowStart >= ROTATION_INTERVAL_DAYS * 86_400_000;
@@ -367,10 +444,16 @@ export class RotationService {
    * device), keep the previous (the credential the device still holds) and
    * mint the next generation as the new target.
    */
-  private recoverFromCacheLoss(deviceId: string, oldRotationId: string | null, unconfirmedCredentialId: string | null): void {
+  private recoverFromCacheLoss(
+    deviceId: string,
+    oldRotationId: string | null,
+    unconfirmedCredentialId: string | null,
+  ): void {
     if (!oldRotationId || !unconfirmedCredentialId) return;
     const pairing = this.registry.db
-      .prepare("SELECT pairing_epoch, credential_generation FROM pairings WHERE device_id=? AND status='paired'")
+      .prepare(
+        "SELECT pairing_epoch, credential_generation FROM pairings WHERE device_id=? AND status='paired'",
+      )
       .get(deviceId) as { pairing_epoch: string; credential_generation: number } | undefined;
     if (!pairing) return;
     // Previous = generation G (device holds it); new target = G+2.
@@ -383,7 +466,9 @@ export class RotationService {
     this.audit.withTransaction(() => {
       // The unconfirmed current becomes retired (never reached the device).
       this.registry.db
-        .prepare("UPDATE tunnel_credentials SET status='retired', retired_at=? WHERE credential_id=? AND status='current'")
+        .prepare(
+          "UPDATE tunnel_credentials SET status='retired', retired_at=? WHERE credential_id=? AND status='current'",
+        )
         .run(now, unconfirmedCredentialId);
       this.registry.db
         .prepare(
@@ -400,12 +485,25 @@ export class RotationService {
         actor: "hub",
         action: "token.rotate_regenerated",
         outcome: "ok",
-        detail: { deviceId, oldRotationId: oldRotationId, rotationId, credentialId, generation, reason: "cache_loss" },
+        detail: {
+          deviceId,
+          oldRotationId: oldRotationId,
+          rotationId,
+          credentialId,
+          generation,
+          reason: "cache_loss",
+        },
       });
     });
     this.cacheForget(oldRotationId);
     this.deliveries.delete(oldRotationId);
-    this.cachePut(rotationId, { deviceId, token, credentialId, generation, epoch: pairing.pairing_epoch });
+    this.cachePut(rotationId, {
+      deviceId,
+      token,
+      credentialId,
+      generation,
+      epoch: pairing.pairing_epoch,
+    });
     this.hooks.onChange?.();
     this.deliver(deviceId, rotationId, credentialId, generation, pairing.pairing_epoch, token);
   }
@@ -414,14 +512,25 @@ export class RotationService {
 
   private onAck(
     conn: { deviceId: string; connectionId: string },
-    ack: Extract<TunnelFrame, { type: "control" }> & { action: "token-rotate-ack"; rotationId: string; credentialId: string; generation: number; pairingEpoch: string },
+    ack: Extract<TunnelFrame, { type: "control" }> & {
+      action: "token-rotate-ack";
+      rotationId: string;
+      credentialId: string;
+      generation: number;
+      pairingEpoch: string;
+    },
   ): void {
     const pairing = this.registry.db
       .prepare(
         "SELECT pairing_epoch, credential_generation, rotation_id, rotation_target_credential_id FROM pairings WHERE device_id=? AND status='paired'",
       )
       .get(conn.deviceId) as
-      | { pairing_epoch: string; credential_generation: number; rotation_id: string | null; rotation_target_credential_id: string | null }
+      | {
+          pairing_epoch: string;
+          credential_generation: number;
+          rotation_id: string | null;
+          rotation_target_credential_id: string | null;
+        }
       | undefined;
     if (!pairing || !pairing.rotation_id) return; // stale/duplicate ack: ignore
     // EXACT match required; anything else is ignored — never retire/overwrite.
@@ -439,11 +548,18 @@ export class RotationService {
   }
 
   /** One completion tx: retire previous, clear rotation, audit, drop cache. */
-  private completeRotation(deviceId: string, rotationId: string, targetCredentialId: string, via: "ack" | "implicit_ack"): void {
+  private completeRotation(
+    deviceId: string,
+    rotationId: string,
+    targetCredentialId: string,
+    via: "ack" | "implicit_ack",
+  ): void {
     const now = this.now();
     this.audit.withTransaction(() => {
       this.registry.db
-        .prepare("UPDATE tunnel_credentials SET status='retired', retired_at=? WHERE device_id=? AND status='previous'")
+        .prepare(
+          "UPDATE tunnel_credentials SET status='retired', retired_at=? WHERE device_id=? AND status='previous'",
+        )
         .run(now, deviceId);
       this.registry.db
         .prepare("UPDATE tunnel_credentials SET confirmed_at=? WHERE credential_id=?")

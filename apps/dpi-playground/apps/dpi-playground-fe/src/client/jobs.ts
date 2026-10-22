@@ -31,7 +31,11 @@ export const now = ref(Date.now());
 setInterval(() => (now.value = Date.now()), 1000);
 
 export const seconds = (ms: number) =>
-  ms < 1000 ? `${Math.max(0, Math.round(ms))}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+  ms < 1000
+    ? `${Math.max(0, Math.round(ms))}ms`
+    : ms < 60_000
+      ? `${(ms / 1000).toFixed(1)}s`
+      : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 
 export const pending = ref<string>();
 
@@ -66,9 +70,7 @@ export async function startJob(def: JobDef) {
 }
 
 export const decide = (run: JobRun, approved: boolean) =>
-  act(`decide:${run.id}`, () =>
-    agentHandle.value!.demo(`jobs/${run.id}/approval`, { approved }),
-  );
+  act(`decide:${run.id}`, () => agentHandle.value!.demo(`jobs/${run.id}/approval`, { approved }));
 
 export const stopRun = (run: JobRun) =>
   act(`stop:${run.id}`, () => sessionHandle.value!.abortTask(run.id));

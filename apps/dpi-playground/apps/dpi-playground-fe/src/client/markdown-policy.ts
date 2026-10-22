@@ -3,15 +3,54 @@
 // markdown subset (styles, forms, overlays, remote images) is an injection or phishing surface.
 
 export const ALLOWED_TAGS = [
-  "p", "br", "hr", "strong", "b", "em", "i", "del", "s", "code", "pre", "blockquote",
-  "ul", "ol", "li", "a", "h1", "h2", "h3", "h4", "h5", "h6", "small", "sub", "sup",
-  "table", "thead", "tbody", "tr", "th", "td", "img",
+  "p",
+  "br",
+  "hr",
+  "strong",
+  "b",
+  "em",
+  "i",
+  "del",
+  "s",
+  "code",
+  "pre",
+  "blockquote",
+  "ul",
+  "ol",
+  "li",
+  "a",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "small",
+  "sub",
+  "sup",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "img",
   // Only the disabled GFM task-list checkbox; anything else is removed by the attribute policy.
   "input",
 ];
 
 export const FORBIDDEN_TAGS = [
-  "form", "style", "script", "button", "select", "textarea", "iframe", "object", "embed", "svg", "math",
+  "form",
+  "style",
+  "script",
+  "button",
+  "select",
+  "textarea",
+  "iframe",
+  "object",
+  "embed",
+  "svg",
+  "math",
 ];
 
 const ATTRIBUTES: Record<string, readonly string[]> = {

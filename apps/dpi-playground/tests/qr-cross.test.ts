@@ -10,9 +10,9 @@ import { execFileSync } from "node:child_process";
 import { qrMatrix } from "../apps/dpi-playground-fe/src/client/qrcode.js";
 
 const PAYLOADS = [
-  "HELLO WORLD",                                        // v1
-  "https://hub.example.com/pair?code=AB12CD34",         // v3
-  "https://192.168.1.55:5988/pair?code=XY9Z8W7Q",       // v4
+  "HELLO WORLD", // v1
+  "https://hub.example.com/pair?code=AB12CD34", // v3
+  "https://192.168.1.55:5988/pair?code=XY9Z8W7Q", // v4
   "DPI-PAIR:0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", // v5-ish
 ];
 
@@ -36,7 +36,8 @@ function layout(version: number) {
     if (r === 6 || c === 6) return true;
     for (const ar of ALIGN[version - 1])
       for (const ac of ALIGN[version - 1]) {
-        if ((ar <= 8 && ac <= 8) || (ar <= 8 && ac >= size - 9) || (ar >= size - 9 && ac <= 8)) continue;
+        if ((ar <= 8 && ac <= 8) || (ar <= 8 && ac >= size - 9) || (ar >= size - 9 && ac <= 8))
+          continue;
         if (Math.abs(r - ar) <= 2 && Math.abs(c - ac) <= 2) return true;
       }
     return false;
@@ -68,7 +69,10 @@ print("\\n===\\n".join(out))
 `;
 
 test("QR matrices match python-qrcode (codeword bits + function modules, all masks)", () => {
-  const refOut = execFileSync("python3", ["-c", refScript, ...PAYLOADS], { encoding: "utf8", timeout: 120_000 });
+  const refOut = execFileSync("python3", ["-c", refScript, ...PAYLOADS], {
+    encoding: "utf8",
+    timeout: 120_000,
+  });
   const refs = refOut.trim().split("\n===\n");
   let i = 0;
   for (const payload of PAYLOADS) {
@@ -83,7 +87,11 @@ test("QR matrices match python-qrcode (codeword bits + function modules, all mas
       for (let r = 0; r < size; r++)
         for (let c = 0; c < size; c++) {
           if (!isFn(r, c) && !codewordCells.has(`${r},${c}`)) continue; // remainder cell
-          assert.equal(mine[r][c], refRows[r][c] === "1", `${JSON.stringify(payload)} mask ${mask} cell ${r},${c}`);
+          assert.equal(
+            mine[r][c],
+            refRows[r][c] === "1",
+            `${JSON.stringify(payload)} mask ${mask} cell ${r},${c}`,
+          );
         }
     }
   }

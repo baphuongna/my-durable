@@ -4,14 +4,31 @@
 // thresholds, which pi-durable reads at its next request.
 import { computed, onUnmounted, ref, watch } from "vue";
 import { Info, X } from "lucide-vue-next";
-import { compactionThresholds, defaultCompaction, type CompactionSettings, type WireAssistantMessage } from "@sdk/api";
-import { agentState, attempt, currentModel, sessionHandle, sessionSummary, ui } from "../client/store";
+import {
+  compactionThresholds,
+  defaultCompaction,
+  type CompactionSettings,
+  type WireAssistantMessage,
+} from "@sdk/api";
+import {
+  agentState,
+  attempt,
+  currentModel,
+  sessionHandle,
+  sessionSummary,
+  ui,
+} from "../client/store";
 
 const STEP = 512;
 const MIN_AUTO = 4096;
 const GAP = 1024;
 
-const k = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+const k = (n: number) =>
+  n >= 1_000_000
+    ? `${(n / 1_000_000).toFixed(2)}M`
+    : n >= 1000
+      ? `${(n / 1000).toFixed(1)}k`
+      : String(n);
 const window = computed(() => currentModel.value?.contextWindow ?? 0);
 
 /** The last reply's prompt plus output: what the next request starts from. */
@@ -19,7 +36,9 @@ const used = computed(() => {
   const entries = agentState.value.entries;
   for (let i = entries.length - 1; i >= 0; i--) {
     if (entries[i].kind !== "pi.assistant") continue;
-    const reply = entries[i].model?.find((m) => m.role === "assistant") as WireAssistantMessage | undefined;
+    const reply = entries[i].model?.find((m) => m.role === "assistant") as
+      | WireAssistantMessage
+      | undefined;
     const u = reply?.usage;
     if (u) return u.totalTokens || u.input + u.output + u.cacheRead + u.cacheWrite;
   }
@@ -100,7 +119,13 @@ function up() {
   commit();
 }
 function key(which: "auto" | "wait", e: KeyboardEvent) {
-  const delta = (e.shiftKey ? 8192 : 1024) * (e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : 0);
+  const delta =
+    (e.shiftKey ? 8192 : 1024) *
+    (e.key === "ArrowRight" || e.key === "ArrowUp"
+      ? 1
+      : e.key === "ArrowLeft" || e.key === "ArrowDown"
+        ? -1
+        : 0);
   if (!delta) return;
   e.preventDefault();
   const current = marks.value;
@@ -112,14 +137,19 @@ function key(which: "auto" | "wait", e: KeyboardEvent) {
   <section class="context-section" aria-labelledby="context-title">
     <div class="section-label">
       <span id="context-title">CONTEXT</span>
-      <button v-if="window" class="context-details-toggle" @click="ui.dialog = { kind: 'compaction' }">
+      <button
+        v-if="window"
+        class="context-details-toggle"
+        @click="ui.dialog = { kind: 'compaction' }"
+      >
         <Info :size="16" />Details
       </button>
     </div>
     <div v-if="!window" class="hint">Pick a model to see its context window.</div>
     <template v-else>
       <div class="context-numbers">
-        <strong>{{ k(used) }}</strong><span>of {{ k(window) }} tokens</span><span class="context-pct">{{ fullness }}%</span>
+        <strong>{{ k(used) }}</strong
+        ><span>of {{ k(window) }} tokens</span><span class="context-pct">{{ fullness }}%</span>
         <span v-if="compacting" class="context-compacting"><i />Compacting</span>
       </div>
       <div
@@ -130,8 +160,16 @@ function key(which: "auto" | "wait", e: KeyboardEvent) {
         @pointerup="up"
         @pointercancel="up"
       >
-        <div class="context-fill" :class="{ hot: marks.auto !== undefined && used >= marks.auto }" :style="{ width: pct(used) }" />
-        <div class="context-reserve" :style="{ left: pct(marks.wait) }" title="Reserved for the answer" />
+        <div
+          class="context-fill"
+          :class="{ hot: marks.auto !== undefined && used >= marks.auto }"
+          :style="{ width: pct(used) }"
+        />
+        <div
+          class="context-reserve"
+          :style="{ left: pct(marks.wait) }"
+          title="Reserved for the answer"
+        />
         <button
           v-if="marks.auto !== undefined"
           class="context-marker auto"
@@ -170,15 +208,21 @@ function key(which: "auto" | "wait", e: KeyboardEvent) {
       </div>
       <p class="hint context-hint">
         <template v-if="settings.enabled"
-          >Compacts in the background at <strong>{{ k(marks.auto ?? marks.wait) }}</strong> and waits at
-          <strong>{{ k(marks.wait) }}</strong>.</template
+          >Compacts in the background at <strong>{{ k(marks.auto ?? marks.wait) }}</strong> and
+          waits at <strong>{{ k(marks.wait) }}</strong
+          >.</template
         ><template v-else>Automatic compaction is off.</template>
       </p>
     </template>
   </section>
   <Teleport to="body">
     <div v-if="detailsOpen" class="modal-backdrop" @click.self="closeDetails">
-      <section class="modal compaction-modal" role="dialog" aria-modal="true" aria-labelledby="compaction-title">
+      <section
+        class="modal compaction-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="compaction-title"
+      >
         <header>
           <h2 id="compaction-title">Context compaction</h2>
           <button class="icon-button" aria-label="Close context compaction" @click="closeDetails">
@@ -186,9 +230,10 @@ function key(which: "auto" | "wait", e: KeyboardEvent) {
           </button>
         </header>
         <p>
-          A summary starts in the background at <strong>{{ k(marks.auto ?? marks.wait) }}</strong>. Above
-          <strong>{{ k(marks.wait) }}</strong> the next request waits for it, keeping {{ k(window - marks.wait) }} free
-          for the answer. Drag a marker on the bar to change either point.
+          A summary starts in the background at <strong>{{ k(marks.auto ?? marks.wait) }}</strong
+          >. Above <strong>{{ k(marks.wait) }}</strong> the next request waits for it, keeping
+          {{ k(window - marks.wait) }} free for the answer. Drag a marker on the bar to change
+          either point.
         </p>
         <p>Older entries stay stored, and <code>search_history</code> still finds them.</p>
         <label class="context-toggle">
@@ -199,7 +244,9 @@ function key(which: "auto" | "wait", e: KeyboardEvent) {
           />
           Automatic compaction
         </label>
-        <p class="hint">Applies to every agent in this session. <code>/compact</code> works either way.</p>
+        <p class="hint">
+          Applies to every agent in this session. <code>/compact</code> works either way.
+        </p>
         <footer><button class="secondary" @click="closeDetails">Close</button></footer>
       </section>
     </div>

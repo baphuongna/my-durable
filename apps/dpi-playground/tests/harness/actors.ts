@@ -48,7 +48,11 @@ export function makeActors() {
 export async function openTab(
   url: string,
   opts: { agent?: HttpsAgent; headers?: Record<string, string>; signal: AbortSignal },
-): Promise<{ streamId: string; next: () => Promise<{ event: string; data: string }>; close: () => void }> {
+): Promise<{
+  streamId: string;
+  next: () => Promise<{ event: string; data: string }>;
+  close: () => void;
+}> {
   const https = await import("node:https");
   const parsed = new URL(url);
   const req = (parsed.protocol === "https:" ? https : await import("node:http")).get(
@@ -66,7 +70,9 @@ export async function openTab(
       wire(res);
     },
   );
-  req.on("error", () => {/* aborted */});
+  req.on("error", () => {
+    /* aborted */
+  });
   let streamId = "";
   const pending: { event: string; data: string }[] = [];
   let waiter: (() => void) | null = null;

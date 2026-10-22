@@ -52,7 +52,8 @@ export class TokenBuckets {
     }
     if (!b) {
       if (this.map.size >= this.policy.maxKeys) this.reclaim(t);
-      if (this.map.size >= this.policy.maxKeys) return { ok: false, reason: "full", retryAfterMs: FULL_RETRY_MS };
+      if (this.map.size >= this.policy.maxKeys)
+        return { ok: false, reason: "full", retryAfterMs: FULL_RETRY_MS };
       b = { tokens: this.policy.capacity, last: t, touched: t };
       this.map.set(key, b);
     }
@@ -70,7 +71,8 @@ export class TokenBuckets {
   /** Forget keys idle for the TTL (housekeeping timer; lookups also honour the TTL). */
   sweep(): void {
     const t = this.now();
-    for (const [key, b] of this.map) if (t - b.touched >= this.policy.idleTtlMs) this.map.delete(key);
+    for (const [key, b] of this.map)
+      if (t - b.touched >= this.policy.idleTtlMs) this.map.delete(key);
   }
 
   /**

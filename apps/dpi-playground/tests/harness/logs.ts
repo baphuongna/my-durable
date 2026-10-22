@@ -32,7 +32,10 @@ const TOKEN_PATTERERS: [RegExp, string][] = [
   [/\bdpi_[A-Za-z0-9_-]{43}\b/g, "dpi_<redacted>"],
   [/\bdpt_[A-Za-z0-9_-]{43}\b/g, "dpt_<redacted>"],
   [/\bcode[=:"'\s]+([A-Z2-7]{8})\b/g, "code=<redacted>"],
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "<private key redacted>"],
+  [
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    "<private key redacted>",
+  ],
   [/Authorization:\s*Bearer\s+[A-Za-z0-9._-]+/gi, "Authorization: Bearer <redacted>"],
 ];
 

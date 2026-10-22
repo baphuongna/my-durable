@@ -29,7 +29,14 @@ test("append: all 14 required actions round-trip with correlation fields", async
   const { registry, audit, cleanup } = await tempAudit();
   try {
     for (const action of AUDIT_ACTIONS) {
-      audit.append({ actor: "admin", action, outcome: action === "auth.denied" ? "denied" : "ok", requestId: "req-1", connectionId: "conn-1", detail: { x: 1 } });
+      audit.append({
+        actor: "admin",
+        action,
+        outcome: action === "auth.denied" ? "denied" : "ok",
+        requestId: "req-1",
+        connectionId: "conn-1",
+        detail: { x: 1 },
+      });
     }
     assert.equal(AUDIT_ACTIONS.length, 14);
     const all = rows(registry);
@@ -52,24 +59,44 @@ test("same transaction: mutation + audit commit together, rollback together (fai
     // happy path: credential row + audit row commit together
     audit.withTransaction(() => {
       registry.db
-        .prepare("INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at) VALUES('c1','dev-a','e',1,?,'current',1)")
+        .prepare(
+          "INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at) VALUES('c1','dev-a','e',1,?,'current',1)",
+        )
         .run("a".repeat(64));
-      audit.append({ actor: "hub", action: "token.rotate_started", outcome: "ok", detail: { credentialId: "c1" } });
+      audit.append({
+        actor: "hub",
+        action: "token.rotate_started",
+        outcome: "ok",
+        detail: { credentialId: "c1" },
+      });
     });
-    assert.ok(registry.db.prepare("SELECT 1 FROM tunnel_credentials WHERE credential_id='c1'").get());
+    assert.ok(
+      registry.db.prepare("SELECT 1 FROM tunnel_credentials WHERE credential_id='c1'").get(),
+    );
     assert.equal(rows(registry).length, 1);
 
     // business failure after audit append → both roll back
     assert.throws(() =>
       audit.withTransaction(() => {
         registry.db
-          .prepare("INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at) VALUES('c2','dev-a','e',2,?,'current',1)")
+          .prepare(
+            "INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at) VALUES('c2','dev-a','e',2,?,'current',1)",
+          )
           .run("b".repeat(64));
-        audit.append({ actor: "hub", action: "token.rotate_started", outcome: "ok", detail: { credentialId: "c2" } });
+        audit.append({
+          actor: "hub",
+          action: "token.rotate_started",
+          outcome: "ok",
+          detail: { credentialId: "c2" },
+        });
         throw new Error("mutation failed");
       }),
     );
-    const n2 = (registry.db.prepare("SELECT count(*) AS n FROM tunnel_credentials WHERE credential_id='c2'").get() as { n: number }).n;
+    const n2 = (
+      registry.db
+        .prepare("SELECT count(*) AS n FROM tunnel_credentials WHERE credential_id='c2'")
+        .get() as { n: number }
+    ).n;
     assert.equal(n2, 0);
     assert.equal(rows(registry).length, 1); // no orphan audit row
   } finally {
@@ -85,12 +112,16 @@ test("audit-write failure fails the mutation closed", async () => {
     assert.throws(() =>
       failing.withTransaction(() => {
         registry.db
-          .prepare("INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at) VALUES('c9','dev-a','e',1,?,'current',1)")
+          .prepare(
+            "INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at) VALUES('c9','dev-a','e',1,?,'current',1)",
+          )
           .run("c".repeat(64));
         failing.append({ actor: "hub", action: "pair.success", outcome: "ok" });
       }),
     );
-    const n = (registry.db.prepare("SELECT count(*) AS n FROM tunnel_credentials").get() as { n: number }).n;
+    const n = (
+      registry.db.prepare("SELECT count(*) AS n FROM tunnel_credentials").get() as { n: number }
+    ).n;
     assert.equal(n, 0); // mutation did NOT commit
   } finally {
     await cleanup();
@@ -102,7 +133,16 @@ test("detail byte-cap: 4096 UTF-8 bytes, not characters (multibyte rejected)", a
   const { registry, audit, cleanup } = await tempAudit();
   try {
     // 4000 'é' chars = 8000 bytes → must throw (S-12)
-    assert.throws(() => audit.append({ actor: "a", action: "pair.approved", outcome: "ok", detail: { blob: "é".repeat(4000) } }), /bytes/);
+    assert.throws(
+      () =>
+        audit.append({
+          actor: "a",
+          action: "pair.approved",
+          outcome: "ok",
+          detail: { blob: "é".repeat(4000) },
+        }),
+      /bytes/,
+    );
     // exactly-at-cap ASCII passes
     const fill = "x".repeat(4096 - JSON.stringify({ blob: "" }).length - 2);
     audit.append({ actor: "a", action: "pair.approved", outcome: "ok", detail: { blob: fill } });
@@ -124,7 +164,11 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
       outcome: "denied",
       detail: {
         header: `Authorization: Bearer ${dpt}`,
-        nested: { url: `https://hub/pair?code=AB2C7DEF&v=1`, tokenTry: dpi, pem: "-----BEGIN PRIVATE KEY-----\nzz\n-----END PRIVATE KEY-----" },
+        nested: {
+          url: `https://hub/pair?code=AB2C7DEF&v=1`,
+          tokenTry: dpi,
+          pem: "-----BEGIN PRIVATE KEY-----\nzz\n-----END PRIVATE KEY-----",
+        },
         free: `prefix ${dpt.slice(4)} mid ${"AB2C7DEF"} end`,
       },
     });
@@ -161,7 +205,8 @@ test("denial aggregation: floods collapse to one row per window; buckets bounded
   }
 });
 
-const detailOf = (row: Record<string, unknown>) => JSON.parse(row.detail_json as string) as Record<string, unknown>;
+const detailOf = (row: Record<string, unknown>) =>
+  JSON.parse(row.detail_json as string) as Record<string, unknown>;
 
 test("RR: a flood leaves its real total once the window has closed; the opening row does not pretend to count", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 }); // 10 s into a window
@@ -169,7 +214,11 @@ test("RR: a flood leaves its real total once the window has closed; the opening 
   try {
     for (let i = 0; i < 1000; i++) audit.denied("auth.denied", "10.9.9.9", { path: "/api/tunnel" });
     assert.equal(rows(registry).length, 1);
-    assert.equal(detailOf(rows(registry)[0]).count, undefined, "the opening row is a marker, not a total");
+    assert.equal(
+      detailOf(rows(registry)[0]).count,
+      undefined,
+      "the opening row is a marker, not a total",
+    );
 
     audit.sweepDenials();
     assert.equal(rows(registry).length, 1, "the window is still open: nothing to close");
@@ -202,15 +251,33 @@ test("RR: a window with a single denial needs no closing row; flushDenials close
     audit.denied("rate_limited", "10.4.4.5", {});
     t.mock.timers.tick(60_000);
     audit.sweepDenials();
-    const closing = rows(registry).map(detailOf).filter((d) => d.closing);
-    assert.deepEqual(closing.map((d) => d.count), [3], "only the window that saw more than one denial");
+    const closing = rows(registry)
+      .map(detailOf)
+      .filter((d) => d.closing);
+    assert.deepEqual(
+      closing.map((d) => d.count),
+      [3],
+      "only the window that saw more than one denial",
+    );
 
     audit.denied("auth.denied", "10.4.4.6", {});
     audit.denied("auth.denied", "10.4.4.6", {});
     audit.flushDenials(); // shutdown: the current window is still open
-    assert.deepEqual(rows(registry).map(detailOf).filter((d) => d.closing).map((d) => d.count), [3, 2]);
+    assert.deepEqual(
+      rows(registry)
+        .map(detailOf)
+        .filter((d) => d.closing)
+        .map((d) => d.count),
+      [3, 2],
+    );
     audit.flushDenials();
-    assert.equal(rows(registry).map(detailOf).filter((d) => d.closing).length, 2, "flushing twice writes nothing new");
+    assert.equal(
+      rows(registry)
+        .map(detailOf)
+        .filter((d) => d.closing).length,
+      2,
+      "flushing twice writes nothing new",
+    );
   } finally {
     await cleanup();
   }
@@ -220,7 +287,8 @@ test("RR: closing rows stay bounded: a distinct-address flood costs at most one 
   t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 });
   const { registry, audit, cleanup } = await tempAudit();
   try {
-    for (let i = 0; i < 400; i++) for (let k = 0; k < 2; k++) audit.denied("rate_limited", `10.6.${i >> 8}.${i & 255}`, {});
+    for (let i = 0; i < 400; i++)
+      for (let k = 0; k < 2; k++) audit.denied("rate_limited", `10.6.${i >> 8}.${i & 255}`, {});
     t.mock.timers.tick(60_000);
     audit.sweepDenials();
     const total = rows(registry).length;
@@ -235,9 +303,16 @@ test("RR: addresses of one IPv6 /64 are one denial source; an IPv4 client is one
   t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 });
   const { registry, audit, cleanup } = await tempAudit();
   try {
-    for (let i = 1; i <= 50; i++) audit.denied("auth.denied", `2001:db8:1:2::${i.toString(16)}`, {});
-    for (const spelling of ["198.51.100.7", "::ffff:198.51.100.7", "::ffff:c633:6407"]) audit.denied("auth.denied", spelling, {});
-    assert.deepEqual(rows(registry).map((r) => r.actor).sort(), ["ip:198.51.100.7", "ip:2001:db8:1:2::/64"]);
+    for (let i = 1; i <= 50; i++)
+      audit.denied("auth.denied", `2001:db8:1:2::${i.toString(16)}`, {});
+    for (const spelling of ["198.51.100.7", "::ffff:198.51.100.7", "::ffff:c633:6407"])
+      audit.denied("auth.denied", spelling, {});
+    assert.deepEqual(
+      rows(registry)
+        .map((r) => r.actor)
+        .sort(),
+      ["ip:198.51.100.7", "ip:2001:db8:1:2::/64"],
+    );
   } finally {
     await cleanup();
   }
@@ -247,12 +322,19 @@ test("RR: an over-long sample field cannot make the denial row unwritable", asyn
   t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 });
   const { registry, audit, cleanup } = await tempAudit();
   try {
-    audit.denied("auth.denied", "10.7.7.7", { method: "GET", path: `/${"a".repeat(6_000)}`, status: 401 });
+    audit.denied("auth.denied", "10.7.7.7", {
+      method: "GET",
+      path: `/${"a".repeat(6_000)}`,
+      status: 401,
+    });
     assert.equal(audit.droppedDenials, 0);
     const all = rows(registry);
     assert.equal(all.length, 1);
     const sample = detailOf(all[0]).sample as { path: string; method: string; status: number };
-    assert.ok(sample.path.length <= 200 && sample.path.startsWith("/aaa"), "the path is clipped, not dropped");
+    assert.ok(
+      sample.path.length <= 200 && sample.path.startsWith("/aaa"),
+      "the path is clipped, not dropped",
+    );
     assert.equal(sample.method, "GET");
     assert.equal(sample.status, 401);
   } finally {
@@ -283,15 +365,20 @@ test("GA-02: denial kinds from one IP and window are separate aggregates; a floo
   const { registry, audit, cleanup } = await tempAudit();
   try {
     for (let i = 0; i < 50; i++) {
-      audit.denied("auth.denied", "10.2.2.2", { code: "token_unknown" }, "tunnel.upgrade:token_unknown");
+      audit.denied(
+        "auth.denied",
+        "10.2.2.2",
+        { code: "token_unknown" },
+        "tunnel.upgrade:token_unknown",
+      );
       audit.denied("auth.denied", "10.2.2.2", { code: "revoked" }, "tunnel.upgrade:revoked");
     }
     const all = rows(registry);
     assert.equal(all.length, 2);
-    assert.deepEqual(
-      all.map((r) => JSON.parse(r.detail_json as string).sample.code).sort(),
-      ["revoked", "token_unknown"],
-    );
+    assert.deepEqual(all.map((r) => JSON.parse(r.detail_json as string).sample.code).sort(), [
+      "revoked",
+      "token_unknown",
+    ]);
   } finally {
     await cleanup();
   }
@@ -300,7 +387,10 @@ test("GA-02: denial kinds from one IP and window are separate aggregates; a floo
 test("GA-02: disk guard refuses audited work below the free-space floor; denials degrade to RAM-only", async () => {
   const MiB = 1024 * 1024;
   let free = 10 * 1024 * MiB;
-  const { registry, audit, cleanup } = await tempAudit({ freeBytes: () => free, minFreeBytes: 64 * MiB });
+  const { registry, audit, cleanup } = await tempAudit({
+    freeBytes: () => free,
+    minFreeBytes: 64 * MiB,
+  });
   try {
     let ran = 0;
     audit.withTransaction(() => {
@@ -312,8 +402,16 @@ test("GA-02: disk guard refuses audited work below the free-space floor; denials
 
     free = 8 * MiB;
     const refused = (fn: () => unknown) =>
-      assert.throws(fn, (e: Error & { status?: number; code?: string }) => e.status === 503 && e.code === "audit_unavailable");
-    refused(() => audit.withTransaction(() => { ran++; }));
+      assert.throws(
+        fn,
+        (e: Error & { status?: number; code?: string }) =>
+          e.status === 503 && e.code === "audit_unavailable",
+      );
+    refused(() =>
+      audit.withTransaction(() => {
+        ran++;
+      }),
+    );
     refused(() => audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok" }));
     assert.equal(ran, 1, "the mutation callback never ran");
     assert.doesNotThrow(() => audit.denied("auth.denied", "10.3.3.3", {}));
@@ -321,7 +419,9 @@ test("GA-02: disk guard refuses audited work below the free-space floor; denials
     assert.equal(audit.droppedDenials, 1);
 
     free = 10 * 1024 * MiB;
-    audit.withTransaction(() => { audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok" }); });
+    audit.withTransaction(() => {
+      audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok" });
+    });
     assert.equal(rows(registry).length, 2, "writes resume once space is available");
   } finally {
     await cleanup();

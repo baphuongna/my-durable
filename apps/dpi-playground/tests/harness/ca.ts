@@ -35,31 +35,70 @@ export async function makeTestCa(): Promise<TestCa> {
   const leafCrt = join(dir, "hub.crt");
 
   await openssl([
-    "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-    "-nodes", "-keyout", caKey, "-out", caCrt, "-days", "2",
-    "-subj", "/CN=DPI Test Root CA (fixtures only)",
-    "-addext", "basicConstraints=critical,CA:TRUE",
-    "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+    "req",
+    "-x509",
+    "-newkey",
+    "ec",
+    "-pkeyopt",
+    "ec_paramgen_curve:P-256",
+    "-nodes",
+    "-keyout",
+    caKey,
+    "-out",
+    caCrt,
+    "-days",
+    "2",
+    "-subj",
+    "/CN=DPI Test Root CA (fixtures only)",
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+    "-addext",
+    "keyUsage=critical,keyCertSign,cRLSign",
   ]);
 
   await openssl([
-    "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-    "-nodes", "-keyout", leafKey, "-out", leafCsr,
-    "-subj", "/CN=hub.local.test",
+    "req",
+    "-newkey",
+    "ec",
+    "-pkeyopt",
+    "ec_paramgen_curve:P-256",
+    "-nodes",
+    "-keyout",
+    leafKey,
+    "-out",
+    leafCsr,
+    "-subj",
+    "/CN=hub.local.test",
   ]);
 
   const extFile = join(dir, "hub.ext");
   const { writeFile } = await import("node:fs/promises");
-  await writeFile(extFile, [
-    "subjectAltName=DNS:hub.local.test,IP:127.0.0.1",
-    "extendedKeyUsage=serverAuth",
-    "keyUsage=digitalSignature,keyEncipherment",
-    "basicConstraints=CA:FALSE",
-  ].join("\n"));
+  await writeFile(
+    extFile,
+    [
+      "subjectAltName=DNS:hub.local.test,IP:127.0.0.1",
+      "extendedKeyUsage=serverAuth",
+      "keyUsage=digitalSignature,keyEncipherment",
+      "basicConstraints=CA:FALSE",
+    ].join("\n"),
+  );
 
   await openssl([
-    "x509", "-req", "-in", leafCsr, "-CA", caCrt, "-CAkey", caKey,
-    "-CAcreateserial", "-out", leafCrt, "-days", "2", "-extfile", extFile,
+    "x509",
+    "-req",
+    "-in",
+    leafCsr,
+    "-CA",
+    caCrt,
+    "-CAkey",
+    caKey,
+    "-CAcreateserial",
+    "-out",
+    leafCrt,
+    "-days",
+    "2",
+    "-extfile",
+    extFile,
   ]);
 
   return {
@@ -83,5 +122,9 @@ export async function trustedAgent(ca: TestCa) {
 export async function trustCaInBrowserProfile(profileDir: string, ca: TestCa): Promise<void> {
   const caPath = join(ca.dir, "ca.crt");
   await run("certutil", ["-N", "-d", `sql:${profileDir}`, "--empty-password"], { timeout: 15_000 });
-  await run("certutil", ["-A", "-d", `sql:${profileDir}`, "-t", "C,,", "-n", "DPI Test Root CA", "-i", caPath], { timeout: 15_000 });
+  await run(
+    "certutil",
+    ["-A", "-d", `sql:${profileDir}`, "-t", "C,,", "-n", "DPI Test Root CA", "-i", caPath],
+    { timeout: 15_000 },
+  );
 }

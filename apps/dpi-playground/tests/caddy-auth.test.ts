@@ -22,28 +22,53 @@ import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
 const CADDY_BIN = resolve(import.meta.dirname, "../../../tools/caddy");
 const ADMIN_PASSWORD = "dpi-p221-admin-password";
 
-const hreq = async (url: string, opts: { agent?: import("node:https").Agent; headers?: Record<string, string>; method?: string; body?: string } = {}) => {
+const hreq = async (
+  url: string,
+  opts: {
+    agent?: import("node:https").Agent;
+    headers?: Record<string, string>;
+    method?: string;
+    body?: string;
+  } = {},
+) => {
   const https = await import("node:https");
   const u = new URL(url);
-  return new Promise<{ status: number; body: string; headers: Record<string, string | undefined> }>((resolveReq, rejectReq) => {
-    const req = https.request(
-      { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: opts.method ?? "GET", headers: opts.headers, ...(opts.agent ? { agent: opts.agent } : {}) },
-      (res) => {
-        let body = "";
-        res.on("data", (x: Buffer) => (body += x));
-        res.on("end", () => resolveReq({ status: res.statusCode ?? 0, body, headers: { hsts: res.headers["strict-transport-security"] } }));
-      },
-    );
-    req.on("error", (e) => rejectReq(e));
-    if (opts.body) req.write(opts.body);
-    req.end();
-  });
+  return new Promise<{ status: number; body: string; headers: Record<string, string | undefined> }>(
+    (resolveReq, rejectReq) => {
+      const req = https.request(
+        {
+          hostname: u.hostname,
+          port: u.port,
+          path: u.pathname + u.search,
+          method: opts.method ?? "GET",
+          headers: opts.headers,
+          ...(opts.agent ? { agent: opts.agent } : {}),
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (x: Buffer) => (body += x));
+          res.on("end", () =>
+            resolveReq({
+              status: res.statusCode ?? 0,
+              body,
+              headers: { hsts: res.headers["strict-transport-security"] },
+            }),
+          );
+        },
+      );
+      req.on("error", (e) => rejectReq(e));
+      if (opts.body) req.write(opts.body);
+      req.end();
+    },
+  );
 };
 
 test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, HSTS, SSE flush", async () => {
   const ca = await makeTestCa();
   const agent = await trustedAgent(ca);
-  const adminHash = execFileSync(CADDY_BIN, ["hash-password", "--plaintext", ADMIN_PASSWORD], { encoding: "utf8" }).trim();
+  const adminHash = execFileSync(CADDY_BIN, ["hash-password", "--plaintext", ADMIN_PASSWORD], {
+    encoding: "utf8",
+  }).trim();
 
   const { freePort } = await import("./harness/caddy.js");
   const caddyPort = await freePort();
@@ -67,18 +92,36 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
     assert.match(health.headers.hsts ?? "", /max-age=15552000/);
 
     // Exempt: pair/start + pair/verify reach the hub (never a Caddy 401)
-    const start = await hreq(`${base}/api/pair/start`, { agent, method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const start = await hreq(`${base}/api/pair/start`, {
+      agent,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
     assert.notEqual(start.status, 401, "pair/start must be exempt from basic auth");
-    const verify = await hreq(`${base}/api/pair/verify`, { agent, method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const verify = await hreq(`${base}/api/pair/verify`, {
+      agent,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
     assert.notEqual(verify.status, 401, "pair/verify must be exempt");
 
     // Admin matrix: no auth → 401 from Caddy (hub never consulted)
-    for (const path of ["/api/network", "/api/stream", "/api/pair/codes/X", "/api/devices/x/check"]) {
+    for (const path of [
+      "/api/network",
+      "/api/stream",
+      "/api/pair/codes/X",
+      "/api/devices/x/check",
+    ]) {
       const r = await hreq(`${base}${path}`, { agent });
       assert.equal(r.status, 401, `${path} must require basic auth`);
     }
     // Wrong password → 401
-    const wrong = await hreq(`${base}/api/network`, { agent, headers: { authorization: "Basic " + Buffer.from("admin:wrong").toString("base64") } });
+    const wrong = await hreq(`${base}/api/network`, {
+      agent,
+      headers: { authorization: "Basic " + Buffer.from("admin:wrong").toString("base64") },
+    });
     assert.equal(wrong.status, 401);
     // Correct basic auth → 200
     const ok = await hreq(`${base}/api/network`, { agent, headers: { authorization: basic } });
@@ -88,7 +131,11 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
     // into the same registry file the hub process has open (WAL, multi-process).
     const registry = new NetworkRegistry(join(hub.home, "network.sqlite"));
     const epoch = randomUUID();
-    const token = "dpt_" + Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43);
+    const token =
+      "dpt_" +
+      Buffer.from(randomUUID() + randomUUID())
+        .toString("base64url")
+        .slice(0, 43);
     const t = Date.now();
     registry.db
       .prepare(
@@ -118,7 +165,11 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
       ws.once("unexpected-response", (_q, res) => done(`http ${res.statusCode}`));
       ws.once("error", (e) => done(`error ${e.message}`));
     });
-    assert.equal(opened, "open", "tunnel WS upgrade must pass Caddy without basic auth (Bearer kept)");
+    assert.equal(
+      opened,
+      "open",
+      "tunnel WS upgrade must pass Caddy without basic auth (Bearer kept)",
+    );
     ws.close();
 
     // SSE flush through Caddy: hello/network arrives promptly (no buffering).
@@ -126,16 +177,22 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
       const https = await import("node:https");
       const u = new URL(`${base}/api/stream`);
       return new Promise<string>((done) => {
-      const req = https.get(
-        { hostname: u.hostname, port: u.port, path: u.pathname, headers: { authorization: basic, accept: "text/event-stream" }, agent },
-        (res) => {
-          res.once("data", (chunk: Buffer) => {
-            res.destroy();
-            done(`${res.statusCode ?? 0}|${chunk.toString("utf8")}`);
-          });
-        },
-      );
-      req.on("error", (e) => done(`err|${e.message}`));
+        const req = https.get(
+          {
+            hostname: u.hostname,
+            port: u.port,
+            path: u.pathname,
+            headers: { authorization: basic, accept: "text/event-stream" },
+            agent,
+          },
+          (res) => {
+            res.once("data", (chunk: Buffer) => {
+              res.destroy();
+              done(`${res.statusCode ?? 0}|${chunk.toString("utf8")}`);
+            });
+          },
+        );
+        req.on("error", (e) => done(`err|${e.message}`));
       });
     })();
     const [sseStatus, sseBody] = sseFirst.split("|");
@@ -153,11 +210,16 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
     });
     await new Promise((r) => setTimeout(r, 200));
     const auditRows = registry.db
-      .prepare("SELECT actor, detail_json FROM events WHERE action IN ('auth.denied','pair.revoke','rate_limited') ORDER BY id DESC LIMIT 5")
+      .prepare(
+        "SELECT actor, detail_json FROM events WHERE action IN ('auth.denied','pair.revoke','rate_limited') ORDER BY id DESC LIMIT 5",
+      )
       .all() as { actor: string; detail_json: string }[];
     const hubDenials = auditRows.filter((r) => r.actor.startsWith("ip:"));
     if (hubDenials.length > 0)
-      assert.ok(hubDenials.every((r) => !r.actor.includes("1.2.3.4") && !r.detail_json.includes("1.2.3.4")), "forged XFF must not reach the hub");
+      assert.ok(
+        hubDenials.every((r) => !r.actor.includes("1.2.3.4") && !r.detail_json.includes("1.2.3.4")),
+        "forged XFF must not reach the hub",
+      );
   } finally {
     await hub.stop();
     await hub.cleanup();

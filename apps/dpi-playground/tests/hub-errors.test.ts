@@ -31,16 +31,33 @@ interface Reply {
   headers: IncomingHttpHeaders;
 }
 
-function raw(base: string, method: string, path: string, opts: { body?: string | Buffer; headers?: Record<string, string>; agent?: Agent } = {}): Promise<Reply> {
+function raw(
+  base: string,
+  method: string,
+  path: string,
+  opts: { body?: string | Buffer; headers?: Record<string, string>; agent?: Agent } = {},
+): Promise<Reply> {
   const url = new URL(base);
   return new Promise((resolve, reject) => {
     const req = request(
-      { host: url.hostname, port: url.port, method, path, headers: opts.headers, agent: opts.agent },
+      {
+        host: url.hostname,
+        port: url.port,
+        method,
+        path,
+        headers: opts.headers,
+        agent: opts.agent,
+      },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
         res.on("end", () =>
-          resolve({ status: res.statusCode ?? 0, type: String(res.headers["content-type"] ?? ""), text: Buffer.concat(chunks).toString("utf8"), headers: res.headers }),
+          resolve({
+            status: res.statusCode ?? 0,
+            type: String(res.headers["content-type"] ?? ""),
+            text: Buffer.concat(chunks).toString("utf8"),
+            headers: res.headers,
+          }),
         );
       },
     );
@@ -54,7 +71,11 @@ const JSON_BODY = { "content-type": "application/json" };
 /** Nothing a stranger can use to map the install: frames, module paths, absolute paths, error class names. */
 function assertClean(reply: Reply, label: string) {
   assert.match(reply.type, /^application\/json/, `${label}: content-type ${reply.type}`);
-  assert.doesNotMatch(reply.text, /node_modules|\n\s+at |\.ts:\d+|\.js:\d+|\/home\/|\/usr\/|\/tmp\/|SyntaxError|URIError|PayloadTooLarge|<html|<pre>/i, `${label}: ${reply.text.slice(0, 300)}`);
+  assert.doesNotMatch(
+    reply.text,
+    /node_modules|\n\s+at |\.ts:\d+|\.js:\d+|\/home\/|\/usr\/|\/tmp\/|SyntaxError|URIError|PayloadTooLarge|<html|<pre>/i,
+    `${label}: ${reply.text.slice(0, 300)}`,
+  );
   const body = JSON.parse(reply.text) as { error?: { code?: string; message?: string } };
   assert.equal(typeof body.error?.code, "string", `${label}: error.code`);
   assert.equal(typeof body.error?.message, "string", `${label}: error.message`);
@@ -79,13 +100,22 @@ test("GA-10: an oversized body is a clean JSON 413 on the pairing surface and on
   const hub = await bootHub();
   try {
     const big20k = JSON.stringify({ pad: "x".repeat(20_000) });
-    const pair = await raw(hub.base, "POST", "/api/pair/start", { body: big20k, headers: JSON_BODY });
+    const pair = await raw(hub.base, "POST", "/api/pair/start", {
+      body: big20k,
+      headers: JSON_BODY,
+    });
     assert.equal(pair.status, 413);
     assertClean(pair, "pair 16 KiB cap");
-    assert.equal((JSON.parse(pair.text) as { error: { code: string } }).error.code, "payload_too_large");
+    assert.equal(
+      (JSON.parse(pair.text) as { error: { code: string } }).error.code,
+      "payload_too_large",
+    );
 
     const big300k = JSON.stringify({ value: "x".repeat(300_000) });
-    const admin = await raw(hub.base, "PUT", "/api/ui-state/k", { body: big300k, headers: JSON_BODY });
+    const admin = await raw(hub.base, "PUT", "/api/ui-state/k", {
+      body: big300k,
+      headers: JSON_BODY,
+    });
     assert.equal(admin.status, 413);
     assertClean(admin, "admin 256 KiB cap");
   } finally {
@@ -96,7 +126,10 @@ test("GA-10: an oversized body is a clean JSON 413 on the pairing surface and on
 test("GA-10: malformed JSON and an undecodable URL on the admin API/static surface are clean JSON 400s", async () => {
   const hub = await bootHub();
   try {
-    const json = await raw(hub.base, "PUT", "/api/ui-state/k", { body: "{not json", headers: JSON_BODY });
+    const json = await raw(hub.base, "PUT", "/api/ui-state/k", {
+      body: "{not json",
+      headers: JSON_BODY,
+    });
     assert.equal(json.status, 400);
     assertClean(json, "admin malformed json");
 
@@ -113,10 +146,16 @@ test("GA-10: malformed JSON and an undecodable URL on the admin API/static surfa
 test("GA-02: while the audit volume is under its free-space floor an audited change is a JSON 503 and reads keep working", async () => {
   const hub = await bootHub({ env: { DPI_AUDIT_MIN_FREE_BYTES: String(Number.MAX_SAFE_INTEGER) } });
   try {
-    const refused = await raw(hub.base, "POST", "/api/pair/code", { headers: JSON_BODY, body: "{}" });
+    const refused = await raw(hub.base, "POST", "/api/pair/code", {
+      headers: JSON_BODY,
+      body: "{}",
+    });
     assert.equal(refused.status, 503);
     assertClean(refused, "audited change refused");
-    assert.equal((JSON.parse(refused.text) as { error: { code: string } }).error.code, "audit_unavailable");
+    assert.equal(
+      (JSON.parse(refused.text) as { error: { code: string } }).error.code,
+      "audit_unavailable",
+    );
 
     const read = await raw(hub.base, "GET", "/api/network", {});
     assert.equal(read.status, 200, "read-only API is unaffected");
@@ -150,7 +189,15 @@ function seedPairedDevice(home: string, deviceId: string): void {
         `INSERT INTO tunnel_credentials(credential_id,device_id,pairing_epoch,generation,token_hash,status,created_at,confirmed_at)
          VALUES(?,?,?,?,?,'current',?,?)`,
       )
-      .run(randomUUID(), deviceId, epoch, 1, createHash("sha256").update(randomUUID(), "utf8").digest("hex"), t, t);
+      .run(
+        randomUUID(),
+        deviceId,
+        epoch,
+        1,
+        createHash("sha256").update(randomUUID(), "utf8").digest("hex"),
+        t,
+        t,
+      );
   } finally {
     registry.close();
   }
@@ -167,7 +214,9 @@ function registryState(home: string, deviceId: string): RegistryState {
   const db = new DatabaseSync(join(home, "network.sqlite"), { readOnly: true });
   try {
     const pairing = db.prepare("SELECT * FROM pairings WHERE device_id=?").get(deviceId);
-    const credentials = db.prepare("SELECT * FROM tunnel_credentials WHERE device_id=? ORDER BY credential_id").all(deviceId);
+    const credentials = db
+      .prepare("SELECT * FROM tunnel_credentials WHERE device_id=? ORDER BY credential_id")
+      .all(deviceId);
     const events = db.prepare("SELECT action FROM events ORDER BY rowid").all();
     return JSON.parse(JSON.stringify({ pairing, credentials, events })) as RegistryState;
   } finally {
@@ -175,10 +224,17 @@ function registryState(home: string, deviceId: string): RegistryState {
   }
 }
 
-async function publicPairing(base: string, deviceId: string): Promise<{ status: string; rotationPending: boolean } | undefined> {
+async function publicPairing(
+  base: string,
+  deviceId: string,
+): Promise<{ status: string; rotationPending: boolean } | undefined> {
   const r = await raw(base, "GET", "/api/network", {});
   assert.equal(r.status, 200, "the device list is a read and must not depend on audit storage");
-  const devices = (JSON.parse(r.text) as { devices: { id: string; pairing?: { status: string; rotationPending: boolean } }[] }).devices;
+  const devices = (
+    JSON.parse(r.text) as {
+      devices: { id: string; pairing?: { status: string; rotationPending: boolean } }[];
+    }
+  ).devices;
   return devices.find((d) => d.id === deviceId)?.pairing;
 }
 
@@ -186,7 +242,11 @@ test("GA-02: under the audit floor revoke and rotate of a paired device are JSON
   const env: Record<string, string> = {};
   const hub = await bootHub({ env });
   const id = "floor-dev";
-  const post = (path: string) => raw(hub.base, "POST", path, { headers: JSON_BODY, body: JSON.stringify({ reason: "compromise" }) });
+  const post = (path: string) =>
+    raw(hub.base, "POST", path, {
+      headers: JSON_BODY,
+      body: JSON.stringify({ reason: "compromise" }),
+    });
   try {
     await hub.stop(); // the first boot created the schema; seed while no process holds the file
     seedPairedDevice(hub.home, id);
@@ -196,9 +256,16 @@ test("GA-02: under the audit floor revoke and rotate of a paired device are JSON
     const before = registryState(hub.home, id);
     assert.equal(before.pairing.status, "paired");
     assert.equal(before.pairing.rotation_requested_at, null);
-    assert.deepEqual(before.credentials.map((c) => c.status), ["current"]);
+    assert.deepEqual(
+      before.credentials.map((c) => c.status),
+      ["current"],
+    );
     assert.deepEqual(await publicPairing(hub.base, id), {
-      status: "paired", keyFingerprint: `sha256:${"4".repeat(64)}`, pairedAt: before.pairing.paired_at, credentialGeneration: 1, rotationPending: false,
+      status: "paired",
+      keyFingerprint: `sha256:${"4".repeat(64)}`,
+      pairedAt: before.pairing.paired_at,
+      credentialGeneration: 1,
+      rotationPending: false,
     });
 
     const refusals = [
@@ -211,10 +278,22 @@ test("GA-02: under the audit floor revoke and rotate of a paired device are JSON
       const r = await post(path);
       assert.equal(r.status, 503, `${label}: ${r.text}`);
       assertClean(r, label);
-      assert.equal((JSON.parse(r.text) as { error: { code: string } }).error.code, "audit_unavailable", label);
+      assert.equal(
+        (JSON.parse(r.text) as { error: { code: string } }).error.code,
+        "audit_unavailable",
+        label,
+      );
     }
-    assert.deepEqual(registryState(hub.home, id), before, "a refused revoke/rotate leaves the pairing, every credential and the audit log as they were");
-    assert.equal((await publicPairing(hub.base, id))?.status, "paired", "reads still show the device as paired");
+    assert.deepEqual(
+      registryState(hub.home, id),
+      before,
+      "a refused revoke/rotate leaves the pairing, every credential and the audit log as they were",
+    );
+    assert.equal(
+      (await publicPairing(hub.base, id))?.status,
+      "paired",
+      "reads still show the device as paired",
+    );
     assert.equal((await raw(hub.base, "GET", "/api/pairings", {})).status, 200);
 
     // Same device, same requests, floor lifted: the 503 above was the floor and not the fixture.
@@ -225,15 +304,29 @@ test("GA-02: under the audit floor revoke and rotate of a paired device are JSON
     const rotate = await post(`/api/pairings/${id}/rotate`);
     assert.equal(rotate.status, 202, rotate.text);
     const rotated = registryState(hub.home, id);
-    assert.notEqual(rotated.pairing.rotation_requested_at, null, "an offline device records that a rotation is due");
-    assert.deepEqual(rotated.events.slice(before.events.length).map((e) => e.action), ["token.rotate_started"]);
+    assert.notEqual(
+      rotated.pairing.rotation_requested_at,
+      null,
+      "an offline device records that a rotation is due",
+    );
+    assert.deepEqual(
+      rotated.events.slice(before.events.length).map((e) => e.action),
+      ["token.rotate_started"],
+    );
 
     const revoke = await post(`/api/pairings/${id}/revoke`);
     assert.equal(revoke.status, 202, revoke.text);
     const revoked = registryState(hub.home, id);
     assert.equal(revoked.pairing.status, "revoked");
-    assert.deepEqual(revoked.credentials.map((c) => c.status), ["revoked"], "the credential row stays as a tombstone");
-    assert.deepEqual(revoked.events.slice(before.events.length).map((e) => e.action), ["token.rotate_started", "pair.revoke"]);
+    assert.deepEqual(
+      revoked.credentials.map((c) => c.status),
+      ["revoked"],
+      "the credential row stays as a tombstone",
+    );
+    assert.deepEqual(
+      revoked.events.slice(before.events.length).map((e) => e.action),
+      ["token.rotate_started", "pair.revoke"],
+    );
     assert.equal((await publicPairing(hub.base, id))?.status, "revoked");
   } finally {
     await hub.cleanup();
@@ -244,7 +337,10 @@ test("GA-15: the admin API quota of one address survives churn through thousands
   const hub = await bootHub();
   const agent = new Agent({ keepAlive: true, maxSockets: 16 });
   try {
-    const hit = (ip: string) => raw(hub.base, "GET", "/api/network", { headers: { "x-forwarded-for": ip }, agent }).then((r) => r.status);
+    const hit = (ip: string) =>
+      raw(hub.base, "GET", "/api/network", { headers: { "x-forwarded-for": ip }, agent }).then(
+        (r) => r.status,
+      );
     const victim = "9.9.9.9";
     let served = 0;
     const burstStartedAt = Date.now();
@@ -256,8 +352,14 @@ test("GA-15: the admin API quota of one address survives churn through thousands
     // instead of assuming < 10 s. It stays far below the 4.200-request churn and the
     // 200-request guard: an unlimited (broken) limiter still fails hard at the guard.
     const burstElapsedS = (drainedAt - burstStartedAt) / 1000;
-    assert.ok(served >= 100, `burst of ${served} before the first 429 — a bucket materially smaller than 120 would be a defect`);
-    assert.ok(served <= 120 + Math.floor(burstElapsedS) + 2, `burst of ${served} in ${burstElapsedS.toFixed(1)} s exceeds 120 tokens + refill (+2 s slack)`);
+    assert.ok(
+      served >= 100,
+      `burst of ${served} before the first 429 — a bucket materially smaller than 120 would be a defect`,
+    );
+    assert.ok(
+      served <= 120 + Math.floor(burstElapsedS) + 2,
+      `burst of ${served} in ${burstElapsedS.toFixed(1)} s exceeds 120 tokens + refill (+2 s slack)`,
+    );
 
     // 4.200 distinct client addresses (the old table wiped EVERY bucket once it held more than 4.096).
     const churn = 4_200;
@@ -278,7 +380,10 @@ test("GA-15: the admin API quota of one address survives churn through thousands
     let regained = 0;
     for (let i = 0; i < 60; i++) if ((await hit(victim)) === 200) regained++;
     const refillable = Math.ceil((Date.now() - drainedAt) / 1000) + 1;
-    assert.ok(regained <= refillable, `victim regained ${regained} requests; only ${refillable} could have refilled`);
+    assert.ok(
+      regained <= refillable,
+      `victim regained ${regained} requests; only ${refillable} could have refilled`,
+    );
   } finally {
     agent.destroy();
     await hub.cleanup();
@@ -306,14 +411,32 @@ test("RR: the app shell is served under a CSP without inline script, framing or 
       const r = await raw(hub.base, "GET", path, {});
       assert.equal(r.status, 200, path);
       const csp = directives(r.headers["content-security-policy"]);
-      assert.deepEqual(csp["default-src"], ["'none'"], `${path}: nothing is allowed unless a directive says so`);
-      assert.deepEqual(csp["script-src"], ["'self'"], `${path}: no inline script, no eval, no other origin`);
-      assert.deepEqual(csp["connect-src"], ["'self'"], `${path}: the app only talks to its own hub`);
+      assert.deepEqual(
+        csp["default-src"],
+        ["'none'"],
+        `${path}: nothing is allowed unless a directive says so`,
+      );
+      assert.deepEqual(
+        csp["script-src"],
+        ["'self'"],
+        `${path}: no inline script, no eval, no other origin`,
+      );
+      assert.deepEqual(
+        csp["connect-src"],
+        ["'self'"],
+        `${path}: the app only talks to its own hub`,
+      );
       assert.deepEqual(csp["frame-ancestors"], ["'none'"], `${path}: not frameable`);
       assert.deepEqual(csp["base-uri"], ["'none'"]);
       assert.deepEqual(csp["form-action"], ["'self'"]);
-      assert.ok(!(csp["style-src"] ?? []).includes("'unsafe-inline'"), `${path}: styles come from files`);
-      assert.ok(!(csp["img-src"] ?? []).some((s) => s === "*" || s.startsWith("http")), `${path}: no remote images`);
+      assert.ok(
+        !(csp["style-src"] ?? []).includes("'unsafe-inline'"),
+        `${path}: styles come from files`,
+      );
+      assert.ok(
+        !(csp["img-src"] ?? []).some((s) => s === "*" || s.startsWith("http")),
+        `${path}: no remote images`,
+      );
       assert.equal(r.headers["x-frame-options"], "DENY", path);
       assert.equal(r.headers["x-content-type-options"], "nosniff", path);
     }
@@ -364,7 +487,11 @@ test("RR: an unknown route or a missing asset is a clean JSON 404, whatever the 
       const r = await raw(hub.base, method, path, { headers: JSON_BODY });
       assert.equal(r.status, 404, `${method} ${path}`);
       assertClean(r, `${method} ${path}`);
-      assert.equal((JSON.parse(r.text) as { error: { code: string } }).error.code, "not_found", `${method} ${path}`);
+      assert.equal(
+        (JSON.parse(r.text) as { error: { code: string } }).error.code,
+        "not_found",
+        `${method} ${path}`,
+      );
     }
   } finally {
     await hub.cleanup();
@@ -374,11 +501,20 @@ test("RR: an unknown route or a missing asset is a clean JSON 404, whatever the 
 test("RR: a UI-state value over the limit is a clean 413, not a 400 that echoes an internal message", async () => {
   const hub = await bootHub();
   try {
-    const r = await raw(hub.base, "PUT", "/api/ui-state/k", { body: JSON.stringify({ value: "x".repeat(150_000) }), headers: JSON_BODY });
+    const r = await raw(hub.base, "PUT", "/api/ui-state/k", {
+      body: JSON.stringify({ value: "x".repeat(150_000) }),
+      headers: JSON_BODY,
+    });
     assert.equal(r.status, 413);
     assertClean(r, "ui-state over limit");
-    assert.equal((JSON.parse(r.text) as { error: { code: string } }).error.code, "payload_too_large");
-    const ok = await raw(hub.base, "PUT", "/api/ui-state/k", { body: JSON.stringify({ value: { fine: true } }), headers: JSON_BODY });
+    assert.equal(
+      (JSON.parse(r.text) as { error: { code: string } }).error.code,
+      "payload_too_large",
+    );
+    const ok = await raw(hub.base, "PUT", "/api/ui-state/k", {
+      body: JSON.stringify({ value: { fine: true } }),
+      headers: JSON_BODY,
+    });
     assert.equal(ok.status, 200);
   } finally {
     await hub.cleanup();
@@ -394,7 +530,8 @@ test("RR: a UI-state value over the limit is a clean 413, not a 400 that echoes 
 test("RR: the rotate route reports 404/400/202/409 to match what actually happened", async () => {
   const hub = await bootHub();
   let devWs: WsClient | undefined;
-  const rotate = (id: string) => raw(hub.base, "POST", `/api/devices/${id}/rotate`, { headers: JSON_BODY, body: "{}" });
+  const rotate = (id: string) =>
+    raw(hub.base, "POST", `/api/devices/${id}/rotate`, { headers: JSON_BODY, body: "{}" });
   try {
     const ghost = await rotate("ghost-dev");
     assert.equal(ghost.status, 404, ghost.text);
@@ -405,10 +542,19 @@ test("RR: the rotate route reports 404/400/202/409 to match what actually happen
     const registry = new NetworkRegistry(join(hub.home, "network.sqlite"));
     const t0 = Date.now();
     const npDev = { id: "np-dev", uid: randomUUID() };
-    const onDev = { id: "on-dev", uid: randomUUID(), epoch: randomUUID(), token: "dpt_" + randomUUID().replace(/-/g, "") + randomUUID().slice(0, 11) };
+    const onDev = {
+      id: "on-dev",
+      uid: randomUUID(),
+      epoch: randomUUID(),
+      token: "dpt_" + randomUUID().replace(/-/g, "") + randomUUID().slice(0, 11),
+    };
     const lanDev = { id: "lan-dev", uid: randomUUID() };
     try {
-      for (const [d, transport] of [[npDev, "tunnel"], [onDev, "tunnel"], [lanDev, "lan"]] as const) {
+      for (const [d, transport] of [
+        [npDev, "tunnel"],
+        [onDev, "tunnel"],
+        [lanDev, "lan"],
+      ] as const) {
         registry.db
           .prepare(
             `INSERT INTO devices(id,name,kind,url,token,source,position,device_uid,last_status,created_at,updated_at,transport)
@@ -447,27 +593,43 @@ test("RR: the rotate route reports 404/400/202/409 to match what actually happen
     const registry2 = new NetworkRegistry(join(hub.home, "network.sqlite"));
     let pending: number | null;
     try {
-      pending = (registry2.db
-        .prepare("SELECT rotation_requested_at FROM pairings WHERE device_id=?")
-        .get(onDev.id) as { rotation_requested_at: number | null }).rotation_requested_at;
+      pending = (
+        registry2.db
+          .prepare("SELECT rotation_requested_at FROM pairings WHERE device_id=?")
+          .get(onDev.id) as { rotation_requested_at: number | null }
+      ).rotation_requested_at;
     } finally {
       registry2.close();
     }
-    assert.ok(typeof pending === "number" && pending > 0, "the offline request is recorded against the pairing");
+    assert.ok(
+      typeof pending === "number" && pending > 0,
+      "the offline request is recorded against the pairing",
+    );
 
     // Online now: 202 "online" the first time, 409 while that rotation is in flight.
     // The fake device applies and acks rotations only while autoAck is set.
     let autoAck = true;
-    const file = { pairingEpoch: onDev.epoch, credentialId: "", generation: 1, tunnelToken: onDev.token };
+    const file = {
+      pairingEpoch: onDev.epoch,
+      credentialId: "",
+      generation: 1,
+      tunnelToken: onDev.token,
+    };
     {
       const r3 = new NetworkRegistry(join(hub.home, "network.sqlite"));
       try {
-        file.credentialId = (r3.db.prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?").get(onDev.id) as { credential_id: string }).credential_id;
+        file.credentialId = (
+          r3.db
+            .prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?")
+            .get(onDev.id) as { credential_id: string }
+        ).credential_id;
       } finally {
         r3.close();
       }
     }
-    devWs = new WsClient(`ws://127.0.0.1:${hub.port}/api/tunnel`, { headers: { authorization: `Bearer ${file.tunnelToken}` } });
+    devWs = new WsClient(`ws://127.0.0.1:${hub.port}/api/tunnel`, {
+      headers: { authorization: `Bearer ${file.tunnelToken}` },
+    });
     await new Promise<void>((d, rej) => {
       devWs!.once("open", d);
       devWs!.once("unexpected-response", (_q, res) => rej(new Error(`upgrade ${res.statusCode}`)));
@@ -480,44 +642,78 @@ test("RR: the rotate route reports 404/400/202/409 to match what actually happen
       // legitimately stay in flight forever (the real device acks on apply), making the
       // later "202 online" assertion racy. Force-acking exactly generation 2 keeps the
       // un-acked rotation under test the POSTed one (generation 3).
-      if (msg.type === "control" && msg.action === "token-rotate" && (autoAck || msg.generation === 2) && msg.generation > file.generation) {
+      if (
+        msg.type === "control" &&
+        msg.action === "token-rotate" &&
+        (autoAck || msg.generation === 2) &&
+        msg.generation > file.generation
+      ) {
         file.pairingEpoch = msg.pairingEpoch;
         file.credentialId = msg.credentialId;
         file.generation = msg.generation;
         file.tunnelToken = msg.tunnelToken;
-        devWs!.send(JSON.stringify({
-          type: "control", action: "token-rotate-ack", rotationId: msg.rotationId,
-          credentialId: msg.credentialId, generation: msg.generation, pairingEpoch: msg.pairingEpoch,
-        }));
+        devWs!.send(
+          JSON.stringify({
+            type: "control",
+            action: "token-rotate-ack",
+            rotationId: msg.rotationId,
+            credentialId: msg.credentialId,
+            generation: msg.generation,
+            pairingEpoch: msg.pairingEpoch,
+          }),
+        );
       }
     });
-    devWs.send(JSON.stringify({
-      type: "pair-handshake", v: 1, deviceUid: onDev.uid, deviceId: onDev.id, pairingEpoch: file.pairingEpoch,
-      credentialId: file.credentialId, generation: file.generation, apiVersion: 1, tunnelProto: 1, keyFingerprint: `sha256:${"9".repeat(64)}`,
-    }));
+    devWs.send(
+      JSON.stringify({
+        type: "pair-handshake",
+        v: 1,
+        deviceUid: onDev.uid,
+        deviceId: onDev.id,
+        pairingEpoch: file.pairingEpoch,
+        credentialId: file.credentialId,
+        generation: file.generation,
+        apiVersion: 1,
+        tunnelProto: 1,
+        keyFingerprint: `sha256:${"9".repeat(64)}`,
+      }),
+    );
     await new Promise<void>((d) => devWs!.once("message", () => d())); // hello
-    const pairingRow = () => new Promise<{ gen: number; rid: string | null; started: number | null }>((d) => {
-      const r3 = new NetworkRegistry(join(hub.home, "network.sqlite"));
-      try {
-        const row = r3.db.prepare("SELECT credential_generation AS gen, rotation_id AS rid, rotation_started_at AS started FROM pairings WHERE device_id=?").get(onDev.id) as { gen: number; rid: string | null; started: number | null };
-        d(row);
-      } finally {
-        r3.close();
-      }
-    });
+    const pairingRow = () =>
+      new Promise<{ gen: number; rid: string | null; started: number | null }>((d) => {
+        const r3 = new NetworkRegistry(join(hub.home, "network.sqlite"));
+        try {
+          const row = r3.db
+            .prepare(
+              "SELECT credential_generation AS gen, rotation_id AS rid, rotation_started_at AS started FROM pairings WHERE device_id=?",
+            )
+            .get(onDev.id) as { gen: number; rid: string | null; started: number | null };
+          d(row);
+        } finally {
+          r3.close();
+        }
+      });
     const pairingGen = async () => (await pairingRow()).gen;
     // Settled, not merely recorded: generation 2 AND the in-flight markers cleared by the
     // ack. Waiting only for gen===2 races the hub's redelivery against this test's POST.
-    await until(async () => {
-      const row = await pairingRow();
-      return row.gen === 2 && row.rid === null && row.started === null;
-    }, 10_000, "reconnect completes and settles the pending rotation (gen 2, acked, no in-flight marker)");
+    await until(
+      async () => {
+        const row = await pairingRow();
+        return row.gen === 2 && row.rid === null && row.started === null;
+      },
+      10_000,
+      "reconnect completes and settles the pending rotation (gen 2, acked, no in-flight marker)",
+    );
 
     autoAck = false; // the next rotate is delivered but never acked → stays in flight
     const online = await rotate(onDev.id);
     assert.equal(online.status, 202, online.text);
     assert.equal((JSON.parse(online.text) as { mode: string }).mode, "online");
-    await until(async () => (await pairingGen()) === 3, 5_000, "the in-flight rotation is recorded");
+    await until(
+      async () => (await pairingGen()) === 3,
+      5_000,
+      "the in-flight rotation is recorded",
+    );
     const again = await rotate(onDev.id);
     assert.equal(again.status, 409, `in-flight rotation: ${again.text}`);
     assertClean(again, "in-flight rotation");

@@ -15,7 +15,9 @@ const { chromium, expect } = require("@playwright/test");
 const hub = process.env.DPI_URL ?? "http://localhost:4781";
 const device = process.env.DPI_DEVICE;
 if (!device) {
-  console.error("Set DPI_DEVICE to a device id from dpi-network.yaml, e.g. DPI_DEVICE=mac-mini node tests/e2e-network.mjs");
+  console.error(
+    "Set DPI_DEVICE to a device id from dpi-network.yaml, e.g. DPI_DEVICE=mac-mini node tests/e2e-network.mjs",
+  );
   process.exit(2);
 }
 const repo = resolve(import.meta.dirname, "../../..");

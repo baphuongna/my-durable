@@ -335,8 +335,7 @@ export function showInspector(tab?: string) {
   if (narrow.value) {
     ui.drawer = false;
     ui.inspectorOverlay = true;
-  }
-  else layout.inspector = true;
+  } else layout.inspector = true;
 }
 
 export function hideInspector() {

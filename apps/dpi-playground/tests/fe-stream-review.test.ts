@@ -8,16 +8,25 @@ class Source {
   onmessage?: (event: { data: string }) => void;
   onerror?: () => void;
   readyState = 1;
-  constructor(_url: string) { Source.latest = this; }
-  close() { this.readyState = Source.CLOSED; }
-  emit(sub: string, frame: unknown) { this.onmessage?.({ data: JSON.stringify({ sub, frame }) }); }
+  constructor(_url: string) {
+    Source.latest = this;
+  }
+  close() {
+    this.readyState = Source.CLOSED;
+  }
+  emit(sub: string, frame: unknown) {
+    this.onmessage?.({ data: JSON.stringify({ sub, frame }) });
+  }
 }
 
 test("R01: only hub-owned subscriptions can update the network or stream identity", (t) => {
   const original = globalThis.EventSource;
   globalThis.EventSource = Source as never;
   const stream = new HubStream();
-  t.after(() => { stream.stop(); globalThis.EventSource = original; });
+  t.after(() => {
+    stream.stop();
+    globalThis.EventSource = original;
+  });
   const networks: unknown[] = [];
   const frames: unknown[] = [];
   stream.onNetwork((devices) => networks.push(devices));

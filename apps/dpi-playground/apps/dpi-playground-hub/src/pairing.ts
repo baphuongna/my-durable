@@ -17,7 +17,13 @@
  * - Per-source limiter state is bounded (10,000 sources, 15 min idle TTL) and a full table refuses
  *   new sources instead of forgetting counters that are being enforced (GA-06).
  */
-import { createHash, createPublicKey, randomBytes, randomUUID, verify as cryptoVerify } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  randomBytes,
+  randomUUID,
+  verify as cryptoVerify,
+} from "node:crypto";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import {
   IP_BUCKET_IDLE_TTL_MS,
@@ -48,7 +54,10 @@ const NONCE_TTL_MS = 60_000;
 const RECEIPT_GRACE_MS = 120_000;
 const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
-export type PairingFailure = { ok: false; error: { code: string; message: string; status: number; retryAfterMs?: number } };
+export type PairingFailure = {
+  ok: false;
+  error: { code: string; message: string; status: number; retryAfterMs?: number };
+};
 
 interface Enrollment {
   enrollmentId: string;
@@ -125,12 +134,18 @@ export class PairingService {
   constructor(private readonly deps: PairingDeps) {
     this.now = deps.now ?? Date.now;
     const perIp = (rate: { capacity: number; perMinute: number }) =>
-      new TokenBuckets({ ...rate, maxKeys: IP_BUCKET_MAX_KEYS, idleTtlMs: IP_BUCKET_IDLE_TTL_MS }, this.now);
+      new TokenBuckets(
+        { ...rate, maxKeys: IP_BUCKET_MAX_KEYS, idleTtlMs: IP_BUCKET_IDLE_TTL_MS },
+        this.now,
+      );
     this.createLimiter = perIp(PAIR_RATE_LIMITS.codeCreate);
     this.startLimiter = perIp(PAIR_RATE_LIMITS.start);
     this.verifyLimiter = perIp(PAIR_RATE_LIMITS.verifyTotal);
     this.failWindows = new SlidingWindows(
-      { windowMs: PAIR_RATE_LIMITS.verifyFails.windowMinutes * 60_000, maxKeys: IP_BUCKET_MAX_KEYS },
+      {
+        windowMs: PAIR_RATE_LIMITS.verifyFails.windowMinutes * 60_000,
+        maxKeys: IP_BUCKET_MAX_KEYS,
+      },
       this.now,
     );
   }
@@ -145,15 +160,31 @@ export class PairingService {
    * cannot track is refused as well: forgetting an enforced counter would hand its owner a reset.
    */
   private failureBlocked(ip: string): boolean {
-    return this.failWindows.saturatedFor(ip) || this.failWindows.count(ip) >= PAIR_RATE_LIMITS.verifyFails.perWindow;
+    return (
+      this.failWindows.saturatedFor(ip) ||
+      this.failWindows.count(ip) >= PAIR_RATE_LIMITS.verifyFails.perWindow
+    );
   }
 
-  private fail(status: number, code: string, message: string, retryAfterMs?: number): PairingFailure {
-    return { ok: false, error: { status, code, message, ...(retryAfterMs ? { retryAfterMs } : {}) } };
+  private fail(
+    status: number,
+    code: string,
+    message: string,
+    retryAfterMs?: number,
+  ): PairingFailure {
+    return {
+      ok: false,
+      error: { status, code, message, ...(retryAfterMs ? { retryAfterMs } : {}) },
+    };
   }
 
   private rateLimited(taken: Extract<Take, { ok: false }>, tooMany: string): PairingFailure {
-    return this.fail(429, "rate_limited", taken.reason === "full" ? "Pairing is busy; retry later" : tooMany, taken.retryAfterMs);
+    return this.fail(
+      429,
+      "rate_limited",
+      taken.reason === "full" ? "Pairing is busy; retry later" : tooMany,
+      taken.retryAfterMs,
+    );
   }
 
   private ok<T>(value: T): { ok: true; value: T } {
@@ -171,13 +202,27 @@ export class PairingService {
     do {
       code = [...randomBytes(8)].map((b) => CODE_ALPHABET[b % 32]).join("");
     } while (this.byCode.has(code));
-    const entry: CodeEntry = { codeId: randomUUID(), code, expiresAt: now + CODE_TTL_MS, cancelled: false };
+    const entry: CodeEntry = {
+      codeId: randomUUID(),
+      code,
+      expiresAt: now + CODE_TTL_MS,
+      cancelled: false,
+    };
     // Audit row first: a code that cannot be audited must not exist (and must not eat the code capacity).
-    this.deps.audit.append({ actor: "admin", action: "pair.code_created", outcome: "ok", detail: { codeId: entry.codeId, expiresAt: entry.expiresAt } });
+    this.deps.audit.append({
+      actor: "admin",
+      action: "pair.code_created",
+      outcome: "ok",
+      detail: { codeId: entry.codeId, expiresAt: entry.expiresAt },
+    });
     this.codes.set(entry.codeId, entry);
     this.byCode.set(code, entry.codeId);
     return this.ok({
-      type: "pair.code", v: 1, codeId: entry.codeId, code, expiresAt: entry.expiresAt,
+      type: "pair.code",
+      v: 1,
+      codeId: entry.codeId,
+      code,
+      expiresAt: entry.expiresAt,
       hubOrigin: this.deps.hubOrigin,
       pairUrl: `${this.deps.hubOrigin}/pair?code=${code}&v=1`,
     });
@@ -186,8 +231,13 @@ export class PairingService {
   /** Admin handoff lookup. Reuses a code; never creates an enrollment or approves it. */
   resolveCode(body: unknown): { ok: true; value: PairCodeIssue } | PairingFailure {
     const code = (body as { code?: unknown } | null)?.code;
-    if (!body || typeof body !== "object" || Object.keys(body).length !== 1
-      || typeof code !== "string" || !/^[A-Z2-7]{8}$/.test(code))
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Object.keys(body).length !== 1 ||
+      typeof code !== "string" ||
+      !/^[A-Z2-7]{8}$/.test(code)
+    )
       return this.fail(400, "code_invalid", "Invalid pairing handoff");
     const codeId = this.byCode.get(code);
     const entry = codeId ? this.codes.get(codeId) : undefined;
@@ -195,8 +245,13 @@ export class PairingService {
     const state = this.status(entry.codeId);
     if (!state.ok) return state;
     return this.ok({
-      type: "pair.code", v: 1, codeId: entry.codeId, code: entry.code, expiresAt: entry.expiresAt,
-      hubOrigin: this.deps.hubOrigin, pairUrl: `${this.deps.hubOrigin}/pair?code=${entry.code}&v=1`,
+      type: "pair.code",
+      v: 1,
+      codeId: entry.codeId,
+      code: entry.code,
+      expiresAt: entry.expiresAt,
+      hubOrigin: this.deps.hubOrigin,
+      pairUrl: `${this.deps.hubOrigin}/pair?code=${entry.code}&v=1`,
     });
   }
 
@@ -221,7 +276,15 @@ export class PairingService {
       this.noteFailure(ip);
       return this.fail(400, "invalid", "pair.request body failed schema validation");
     }
-    const req = body as { requestId: string; code: string; deviceUid: string; deviceName: string; publicKey: string; keyFingerprint: string; clientTime: number };
+    const req = body as {
+      requestId: string;
+      code: string;
+      deviceUid: string;
+      deviceName: string;
+      publicKey: string;
+      keyFingerprint: string;
+      clientTime: number;
+    };
     const live = this.liveCode(req.code, now);
     if (live === "invalid") {
       this.noteFailure(ip); // code guessing
@@ -231,7 +294,8 @@ export class PairingService {
       this.noteFailure(ip);
       return this.fail(410, "code_expired", "Pairing code expired");
     }
-    if (live === "cancelled") return this.fail(410, "enrollment_cancelled", "Pairing code cancelled");
+    if (live === "cancelled")
+      return this.fail(410, "enrollment_cancelled", "Pairing code cancelled");
 
     // Same requestId + same tuple → same live challenge (idempotent retry).
     if (live.enrollmentId) {
@@ -242,12 +306,17 @@ export class PairingService {
         existing.deviceName === req.deviceName &&
         existing.declaredFingerprint === req.keyFingerprint &&
         existing.publicKeyPem === req.publicKey;
-      if (!sameTuple) return this.fail(409, "code_in_use", "This code is reserved for another enrollment");
+      if (!sameTuple)
+        return this.fail(409, "code_in_use", "This code is reserved for another enrollment");
       if (existing.cancelled) return this.fail(410, "enrollment_cancelled", "Enrollment cancelled");
       if (now >= live.expiresAt) return this.fail(410, "code_expired", "Pairing code expired");
       return this.ok({
-        type: "pair.challenge", v: 1, enrollmentId: existing.enrollmentId, nonce: existing.nonce,
-        issuedAt: existing.nonceIssuedAt, hubId: this.deps.hubId,
+        type: "pair.challenge",
+        v: 1,
+        enrollmentId: existing.enrollmentId,
+        nonce: existing.nonce,
+        issuedAt: existing.nonceIssuedAt,
+        hubId: this.deps.hubId,
       });
     }
 
@@ -267,7 +336,11 @@ export class PairingService {
     }
     if (fingerprint !== req.keyFingerprint) {
       this.noteFailure(ip);
-      return this.fail(409, "fingerprint_mismatch", "Declared fingerprint does not match the submitted public key");
+      return this.fail(
+        409,
+        "fingerprint_mismatch",
+        "Declared fingerprint does not match the submitted public key",
+      );
     }
 
     if (this.enrollments.size >= PAIR_RAM_CAPS.enrollments)
@@ -293,13 +366,20 @@ export class PairingService {
     this.enrollments.set(enrollment.enrollmentId, enrollment);
     live.enrollmentId = enrollment.enrollmentId;
     return this.ok({
-      type: "pair.challenge", v: 1, enrollmentId: enrollment.enrollmentId, nonce: enrollment.nonce,
-      issuedAt: enrollment.nonceIssuedAt, hubId: this.deps.hubId,
+      type: "pair.challenge",
+      v: 1,
+      enrollmentId: enrollment.enrollmentId,
+      nonce: enrollment.nonce,
+      issuedAt: enrollment.nonceIssuedAt,
+      hubId: this.deps.hubId,
     });
   }
 
   /** POST /api/pair/verify — proof, poll, and (post-approval) issuance. */
-  async verify(body: unknown, address: string): Promise<{ ok: true; value: PairPendingOut | TokenIssue; status: number } | PairingFailure> {
+  async verify(
+    body: unknown,
+    address: string,
+  ): Promise<{ ok: true; value: PairPendingOut | TokenIssue; status: number } | PairingFailure> {
     const now = this.now();
     const ip = ipKey(address);
     if (this.failureBlocked(ip))
@@ -314,7 +394,11 @@ export class PairingService {
     const enrollment = this.enrollments.get(req.enrollmentId);
     if (!enrollment) {
       this.noteFailure(ip);
-      return this.fail(410, "enrollment_lost", "Enrollment not found (hub restart or new code required)");
+      return this.fail(
+        410,
+        "enrollment_lost",
+        "Enrollment not found (hub restart or new code required)",
+      );
     }
     if (enrollment.cancelled) return this.fail(410, "enrollment_cancelled", "Enrollment cancelled");
     const code = this.codes.get(enrollment.codeId)!;
@@ -326,25 +410,39 @@ export class PairingService {
       // key (spec 03 §4.3: poll bằng cùng body, retry đúng proof).
       if (req.nonce !== enrollment.nonce || !this.signatureOk(enrollment, req.signature)) {
         this.noteFailure(ip);
-        this.deps.audit.denied("auth.denied", ip, { stage: "pair.verify", enrollmentId: enrollment.enrollmentId, reason: "receipt_proof_mismatch" });
+        this.deps.audit.denied("auth.denied", ip, {
+          stage: "pair.verify",
+          enrollmentId: enrollment.enrollmentId,
+          reason: "receipt_proof_mismatch",
+        });
         return this.fail(401, "signature_invalid", "Proof does not match the verified enrollment");
       }
       // F01: invalidation is TERMINAL. A revoked/re-paired credential never
       // leads to a re-issue of this enrollment; a NEW enrollment with a NEW
       // operator approval is required.
       if (enrollment.invalidated)
-        return this.fail(410, "reauth_required", "Issued credential is no longer active; re-pair required");
+        return this.fail(
+          410,
+          "reauth_required",
+          "Issued credential is no longer active; re-pair required",
+        );
       // S-3: a valid poll is accepted at most once per PAIR_POLL_MS per enrollment. Judged only now that
       // the proof checked out, so a caller without the device key can never burn the device's slot, and a
       // paced-out poll is not an auth failure. A clock that stepped back never locks the device out.
       if (enrollment.lastPollAt !== undefined) {
         const elapsed = now - enrollment.lastPollAt;
         if (elapsed >= 0 && elapsed < PAIR_POLL_MS)
-          return this.fail(429, "rate_limited", "Polling too fast; wait before the next poll", PAIR_POLL_MS - elapsed);
+          return this.fail(
+            429,
+            "rate_limited",
+            "Polling too fast; wait before the next poll",
+            PAIR_POLL_MS - elapsed,
+          );
       }
       enrollment.lastPollAt = now;
       if (enrollment.issued) {
-        if (now > code.expiresAt + RECEIPT_GRACE_MS) return this.fail(410, "code_expired", "Receipt grace window passed");
+        if (now > code.expiresAt + RECEIPT_GRACE_MS)
+          return this.fail(410, "code_expired", "Receipt grace window passed");
         // Re-validate before returning the cached secret: revoked/re-paired
         // credentials must never be replayed just because the TTL is open.
         if (this.deps.receiptValidator) {
@@ -352,14 +450,30 @@ export class PairingService {
           if (verdict !== true) {
             enrollment.issued = undefined; // drop the cached secret
             enrollment.invalidated = true; // …and end this enrollment (F01)
-            return this.fail(410, verdict.code, "Issued credential is no longer active; re-pair required");
+            return this.fail(
+              410,
+              verdict.code,
+              "Issued credential is no longer active; re-pair required",
+            );
           }
         }
         return { ok: true, value: enrollment.issued.tokenIssue, status: 200 };
       }
-      if (now >= code.expiresAt) return this.fail(410, "code_expired", "Pairing code expired before approval");
+      if (now >= code.expiresAt)
+        return this.fail(410, "code_expired", "Pairing code expired before approval");
       if (!enrollment.approval)
-        return { ok: true, value: { type: "pair.pending", v: 1, enrollmentId: enrollment.enrollmentId, state: "awaiting_approval", expiresAt: code.expiresAt, pollAfterMs: PAIR_POLL_MS }, status: 202 };
+        return {
+          ok: true,
+          value: {
+            type: "pair.pending",
+            v: 1,
+            enrollmentId: enrollment.enrollmentId,
+            state: "awaiting_approval",
+            expiresAt: code.expiresAt,
+            pollAfterMs: PAIR_POLL_MS,
+          },
+          status: 202,
+        };
       // Approved + not yet issued. F03: issuance is serialized per enrollment
       // — concurrent polls share ONE in-flight promise and get the SAME
       // credential (no await between the check and the assignment).
@@ -367,20 +481,22 @@ export class PairingService {
       const approval = enrollment.approval;
       const inflight =
         enrollment.issuing ??
-        this.deps.issue({
-          enrollmentId: enrollment.enrollmentId,
-          codeId: enrollment.codeId,
-          deviceUid: enrollment.deviceUid,
-          deviceName: enrollment.deviceName,
-          publicKeyPem: enrollment.publicKeyPem,
-          keyFingerprint: enrollment.computedFingerprint,
-          replaceKey: approval.replaceKey,
-          expectedIdentity: approval.identity,
-        }).then((tokenIssue) => {
-          // pair.success is audited INSIDE the issuance transaction (P2-10).
-          enrollment.issued = { tokenIssue, at: this.now() };
-          return tokenIssue;
-        });
+        this.deps
+          .issue({
+            enrollmentId: enrollment.enrollmentId,
+            codeId: enrollment.codeId,
+            deviceUid: enrollment.deviceUid,
+            deviceName: enrollment.deviceName,
+            publicKeyPem: enrollment.publicKeyPem,
+            keyFingerprint: enrollment.computedFingerprint,
+            replaceKey: approval.replaceKey,
+            expectedIdentity: approval.identity,
+          })
+          .then((tokenIssue) => {
+            // pair.success is audited INSIDE the issuance transaction (P2-10).
+            enrollment.issued = { tokenIssue, at: this.now() };
+            return tokenIssue;
+          });
       enrollment.issuing = inflight;
       try {
         const tokenIssue = await inflight;
@@ -392,10 +508,18 @@ export class PairingService {
           // another enrollment). Nothing was issued; the approval is void and a new one, taken against
           // the current state, is required.
           if (enrollment.approval === approval) enrollment.approval = undefined;
-          return this.fail(409, "identity_changed", "Device identity changed since approval; approve again");
+          return this.fail(
+            409,
+            "identity_changed",
+            "Device identity changed since approval; approve again",
+          );
         }
         if (e instanceof AuditUnavailableError)
-          return this.fail(503, "audit_unavailable", "Audit storage is unavailable; the credential was not issued");
+          return this.fail(
+            503,
+            "audit_unavailable",
+            "Audit storage is unavailable; the credential was not issued",
+          );
         // Any other issuance fault is ours, not the caller's: fixed text, detail stays in the log.
         return this.fail(500, "internal", "Issuance failed");
       } finally {
@@ -429,18 +553,30 @@ export class PairingService {
     });
     let valid = false;
     try {
-      valid = cryptoVerify(null, Buffer.from(payload, "utf8"), createPublicKey(enrollment.publicKeyPem), Buffer.from(req.signature, "base64url"));
+      valid = cryptoVerify(
+        null,
+        Buffer.from(payload, "utf8"),
+        createPublicKey(enrollment.publicKeyPem),
+        Buffer.from(req.signature, "base64url"),
+      );
     } catch {
       valid = false;
     }
     if (!valid) {
       enrollment.badSignatures += 1;
       this.noteFailure(ip); // sliding-window IP counter (S-1): code/UID change does not reset
-      this.deps.audit.denied("auth.denied", ip, { stage: "pair.verify", enrollmentId: enrollment.enrollmentId });
+      this.deps.audit.denied("auth.denied", ip, {
+        stage: "pair.verify",
+        enrollmentId: enrollment.enrollmentId,
+      });
       if (enrollment.badSignatures >= PAIR_SIGNATURE_FAIL_LIMIT) {
         enrollment.cancelled = true;
         code.cancelled = true;
-        return this.fail(410, "enrollment_cancelled", "Too many invalid signatures; enrollment cancelled");
+        return this.fail(
+          410,
+          "enrollment_cancelled",
+          "Too many invalid signatures; enrollment cancelled",
+        );
       }
       return this.fail(401, "signature_invalid", "Signature verification failed");
     }
@@ -448,7 +584,18 @@ export class PairingService {
     enrollment.nonceConsumed = true;
     enrollment.proofVerified = true;
     enrollment.verifiedAt = now;
-    return { ok: true, value: { type: "pair.pending", v: 1, enrollmentId: enrollment.enrollmentId, state: "awaiting_approval", expiresAt: code.expiresAt, pollAfterMs: PAIR_POLL_MS }, status: 202 };
+    return {
+      ok: true,
+      value: {
+        type: "pair.pending",
+        v: 1,
+        enrollmentId: enrollment.enrollmentId,
+        state: "awaiting_approval",
+        expiresAt: code.expiresAt,
+        pollAfterMs: PAIR_POLL_MS,
+      },
+      status: 202,
+    };
   }
 
   /** Proof check shared by first-verify and every receipt poll (F02). */
@@ -463,7 +610,12 @@ export class PairingService {
       keyFingerprint: enrollment.computedFingerprint,
     });
     try {
-      return cryptoVerify(null, Buffer.from(payload, "utf8"), createPublicKey(enrollment.publicKeyPem), Buffer.from(signature, "base64url"));
+      return cryptoVerify(
+        null,
+        Buffer.from(payload, "utf8"),
+        createPublicKey(enrollment.publicKeyPem),
+        Buffer.from(signature, "base64url"),
+      );
     } catch {
       return false;
     }
@@ -473,14 +625,21 @@ export class PairingService {
   approve(codeId: string, body: unknown): { ok: true; value: PairCodeState } | PairingFailure {
     if (!checkPairingDto(PairApprovalSchema, body))
       return this.fail(400, "invalid", "approval body failed schema validation");
-    const approval = body as { enrollmentId: string; deviceUid: string; keyFingerprint: string; replaceKey?: boolean };
+    const approval = body as {
+      enrollmentId: string;
+      deviceUid: string;
+      keyFingerprint: string;
+      replaceKey?: boolean;
+    };
     const code = this.codes.get(codeId);
     const now = this.now();
     if (!code) return this.fail(404, "code_invalid", "Unknown code");
     const enrollment = code.enrollmentId ? this.enrollments.get(code.enrollmentId) : undefined;
     if (!enrollment) return this.fail(409, "invalid", "No enrollment to approve yet");
-    if (enrollment.cancelled || code.cancelled) return this.fail(410, "enrollment_cancelled", "Enrollment cancelled");
-    if (!enrollment.proofVerified) return this.fail(409, "invalid", "Proof not verified yet; nothing to approve");
+    if (enrollment.cancelled || code.cancelled)
+      return this.fail(410, "enrollment_cancelled", "Enrollment cancelled");
+    if (!enrollment.proofVerified)
+      return this.fail(409, "invalid", "Proof not verified yet; nothing to approve");
     if (now >= code.expiresAt) return this.fail(410, "code_expired", "Pairing code expired");
     // Immutable tuple must match the enrollment exactly.
     if (
@@ -488,15 +647,25 @@ export class PairingService {
       approval.deviceUid !== enrollment.deviceUid ||
       approval.keyFingerprint !== enrollment.computedFingerprint
     )
-      return this.fail(409, "fingerprint_mismatch", "Approval tuple does not match the verified enrollment");
+      return this.fail(
+        409,
+        "fingerprint_mismatch",
+        "Approval tuple does not match the verified enrollment",
+      );
     if (enrollment.approval) return this.fail(409, "invalid", "Already approved");
 
     // A DIFFERENT key than the one on record — in ANY pairing state, a revoked pairing keeps its key —
     // requires replaceKey=true (P-14).
     const identity = observeIdentity(this.deps.registry, enrollment.deviceUid);
-    const keyChanged = identity.storedFingerprint !== undefined && identity.storedFingerprint !== enrollment.computedFingerprint;
+    const keyChanged =
+      identity.storedFingerprint !== undefined &&
+      identity.storedFingerprint !== enrollment.computedFingerprint;
     if (keyChanged && !approval.replaceKey)
-      return this.fail(409, "invalid", "Device has a different key on record; re-confirm with replaceKey=true");
+      return this.fail(
+        409,
+        "invalid",
+        "Device has a different key on record; re-confirm with replaceKey=true",
+      );
     if (approval.replaceKey && !keyChanged)
       return this.fail(409, "invalid", "replaceKey set but the key has not changed");
 
@@ -504,13 +673,23 @@ export class PairingService {
     // enrollment still un-approved — fail-closed means a storage outage can
     // never leave a silently-live approval behind.
     this.deps.audit.append({
-      actor: "admin", action: "pair.approved", outcome: "ok",
+      actor: "admin",
+      action: "pair.approved",
+      outcome: "ok",
       detail: {
-        codeId, enrollmentId: enrollment.enrollmentId, keyFingerprint: enrollment.computedFingerprint, replaceKey: keyChanged,
+        codeId,
+        enrollmentId: enrollment.enrollmentId,
+        keyFingerprint: enrollment.computedFingerprint,
+        replaceKey: keyChanged,
         ...(keyChanged ? { replacedKeyFingerprint: identity.storedFingerprint } : {}),
       },
     });
-    enrollment.approval = { fingerprint: enrollment.computedFingerprint, replaceKey: keyChanged, at: now, identity: identity.stamp };
+    enrollment.approval = {
+      fingerprint: enrollment.computedFingerprint,
+      replaceKey: keyChanged,
+      at: now,
+      identity: identity.stamp,
+    };
     const s = this.status(codeId);
     return s.ok ? this.ok(s.value) : s;
   }
@@ -520,9 +699,15 @@ export class PairingService {
     const code = this.codes.get(codeId);
     if (!code) return this.fail(404, "code_invalid", "Unknown code");
     const enrollment = code.enrollmentId ? this.enrollments.get(code.enrollmentId) : undefined;
-    if (enrollment?.issued) return this.fail(409, "already_issued", "Credential already issued; revoke it instead");
+    if (enrollment?.issued)
+      return this.fail(409, "already_issued", "Credential already issued; revoke it instead");
     // Audit row first (as for approve): a cancel that cannot be audited does not take effect.
-    this.deps.audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok", detail: { codeId } });
+    this.deps.audit.append({
+      actor: "admin",
+      action: "pair.cancelled",
+      outcome: "ok",
+      detail: { codeId },
+    });
     code.cancelled = true;
     if (enrollment) {
       enrollment.cancelled = true;
@@ -560,7 +745,11 @@ export class PairingService {
                   ? "awaiting_proof"
                   : "open";
     const state: PairCodeState = {
-      type: "pair.code-state", v: 1, codeId, expiresAt: code.expiresAt, phase,
+      type: "pair.code-state",
+      v: 1,
+      codeId,
+      expiresAt: code.expiresAt,
+      phase,
       ...(enrollment
         ? {
             enrollment: {
@@ -573,7 +762,10 @@ export class PairingService {
               // vs the key on record (any pairing state) — available BEFORE
               // approval, so the wizard can offer the replace-key confirmation in time.
               keyChanged: (() => {
-                const stored = observeIdentity(this.deps.registry, enrollment.deviceUid).storedFingerprint;
+                const stored = observeIdentity(
+                  this.deps.registry,
+                  enrollment.deviceUid,
+                ).storedFingerprint;
                 return stored !== undefined && stored !== enrollment.computedFingerprint;
               })(),
             },
@@ -581,7 +773,9 @@ export class PairingService {
         : {}),
       ...(issued ? { deviceId: issued.tokenIssue.deviceId } : {}),
     };
-    return checkPairingDto(PairCodeStateSchema, state) ? { ok: true, value: state } : this.fail(500, "internal", "status serialization failed");
+    return checkPairingDto(PairCodeStateSchema, state)
+      ? { ok: true, value: state }
+      : this.fail(500, "internal", "status serialization failed");
   }
 
   /** Drop expired entries (hub housekeeping). F15: past expiry+grace the
@@ -604,5 +798,19 @@ export class PairingService {
   }
 }
 
-export type PairChallengeOut = { type: "pair.challenge"; v: 1; enrollmentId: string; nonce: string; issuedAt: number; hubId: string };
-export type PairPendingOut = { type: "pair.pending"; v: 1; enrollmentId: string; state: "awaiting_approval"; expiresAt: number; pollAfterMs: number };
+export type PairChallengeOut = {
+  type: "pair.challenge";
+  v: 1;
+  enrollmentId: string;
+  nonce: string;
+  issuedAt: number;
+  hubId: string;
+};
+export type PairPendingOut = {
+  type: "pair.pending";
+  v: 1;
+  enrollmentId: string;
+  state: "awaiting_approval";
+  expiresAt: number;
+  pollAfterMs: number;
+};

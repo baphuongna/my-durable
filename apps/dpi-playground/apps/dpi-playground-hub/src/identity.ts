@@ -34,7 +34,10 @@ function fingerprintOfStoredKey(row: Row): string | undefined {
     const der = createPublicKey(row.publicKey).export({ format: "der", type: "spki" }) as Buffer;
     return `sha256:${createHash("sha256").update(der).digest("hex")}`;
   } catch {
-    return row.keyFingerprint ?? `unparseable:${createHash("sha256").update(row.publicKey).digest("hex")}`;
+    return (
+      row.keyFingerprint ??
+      `unparseable:${createHash("sha256").update(row.publicKey).digest("hex")}`
+    );
   }
 }
 

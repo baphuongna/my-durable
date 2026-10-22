@@ -63,7 +63,10 @@ export async function bootCaddyDeploy(opts: {
     XDG_CONFIG_HOME: join(dir, "config"),
     XDG_DATA_HOME: join(dir, "data"),
   };
-  const child = spawn(CADDY_BINARY, ["run", "--config", config, "--adapter", "caddyfile"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(CADDY_BINARY, ["run", "--config", config, "--adapter", "caddyfile"], {
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   child.stdout?.on("data", (x) => log.push(String(x)));
   child.stderr?.on("data", (x) => log.push(String(x)));
   const base = `https://127.0.0.1:${port}`;
@@ -74,10 +77,14 @@ export async function bootCaddyDeploy(opts: {
   for (;;) {
     if (child.exitCode !== null) throw new Error(`caddy exited early:\n${log.tail(30)}`);
     const up = await new Promise<boolean>((done) => {
-      const req = https.get(`${base}/healthz`, { rejectUnauthorized: false, timeout: 1500 }, (res) => {
-        res.resume();
-        done(true);
-      });
+      const req = https.get(
+        `${base}/healthz`,
+        { rejectUnauthorized: false, timeout: 1500 },
+        (res) => {
+          res.resume();
+          done(true);
+        },
+      );
       req.on("error", () => done(false));
       req.on("timeout", () => {
         req.destroy();
@@ -126,10 +133,14 @@ https://127.0.0.1:${port} {
 `,
   );
   const log = new BoundedLog("caddy", 400);
-  const child: ChildProcess = spawn(CADDY_BINARY, ["run", "--config", caddyfile, "--adapter", "caddyfile"], {
-    stdio: ["ignore", "pipe", "pipe"],
-    cwd: dir,
-  });
+  const child: ChildProcess = spawn(
+    CADDY_BINARY,
+    ["run", "--config", caddyfile, "--adapter", "caddyfile"],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: dir,
+    },
+  );
   child.stdout?.on("data", (x) => log.push(String(x)));
   child.stderr?.on("data", (x) => log.push(String(x)));
   const exited = () => child.exitCode !== null;

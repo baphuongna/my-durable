@@ -40,11 +40,7 @@ const steps = [
           <span class="dialog-eyebrow">LEARN BY DOING</span>
           <h3 id="help-title">What makes this durable?</h3>
         </div>
-        <button
-          class="icon-button"
-          aria-label="Close help"
-          @click="ui.dialog = undefined"
-        >
+        <button class="icon-button" aria-label="Close help" @click="ui.dialog = undefined">
           <X :size="18" />
         </button>
       </div>

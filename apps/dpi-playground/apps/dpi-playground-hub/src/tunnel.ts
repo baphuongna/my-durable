@@ -144,7 +144,9 @@ interface Conn {
 export class TunnelServer {
   private readonly wss: WebSocketServer;
   private readonly openListeners: Array<(conn: TunnelConnection) => void> = [];
-  private readonly frameListeners: Array<(conn: TunnelConnection, frame: TunnelWireMessage) => void> = [];
+  private readonly frameListeners: Array<
+    (conn: TunnelConnection, frame: TunnelWireMessage) => void
+  > = [];
   private readonly connections = new Map<string, Conn>(); // deviceId → authenticated
   private readonly ipBuckets: TokenBuckets;
   private readonly globalBuckets: TokenBuckets;
@@ -162,18 +164,33 @@ export class TunnelServer {
     hooks: TunnelTestHooks = {},
   ) {
     this.policy = { ...DEFAULT_TUNNEL_POLICY, ...policy };
-    if (policy.ipCapacity === undefined) this.policy.ipCapacity = Math.min(DEFAULT_TUNNEL_POLICY.ipCapacity, this.policy.ipPerMinute);
+    if (policy.ipCapacity === undefined)
+      this.policy.ipCapacity = Math.min(DEFAULT_TUNNEL_POLICY.ipCapacity, this.policy.ipPerMinute);
     this.handlers = handlers;
     this.now = hooks.now ?? Date.now;
     this.ipBuckets = new TokenBuckets(
-      { capacity: this.policy.ipCapacity, perMinute: this.policy.ipPerMinute, maxKeys: IP_BUCKET_MAX_KEYS, idleTtlMs: IP_BUCKET_IDLE_TTL_MS },
+      {
+        capacity: this.policy.ipCapacity,
+        perMinute: this.policy.ipPerMinute,
+        maxKeys: IP_BUCKET_MAX_KEYS,
+        idleTtlMs: IP_BUCKET_IDLE_TTL_MS,
+      },
       this.now,
     );
     this.globalBuckets = new TokenBuckets(
-      { capacity: this.policy.globalPerMinute, perMinute: this.policy.globalPerMinute, maxKeys: 1, idleTtlMs: IP_BUCKET_IDLE_TTL_MS },
+      {
+        capacity: this.policy.globalPerMinute,
+        perMinute: this.policy.globalPerMinute,
+        maxKeys: 1,
+        idleTtlMs: IP_BUCKET_IDLE_TTL_MS,
+      },
       this.now,
     );
-    this.wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_MESSAGE_BYTES, perMessageDeflate: false });
+    this.wss = new WebSocketServer({
+      noServer: true,
+      maxPayload: WS_MAX_MESSAGE_BYTES,
+      perMessageDeflate: false,
+    });
   }
 
   private readonly policy: TunnelPolicy;
@@ -260,7 +277,9 @@ export class TunnelServer {
       // Any fault before the 101 (registry read, audit storage, anything unexpected) fails THIS
       // request closed with a plain 503; it must never escape into the server's 'upgrade' emitter.
       this.reportFault("upgrade", e);
-      this.httpJson(socket, 503, { error: { code: "unavailable", message: "tunnel: temporarily unavailable" } });
+      this.httpJson(socket, 503, {
+        error: { code: "unavailable", message: "tunnel: temporarily unavailable" },
+      });
       return;
     }
     if (!admitted) return;
@@ -306,21 +325,40 @@ export class TunnelServer {
       /* fall through to reject */
     }
     if (req.method !== "GET" || path !== "/api/tunnel") {
-      this.httpJson(socket, 404, { type: "tunnel.auth-error", v: 1, code: "token_unknown", message: "tunnel: wrong endpoint" });
+      this.httpJson(socket, 404, {
+        type: "tunnel.auth-error",
+        v: 1,
+        code: "token_unknown",
+        message: "tunnel: wrong endpoint",
+      });
       return undefined;
     }
     const ip = ipKey(clientIp(req));
     // Before any bucket: a request that cannot show TLS must not be able to spend (or probe) a client's budget.
     if (this.policy.requireTls && !viaTls(req)) {
-      this.audit.denied("auth.denied", ip, { endpoint: "tunnel.upgrade", code: "tls_required" }, "tunnel.upgrade:tls_required");
-      this.httpJson(socket, 403, { error: { code: "tls_required", message: "tunnel: this hub is only served over HTTPS" } });
+      this.audit.denied(
+        "auth.denied",
+        ip,
+        { endpoint: "tunnel.upgrade", code: "tls_required" },
+        "tunnel.upgrade:tls_required",
+      );
+      this.httpJson(socket, 403, {
+        error: { code: "tls_required", message: "tunnel: this hub is only served over HTTPS" },
+      });
       return undefined;
     }
     // The only legitimate client is the device connector, which sends no Origin; browsers always do.
     // Refused before any bucket is touched so such requests can neither drain nor probe the limits.
     if (req.headers.origin !== undefined) {
-      this.audit.denied("auth.denied", ip, { endpoint: "tunnel.upgrade", code: "origin_forbidden" }, "tunnel.upgrade:origin_forbidden");
-      this.httpJson(socket, 403, { error: { code: "origin_forbidden", message: "tunnel: browser origins are not allowed" } });
+      this.audit.denied(
+        "auth.denied",
+        ip,
+        { endpoint: "tunnel.upgrade", code: "origin_forbidden" },
+        "tunnel.upgrade:origin_forbidden",
+      );
+      this.httpJson(socket, 403, {
+        error: { code: "origin_forbidden", message: "tunnel: browser origins are not allowed" },
+      });
       return undefined;
     }
     // What an address can spend before it shows a credential is its OWN budget. The hub-wide bucket
@@ -332,7 +370,12 @@ export class TunnelServer {
       return undefined;
     }
     if ((this.ipConnections.get(ip) ?? 0) >= this.policy.maxConnectionsPerIp) {
-      this.audit.denied("rate_limited", ip, { endpoint: "tunnel.upgrade", scope: "ip_connections" }, "tunnel.upgrade:ip_connections");
+      this.audit.denied(
+        "rate_limited",
+        ip,
+        { endpoint: "tunnel.upgrade", scope: "ip_connections" },
+        "tunnel.upgrade:ip_connections",
+      );
       this.httpJson(socket, 429, {
         type: "tunnel.auth-error",
         v: 1,
@@ -343,7 +386,9 @@ export class TunnelServer {
       return undefined;
     }
 
-    const m = /^Bearer (dpt_[A-Za-z0-9_-]{43})$/.exec(String(req.headers.authorization ?? "").trim());
+    const m = /^Bearer (dpt_[A-Za-z0-9_-]{43})$/.exec(
+      String(req.headers.authorization ?? "").trim(),
+    );
     if (!m) {
       this.deny(socket, ip, "token_unknown", "tunnel: missing or malformed bearer credential");
       return undefined;
@@ -366,7 +411,9 @@ export class TunnelServer {
     // Pairing must still be live and be THE epoch this credential belongs to.
     const pairing = this.registry.db
       .prepare("SELECT pairing_epoch, status, key_fingerprint FROM pairings WHERE device_id=?")
-      .get(row.device_id) as { pairing_epoch: string; status: string; key_fingerprint: string } | undefined;
+      .get(row.device_id) as
+      | { pairing_epoch: string; status: string; key_fingerprint: string }
+      | undefined;
     if (!pairing || pairing.status !== "paired" || pairing.pairing_epoch !== row.pairing_epoch) {
       this.deny(socket, ip, "revoked", "tunnel: pairing no longer active for this credential");
       return undefined;
@@ -387,8 +434,16 @@ export class TunnelServer {
     }
     // A device that already holds the live slot is replaced, not added.
     const replacing = this.connections.has(row.device_id);
-    if (this.pendingHandshakes >= this.policy.maxPendingHandshakes || (!replacing && this.connections.size >= this.policy.maxAuthenticated)) {
-      this.audit.denied("rate_limited", ip, { endpoint: "tunnel.upgrade", scope: "capacity" }, "tunnel.upgrade:capacity");
+    if (
+      this.pendingHandshakes >= this.policy.maxPendingHandshakes ||
+      (!replacing && this.connections.size >= this.policy.maxAuthenticated)
+    ) {
+      this.audit.denied(
+        "rate_limited",
+        ip,
+        { endpoint: "tunnel.upgrade", scope: "capacity" },
+        "tunnel.upgrade:capacity",
+      );
       this.httpJson(socket, 429, {
         type: "tunnel.auth-error",
         v: 1,
@@ -401,8 +456,18 @@ export class TunnelServer {
     return { row, deviceUid: device.device_uid, keyFingerprint: pairing.key_fingerprint, ip };
   }
 
-  private refuseRate(socket: Duplex, ip: string, scope: "ip" | "global", retryAfterMs: number): void {
-    this.audit.denied("rate_limited", ip, { endpoint: "tunnel.upgrade", scope }, `tunnel.upgrade:${scope}`);
+  private refuseRate(
+    socket: Duplex,
+    ip: string,
+    scope: "ip" | "global",
+    retryAfterMs: number,
+  ): void {
+    this.audit.denied(
+      "rate_limited",
+      ip,
+      { endpoint: "tunnel.upgrade", scope },
+      `tunnel.upgrade:${scope}`,
+    );
     this.httpJson(socket, 429, {
       type: "tunnel.auth-error",
       v: 1,
@@ -421,19 +486,33 @@ export class TunnelServer {
   // -- internals ----------------------------------------------------------
 
   /** Pre-auth refusals are coalesced per (ip, reason, minute): a flood never costs a database write per request. */
-  private deny(socket: Duplex, ip: string, code: "revoked" | "token_unknown", message: string): void {
-    this.audit.denied("auth.denied", ip, { endpoint: "tunnel.upgrade", code }, `tunnel.upgrade:${code}`);
+  private deny(
+    socket: Duplex,
+    ip: string,
+    code: "revoked" | "token_unknown",
+    message: string,
+  ): void {
+    this.audit.denied(
+      "auth.denied",
+      ip,
+      { endpoint: "tunnel.upgrade", code },
+      `tunnel.upgrade:${code}`,
+    );
     this.httpJson(socket, 401, { type: "tunnel.auth-error", v: 1, code, message });
   }
 
   /** Raw HTTP JSON response on the upgrade socket (≤4 KiB by construction). */
   private httpJson(socket: Duplex, status: number, body: Record<string, unknown>): void {
     const reason =
-      status === 401 ? "Unauthorized"
-      : status === 403 ? "Forbidden"
-      : status === 404 ? "Not Found"
-      : status === 503 ? "Service Unavailable"
-      : "Too Many Requests";
+      status === 401
+        ? "Unauthorized"
+        : status === 403
+          ? "Forbidden"
+          : status === 404
+            ? "Not Found"
+            : status === 503
+              ? "Service Unavailable"
+              : "Too Many Requests";
     const payload = Buffer.from(JSON.stringify(body), "utf8");
     try {
       socket.write(
@@ -452,7 +531,9 @@ export class TunnelServer {
     const now = Date.now();
     if (now - this.faultLoggedAt < FAULT_LOG_INTERVAL_MS) return;
     this.faultLoggedAt = now;
-    console.error(`tunnel: ${where} failed closed: ${scrubSecrets(String((e as Error)?.message ?? e)).slice(0, 200)}`);
+    console.error(
+      `tunnel: ${where} failed closed: ${scrubSecrets(String((e as Error)?.message ?? e)).slice(0, 200)}`,
+    );
   }
 
   /** For events that describe something that already happened: a storage fault is logged, never thrown into a socket/timer callback. */
@@ -498,7 +579,12 @@ export class TunnelServer {
     // 5 s to produce a valid handshake (04 §4).
     conn.handshakeTimer = setTimeout(() => {
       this.contain(conn, "handshake deadline", () =>
-        this.failHandshake(conn, "handshake_timeout", "tunnel: no valid handshake within deadline", ip),
+        this.failHandshake(
+          conn,
+          "handshake_timeout",
+          "tunnel: no valid handshake within deadline",
+          ip,
+        ),
       );
     }, HANDSHAKE_DEADLINE_MS);
 
@@ -536,7 +622,11 @@ export class TunnelServer {
       return;
     }
     if (!allowedInPhase(frame, conn.phase)) {
-      this.failProtocol(conn, "phase_violation", `tunnel: message not allowed in phase ${conn.phase}`);
+      this.failProtocol(
+        conn,
+        "phase_violation",
+        `tunnel: message not allowed in phase ${conn.phase}`,
+      );
       return;
     }
     if (conn.phase === "awaiting-handshake") {
@@ -576,7 +666,9 @@ export class TunnelServer {
       .get(conn.auth.credential_id) as { status: string } | undefined;
     const pairing = this.registry.db
       .prepare("SELECT pairing_epoch, status, key_fingerprint FROM pairings WHERE device_id=?")
-      .get(conn.auth.device_id) as { pairing_epoch: string; status: string; key_fingerprint: string } | undefined;
+      .get(conn.auth.device_id) as
+      | { pairing_epoch: string; status: string; key_fingerprint: string }
+      | undefined;
     const problems: string[] = [];
     if (!credential || credential.status === "retired" || credential.status === "revoked")
       problems.push("credential no longer active");
@@ -587,7 +679,8 @@ export class TunnelServer {
     if (hs.credentialId !== conn.auth.credential_id) problems.push("credentialId mismatch");
     if (hs.generation !== conn.auth.generation) problems.push("generation mismatch");
     if (hs.deviceUid !== conn.deviceUid) problems.push("deviceUid mismatch");
-    if (pairing && hs.keyFingerprint !== pairing.key_fingerprint) problems.push("key fingerprint mismatch");
+    if (pairing && hs.keyFingerprint !== pairing.key_fingerprint)
+      problems.push("key fingerprint mismatch");
     if (problems.length > 0) {
       this.failHandshake(conn, "handshake_mismatch", `tunnel: ${problems.join("; ")}`, ip);
       return;
@@ -605,14 +698,20 @@ export class TunnelServer {
       });
     } catch (e) {
       this.reportFault("tunnel.connect audit", e);
-      this.failProtocol(conn, "unavailable", "tunnel: hub cannot record this connection; retry later", 1011);
+      this.failProtocol(
+        conn,
+        "unavailable",
+        "tunnel: hub cannot record this connection; retry later",
+        1011,
+      );
       return;
     }
 
     // Swap: the new connection replaces the old one ONLY now. The old socket's
     // teardown must not delete this new registration (identity check below).
     const previous = this.connections.get(conn.auth.device_id);
-    if (previous && previous !== conn) this.teardown(previous, 1000, "superseded by new connection");
+    if (previous && previous !== conn)
+      this.teardown(previous, 1000, "superseded by new connection");
 
     clearTimeout(conn.handshakeTimer);
     conn.handshakeTimer = undefined;
@@ -620,7 +719,10 @@ export class TunnelServer {
     conn.releasePending?.(); // F13: handshake done — the authed connection now counts under maxAuthenticated
     conn.releasePending = undefined;
     this.connections.set(conn.auth.device_id, conn);
-    this.registry.recordTunnelState(conn.auth.device_id, { connectionId: conn.connectionId, connectedAt: this.now() });
+    this.registry.recordTunnelState(conn.auth.device_id, {
+      connectionId: conn.connectionId,
+      connectedAt: this.now(),
+    });
 
     // Heartbeat: ping every 15 s; 2 unanswered pings close; 45 s byte-idle closes.
     conn.pingTimer = setInterval(() => {
@@ -636,9 +738,12 @@ export class TunnelServer {
         this.teardown(conn, 1011, "ping failed");
       }
     }, PING_INTERVAL_MS);
-    conn.idleTimer = setInterval(() => {
-      if (this.now() - conn.lastByte > IDLE_TIMEOUT_MS) this.teardown(conn, 1001, "idle timeout");
-    }, Math.min(IDLE_TIMEOUT_MS, 5_000));
+    conn.idleTimer = setInterval(
+      () => {
+        if (this.now() - conn.lastByte > IDLE_TIMEOUT_MS) this.teardown(conn, 1001, "idle timeout");
+      },
+      Math.min(IDLE_TIMEOUT_MS, 5_000),
+    );
 
     conn.ws.send(
       JSON.stringify({
@@ -685,7 +790,9 @@ export class TunnelServer {
   private failProtocol(conn: Conn, code: string, message: string, closeCode = 1008): void {
     if (conn.ws.readyState === conn.ws.OPEN) {
       try {
-        conn.ws.send(JSON.stringify({ type: "fault", error: { code, message } } satisfies TunnelFrame));
+        conn.ws.send(
+          JSON.stringify({ type: "fault", error: { code, message } } satisfies TunnelFrame),
+        );
         conn.ws.close(closeCode, message.slice(0, 120));
       } catch {
         /* socket already gone */
