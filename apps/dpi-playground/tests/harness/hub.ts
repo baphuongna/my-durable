@@ -14,6 +14,23 @@ import { freePort } from "./caddy.js";
 const HUB_MAIN = resolve(import.meta.dirname, "../../apps/dpi-playground-hub/src/main.ts");
 const PLAYGROUND_ROOT = resolve(import.meta.dirname, "../..");
 
+/**
+ * The hub child must measure what THESE tests intend, not what the caller's shell
+ * happens to export: an ambient DPI_HUB_REQUIRE_TLS or DPI_HUB_PUBLIC_HOST would
+ * silently turn a "plain" hub boot into something else. Start from a minimal safe
+ * base and let only the DPI_* variables the harness itself passes (opts.env +
+ * DPI_HOME) through.
+ */
+const SAFE_CHILD_ENV_KEYS = ["PATH", "HOME", "TMPDIR", "TZ"] as const;
+const childEnv = (intended: Record<string, string>): Record<string, string> => {
+  const env: Record<string, string> = {};
+  for (const key of SAFE_CHILD_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return { ...env, ...intended };
+};
+
 export interface HubHandle {
   port: number;
   base: string; // http://127.0.0.1:<port>
@@ -27,7 +44,9 @@ export interface HubHandle {
   cleanup: () => Promise<void>;
 }
 
-export async function bootHub(opts: { port?: number; publicHost?: string; healthTimeoutMs?: number } = {}): Promise<HubHandle> {
+export async function bootHub(
+  opts: { port?: number; publicHost?: string; healthTimeoutMs?: number; env?: Record<string, string> } = {},
+): Promise<HubHandle> {
   const port = opts.port ?? (await freePort());
   const home = await mkdtemp(join(tmpdir(), "dpi-hub-"));
   const log = new BoundedLog("hub", 500);
@@ -37,7 +56,7 @@ export async function bootHub(opts: { port?: number; publicHost?: string; health
     const args = ["--import", "tsx", HUB_MAIN, "--port", String(port), "--host", "127.0.0.1"];
     if (opts.publicHost) args.push("--public-host", opts.publicHost);
     child = spawn(process.execPath, args, {
-      env: { ...process.env, DPI_HOME: home },
+      env: childEnv({ ...opts.env, DPI_HOME: home }),
       stdio: ["ignore", "pipe", "pipe"],
       cwd: PLAYGROUND_ROOT,
     });
@@ -73,7 +92,14 @@ export async function bootHub(opts: { port?: number; publicHost?: string; health
     }
   };
 
-  await start();
+  try {
+    await start();
+  } catch (err) {
+    // A failed boot must not leak the child or the mkdtemp home it was given.
+    if (child && child.exitCode === null) await waitForExit("SIGKILL", 5000);
+    await rm(home, { recursive: true, force: true });
+    throw err;
+  }
   return {
     port,
     base: `http://127.0.0.1:${port}`,

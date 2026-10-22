@@ -15,6 +15,10 @@ import {
 } from "../../dpi-backend/tests/helpers.js";
 import { readSse } from "../../dpi-sdk/src/sse.js";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
+import { randomUUID } from "node:crypto";
+import { CredentialService } from "../apps/dpi-playground-hub/src/credentials.js";
+import { Audit } from "../apps/dpi-playground-hub/src/audit.js";
+import { WebSocket } from "ws";
 import type { MuxFrame, NetworkDevice } from "../../dpi-sdk/src/api.js";
 
 async function bootHub(home: string, networkFile: string, env: Record<string, string>) {
@@ -48,6 +52,7 @@ async function bootHub(home: string, networkFile: string, env: Record<string, st
     try {
       if ((await fetch(`${base}/api/network`)).ok) break;
     } catch {}
+    if (child.exitCode !== null) throw Error(output);
     await delay(100);
   }
   return {
@@ -67,6 +72,94 @@ const json = (body: unknown) => ({
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify(body),
+});
+
+test("R03: real hub publishes safe offline credential metadata and notifies an open tab after rotate/revoke", async () => {
+  const t = await tempStore();
+  const home = join(t.root, "hub");
+  const registry = new NetworkRegistry(join(home, "network.sqlite"));
+  const fingerprint = `sha256:${"b".repeat(64)}`;
+  const ticket = await new CredentialService(registry, new Audit(registry), "https://fixture.test", randomUUID()).issue({
+    enrollmentId: randomUUID(), codeId: randomUUID(), deviceUid: randomUUID(), deviceName: "Offline paired fixture",
+    publicKeyPem: "fixture-public-key", keyFingerprint: fingerprint, replaceKey: false,
+  });
+  registry.close();
+  const networkFile = join(t.root, "empty-network.yaml");
+  writeFileSync(networkFile, "devices: {}\n");
+  const hub = await bootHub(home, networkFile, {});
+  const ctl = new AbortController();
+  let ws: WebSocket | undefined;
+  try {
+    const network = await (await fetch(`${hub.base}/api/network`)).json() as { devices: NetworkDevice[] };
+    const dto = network.devices.find((d) => d.id === ticket.deviceId)!;
+    assert.deepEqual(dto.pairing, {
+      status: "paired", keyFingerprint: fingerprint, pairedAt: ticket.issuedAt, credentialGeneration: 1, rotationPending: false,
+    });
+    assert.deepEqual(dto.tunnel, { state: "disconnected", readerCount: 0 });
+    assert.equal(dto.status, "offline");
+    const listing = await fetch(`${hub.base}/api/pairings`);
+    assert.equal(listing.status, 200, "the canonical pairing API is available");
+    assert.deepEqual(await listing.json(), [{
+      ...dto.pairing, deviceId: ticket.deviceId, deviceUid: ticket.deviceUid,
+      deviceName: dto.name, tunnel: dto.tunnel,
+    }]);
+    const response = await fetch(`${hub.base}/api/stream`, { signal: ctl.signal });
+    const frames: MuxFrame[] = [];
+    void (async () => {
+      for await (const event of readSse(response.body!)) frames.push(JSON.parse(event.data) as MuxFrame);
+    })().catch(() => {});
+    const devices = () => frames.flatMap((frame) => frame.frame.type === "network" ? frame.frame.devices : []);
+    await until(() => devices().length > 0, 2000, "initial credential metadata on SSE");
+    assert.deepEqual(devices()[0].pairing, dto.pairing);
+    assert.equal((await fetch(`${hub.base}/api/pairings/${ticket.deviceId}/rotate`, json({}))).status, 202);
+    await until(() => devices().some((d) => d.pairing?.rotationPending), 2000, "offline rotation intent on SSE without reload");
+    ws = new WebSocket(hub.base.replace("http:", "ws:") + "/api/tunnel", { headers: { authorization: `Bearer ${ticket.tunnelToken}` } });
+    await once(ws, "open");
+    let rotation: { rotationId: string; credentialId: string; generation: number; pairingEpoch: string } | undefined;
+    ws.on("message", (raw) => {
+      const request = JSON.parse(raw.toString());
+      if (request.type === "control" && request.action === "token-rotate") rotation = request;
+      if (request.type === "rest-request") ws!.send(JSON.stringify({
+        type: "rest-response", reqId: request.reqId, status: 200,
+        body: JSON.stringify({ apiVersion: 1, uid: ticket.deviceUid, name: "Offline paired fixture" }),
+      }));
+      if (request.type === "control" && request.action === "subscribe") ws!.send(JSON.stringify({
+        type: "tunnel-data", subscriptionId: request.subscriptionId, sub: request.sub,
+        frame: { type: "tree", tree: { sessions: [] } },
+      }));
+    });
+    const greeted = once(ws, "message");
+    ws.send(JSON.stringify({
+      type: "pair-handshake", v: 1, deviceUid: ticket.deviceUid, deviceId: ticket.deviceId,
+      pairingEpoch: ticket.pairingEpoch, credentialId: ticket.credentialId, generation: 1,
+      apiVersion: 1, tunnelProto: 1, keyFingerprint: fingerprint,
+    }));
+    await greeted;
+    await fetch(`${hub.base}/api/devices/${ticket.deviceId}/check`, json({}));
+    const liveNetwork = await (await fetch(`${hub.base}/api/network`)).json() as { devices: NetworkDevice[] };
+    const live = liveNetwork.devices.find((d) => d.id === ticket.deviceId)!;
+    assert.equal(live.tunnel?.state, "connected");
+    assert.equal(live.tunnel?.readerCount, 1, "diagnostics count the actual monitor subscription");
+    assert.ok(live.tunnel?.lastSeenAt);
+    await until(() => !!rotation && devices().some((d) => d.pairing?.credentialGeneration === 2 && d.pairing.rotationPending), 2000, "rotation delivered and pending on SSE");
+    ws.send(JSON.stringify({
+      type: "control", action: "token-rotate-ack", rotationId: rotation!.rotationId,
+      credentialId: rotation!.credentialId, generation: rotation!.generation, pairingEpoch: rotation!.pairingEpoch,
+    }));
+    await until(() => devices().some((d) => d.pairing?.credentialGeneration === 2 && !d.pairing.rotationPending), 2000, "rotation ACK updates the open tab");
+    const disconnected = once(ws, "close");
+    ws.close();
+    await disconnected;
+    assert.equal((await fetch(`${hub.base}/api/devices/${ticket.deviceId}/revoke`, json({ reason: "user" }))).status, 202);
+    await until(() => devices().some((d) => d.pairing?.status === "revoked" && !d.pairing.rotationPending), 2000, "offline revoke on SSE without reload");
+    const wire = JSON.stringify(frames);
+    assert.equal(wire.includes(ticket.tunnelToken) || wire.includes("fixture-public-key") || wire.includes("token_hash"), false);
+  } finally {
+    ctl.abort();
+    ws?.terminate();
+    await hub.stop();
+    await t.cleanup();
+  }
 });
 
 test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, offline and mismatch", async () => {

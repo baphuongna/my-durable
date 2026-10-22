@@ -42,14 +42,14 @@ test.after(async () => {
   await vite?.close();
 });
 
-await test("App shell renders with empty store (0 devices / 0 sessions)", async () => {
+test("App shell renders with empty store (0 devices / 0 sessions)", async () => {
   const mod = await vite.ssrLoadModule("/src/App.vue");
   assert.ok(mod.default, "App.vue default export");
   html = await renderToString(createSSRApp(mod.default)); // no boot() → empty store
   assert.ok(html.length > 0, "non-empty render");
 });
 
-await test("H05: empty states render, no assumptions of existing data", () => {
+test("H05: empty states render, no assumptions of existing data", () => {
   assert.ok(html, "html from previous test");
   assert.match(html, /data-testid="app-shell"/, "app shell mounts");
   assert.match(html, /data-testid="welcome-empty"/, "welcome empty-state view");
@@ -61,7 +61,7 @@ await test("H05: empty states render, no assumptions of existing data", () => {
   assert.match(html, /0<\/b> agents/, "topbar stats show 0 agents");
 });
 
-await test("style tokens: no self-referential custom property definitions", async () => {
+test("style tokens: no self-referential custom property definitions", async () => {
   // Review MAJOR (P2-UI1): `--x: var(--x)` cycles collapse every dependent usage
   // to unset — the whole theme silently disappears. Guard the source.
   const { readFile } = await import("node:fs/promises");
@@ -74,5 +74,53 @@ await test("style tokens: no self-referential custom property definitions", asyn
   // And the core brand palette must resolve to real colors (not var() indirection).
   for (const token of ["--bg", "--fg", "--primary", "--ok", "--warn", "--err", "--offline"]) {
     assert.match(css, new RegExp(`${token}\\s*:\\s*#[0-9a-fA-F]{3,8}`), `${token} has a literal value`);
+  }
+});
+
+test("R03: an offline paired device with no sessions has an accessible credential manager", async () => {
+  const store = await vite.ssrLoadModule("/src/client/store.ts");
+  const mod = await vite.ssrLoadModule("/src/App.vue");
+  const fingerprint = `sha256:${"c".repeat(64)}`;
+  const device = {
+    id: "offline-box", name: "Offline box", kind: "url", transport: "tunnel", url: null,
+    source: "ui", hasToken: false, deviceUid: "fixture-uid", status: "offline",
+    pairing: { status: "paired", keyFingerprint: fingerprint, pairedAt: Date.now(), credentialGeneration: 1, rotationPending: false },
+    tunnel: { state: "disconnected", readerCount: 0 },
+  };
+  try {
+    store.network.model.apply({ type: "network", devices: [device] });
+    let rendered = await renderToString(createSSRApp(mod.default));
+    assert.match(rendered, /aria-label="Manage credentials for offline-box"/);
+    store.ui.dialog = { kind: "credentials", deviceId: device.id };
+    rendered = await renderToString(createSSRApp(mod.default));
+    assert.match(rendered, /aria-label="Credential manager"/);
+    assert.match(rendered, /Rotate credential/);
+    assert.ok(/>\s*Revoke\s*</.test(rendered), "revoke remains accessible while offline");
+    assert.match(rendered, new RegExp(fingerprint), "the detail shows the full fingerprint");
+    assert.equal(store.selected.value, undefined, "managing a device needs no selected agent");
+  } finally {
+    store.network.model.apply({ type: "network", devices: [] });
+    store.ui.dialog = undefined;
+  }
+});
+
+test("R04: narrow-screen Network and Details are mutually exclusive", async () => {
+  const store = await vite.ssrLoadModule("/src/client/store.ts");
+  const wasNarrow = store.narrow.value;
+  try {
+    store.narrow.value = true;
+    store.ui.drawer = true;
+    store.showInspector();
+    assert.equal(store.ui.drawer, false, "Details closes Network");
+    assert.equal(store.ui.inspectorOverlay, true);
+    store.toggleTree();
+    assert.equal(store.ui.inspectorOverlay, false, "Network closes Details");
+    assert.equal(store.ui.drawer, true);
+    store.toggleTree();
+    assert.equal(store.ui.drawer || store.ui.inspectorOverlay, false, "closing the active panel returns to Chat");
+  } finally {
+    store.narrow.value = wasNarrow;
+    store.ui.drawer = false;
+    store.ui.inspectorOverlay = false;
   }
 });

@@ -19,6 +19,10 @@ npm run dev                          # Vite middleware with hot reload (no build
 |---|---|---|
 | `--port` / `DPI_HUB_PORT` | `4781` | hub port |
 | `--host` / `DPI_HUB_HOST` | `127.0.0.1` | bind address. Anything else lets the network drive every device the hub holds tokens for |
+| `--public-host` / `DPI_HUB_PUBLIC_HOST` | empty | the browser-facing `host:port` when the hub sits behind the TLS reverse proxy; allow-listed as a Host and turns TLS proof on (below) |
+| `DPI_HUB_REQUIRE_TLS` | on when `--public-host` is set | `1`/`0` override: refuse admin/pairing requests the loopback TLS proxy did not vouch for. A typo stops the start |
+| `DPI_HUB_ORIGIN` | `https://<hostname>` | the origin written into issued tunnel credentials (`hubUrl`/`hubOrigin`); set it to the public HTTPS origin |
+| `DPI_AUDIT_MIN_FREE_BYTES` | `33554432` | free-space floor on the registry volume: below it audited changes answer 503 and nothing is mutated (reads keep working) |
 | `DPI_HOME` | `~/.dpi` | where `network.sqlite` lives |
 | `DPI_NETWORK_FILE` | `dpi-network.yaml`, found by walking up from the app | devices seeded into the registry at boot |
 
@@ -34,6 +38,15 @@ npm run dev                          # Vite middleware with hot reload (no build
 | `ALL /api/devices/:id/v1/*` | REST proxy with the device token injected. Answers 503 while the device is not online and 502 when it does not answer. Paths ending in `/events` answer 400: streams go through `/api/stream` |
 
 `guard.ts` rejects unknown Host headers (DNS rebinding), cross-origin requests and non-JSON writes.
+
+Security behavior worth knowing when you operate it:
+
+- Every answer carries `X-Content-Type-Options: nosniff`; everything under `/api` is `Cache-Control: no-store`. The app shell is served under a restrictive CSP (no inline script, `connect-src 'self'`, `frame-ancestors 'none'`) with `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`. It loads the brand font stylesheet from Google Fonts; nothing else third-party.
+- `GET /healthz` is the only unauthenticated route and answers `{ "ok": true }` — liveness for supervisors, no registry data.
+- Errors are one contract (`{ "error": { "code", "message" } }`): framework pages and stack traces never leave the process, an unexpected fault is a generic 500, and an unmatched route (any method) is a JSON 404.
+- Rate limits key on the **client /64 for IPv6** (IPv4-mapped spellings fold into the IPv4 address), so one client rotating through a prefix cannot multiply its budget. The hub-wide tunnel upgrade bucket is charged only after a credential resolves, so garbage tokens from many addresses cannot starve real devices.
+- Denied requests are audited as bounded aggregates: one opening row per (action, source, kind, minute-window), and a closing row with the window's total when the window ends or the hub stops.
+- Device responses are proxied back locked down (`nosniff`, sandboxed CSP, non-JSON becomes an `application/octet-stream` download) and are refused to browser navigations — device data never becomes an active document on the admin origin.
 
 ## Layout
 

@@ -7,6 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { Duplex } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -163,6 +164,40 @@ const nextFrame = (ws: WebSocket) => new Promise<any>((done, reject) => {
 
 const waitClosed = (ws: WebSocket) => new Promise<{ code: number; reason: string }>((done) => {
   ws.once("close", (code, reason) => done({ code, reason: Buffer.from(reason).toString("utf8") }));
+});
+
+test("R02: after a long idle the table forgets old addresses, yet an address that has since spent its quota stays limited", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dpi-ip-lifetime-"));
+  const registry = new NetworkRegistry(join(dir, "network.sqlite"));
+  let clock = 1000;
+  const tunnel = new TunnelServer(registry, new Audit(registry), HUB_ID, {}, {}, { now: () => clock });
+  class ResponseSocket extends Duplex {
+    parts: string[] = [];
+    _read() {}
+    _write(chunk: Buffer, _encoding: string, callback: () => void) {
+      this.parts.push(chunk.toString());
+      callback();
+    }
+  }
+  const attempt = (ip: string) => {
+    const socket = new ResponseSocket();
+    tunnel.handleUpgrade({ method: "GET", url: "/api/tunnel", headers: {}, socket: { remoteAddress: ip } } as never, socket, Buffer.alloc(0));
+    return Number(socket.parts[0]?.match(/^HTTP\/1\.1 (\d+)/)?.[1]);
+  };
+  try {
+    const ipOf = (i: number) => `10.0.${i >> 8}.${i & 255}`;
+    for (let i = 1; i <= 1024; i++) assert.equal(attempt(ipOf(i)), 401, ipOf(i));
+    clock += 16 * 60_000;
+    let hot = 401;
+    for (let i = 0; i < 100 && hot === 401; i++) hot = attempt(ipOf(1));
+    assert.equal(hot, 429, "the active IP has consumed its own quota");
+    assert.equal(attempt(ipOf(2000)), 401, "an unseen IP reaches auth after idle buckets refill");
+    assert.equal(attempt(ipOf(1)), 429, "reclaiming idle entries cannot reset an active IP");
+  } finally {
+    tunnel.close();
+    registry.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("auth: unknown hash → 401 token_unknown JSON (≤4KiB), no 101, audited, no token leak", async () => {

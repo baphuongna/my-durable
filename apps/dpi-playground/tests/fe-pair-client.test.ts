@@ -113,6 +113,10 @@ test("admin pairing flow: typed state → fingerprint approval → issued; no se
     assert.equal(issued.phase, "issued");
     assert.ok(issued.deviceId, "issued state names the device row");
     assert.ok(!JSON.stringify(issued).includes("dpt_"), "no token in admin state");
+    const network = await (await fetch(`${hub.base}/api/network`)).json();
+    const device = network.devices.find((d: { id: string }) => d.id === issued.deviceId);
+    assert.equal(device?.status, "offline", "R03: issuing a new pairing starts its monitor immediately");
+    assert.equal(device?.pairing?.status, "paired");
 
     // Wrong tuple is rejected (P-8 wrong-approval → 409).
     const created2 = await pairingAdmin.createCode();

@@ -112,6 +112,35 @@ async function fixture(
   return { registry, audit, tunnel, dispatcher, addDevice, connect, cleanup, port };
 }
 
+test("R01: chunked reader payloads cannot bypass device frame validation", async () => {
+  const f = await fixture();
+  const ctl = new AbortController();
+  try {
+    const device = f.addDevice("r01-reader");
+    const ws = await f.connect(device);
+    const iterator = f.dispatcher.watch(device.id, { path: "/v1/events", consumerId: "review" }, ctl.signal)[Symbol.asyncIterator]();
+    const subscribed = once(ws, "message");
+    const first = iterator.next();
+    const [raw] = await subscribed;
+    const subscription = JSON.parse(raw.toString());
+    const send = (value: unknown) => sendChunked(
+      value, { kind: "tunnel-data", subscriptionId: subscription.subscriptionId, sub: subscription.sub },
+      (chunk) => ws.send(JSON.stringify(chunk)),
+    );
+    assert.ok(send({ type: "network", devices: [] }).ok);
+    assert.equal((await first).value?.type, "fault", "an invalid inner frame faults the reader, never the global network");
+    const next = iterator.next();
+    const payload = "漢𝄞".repeat(20_000);
+    assert.ok(send({ type: "doc", kind: "fixture", value: payload }).ok);
+    assert.deepEqual((await next).value, { type: "doc", kind: "fixture", value: payload });
+    assert.equal(ws.readyState, WebSocket.OPEN, "the isolated bad reader frame does not break the tunnel");
+    ws.close();
+  } finally {
+    ctl.abort();
+    await f.cleanup();
+  }
+});
+
 test("F08 regression: rotation intent from a DEAD epoch is cleared at handshake — no UNIQUE crash, tunnel stays up", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dpi-f08-"));
   const registry = new NetworkRegistry(join(dir, "net.sqlite"));
@@ -283,6 +312,57 @@ test("F09 follow-up: late own chunks after timeout or completion are ignored wit
   }
 });
 
+test("RR: a late answer to an abandoned request survives normal-traffic FIFO churn (no false foreign_response)", async () => {
+  const budget = new ByteBudget("abandoned-grace-test", 32 * 1024 * 1024);
+  const f = await fixture(undefined, { deadlineMs: 800, budget });
+  try {
+    const d = f.addDevice("rr-abandoned");
+    const ws = await f.connect(d);
+    const transport = new TunnelTransport({ id: d.id, transport: "tunnel" }, f.dispatcher);
+    // R1: the device never answers within the deadline; the hub abandons the request.
+    const silent = new Promise<string>((resolve) => {
+      const on = (buf: Buffer) => {
+        const msg = JSON.parse(buf.toString());
+        if (msg.type === "rest-request") {
+          ws.off("message", on);
+          resolve(msg.reqId);
+        }
+      };
+      ws.on("message", on);
+    });
+    const timedOut = assert.rejects(
+      transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(10_000)),
+      (e: { status?: number }) => e.status === 504,
+    );
+    const silentReqId = await silent;
+    await timedOut;
+    // Normal traffic churns the settled FIFO far past its 256-entry cap.
+    ws.on("message", (buf) => {
+      const msg = JSON.parse(buf.toString());
+      if (msg.type === "rest-request" && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ type: "rest-response", reqId: msg.reqId, status: 200, body: "ok" }));
+    });
+    for (let i = 0; i < 300; i++)
+      assert.equal((await transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(5_000))).status, 200, `round trip ${i}`);
+    // NOW the device answers the abandoned request (plain and chunked): benign, never foreign.
+    ws.send(JSON.stringify({ type: "rest-response", reqId: silentReqId, status: 200, body: "late" }));
+    ws.send(JSON.stringify({
+      type: "tunnel-chunk", v: 1, kind: "rest-response", reqId: silentReqId,
+      messageId: randomUUID(), index: 0, count: 1, totalBytes: 16 * 1024 * 1024,
+      data: Buffer.from("late").toString("base64"),
+    }));
+    // A round trip is the ordering barrier for both late frames.
+    assert.equal((await transport.request({ method: "GET", path: "/v1/tree" }, AbortSignal.timeout(5_000))).status, 200);
+    assert.equal(ws.readyState, WebSocket.OPEN, "the tunnel survives a late own response after heavy churn");
+    assert.equal(budget.used, 0, "late frames never reserve their advertised bytes");
+    const denied = f.registry.db.prepare("SELECT COUNT(*) c FROM events WHERE action='auth.denied'").get() as { c: number };
+    assert.equal(denied.c, 0, "an abandoned own correlation is not a foreign-response attack");
+    ws.close();
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("F09 follow-up: settling a request releases its partial assembly before late chunks are ignored", async () => {
   const budget = new ByteBudget("partial-response-test", 256_000);
   const f = await fixture(undefined, { deadlineMs: 2000, budget });
@@ -386,6 +466,27 @@ test("F10 follow-up: real WSS clients through reference Caddy have separate, spo
   }
 });
 
+test("RR: a peer that never answers the close handshake loses its socket after the grace, counters freed at once", async () => {
+  const f = await fixture({ teardownGraceMs: 150 } as never);
+  try {
+    const d = f.addDevice("rr-grace");
+    const ws = await f.connect(d);
+    assert.equal(f.tunnel.activeCount(), 1);
+    // A wedged device: its TCP write path accepts nothing more, so the server's close
+    // frame is never echoed and the close handshake never completes.
+    const sock = (ws as unknown as { _socket: import("node:net").Socket })._socket;
+    const sockClosed = new Promise<void>((res) => sock.once("close", () => res()));
+    sock.write = (() => true) as never;
+    f.tunnel.closeConnection(d.id, 1000, "wedged test");
+    assert.equal(f.tunnel.activeCount(), 0, "counters are released at teardown, not when the peer dies");
+    const gone = await Promise.race([sockClosed.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 3_000))]);
+    assert.equal(gone, true, "the server terminated the dead socket after the close grace");
+    ws.terminate();
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("F13 follow-up: rejected HTTP upgrades release the pending handshake slot", async () => {
   const f = await fixture({ maxPendingHandshakes: 1, maxAuthenticated: 8 });
   try {
@@ -446,6 +547,76 @@ test("F13 regression: pre-handshake sockets hold the pending cap; completed hand
     });
     ws3.close();
     ws1.close();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("RR: a credential retired or revoked between the 101 and the handshake is refused at the handshake", async () => {
+  const f = await fixture();
+  const opened: WebSocket[] = [];
+  try {
+    const attempt = async (id: string, kill: (d: DeviceRow) => void) => {
+      const d = f.addDevice(id);
+      const ws = new WebSocket(`ws://127.0.0.1:${f.port}/api/tunnel`, { headers: { authorization: `Bearer ${d.token}` } });
+      opened.push(ws);
+      await new Promise<void>((res, rej) => {
+        ws.once("open", res);
+        ws.once("unexpected-response", (_q, r) => rej(new Error(`upgrade ${r.statusCode}`)));
+      });
+      // The auth snapshot is taken: NOW the credential dies (rotation completed
+      // on another connection, or an admin revoke raced the upgrade).
+      kill(d);
+      // Bounded: a hub that wrongly completes the handshake never closes, which must FAIL the test.
+      const outcome = Promise.race([
+        new Promise<{ code: number }>((res) => ws.once("close", (code) => res({ code }))),
+        new Promise<{ code: number }>((res) => setTimeout(() => res({ code: 0 }), 3_000)),
+      ]);
+      ws.send(JSON.stringify({
+        type: "pair-handshake", v: 1, deviceUid: d.uid, deviceId: d.id, pairingEpoch: d.epoch,
+        credentialId: d.credentialId, generation: 1, apiVersion: 1, tunnelProto: 1, keyFingerprint: `sha256:${"9".repeat(64)}`,
+      }));
+      return outcome;
+    };
+    const retired = await attempt("hs-retired", (d) =>
+      f.registry.db.prepare("UPDATE tunnel_credentials SET status='retired', retired_at=? WHERE credential_id=?").run(Date.now(), d.credentialId));
+    assert.equal(retired.code, 1008, "a credential retired after the 101 must not complete the handshake");
+    const revoked = await attempt("hs-revoked", (d) =>
+      f.registry.db.prepare("UPDATE tunnel_credentials SET status='revoked', revoked_at=? WHERE credential_id=?").run(Date.now(), d.credentialId));
+    assert.equal(revoked.code, 1008, "a credential revoked after the 101 must not complete the handshake");
+    assert.equal(f.tunnel.activeCount(), 0, "neither connection was registered");
+  } finally {
+    for (const ws of opened) ws.terminate();
+    await f.cleanup();
+  }
+});
+
+test("RR: a credential that merely became PREVIOUS (rotation in flight) still completes its handshake", async () => {
+  const f = await fixture();
+  try {
+    const d = f.addDevice("hs-previous");
+    const ws = new WebSocket(`ws://127.0.0.1:${f.port}/api/tunnel`, { headers: { authorization: `Bearer ${d.token}` } });
+    await new Promise<void>((res, rej) => {
+      ws.once("open", res);
+      ws.once("unexpected-response", (_q, r) => rej(new Error(`upgrade ${r.statusCode}`)));
+    });
+    // rotateOnline raced the upgrade: the authed 'current' is now 'previous'.
+    f.registry.db.prepare("UPDATE tunnel_credentials SET status='previous' WHERE credential_id=?").run(d.credentialId);
+    ws.send(JSON.stringify({
+      type: "pair-handshake", v: 1, deviceUid: d.uid, deviceId: d.id, pairingEpoch: d.epoch,
+      credentialId: d.credentialId, generation: 1, apiVersion: 1, tunnelProto: 1, keyFingerprint: `sha256:${"9".repeat(64)}`,
+    }));
+    await new Promise<void>((res, rej) => {
+      const on = (buf: Buffer) => {
+        const msg = JSON.parse(buf.toString());
+        if (msg.type === "hello") { ws.off("message", on); res(); }
+        if (msg.type === "fault") { ws.off("message", on); rej(new Error(`fault ${msg.error.code}`)); }
+      };
+      ws.on("message", on);
+      ws.once("close", (code) => rej(new Error(`closed ${code} before hello`)));
+    });
+    assert.equal(f.tunnel.activeCount(), 1, "the previous-generation reconnect path must keep working");
+    ws.close();
   } finally {
     await f.cleanup();
   }

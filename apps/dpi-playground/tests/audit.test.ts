@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
 import { AUDIT_ACTIONS, Audit, scrubSecrets } from "../apps/dpi-playground-hub/src/audit.js";
 
-async function tempAudit(hooks?: { failAppend?: boolean }) {
+async function tempAudit(hooks?: ConstructorParameters<typeof Audit>[1]) {
   const dir = await mkdtemp(join(tmpdir(), "dpi-audit-"));
   const registry = new NetworkRegistry(join(dir, "network.sqlite"));
   return {
@@ -142,7 +142,8 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
   }
 });
 
-test("denial aggregation: floods collapse to one row per window; buckets bounded", async () => {
+test("denial aggregation: floods collapse to one row per window; buckets bounded", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_030_000 }); // mid-window: a minute boundary must not split the flood
   const { registry, audit, cleanup } = await tempAudit();
   try {
     for (let i = 0; i < 1000; i++) audit.denied("auth.denied", "10.9.9.9", { path: "/api/tunnel" });
@@ -155,6 +156,203 @@ test("denial aggregation: floods collapse to one row per window; buckets bounded
     for (let i = 0; i < 600; i++) audit.denied("rate_limited", `10.8.0.${i}`, {});
     const after = rows(registry).length;
     assert.ok(after <= 513, `bounded rows, got ${after}`);
+  } finally {
+    await cleanup();
+  }
+});
+
+const detailOf = (row: Record<string, unknown>) => JSON.parse(row.detail_json as string) as Record<string, unknown>;
+
+test("RR: a flood leaves its real total once the window has closed; the opening row does not pretend to count", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 }); // 10 s into a window
+  const { registry, audit, cleanup } = await tempAudit();
+  try {
+    for (let i = 0; i < 1000; i++) audit.denied("auth.denied", "10.9.9.9", { path: "/api/tunnel" });
+    assert.equal(rows(registry).length, 1);
+    assert.equal(detailOf(rows(registry)[0]).count, undefined, "the opening row is a marker, not a total");
+
+    audit.sweepDenials();
+    assert.equal(rows(registry).length, 1, "the window is still open: nothing to close");
+
+    t.mock.timers.tick(60_000);
+    audit.sweepDenials();
+    const all = rows(registry);
+    assert.equal(all.length, 2);
+    const [opening, closing] = [detailOf(all[0]), detailOf(all[1])];
+    assert.equal(closing.count, 1000);
+    assert.equal(closing.closing, true);
+    assert.equal(closing.window, opening.window);
+    assert.equal(all[1].actor, all[0].actor);
+    assert.equal(all[1].action, all[0].action);
+
+    audit.sweepDenials();
+    assert.equal(rows(registry).length, 2, "a window is closed once");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RR: a window with a single denial needs no closing row; flushDenials closes the windows still open", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 });
+  const { registry, audit, cleanup } = await tempAudit();
+  try {
+    audit.denied("auth.denied", "10.4.4.4", {});
+    audit.denied("rate_limited", "10.4.4.5", {});
+    audit.denied("rate_limited", "10.4.4.5", {});
+    audit.denied("rate_limited", "10.4.4.5", {});
+    t.mock.timers.tick(60_000);
+    audit.sweepDenials();
+    const closing = rows(registry).map(detailOf).filter((d) => d.closing);
+    assert.deepEqual(closing.map((d) => d.count), [3], "only the window that saw more than one denial");
+
+    audit.denied("auth.denied", "10.4.4.6", {});
+    audit.denied("auth.denied", "10.4.4.6", {});
+    audit.flushDenials(); // shutdown: the current window is still open
+    assert.deepEqual(rows(registry).map(detailOf).filter((d) => d.closing).map((d) => d.count), [3, 2]);
+    audit.flushDenials();
+    assert.equal(rows(registry).map(detailOf).filter((d) => d.closing).length, 2, "flushing twice writes nothing new");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RR: closing rows stay bounded: a distinct-address flood costs at most one opening and one closing row per recorded address", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 });
+  const { registry, audit, cleanup } = await tempAudit();
+  try {
+    for (let i = 0; i < 400; i++) for (let k = 0; k < 2; k++) audit.denied("rate_limited", `10.6.${i >> 8}.${i & 255}`, {});
+    t.mock.timers.tick(60_000);
+    audit.sweepDenials();
+    const total = rows(registry).length;
+    assert.ok(total <= 2 * 256 + 1, `${total} rows for 800 denials from 400 addresses`);
+    assert.ok(total >= 256, "the first 256 addresses were evidenced");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RR: addresses of one IPv6 /64 are one denial source; an IPv4 client is one source in either spelling", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 });
+  const { registry, audit, cleanup } = await tempAudit();
+  try {
+    for (let i = 1; i <= 50; i++) audit.denied("auth.denied", `2001:db8:1:2::${i.toString(16)}`, {});
+    for (const spelling of ["198.51.100.7", "::ffff:198.51.100.7", "::ffff:c633:6407"]) audit.denied("auth.denied", spelling, {});
+    assert.deepEqual(rows(registry).map((r) => r.actor).sort(), ["ip:198.51.100.7", "ip:2001:db8:1:2::/64"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RR: an over-long sample field cannot make the denial row unwritable", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_010_000 });
+  const { registry, audit, cleanup } = await tempAudit();
+  try {
+    audit.denied("auth.denied", "10.7.7.7", { method: "GET", path: `/${"a".repeat(6_000)}`, status: 401 });
+    assert.equal(audit.droppedDenials, 0);
+    const all = rows(registry);
+    assert.equal(all.length, 1);
+    const sample = detailOf(all[0]).sample as { path: string; method: string; status: number };
+    assert.ok(sample.path.length <= 200 && sample.path.startsWith("/aaa"), "the path is clipped, not dropped");
+    assert.equal(sample.method, "GET");
+    assert.equal(sample.status, 401);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("GA-02: denied() never throws on a storage fault and does not wedge later accounting", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_030_000 }); // mid-window: a minute boundary must not split the recovered denials
+  const hooks = { failAppend: true };
+  const { registry, audit, cleanup } = await tempAudit(hooks);
+  try {
+    assert.doesNotThrow(() => audit.denied("auth.denied", "10.1.1.1", { path: "/api/tunnel" }));
+    assert.equal(rows(registry).length, 0);
+    assert.equal(audit.droppedDenials, 1);
+    hooks.failAppend = false;
+    audit.denied("auth.denied", "10.1.1.2", { path: "/api/tunnel" });
+    audit.denied("auth.denied", "10.1.1.2", { path: "/api/tunnel" });
+    assert.equal(rows(registry).length, 1, "later keys are persisted once the storage recovers");
+    assert.equal(audit.droppedDenials, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("GA-02: denial kinds from one IP and window are separate aggregates; a flood of each stays one row", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_760_000_030_000 }); // mid-window: a minute boundary must not split a flood
+  const { registry, audit, cleanup } = await tempAudit();
+  try {
+    for (let i = 0; i < 50; i++) {
+      audit.denied("auth.denied", "10.2.2.2", { code: "token_unknown" }, "tunnel.upgrade:token_unknown");
+      audit.denied("auth.denied", "10.2.2.2", { code: "revoked" }, "tunnel.upgrade:revoked");
+    }
+    const all = rows(registry);
+    assert.equal(all.length, 2);
+    assert.deepEqual(
+      all.map((r) => JSON.parse(r.detail_json as string).sample.code).sort(),
+      ["revoked", "token_unknown"],
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("GA-02: disk guard refuses audited work below the free-space floor; denials degrade to RAM-only", async () => {
+  const MiB = 1024 * 1024;
+  let free = 10 * 1024 * MiB;
+  const { registry, audit, cleanup } = await tempAudit({ freeBytes: () => free, minFreeBytes: 64 * MiB });
+  try {
+    let ran = 0;
+    audit.withTransaction(() => {
+      ran++;
+      audit.append({ actor: "admin", action: "pair.code_created", outcome: "ok" });
+    });
+    assert.equal(ran, 1);
+    assert.equal(rows(registry).length, 1);
+
+    free = 8 * MiB;
+    const refused = (fn: () => unknown) =>
+      assert.throws(fn, (e: Error & { status?: number; code?: string }) => e.status === 503 && e.code === "audit_unavailable");
+    refused(() => audit.withTransaction(() => { ran++; }));
+    refused(() => audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok" }));
+    assert.equal(ran, 1, "the mutation callback never ran");
+    assert.doesNotThrow(() => audit.denied("auth.denied", "10.3.3.3", {}));
+    assert.equal(rows(registry).length, 1, "nothing was written below the floor");
+    assert.equal(audit.droppedDenials, 1);
+
+    free = 10 * 1024 * MiB;
+    audit.withTransaction(() => { audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok" }); });
+    assert.equal(rows(registry).length, 2, "writes resume once space is available");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("GA-02: the default disk guard reads the real volume and lets a normal disk through", async () => {
+  const { audit, cleanup } = await tempAudit();
+  try {
+    assert.doesNotThrow(() => audit.assertWritable());
+  } finally {
+    await cleanup();
+  }
+});
+
+test("GA-15: startSweeper drops stale denial accounting on its own timer and stops cleanly", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_760_000_000_000 });
+  const { audit, cleanup } = await tempAudit();
+  try {
+    audit.denied("auth.denied", "10.5.5.5", {});
+    audit.denied("rate_limited", "10.5.5.6", {});
+    assert.deepEqual(audit.stats(), { denialBuckets: 2, droppedDenials: 0 });
+    const stop = audit.startSweeper(60_000);
+    t.mock.timers.tick(60_000);
+    assert.equal(audit.stats().denialBuckets, 2, "inside two windows nothing is stale yet");
+    t.mock.timers.tick(3 * 60_000);
+    assert.equal(audit.stats().denialBuckets, 0, "stale buckets are swept without any caller");
+    stop();
+    audit.denied("auth.denied", "10.5.5.7", {});
+    t.mock.timers.tick(10 * 60_000);
+    assert.equal(audit.stats().denialBuckets, 1, "a stopped sweeper no longer runs");
   } finally {
     await cleanup();
   }

@@ -137,10 +137,28 @@ test("API bucket: 121st burst → 429; healthz exempt; stable forged XFF does no
     for (let i = 0; i < 120; i++) assert.equal(await hit("/api/network", xff), 200, `req ${i}`);
     assert.equal(await hit("/api/network", xff), 429, "121st burst request is 429");
     assert.equal(await hit("/healthz"), 200, "healthz exempt from the API bucket");
-    // Varying the spoofed XFF cannot sneak past either (Caddy overwrites XFF in
-    // deployment; direct-to-hub trust is loopback-scoped and Gate-A gated).
-    const vary = await hit("/api/network", { "x-forwarded-for": `10.1.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}` });
-    assert.ok(vary === 200 || vary === 429, "varying XFF behaves as its own identity (documented)");
+    // A loopback peer IS the TLS proxy, and the proxy's XFF names the client: a different client has
+    // its own bucket (Caddy overwrites XFF from the real connection in deployment).
+    assert.equal(await hit("/api/network", { "x-forwarded-for": "9.9.9.10" }), 200, "another client address is another identity");
+  } finally { await hub.cleanup(); }
+});
+
+test("API bucket: every address of one IPv6 /64 draws on the same bucket; the next /64 and the IPv4 form are not penalised", async () => {
+  const hub = await bootHub();
+  try {
+    const hit = async (xff: string) => {
+      const r = await fetch(`${hub.base}/api/network`, { headers: { "x-forwarded-for": xff } });
+      await r.arrayBuffer();
+      return r.status;
+    };
+    // 120 requests, each from a different address of 2001:db8:5:5::/64.
+    for (let i = 1; i <= 120; i++) assert.equal(await hit(`2001:db8:5:5::${i.toString(16)}`), 200, `request ${i}`);
+    assert.equal(await hit("2001:db8:5:5:abcd::1"), 429, "the 121st address of the block shares the spent bucket");
+    assert.equal(await hit("2001:db8:5:6::1"), 200, "the next /64 is another source");
+
+    // The IPv4 client of a dual-stack listener is the same source in either spelling.
+    for (let i = 0; i < 120; i++) assert.equal(await hit(i % 2 ? "::ffff:198.51.100.7" : "198.51.100.7"), 200, `mapped ${i}`);
+    assert.equal(await hit("::ffff:c633:6407"), 429, "198.51.100.7 in hex form is the same spent bucket");
   } finally { await hub.cleanup(); }
 });
 
@@ -161,7 +179,7 @@ async function tunnFixture(): Promise<TunnFx> {
   const registry = new NetworkRegistry(join(dir, "net.sqlite"));
   registry.clearTunnelState();
   const audit = new Audit(registry);
-  const tunnel = new TunnelServer(registry, audit, HUB_ID, {}, { ipPerMinute: 1_000, globalPerMinute: 1_000 });
+  const tunnel = new TunnelServer(registry, audit, HUB_ID, {}, { ipPerMinute: 1_000, ipCapacity: 1_000, globalPerMinute: 1_000 });
   const server = createServer((_req, res) => res.writeHead(404).end());
   server.on("upgrade", (req, socket, head) => tunnel.handleUpgrade(req, socket, head));
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));

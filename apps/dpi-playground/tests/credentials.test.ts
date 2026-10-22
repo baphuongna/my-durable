@@ -229,6 +229,7 @@ test("pairing integration: after re-pair the FIRST enrollment's cached verify fa
     await pairThrough(w, uid, kpOf(), "dev", true);
 
     // cached retry of the FIRST enrollment must NOT return its stale secret
+    w.clock.now += 1_000; // S-3: one valid poll per second per enrollment
     const stale = await w.pairing.verify(proof1, "10.0.0.2");
     assert.ok(!stale.ok && stale.error.code === "paired_elsewhere", JSON.stringify(stale));
   } finally { await w.cleanup(); }

@@ -177,6 +177,7 @@ test("approve happy path: verify issues exactly once; retries return the SAME To
     assert.ok(first.ok && first.status === 200);
     const token = first.value as TokenIssue;
     assert.equal(token.type, "pair.token");
+    fx.clock.now += 1_000; // S-3: one valid poll per second per enrollment
     const second = await fx.service.verify(p, "10.0.0.2");
     assert.ok(second.ok);
     assert.deepEqual(second.value, token); // same secret, no rotation per retry

@@ -79,6 +79,8 @@ async function setup() {
     const { WebSocket } = await import("ws");
     const ws = new WebSocket(`ws://127.0.0.1:${hubPort}/api/tunnel`, { headers: { authorization: `Bearer ${token}` } }) as WsSocket;
     device.ws = ws;
+    // A device's subscriptions belong to one connection: a reconnect starts with none (T-7 cuts a sender that names the old ones).
+    device.subs.clear();
     await new Promise<void>((d) => ws.once("open", d));
     ws.on("message", (d) => {
       const msg = JSON.parse(d.toString());

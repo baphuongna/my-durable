@@ -29,6 +29,8 @@ interface Fx {
   service: PairingService;
   issueCount: () => number;
   revoke: { v: boolean };
+  /** While set, issuance stays in flight until it resolves. */
+  gate: { hold?: Promise<void> };
   clock: { now: number };
   cleanup: () => Promise<void>;
 }
@@ -39,11 +41,13 @@ async function fixture(): Promise<Fx> {
   const clock = { now: 1760000000000 };
   let issued = 0;
   const revoked = { v: false };
+  const gate: { hold?: Promise<void> } = {};
   const service = new PairingService({
     registry, audit, hubOrigin: HUB_ORIGIN, hubId: HUB_ID,
     now: () => clock.now,
     issue: async (e) => {
       issued++;
+      await gate.hold;
       return {
         type: "pair.token", v: 1, enrollmentId: e.enrollmentId, deviceUid: e.deviceUid,
         deviceId: "dev-issued", pairingEpoch: uuid(), credentialId: `cred-${issued}`, generation: 1,
@@ -53,7 +57,7 @@ async function fixture(): Promise<Fx> {
     },
     receiptValidator: () => (revoked.v ? { code: "revoked" as const } : true as const),
   });
-  return { registry, audit, service, issueCount: () => issued, revoke: revoked, clock, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  return { registry, audit, service, issueCount: () => issued, revoke: revoked, gate, clock, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
 interface Enrolled {
@@ -102,8 +106,10 @@ test("F01 regression: revoked receipt → enrollment TERMINAL, no re-issue on la
   assert.ok(got.ok && got.status === 200);
   assert.equal(fx.issueCount(), 1);
   fx.revoke.v = true; // credential revoked downstream
+  fx.clock.now += 1_000; // S-3: one valid poll per second per enrollment
   const r1 = await fx.service.verify(e.proofBody, "10.0.0.2");
-  assert.ok(!r1.ok, "receipt re-validation fails");
+  assert.ok(!r1.ok && r1.error.code === "revoked", `receipt re-validation fails, got ${JSON.stringify(r1.ok ? r1.value : r1.error)}`);
+  fx.clock.now += 1_000;
   const r2 = await fx.service.verify(e.proofBody, "10.0.0.2");
   assert.ok(!r2.ok && (r2.error.code === "revoked" || r2.error.code === "reauth_required"), `terminal, got ${JSON.stringify(r2.ok ? r2.value : r2.error)}`);
   assert.equal(fx.issueCount(), 1, "no second credential is EVER minted for this enrollment");
@@ -128,10 +134,17 @@ test("F03 regression: concurrent approved polls → ONE issuance, ONE credential
   t.after(() => fx.cleanup());
   const e = await enroll(fx);
   await approve(fx, e);
-  const [a, b] = await Promise.all([fx.service.verify(e.proofBody, "10.0.0.2"), fx.service.verify(e.proofBody, "10.0.0.2")]);
+  let release!: () => void;
+  fx.gate.hold = new Promise<void>((resolve) => (release = resolve)); // issuance stays in flight…
+  const first = fx.service.verify(e.proofBody, "10.0.0.2");
+  fx.clock.now += 1_000; // …S-3: the second poll is a legitimate one, a second later, while it still runs
+  const second = fx.service.verify(e.proofBody, "10.0.0.2");
+  release();
+  const [a, b] = await Promise.all([first, second]);
   assert.ok(a.ok && a.status === 200 && b.ok && b.status === 200, `both 200: ${JSON.stringify([a, b])}`);
   assert.equal(fx.issueCount(), 1, "deps.issue called exactly once");
   assert.equal((a.value as TokenIssue).credentialId, (b.value as TokenIssue).credentialId, "same credential");
+  fx.clock.now += 1_000;
   const again = await fx.service.verify(e.proofBody, "10.0.0.2");
   assert.ok(again.ok && (again.value as TokenIssue).credentialId === (a.value as TokenIssue).credentialId);
 });
@@ -193,6 +206,7 @@ test("F15 regression: sweep drops issued receipts past expiry+grace; keeps them 
   const inGrace = await fx.service.verify(e.proofBody, "10.0.0.2");
   assert.ok(inGrace.ok && inGrace.status === 200, "grace window: receipt still readable");
   fx.service.sweep(); // inside grace (120s): nothing dropped
+  fx.clock.now += 1_000; // S-3: one valid poll per second per enrollment
   const still = await fx.service.verify(e.proofBody, "10.0.0.2");
   assert.ok(still.ok && still.status === 200, "sweep inside grace keeps the receipt");
   fx.clock.now += 121_000; // past grace

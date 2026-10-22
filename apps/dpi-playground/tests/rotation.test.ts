@@ -5,6 +5,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { createServer } from "node:http";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,13 +34,13 @@ interface Device {
   applyRotations: boolean;
 }
 
-async function setup(opts: { cacheTtlMs?: number } = {}) {
+async function setup(opts: { cacheTtlMs?: number; now?: () => number } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "dpi-p219-"));
   const registry = new NetworkRegistry(join(dir, "net.sqlite"));
   registry.clearTunnelState();
   const audit = new Audit(registry);
   const tunnel = new TunnelServer(registry, audit, HUB_ID);
-  const rotation = new RotationService(registry, audit, tunnel, { cacheTtlMs: opts.cacheTtlMs });
+  const rotation = new RotationService(registry, audit, tunnel, { cacheTtlMs: opts.cacheTtlMs, now: opts.now });
   const epoch = randomUUID();
   const t0 = Date.now();
   registry.db
@@ -242,7 +243,7 @@ test("P-11 cache loss: reconnect on previous with empty cache → unconfirmed cu
     f.rotation.startRotation(DEVICE_ID, "admin:test");
     await until(() => f.device.rotationsReceived.length === 1, 5000, "first delivery");
     const firstId = f.device.rotationsReceived[0].rotationId;
-    await new Promise((r) => setTimeout(r, 120)); // TTL expiry (setup used 40 ms)
+    await until(() => !f.rotation.plaintextCacheHas(firstId), 2_000, "TTL expiry (setup used 40 ms)");
     await f.device.ws.terminate();
     f.device.applyRotations = true; // apply + ack the regenerated rotation when it arrives
     await f.connectDevice(); // device on G1 (previous); new instance has no cache
@@ -291,12 +292,17 @@ test("P-11 stale/duplicate ack and already-held rotate are ignored", async () =>
     await until(() => f.device.rotationsReceived.length === 1, 5000, "delivered");
     const msg = f.device.rotationsReceived[0];
     await until(() => !f.rows().p.rotation_id, 5000, "completed");
-    // replay the SAME ack after completion → no state change, no crash
+    // Replay the SAME ack after completion → no state change, no crash. The hub
+    // answers a ping only after dispatching every frame sent before it (ws handles
+    // frames in order and tunnel.onFrame runs the listeners synchronously), so the
+    // pong proves the replayed ack was PROCESSED and ignored — not merely sent.
+    const ackProcessed = once(f.device.ws, "pong");
     f.device.ws.send(JSON.stringify({
       type: "control", action: "token-rotate-ack", rotationId: msg.rotationId,
       credentialId: msg.credentialId, generation: msg.generation, pairingEpoch: msg.pairingEpoch,
     }));
-    await new Promise((r) => setTimeout(r, 150));
+    f.device.ws.ping();
+    await ackProcessed;
     const { creds } = f.rows();
     assert.equal(creds.find((c) => c.generation === 2)?.status, "current");
     assert.equal(creds.find((c) => c.generation === 1)?.status, "retired");
@@ -311,7 +317,10 @@ test("P-11 stale/duplicate ack and already-held rotate are ignored", async () =>
       credentialId: randomUUID(),
       generation: msg.generation, // already-held generation
     });
-    await new Promise((r) => setTimeout(r, 150));
+    // The scripted device records EVERY token-rotate it receives before its guard
+    // decides to ignore it, so the second arrival is the observable that the
+    // re-delivered rotate reached the device and was processed — no guessed delay.
+    await until(() => f.device.rotationsReceived.length === 2, 2_000, "the already-held rotate to reach the device");
     assert.equal(f.device.file.generation, 2, "device file untouched by an already-held generation");
     const completedBefore = rotations(f.registry, "token.rotate_completed").length;
     // The real next rotation goes through the full cycle and completes.
@@ -334,3 +343,91 @@ const adoptLastRotation = (d: Device) => {
   const last = d.rotationsReceived.at(-1)!;
   d.file = { pairingEpoch: last.pairingEpoch, credentialId: last.credentialId, generation: last.generation, tunnelToken: last.tunnelToken };
 };
+
+test("GA-12: the 90-day window restarts at every confirmed rotation — a later reconnect does not rotate again", async () => {
+  const DAY = 86_400_000;
+  let skew = 0;
+  const f = await setup({ now: () => Date.now() + skew });
+  try {
+    const reconnect = async () => {
+      f.device.ws.terminate();
+      await until(() => f.tunnel.activeCount() === 0, 5000, "offline");
+      await f.connectDevice();
+    };
+    const started = () => rotations(f.registry, "token.rotate_started").length;
+
+    skew = 89 * DAY;
+    await reconnect();
+    assert.equal(started(), 0, "day 89 is inside the first window");
+
+    skew = 91 * DAY;
+    await reconnect();
+    assert.equal(started(), 1, "day 91: the first window is over, one rotation starts");
+    await until(() => !f.rows().p.rotation_id, 5000, "rotation confirmed by the device");
+
+    await reconnect();
+    assert.equal(started(), 1, "day 91 again: the confirmed rotation restarted the window");
+
+    skew = (91 + 89) * DAY;
+    await reconnect();
+    assert.equal(started(), 1, "89 days after the rotation is still inside the new window");
+
+    skew = (91 + 91) * DAY;
+    await reconnect();
+    assert.equal(started(), 2, "91 days after the rotation the next one is due");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("GA-13: every rotation token is 32 random bytes (43 base64url chars), on both mint paths", async () => {
+  const f = await setup({ cacheTtlMs: 40 });
+  try {
+    deviceSilent(f.device);
+    f.rotation.startRotation(DEVICE_ID, "admin:test"); // rotateOnline
+    await until(() => f.device.rotationsReceived.length === 1, 5000, "first delivery");
+    await until(() => !f.rotation.plaintextCacheHas(f.device.rotationsReceived[0].rotationId), 2_000, "the 40 ms cache TTL to forget the first token");
+    f.device.ws.terminate();
+    await until(() => f.tunnel.activeCount() === 0, 5000, "offline");
+    await f.connectDevice(); // device still on G1 → recoverFromCacheLoss mints again
+    await until(() => f.device.rotationsReceived.length === 2, 5000, "regenerated delivery");
+
+    const tokens = f.device.rotationsReceived.map((m) => m.tunnelToken);
+    assert.notEqual(tokens[0], tokens[1]);
+    const bytes = tokens.map((t) => {
+      assert.match(t, /^dpt_[A-Za-z0-9_-]{43}$/);
+      const raw = Buffer.from(t.slice(4), "base64url");
+      assert.equal(raw.length, 32, "43 base64url chars carry 32 bytes");
+      return raw;
+    });
+    // A token cut from UUID text has only ASCII bytes drawn from [0-9a-f-]; random bytes are not so confined.
+    const all = Buffer.concat(bytes);
+    assert.ok(all.some((b) => b >= 0x80), "token bytes are not confined to ASCII");
+    assert.ok(new Set(all).size > 17, "token bytes are not confined to the UUID alphabet");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("GA-15: a cached plaintext token leaves RAM when its TTL ends, without anyone asking for it — and nothing is retired", async () => {
+  const f = await setup({ cacheTtlMs: 60 });
+  try {
+    deviceSilent(f.device);
+    f.rotation.startRotation(DEVICE_ID, "admin:test");
+    await until(() => f.device.rotationsReceived.length === 1, 5000, "delivered");
+    const { rotationId } = f.device.rotationsReceived[0];
+    assert.ok(f.rotation.plaintextCacheHas(rotationId), "premise: the token is cached right after delivery");
+
+    await until(() => !f.rotation.plaintextCacheHas(rotationId), 2000, "plaintext forgotten on its own");
+    assert.equal(f.rotation.cacheSize(), 0);
+
+    // Forgetting is a RAM matter only: the rotation is still pending and no credential changed state.
+    const { p, creds } = f.rows();
+    assert.equal(p.rotation_id, rotationId);
+    assert.equal(creds.find((c) => c.generation === 1)?.status, "previous");
+    assert.equal(creds.find((c) => c.generation === 2)?.status, "current");
+    assert.equal(rotations(f.registry, "token.rotate_completed").length, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
