@@ -14,7 +14,7 @@ const COMMANDS = {
   tui: "../apps/dpi-tui/src/main.ts",
 };
 
-const HELP = `dpi — Durable Pi
+const HELP = `dpi — Durable Pi (bare "dpi" opens the TUI)
 
 Usage:
   dpi hub [--port 4781] [--host 127.0.0.1] [--public-host <host>]
@@ -67,24 +67,29 @@ async function loadTsx() {
 
 const [first, ...rest] = process.argv.slice(2);
 
-if (!first || first === "help" || first === "--help" || first === "-h") {
+// Bare `dpi` opens the TUI — the app, not a help screen (convention of the
+// reference clients: the product IS the terminal UI; subcommands are the extras).
+const command = !first || first === "tui" ? "tui" : first;
+const commandRest = !first ? [] : rest;
+
+if (command === "help" || command === "--help" || command === "-h") {
   process.stdout.write(HELP);
   process.exit(0);
 }
 
-if (first === "version" || first === "--version" || first === "-v") {
+if (command === "version" || command === "--version" || command === "-v") {
   const { readFileSync } = await import("node:fs");
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   process.stdout.write(`dpi (my-durable) ${pkg.version}\n`);
   process.exit(0);
 }
 
-if (first === "update" || first === "upgrade") {
+if (command === "update" || command === "upgrade") {
   const { readFileSync } = await import("node:fs");
   const { spawn } = await import("node:child_process");
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const current = pkg.version;
-  const checkOnly = rest.includes("--check") || rest.includes("-c");
+  const checkOnly = commandRest.includes("--check") || commandRest.includes("-c");
 
   let latest;
   try {
@@ -138,13 +143,13 @@ if (first === "update" || first === "upgrade") {
     process.stdout.write(`dpi updated ${current} -> ${latest}.\n`);
     process.exit(0);
   });
-} else if (!Object.hasOwn(COMMANDS, first)) {
-  process.stderr.write(`dpi: unknown command '${first}'\n\n${HELP}`);
+} else if (!Object.hasOwn(COMMANDS, command)) {
+  process.stderr.write(`dpi: unknown command '${command}'\n\n${HELP}`);
   process.exit(2);
 } else {
   // The entries parse process.argv.slice(2) themselves: hand them their own args.
-  process.argv = [process.argv[0], process.argv[1], ...rest];
+  process.argv = [process.argv[0], process.argv[1], ...commandRest];
   const { register } = await loadTsx();
   register();
-  await import(COMMANDS[first]);
+  await import(COMMANDS[command]);
 }
