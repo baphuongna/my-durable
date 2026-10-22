@@ -15,7 +15,7 @@
  * `token_unknown` and bare 401s stay non-terminal with an actionable re-pair
  * status instead of an invisible infinite retry.
  */
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, verify as edVerify } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { Agent as HttpsAgent } from "node:https";
 import WebSocket from "ws";
@@ -37,7 +37,15 @@ import {
   WS_PACE_LOW_WATER_BYTES,
 } from "../../dpi-sdk/src/protocol/limits.js";
 import { Backoff } from "../../dpi-sdk/src/protocol/backoff.js";
-import { loadJson, pairingPath, keypairPath, writeAtomic, type PairingFile, type DeviceKeypair } from "./pairing-files.js";
+import {
+  loadJson,
+  pairingPath,
+  keypairPath,
+  writeAtomic,
+  type PairingFile,
+  type DeviceKeypair,
+} from "./pairing-files.js";
+import { hubProofSigningPayload } from "../../dpi-sdk/src/protocol/pairing.js";
 import { ByteBudget, SseReader, chunkMessage } from "../../dpi-sdk/src/node/chunk.js";
 import { REST_BODY_MAX_BYTES as LOCAL_BODY_CAP } from "../../dpi-sdk/src/protocol/limits.js";
 
@@ -50,15 +58,24 @@ const SUBSCRIBE_PATH_OK =
 function isSubscribePathOk(sub: string): boolean {
   if (!SUBSCRIBE_PATH_OK.test(sub) || sub.includes("\\")) return false;
   const path = sub.split("?", 1)[0]!;
-  return path.split("/").slice(1).every((segment) => {
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(segment);
-    } catch {
-      return false;
-    }
-    return segment !== "" && decoded !== "." && decoded !== ".." && !decoded.includes("/") && !decoded.includes("\\");
-  });
+  return path
+    .split("/")
+    .slice(1)
+    .every((segment) => {
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        return false;
+      }
+      return (
+        segment !== "" &&
+        decoded !== "." &&
+        decoded !== ".." &&
+        !decoded.includes("/") &&
+        !decoded.includes("\\")
+      );
+    });
 }
 
 /** Bounded clamp for server-advised 429 delays (04 §6: never trust raw body). */
@@ -81,7 +98,10 @@ const BACKPRESSURE_CLOSE_GRACE_MS = 1_000;
  * cap is refused on the headers, an undeclared one is cut off as soon as the bytes read pass it, and in both
  * cases the loopback connection is abandoned.
  */
-async function readTextCapped(res: Response, cap: number): Promise<{ ok: true; text: string } | { ok: false }> {
+async function readTextCapped(
+  res: Response,
+  cap: number,
+): Promise<{ ok: true; text: string } | { ok: false }> {
   const declared = Number(res.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > cap) {
     await res.body?.cancel().catch(() => {});
@@ -111,7 +131,8 @@ export type ConnectorState =
   | "connected" // valid hello received; transport up
   | "reauth" // non-terminal auth trouble: token_unknown / bare 401 — re-pair is the actionable fix
   | "revoked" // terminal: hub rejected the CURRENT credential tuple; pairing file removed
-  | "hub-mismatch"; // terminal: TLS-trusted endpoint answered with a different hubId
+  | "hub-mismatch" // terminal: TLS-trusted endpoint answered with a different hubId
+  | "hub-key-mismatch"; // terminal (pin): the endpoint cannot prove the pinned hub identity key
 
 export interface ConnectorStatus {
   state: ConnectorState;
@@ -141,16 +162,70 @@ type AttemptOutcome =
   | { kind: "error"; message: string }
   | { kind: "hello"; serverTime: number }
   | { kind: "hub-id-mismatch"; sawHubId: string }
+  | { kind: "hub-key-mismatch"; message: string }
   | { kind: "hello-timeout" }
   | { kind: "stopped" };
 
 interface Classified {
-  kind: "retry" | "reauth" | "revoked-terminal" | "hub-mismatch" | "stopped";
+  kind: "retry" | "reauth" | "revoked-terminal" | "hub-mismatch" | "hub-key-mismatch" | "stopped";
   delayMs?: number;
   detail: string;
 }
 
 const err = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+/**
+ * Gap #6 — verify the hub identity proof inside a tunnel `hello` against the
+ * pinned fingerprint. Returns undefined (pinned + proven), "adopt" (legacy
+ * pairing with NO pin: the proof verifies and the fingerprint may be pinned —
+ * safe because this point is only reachable after the hub accepted the dpt_
+ * credential, which only the real hub issued), or a refusal string.
+ */
+function verifyHubHelloProof(
+  file: PairingFile,
+  hello: Extract<TunnelFrame, { type: "hello" }>,
+  nonce: string,
+): undefined | "adopt" | "skip-legacy-hub" | string {
+  if (!hello.hubPublicKey || !hello.hubSignature) {
+    // An OLD hub (pre-v3) cannot prove anything. A pinned pairing must refuse;
+    // a legacy one just proceeds un-pinned until the hub is upgraded.
+    return file.hubKeyFingerprint
+      ? "the hub hello carried no identity proof (it may predate offer v3); update the hub or re-pair"
+      : "skip-legacy-hub";
+  }
+  let fingerprint: string;
+  let verified: boolean;
+  try {
+    const pub = createPublicKey(hello.hubPublicKey);
+    if (pub.asymmetricKeyType !== "ed25519") return "the hub identity key is not Ed25519";
+    const der = pub.export({ format: "der", type: "spki" }) as Buffer;
+    fingerprint = `sha256:${createHash("sha256").update(der).digest("hex")}`;
+    if (hello.hubKeyFingerprint !== undefined && hello.hubKeyFingerprint !== fingerprint)
+      return "the hub's declared fingerprint does not match the key it sent";
+    verified = edVerify(
+      null,
+      Buffer.from(
+        hubProofSigningPayload({
+          hubOrigin: file.hubOrigin,
+          hubId: file.hubId,
+          subject: `tunnel:${file.deviceId}:${file.pairingEpoch}`,
+          nonce,
+        }),
+      ),
+      pub,
+      Buffer.from(hello.hubSignature, "base64url"),
+    );
+  } catch {
+    return "the hub identity proof is malformed";
+  }
+  if (!verified) return "the hub signature does not verify under the key it sent";
+  if (file.hubKeyFingerprint) {
+    return file.hubKeyFingerprint === fingerprint
+      ? undefined
+      : `hub key fingerprint ${fingerprint.slice(0, 19)}… differs from the pinned ${file.hubKeyFingerprint.slice(0, 19)}…`;
+  }
+  return "adopt";
+}
 
 export class DeviceConnector {
   private file: PairingFile | undefined;
@@ -264,7 +339,15 @@ export class DeviceConnector {
     }
     const pairing = loadJson<PairingFile>(pairingPath(this.home));
     const keypair = loadJson<DeviceKeypair>(keypairPath(this.home));
-    if (!pairing?.tunnelToken || !pairing?.hubUrl || !pairing?.deviceUid || !pairing?.deviceId || !pairing?.pairingEpoch || !pairing?.credentialId || typeof pairing?.generation !== "number") {
+    if (
+      !pairing?.tunnelToken ||
+      !pairing?.hubUrl ||
+      !pairing?.deviceUid ||
+      !pairing?.deviceId ||
+      !pairing?.pairingEpoch ||
+      !pairing?.credentialId ||
+      typeof pairing?.generation !== "number"
+    ) {
       this.setState("file-error", "pairing.json missing or malformed; run pairing again");
       return;
     }
@@ -358,6 +441,11 @@ export class DeviceConnector {
           this.setState("hub-mismatch", verdict.detail);
           break;
         }
+        if (verdict.kind === "hub-key-mismatch") {
+          this.stopped = true;
+          this.setState("hub-key-mismatch", verdict.detail);
+          break;
+        }
         if (verdict.kind === "reauth") this.setState("reauth", verdict.detail);
         else this.setState("connecting", verdict.detail);
         // A verdict without its own delay (transport failure, 5xx, re-pair-needed 401) walks the shared curve.
@@ -431,16 +519,23 @@ export class DeviceConnector {
           }
           finish({ kind: "auth", status: res.statusCode ?? 0, body, raw });
         });
-        res.on("error", () => finish({ kind: "auth", status: res.statusCode ?? 0, body: null, raw: "" }));
+        res.on("error", () =>
+          finish({ kind: "auth", status: res.statusCode ?? 0, body: null, raw: "" }),
+        );
       });
 
       ws.on("error", (e) => finish({ kind: "error", message: e.message }));
-      ws.on("close", (code, reason) => finish({ kind: "closed", code, reason: Buffer.from(reason).toString("utf8") }));
+      ws.on("close", (code, reason) =>
+        finish({ kind: "closed", code, reason: Buffer.from(reason).toString("utf8") }),
+      );
 
       ws.on("open", () => {
         if (settled || this.wsGeneration !== generation) return;
         // Identity handshake with the SAVED tuple; retry counter resets only
-        // after a schema-valid hello below.
+        // after a schema-valid hello below. Every connect challenges the hub to
+        // prove its identity key: a PINNED pairing must see it match; a legacy
+        // pairing (no pin yet) adopts it through this authenticated channel.
+        const proofNonce = randomBytes(32).toString("base64url");
         const hs: TunnelFrame = {
           type: "pair-handshake",
           v: 1,
@@ -452,6 +547,7 @@ export class DeviceConnector {
           apiVersion: 1,
           tunnelProto: 1,
           keyFingerprint: this.keypair?.fingerprint ?? "",
+          ...(proofNonce ? { proofNonce } : {}),
         };
         try {
           ws.send(JSON.stringify(hs));
@@ -469,11 +565,17 @@ export class DeviceConnector {
           try {
             msg = JSON.parse(data.toString("utf8"));
           } catch {
-            finish({ kind: "error", message: helloDone ? "frame: malformed JSON" : "hello: malformed JSON" });
+            finish({
+              kind: "error",
+              message: helloDone ? "frame: malformed JSON" : "hello: malformed JSON",
+            });
             return;
           }
           if (!checkTunnelMessage(msg)) {
-            finish({ kind: "error", message: helloDone ? "frame: schema violation" : "hello: schema violation" });
+            finish({
+              kind: "error",
+              message: helloDone ? "frame: schema violation" : "hello: schema violation",
+            });
             return;
           }
           const frame = msg as TunnelFrame;
@@ -486,6 +588,21 @@ export class DeviceConnector {
               finish({ kind: "hub-id-mismatch", sawHubId: frame.hubId });
               return;
             }
+            // Gap #6 pin enforcement: a pinned pairing demands a valid identity
+            // proof in the very hello; anything else is a WRONG HUB, not a glitch.
+            const pinProblem = verifyHubHelloProof(file, frame, proofNonce);
+            if (
+              pinProblem !== undefined &&
+              pinProblem !== "adopt" &&
+              pinProblem !== "skip-legacy-hub"
+            ) {
+              try {
+                ws.close(1011, "hub identity proof failed");
+              } catch {}
+              finish({ kind: "hub-key-mismatch", message: pinProblem });
+              return;
+            }
+            if (pinProblem === "adopt") this.adoptPin(file, frame.hubKeyFingerprint!);
             // Connected: heartbeat + idle safety net from here (04 §5).
             helloDone = true;
             clearTimeout(helloTimer);
@@ -537,16 +654,34 @@ export class DeviceConnector {
       void (async () => {
         const check = validateRestRequest({ method: frame.method, path: frame.path });
         if (!check.ok) {
-          send({ type: "rest-response", reqId: frame.reqId, status: 404, body: { error: { code: "invalid", message: check.error } } });
+          send({
+            type: "rest-response",
+            reqId: frame.reqId,
+            status: 404,
+            body: { error: { code: "invalid", message: check.error } },
+          });
           return;
         }
-        const bodyBytes = frame.body === undefined ? 0 : Buffer.byteLength(JSON.stringify(frame.body), "utf8");
+        const bodyBytes =
+          frame.body === undefined ? 0 : Buffer.byteLength(JSON.stringify(frame.body), "utf8");
         if (bodyBytes > LOCAL_BODY_CAP) {
-          send({ type: "rest-response", reqId: frame.reqId, status: 413, body: { error: { code: "invalid", message: `Request body exceeds ${LOCAL_BODY_CAP} bytes` } } });
+          send({
+            type: "rest-response",
+            reqId: frame.reqId,
+            status: 413,
+            body: {
+              error: { code: "invalid", message: `Request body exceeds ${LOCAL_BODY_CAP} bytes` },
+            },
+          });
           return;
         }
         const tooLarge = (message: string) =>
-          send({ type: "rest-response", reqId: frame.reqId, status: 502, body: { error: { code: "response_too_large", message } } });
+          send({
+            type: "rest-response",
+            reqId: frame.reqId,
+            status: 502,
+            body: { error: { code: "response_too_large", message } },
+          });
         const call = new AbortController();
         this.restCalls.add(call);
         try {
@@ -556,7 +691,9 @@ export class DeviceConnector {
             headers: {
               authorization: `Bearer ${api.token}`,
               "x-dpi-token": api.token,
-              ...(hasBody && frame.body !== undefined ? { "content-type": "application/json" } : {}),
+              ...(hasBody && frame.body !== undefined
+                ? { "content-type": "application/json" }
+                : {}),
               ...(frame.idempotencyKey ? { "idempotency-key": frame.idempotencyKey } : {}),
             },
             body: hasBody && frame.body !== undefined ? JSON.stringify(frame.body) : undefined,
@@ -565,7 +702,17 @@ export class DeviceConnector {
           });
           if (res.status >= 300 && res.status < 400) {
             await res.body?.cancel().catch(() => {});
-            send({ type: "rest-response", reqId: frame.reqId, status: 502, body: { error: { code: "offline", message: `Device API answered with a redirect (${res.status}); redirects are not followed` } } });
+            send({
+              type: "rest-response",
+              reqId: frame.reqId,
+              status: 502,
+              body: {
+                error: {
+                  code: "offline",
+                  message: `Device API answered with a redirect (${res.status}); redirects are not followed`,
+                },
+              },
+            });
             return;
           }
           const read = await readTextCapped(res, LOGICAL_MESSAGE_MAX_BYTES);
@@ -574,7 +721,13 @@ export class DeviceConnector {
             return;
           }
           // Small responses ride one frame; large ones chunk (hub reassembles).
-          const envelope = { type: "rest-response", reqId: frame.reqId, status: res.status, contentType: res.headers.get("content-type") ?? undefined, body: read.text } as const;
+          const envelope = {
+            type: "rest-response",
+            reqId: frame.reqId,
+            status: res.status,
+            contentType: res.headers.get("content-type") ?? undefined,
+            body: read.text,
+          } as const;
           const serialized = JSON.stringify(envelope);
           if (Buffer.byteLength(serialized, "utf8") <= INLINE_FRAME_MAX_BYTES) {
             await sendPaced(serialized);
@@ -587,7 +740,12 @@ export class DeviceConnector {
           }
           for (const chunk of plan.chunks) if (!(await sendPaced(chunk))) return;
         } catch (e) {
-          send({ type: "rest-response", reqId: frame.reqId, status: 502, body: { error: { code: "offline", message: (e as Error).message } } });
+          send({
+            type: "rest-response",
+            reqId: frame.reqId,
+            status: 502,
+            body: { error: { code: "offline", message: (e as Error).message } },
+          });
         } finally {
           this.restCalls.delete(call);
         }
@@ -609,12 +767,21 @@ export class DeviceConnector {
         const sse = new SseReader(this.ingress);
         // This reader failed, the tunnel did not: say so for this subscription only and stop reading.
         const fault = (message: string) => {
-          send({ type: "tunnel-data", frame: { type: "fault", error: { code: "invalid", message } }, subscriptionId: frame.subscriptionId, sub: frame.sub });
+          send({
+            type: "tunnel-data",
+            frame: { type: "fault", error: { code: "invalid", message } },
+            subscriptionId: frame.subscriptionId,
+            sub: frame.sub,
+          });
           ctl.abort();
         };
         try {
           const res = await fetch(api.baseUrl + frame.sub, {
-            headers: { authorization: `Bearer ${api.token}`, "x-dpi-token": api.token, accept: "text/event-stream" },
+            headers: {
+              authorization: `Bearer ${api.token}`,
+              "x-dpi-token": api.token,
+              accept: "text/event-stream",
+            },
             signal: ctl.signal,
           });
           if (!res.ok || !res.body) throw new Error(`${frame.sub} answered ${res.status}`);
@@ -632,13 +799,22 @@ export class DeviceConnector {
               } catch {
                 continue;
               }
-              const wire = JSON.stringify({ type: "tunnel-data", frame: parsed, subscriptionId: frame.subscriptionId, sub: frame.sub });
+              const wire = JSON.stringify({
+                type: "tunnel-data",
+                frame: parsed,
+                subscriptionId: frame.subscriptionId,
+                sub: frame.sub,
+              });
               if (Buffer.byteLength(wire, "utf8") <= INLINE_FRAME_MAX_BYTES) {
                 if (!(await sendPaced(wire))) return;
                 continue;
               }
               // One WS message ≤1 MiB: large frames (big trees) chunk, one paced frame at a time.
-              const plan = chunkMessage(parsed, { kind: "tunnel-data", subscriptionId: frame.subscriptionId, sub: frame.sub });
+              const plan = chunkMessage(parsed, {
+                kind: "tunnel-data",
+                subscriptionId: frame.subscriptionId,
+                sub: frame.sub,
+              });
               if (!plan.ok) return fault(plan.error);
               for (const chunk of plan.chunks) if (!(await sendPaced(chunk))) return;
             }
@@ -648,7 +824,8 @@ export class DeviceConnector {
         } finally {
           sse.close();
           ctl.abort();
-          if (this.readers.get(frame.subscriptionId) === ctl) this.readers.delete(frame.subscriptionId);
+          if (this.readers.get(frame.subscriptionId) === ctl)
+            this.readers.delete(frame.subscriptionId);
         }
       })();
       return;
@@ -761,7 +938,11 @@ export class DeviceConnector {
         lowest = ws.bufferedAmount;
         progressAt = this.now();
       } else if (this.now() - progressAt >= this.drainMs) {
-        this.closeForBackpressure(ws, generation, `outbound queue did not drain for ${this.drainMs} ms`);
+        this.closeForBackpressure(
+          ws,
+          generation,
+          `outbound queue did not drain for ${this.drainMs} ms`,
+        );
         return false;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, DRAIN_POLL_MS));
@@ -793,6 +974,22 @@ export class DeviceConnector {
     ws.once("close", () => clearTimeout(force));
   }
 
+  /**
+   * Authenticated upgrade (gap #6 migration): a legacy pairing adopted the
+   * hub's identity fingerprint through the just-verified, dpt_-authenticated
+   * tunnel. Best effort — a failed write just means the pin is adopted on a
+   * later connect.
+   */
+  private adoptPin(file: PairingFile, fingerprint: string): void {
+    const next: PairingFile = { ...file, hubKeyFingerprint: fingerprint, updatedAt: this.now() };
+    try {
+      writeAtomic(pairingPath(this.home), JSON.stringify(next, null, 2));
+    } catch {
+      return; // pin adopted next connect
+    }
+    if (this.file?.operationId === file.operationId) this.file = next;
+  }
+
   private startHeartbeat(ws: WebSocket, generation: number): void {
     this.pingTimer = setInterval(() => {
       if (this.wsGeneration !== generation || ws.readyState !== ws.OPEN) return;
@@ -811,15 +1008,18 @@ export class DeviceConnector {
         /* close event will settle */
       }
     }, this.pingMs);
-    this.idleTimer = setInterval(() => {
-      if (this.now() - this.lastByte > this.idleMs) {
-        try {
-          ws.terminate();
-        } catch {
-          /* already gone */
+    this.idleTimer = setInterval(
+      () => {
+        if (this.now() - this.lastByte > this.idleMs) {
+          try {
+            ws.terminate();
+          } catch {
+            /* already gone */
+          }
         }
-      }
-    }, Math.min(this.idleMs, Math.max(200, Math.floor(this.idleMs / 4))));
+      },
+      Math.min(this.idleMs, Math.max(200, Math.floor(this.idleMs / 4))),
+    );
   }
 
   private classify(
@@ -837,41 +1037,79 @@ export class DeviceConnector {
       return { kind: "retry", detail: `closed ${outcome.code} ${outcome.reason}`.trim() };
     }
     if (outcome.kind === "error") return { kind: "retry", detail: outcome.message };
-    if (outcome.kind === "hello-timeout") return { kind: "retry", detail: "no hello within deadline" };
+    if (outcome.kind === "hello-timeout")
+      return { kind: "retry", detail: "no hello within deadline" };
     if (outcome.kind === "hub-id-mismatch")
-      return { kind: "hub-mismatch", detail: `hub answered with a different hubId (${outcome.sawHubId}); check the pair URL — this is not the hub you paired with` };
+      return {
+        kind: "hub-mismatch",
+        detail: `hub answered with a different hubId (${outcome.sawHubId}); check the pair URL — this is not the hub you paired with`,
+      };
+    if (outcome.kind === "hub-key-mismatch")
+      return {
+        kind: "hub-key-mismatch",
+        detail: `${outcome.message}; REFUSING to continue — the pinned hub identity (hubKeyFingerprint) does not match. Re-pair with a fresh offer link from the hub you trust`,
+      };
     // auth-shaped outcomes
     const body = outcome.body as { type?: string; code?: string; retryAfterMs?: number } | null;
     const parsed = body?.type === "tunnel.auth-error" ? body : null;
     if (outcome.status === 429 || parsed?.code === "rate_limited") {
       const advised = Number(parsed?.retryAfterMs ?? 0);
-      const delay = Number.isFinite(advised) && advised > 0
-        ? Math.max(RETRY_AFTER_MIN_MS, Math.min(RETRY_AFTER_MAX_MS, advised))
-        : RETRY_AFTER_MAX_MS;
+      const delay =
+        Number.isFinite(advised) && advised > 0
+          ? Math.max(RETRY_AFTER_MIN_MS, Math.min(RETRY_AFTER_MAX_MS, advised))
+          : RETRY_AFTER_MAX_MS;
       return { kind: "retry", delayMs: delay, detail: "rate limited; honoring bounded retryAfter" };
     }
     if (outcome.status >= 300 && outcome.status < 400)
-      return { kind: "retry", detail: `redirect (${outcome.status}) rejected: connector uses one exact origin` };
+      return {
+        kind: "retry",
+        detail: `redirect (${outcome.status}) rejected: connector uses one exact origin`,
+      };
     if (parsed?.code === "revoked") {
       // Terminal ONLY when this attempt's tuple still matches the CURRENT file.
       const current = this.file;
-      if (current && current.credentialId === attemptTuple.credentialId && current.pairingEpoch === attemptTuple.pairingEpoch) {
+      if (
+        current &&
+        current.credentialId === attemptTuple.credentialId &&
+        current.pairingEpoch === attemptTuple.pairingEpoch
+      ) {
         // F05 disk-truth: a re-pair may have replaced the file mid-flight.
         const onDisk = loadJson<PairingFile>(pairingPath(this.home));
-        if (onDisk && (onDisk.credentialId !== attemptTuple.credentialId || onDisk.pairingEpoch !== attemptTuple.pairingEpoch)) {
+        if (
+          onDisk &&
+          (onDisk.credentialId !== attemptTuple.credentialId ||
+            onDisk.pairingEpoch !== attemptTuple.pairingEpoch)
+        ) {
           this.file = onDisk; // adopt the newer pairing and keep going
           this.backoff.reset();
-          return { kind: "retry", delayMs: 0, detail: "revoked for an old credential; a newer pairing file is on disk" };
+          return {
+            kind: "retry",
+            delayMs: 0,
+            detail: "revoked for an old credential; a newer pairing file is on disk",
+          };
         }
         this.removePairingFile();
-        return { kind: "revoked-terminal", detail: "hub revoked this credential; pairing removed — re-pair to continue" };
+        return {
+          kind: "revoked-terminal",
+          detail: "hub revoked this credential; pairing removed — re-pair to continue",
+        };
       }
-      return { kind: "retry", delayMs: this.backoff.ms, detail: "late revoked response for a replaced credential; ignored" };
+      return {
+        kind: "retry",
+        delayMs: this.backoff.ms,
+        detail: "late revoked response for a replaced credential; ignored",
+      };
     }
     if (parsed?.code === "token_unknown" || outcome.status === 401) {
       // Non-terminal, actionable: the operator can re-pair any time; the
       // connector keeps trying with backoff and never hides that fact.
-      return { kind: "reauth", detail: parsed?.code === "token_unknown" ? "hub does not recognize this credential anymore; re-pair when convenient (still retrying)" : "bare 401 without a parsable auth-error body; still retrying" };
+      return {
+        kind: "reauth",
+        detail:
+          parsed?.code === "token_unknown"
+            ? "hub does not recognize this credential anymore; re-pair when convenient (still retrying)"
+            : "bare 401 without a parsable auth-error body; still retrying",
+      };
     }
     return { kind: "retry", detail: `upgrade failed with HTTP ${outcome.status}` };
   }
@@ -942,7 +1180,8 @@ export class DeviceConnector {
 }
 
 /** sha256 hex of a token — pairing parity helper (used by tests/tools). */
-export const tokenHash = (token: string) => createHash("sha256").update(token, "utf8").digest("hex");
+export const tokenHash = (token: string) =>
+  createHash("sha256").update(token, "utf8").digest("hex");
 
 export { err as connectorError };
 export const readCaPem = (path: string | undefined): string | undefined => {

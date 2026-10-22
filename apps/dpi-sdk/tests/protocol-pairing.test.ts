@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   PAIRING_DTOS,
   PAIR_CODE_PATTERN,
+  PairChallenge,
   PairCodeIssue,
   PairCodeState,
   PairError,
@@ -15,6 +16,7 @@ import {
   PairResponse,
   TokenIssue,
   checkPairingDto,
+  hubProofSigningPayload,
   isPairCode,
   normalizePairCode,
   parseHubOrigin,
@@ -54,23 +56,46 @@ test("W-3: PairRequest valid round-trip", () => {
 
 test("W-3: unknown fields rejected on every DTO", () => {
   for (const schema of PAIRING_DTOS) {
-    const sample: Record<string, unknown> = { type: "pair.error", v: 1, code: "code_invalid", message: "x" };
+    const sample: Record<string, unknown> = {
+      type: "pair.error",
+      v: 1,
+      code: "code_invalid",
+      message: "x",
+    };
     // Build one known-valid sample per schema via its own check where cheap;
     // the generic unknown-field property: appending extra key must fail.
     const withExtra = { ...sample, extra: 1 };
     const before = checkPairingDto(schema, sample);
     const after = checkPairingDto(schema, withExtra);
-    if (before) assert.ok(!after, `extra field must be rejected for ${JSON.stringify(schema).slice(0, 60)}`);
+    if (before)
+      assert.ok(!after, `extra field must be rejected for ${JSON.stringify(schema).slice(0, 60)}`);
   }
   const req = {
-    type: "pair.request", v: 1, requestId: uuid(), code: "AB2C7DEF", deviceUid: uuid(),
-    deviceName: "d", publicKey: "k", keyFingerprint: fp(), clientTime: 1, sneaky: true,
+    type: "pair.request",
+    v: 1,
+    requestId: uuid(),
+    code: "AB2C7DEF",
+    deviceUid: uuid(),
+    deviceName: "d",
+    publicKey: "k",
+    keyFingerprint: fp(),
+    clientTime: 1,
+    sneaky: true,
   };
   assert.ok(!checkPairingDto(PairRequest, req));
 });
 
 test("W-3: code boundaries — 7/9 chars, lowercase, RFC4648-confusable 0/1 rejected", () => {
-  const base = { type: "pair.request", v: 1, requestId: uuid(), deviceUid: uuid(), deviceName: "d", publicKey: "k", keyFingerprint: fp(), clientTime: 1 };
+  const base = {
+    type: "pair.request",
+    v: 1,
+    requestId: uuid(),
+    deviceUid: uuid(),
+    deviceName: "d",
+    publicKey: "k",
+    keyFingerprint: fp(),
+    clientTime: 1,
+  };
   for (const code of ["AB2C7DE", "AB2C7DEFF", "ab2c7def", "AB2C7DE0", "AB2C7DE1"]) {
     assert.ok(!checkPairingDto(PairRequest, { ...base, code }), code);
   }
@@ -78,47 +103,110 @@ test("W-3: code boundaries — 7/9 chars, lowercase, RFC4648-confusable 0/1 reje
 });
 
 test("W-3: fingerprint boundaries — 63/65 hex, uppercase, wrong prefix", () => {
-  const base = { type: "pair.request", v: 1, requestId: uuid(), code: "AB2C7DEF", deviceUid: uuid(), deviceName: "d", publicKey: "k", clientTime: 1 };
-  assert.ok(!checkPairingDto(PairRequest, { ...base, keyFingerprint: "sha256:" + "ab".repeat(31) }));
-  assert.ok(!checkPairingDto(PairRequest, { ...base, keyFingerprint: "sha256:" + "AB".repeat(32) }));
+  const base = {
+    type: "pair.request",
+    v: 1,
+    requestId: uuid(),
+    code: "AB2C7DEF",
+    deviceUid: uuid(),
+    deviceName: "d",
+    publicKey: "k",
+    clientTime: 1,
+  };
+  assert.ok(
+    !checkPairingDto(PairRequest, { ...base, keyFingerprint: "sha256:" + "ab".repeat(31) }),
+  );
+  assert.ok(
+    !checkPairingDto(PairRequest, { ...base, keyFingerprint: "sha256:" + "AB".repeat(32) }),
+  );
   assert.ok(!checkPairingDto(PairRequest, { ...base, keyFingerprint: "md5:" + "ab".repeat(32) }));
   assert.ok(checkPairingDto(PairRequest, { ...base, keyFingerprint: fp() }));
 });
 
 test("W-3: canonical UUID — uppercase, trailing newline, wrong shape rejected", () => {
-  const base = { type: "pair.request", v: 1, code: "AB2C7DEF", deviceName: "d", publicKey: "k", keyFingerprint: fp(), clientTime: 1 };
+  const base = {
+    type: "pair.request",
+    v: 1,
+    code: "AB2C7DEF",
+    deviceName: "d",
+    publicKey: "k",
+    keyFingerprint: fp(),
+    clientTime: 1,
+  };
   const upper = uuid().toUpperCase();
   assert.ok(!checkPairingDto(PairRequest, { ...base, requestId: upper, deviceUid: uuid() }));
-  assert.ok(!checkPairingDto(PairRequest, { ...base, requestId: `${uuid()}\n`, deviceUid: uuid() }));
+  assert.ok(
+    !checkPairingDto(PairRequest, { ...base, requestId: `${uuid()}\n`, deviceUid: uuid() }),
+  );
   assert.ok(!checkPairingDto(PairRequest, { ...base, requestId: "not-a-uuid", deviceUid: uuid() }));
   assert.ok(checkPairingDto(PairRequest, { ...base, requestId: uuid(), deviceUid: uuid() }));
 });
 
 test("W-3: PairResponse signature is exactly 86 base64url chars", () => {
-  const good = { type: "pair.response", v: 1, enrollmentId: uuid(), nonce: nonce(), signature: "B".repeat(86) };
+  const good = {
+    type: "pair.response",
+    v: 1,
+    enrollmentId: uuid(),
+    nonce: nonce(),
+    signature: "B".repeat(86),
+  };
   assert.ok(checkPairingDto(PairResponse, good));
   assert.ok(!checkPairingDto(PairResponse, { ...good, signature: "B".repeat(85) }));
   assert.ok(!checkPairingDto(PairResponse, { ...good, signature: `B`.repeat(85) + "+" }));
 });
 
 test("W-3: PairError code enum coverage — all 15 codes accepted, junk rejected", () => {
-  const codes = ["code_invalid", "code_expired", "code_used", "code_in_use", "rate_limited",
-    "signature_invalid", "clock_skew", "paired_elsewhere", "hub_required", "fingerprint_mismatch",
-    "identity_conflict", "enrollment_lost", "enrollment_cancelled", "already_issued", "challenge_expired"];
+  const codes = [
+    "code_invalid",
+    "code_expired",
+    "code_used",
+    "code_in_use",
+    "rate_limited",
+    "signature_invalid",
+    "clock_skew",
+    "paired_elsewhere",
+    "hub_required",
+    "fingerprint_mismatch",
+    "identity_conflict",
+    "enrollment_lost",
+    "enrollment_cancelled",
+    "already_issued",
+    "challenge_expired",
+  ];
   assert.equal(codes.length, 15);
   for (const code of codes) {
     assert.ok(checkPairingDto(PairError, { type: "pair.error", v: 1, code, message: "m" }), code);
   }
-  assert.ok(!checkPairingDto(PairError, { type: "pair.error", v: 1, code: "mystery", message: "m" }));
-  assert.ok(!checkPairingDto(PairError, { type: "pair.error", v: 1, code: "code_invalid", message: "m", retryAfterMs: 0 }));
+  assert.ok(
+    !checkPairingDto(PairError, { type: "pair.error", v: 1, code: "mystery", message: "m" }),
+  );
+  assert.ok(
+    !checkPairingDto(PairError, {
+      type: "pair.error",
+      v: 1,
+      code: "code_invalid",
+      message: "m",
+      retryAfterMs: 0,
+    }),
+  );
 });
 
 test("W-3: TokenIssue — tunnelToken shape, expiresAt strictly null, generation >= 1", () => {
   const good = {
-    type: "pair.token", v: 1, enrollmentId: uuid(), deviceUid: uuid(), deviceId: "abc123",
-    pairingEpoch: uuid(), credentialId: uuid(), generation: 1, hubId: uuid(),
-    hubOrigin: "https://pi.example.com", hubUrl: "https://pi.example.com/api/tunnel",
-    tunnelToken: dpt(), issuedAt: 1760000000000, expiresAt: null,
+    type: "pair.token",
+    v: 1,
+    enrollmentId: uuid(),
+    deviceUid: uuid(),
+    deviceId: "abc123",
+    pairingEpoch: uuid(),
+    credentialId: uuid(),
+    generation: 1,
+    hubId: uuid(),
+    hubOrigin: "https://pi.example.com",
+    hubUrl: "https://pi.example.com/api/tunnel",
+    tunnelToken: dpt(),
+    issuedAt: 1760000000000,
+    expiresAt: null,
   };
   assert.ok(checkPairingDto(TokenIssue, good));
   assert.ok(!checkPairingDto(TokenIssue, { ...good, tunnelToken: "dpX_" + "A".repeat(43) }));
@@ -131,29 +219,82 @@ test("W-3: TokenIssue — tunnelToken shape, expiresAt strictly null, generation
 });
 
 test("W-3: PairCodeState phases — all 8 accepted, bogus rejected, enrollment optional", () => {
-  const phases = ["open", "awaiting_proof", "awaiting_approval", "approved", "issued", "connected", "cancelled", "expired"];
+  const phases = [
+    "open",
+    "awaiting_proof",
+    "awaiting_approval",
+    "approved",
+    "issued",
+    "connected",
+    "cancelled",
+    "expired",
+  ];
   assert.equal(phases.length, 8);
   for (const phase of phases) {
-    assert.ok(checkPairingDto(PairCodeState, { type: "pair.code-state", v: 1, codeId: uuid(), expiresAt: 1, phase }), phase);
+    assert.ok(
+      checkPairingDto(PairCodeState, {
+        type: "pair.code-state",
+        v: 1,
+        codeId: uuid(),
+        expiresAt: 1,
+        phase,
+      }),
+      phase,
+    );
   }
-  assert.ok(!checkPairingDto(PairCodeState, { type: "pair.code-state", v: 1, codeId: uuid(), expiresAt: 1, phase: "pairing" }));
+  assert.ok(
+    !checkPairingDto(PairCodeState, {
+      type: "pair.code-state",
+      v: 1,
+      codeId: uuid(),
+      expiresAt: 1,
+      phase: "pairing",
+    }),
+  );
   const withEnrollment = {
-    type: "pair.code-state", v: 1, codeId: uuid(), expiresAt: 1, phase: "awaiting_approval" as const,
-    enrollment: { enrollmentId: uuid(), deviceUid: uuid(), deviceName: "d", keyFingerprint: fp(), proofVerified: true, keyChanged: false },
+    type: "pair.code-state",
+    v: 1,
+    codeId: uuid(),
+    expiresAt: 1,
+    phase: "awaiting_approval" as const,
+    enrollment: {
+      enrollmentId: uuid(),
+      deviceUid: uuid(),
+      deviceName: "d",
+      keyFingerprint: fp(),
+      proofVerified: true,
+      keyChanged: false,
+    },
   };
   assert.ok(checkPairingDto(PairCodeState, withEnrollment));
 });
 
 test("W-3: PairCodeIssue — code + urls bounded", () => {
-  const good = { type: "pair.code", v: 1, codeId: uuid(), code: "ZZ7Y6X2W", expiresAt: 1, hubOrigin: "https://h.example", pairUrl: "https://h.example/pair?code=ZZ7Y6X2W&v=1" };
+  const good = {
+    type: "pair.code",
+    v: 1,
+    codeId: uuid(),
+    code: "ZZ7Y6X2W",
+    expiresAt: 1,
+    hubOrigin: "https://h.example",
+    pairUrl: "https://h.example/pair?code=ZZ7Y6X2W&v=1",
+  };
   assert.ok(checkPairingDto(PairCodeIssue, good));
   assert.ok(!checkPairingDto(PairCodeIssue, { ...good, code: "zz9y8x7w" }));
   assert.ok(!checkPairingDto(PairCodeIssue, { ...good, hubOrigin: "h".repeat(2049) }));
 });
 
 test("parseHubOrigin — HTTPS-only canonical origin, no userinfo/query/fragment/base path", () => {
-  assert.deepEqual(parseHubOrigin("https://pi.example.com"), { ok: true, origin: "https://pi.example.com", tunnelUrl: "https://pi.example.com/api/tunnel" });
-  assert.deepEqual(parseHubOrigin("https://pi.example.com:8443/"), { ok: true, origin: "https://pi.example.com:8443", tunnelUrl: "https://pi.example.com:8443/api/tunnel" });
+  assert.deepEqual(parseHubOrigin("https://pi.example.com"), {
+    ok: true,
+    origin: "https://pi.example.com",
+    tunnelUrl: "https://pi.example.com/api/tunnel",
+  });
+  assert.deepEqual(parseHubOrigin("https://pi.example.com:8443/"), {
+    ok: true,
+    origin: "https://pi.example.com:8443",
+    tunnelUrl: "https://pi.example.com:8443/api/tunnel",
+  });
   assert.equal(parseHubOrigin("http://pi.example.com").ok, false);
   assert.equal(parseHubOrigin("wss://pi.example.com").ok, false);
   assert.equal(parseHubOrigin("https://pi.example.com/hub").ok, false);
@@ -166,8 +307,13 @@ test("parseHubOrigin — HTTPS-only canonical origin, no userinfo/query/fragment
 
 test("signing payload — exact element order", () => {
   const s = pairingSigningPayload({
-    hubOrigin: "https://pi.example.com", hubId: uuid(), enrollmentId: uuid(),
-    nonce: nonce(), issuedAt: 1760000000000, deviceUid: uuid(), keyFingerprint: fp(),
+    hubOrigin: "https://pi.example.com",
+    hubId: uuid(),
+    enrollmentId: uuid(),
+    nonce: nonce(),
+    issuedAt: 1760000000000,
+    deviceUid: uuid(),
+    keyFingerprint: fp(),
   });
   const parsed = JSON.parse(s) as string[];
   assert.equal(parsed[0], "dpi-pair-v1");
@@ -219,8 +365,13 @@ test("hardening: a UUID v4 code validates; 12- and 8-char base32 codes still par
   assert.ok(checkPairingDto(PairRequest, { ...requestBase, code: "AB2C7DEF" }));
   assert.ok(
     checkPairingDto(PairCodeIssue, {
-      type: "pair.code", v: 1, codeId: uuid(), code: UUID_CODE, expiresAt: 1,
-      hubOrigin: "https://h.example", pairUrl: `https://h.example/pair?code=${UUID_CODE}&v=1`,
+      type: "pair.code",
+      v: 1,
+      codeId: uuid(),
+      code: UUID_CODE,
+      expiresAt: 1,
+      hubOrigin: "https://h.example",
+      pairUrl: `https://h.example/pair?code=${UUID_CODE}&v=1`,
     }),
   );
 });
@@ -256,7 +407,17 @@ test("hardening: isPairCode accepts UUID v4, 12 and 8 char base32 — nothing el
   assert.equal(isPairCode(UUID_CODE), true);
   assert.equal(isPairCode("ABCD2345EF67"), true);
   assert.equal(isPairCode("AB2C7DEF"), true);
-  for (const bad of ["", " ABCD2345EF67", "ABCD2345EF67 ", "abcd2345ef67", "ABCD-2345-EF67", 12, null, undefined, {}]) {
+  for (const bad of [
+    "",
+    " ABCD2345EF67",
+    "ABCD2345EF67 ",
+    "abcd2345ef67",
+    "ABCD-2345-EF67",
+    12,
+    null,
+    undefined,
+    {},
+  ]) {
     assert.equal(isPairCode(bad), false, JSON.stringify(bad));
   }
 });
@@ -281,7 +442,13 @@ test("hardening: normalizePairCode canonicalises typed/grouped codes", () => {
   assert.equal(normalizePairCode("a1b2c3d4e5f64789abcdeff012345678"), undefined);
   assert.equal(normalizePairCode("a1b2c3d4-e5f6-5789-abcd-eff012345678"), undefined);
   // Round-trip: whatever normalises is exactly what the schema accepts.
-  for (const raw of ["abcd-2345-ef67", "AB2C7DEF", "ABCD 2345 EF67", UUID_CODE.toUpperCase(), UUID_CODE]) {
+  for (const raw of [
+    "abcd-2345-ef67",
+    "AB2C7DEF",
+    "ABCD 2345 EF67",
+    UUID_CODE.toUpperCase(),
+    UUID_CODE,
+  ]) {
     const canonical = normalizePairCode(raw);
     assert.ok(canonical && isPairCode(canonical), raw);
     assert.ok(checkPairingDto(PairRequest, { ...requestBase, code: canonical }), raw);
@@ -295,7 +462,8 @@ import {
   encodePairOffer,
   parsePairOfferUrl,
   readPairOffer,
-  type PairOffer,
+  type PairOfferV2,
+  type PairOfferV3,
 } from "../src/protocol/pairing.js";
 import { PAIR_OFFER_MAX_AHEAD_MS, PAIR_OFFER_SKEW_MS } from "../src/protocol/limits.js";
 
@@ -304,7 +472,7 @@ const OFFER_ID = "1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d";
 const OFFER_CODE = "a1b2c3d4-e5f6-4789-abcd-eff012345678"; // minted family: canonical UUID v4
 const OFFER_NOW = 1760000000000;
 
-const offer = (over: Partial<PairOffer> = {}): PairOffer => ({
+const offer = (over: Partial<Omit<PairOfferV2, "v">> = {}): PairOfferV2 => ({
   v: 2,
   hub: OFFER_HUB,
   id: OFFER_ID,
@@ -322,7 +490,13 @@ test("offer: encode/decode round-trip — canonical field order, base64url witho
   // canonical JSON: exactly v,hub,id,code,exp in that order, short keys
   const bytes = Buffer.from(raw, "base64url");
   assert.deepEqual(JSON.parse(bytes.toString("utf8")), offer());
-  assert.deepEqual(Object.keys(JSON.parse(bytes.toString("utf8"))), ["v", "hub", "id", "code", "exp"]);
+  assert.deepEqual(Object.keys(JSON.parse(bytes.toString("utf8"))), [
+    "v",
+    "hub",
+    "id",
+    "code",
+    "exp",
+  ]);
   assert.deepEqual(decodePairOffer(raw, OFFER_NOW), offer());
   // decode is clock-relative: the same raw offer decodes while fresh and fails once stale
   assert.equal(decodePairOffer(raw, offer().exp + PAIR_OFFER_MAX_AHEAD_MS), undefined);
@@ -356,12 +530,22 @@ test("offer: strict decode — tampering any field yields undefined, never a thr
 });
 
 test("offer: exp window boundaries — 30 s skew back, 10 minutes ahead", () => {
-  assert.deepEqual(decodePairOffer(rawOf(offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS })), OFFER_NOW),
-    offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS }));
-  assert.equal(decodePairOffer(rawOf(offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS - 1 })), OFFER_NOW), undefined);
-  assert.deepEqual(decodePairOffer(rawOf(offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS })), OFFER_NOW),
-    offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS }));
-  assert.equal(decodePairOffer(rawOf(offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS + 1 })), OFFER_NOW), undefined);
+  assert.deepEqual(
+    decodePairOffer(rawOf(offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS })), OFFER_NOW),
+    offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS }),
+  );
+  assert.equal(
+    decodePairOffer(rawOf(offer({ exp: OFFER_NOW - PAIR_OFFER_SKEW_MS - 1 })), OFFER_NOW),
+    undefined,
+  );
+  assert.deepEqual(
+    decodePairOffer(rawOf(offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS })), OFFER_NOW),
+    offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS }),
+  );
+  assert.equal(
+    decodePairOffer(rawOf(offer({ exp: OFFER_NOW + PAIR_OFFER_MAX_AHEAD_MS + 1 })), OFFER_NOW),
+    undefined,
+  );
   // the structural reader is freshness-blind: it is how a caller distinguishes "expired" from "junk"
   const expired = rawOf(offer({ exp: OFFER_NOW - 60_000 }));
   assert.equal(decodePairOffer(expired, OFFER_NOW), undefined);
@@ -395,11 +579,134 @@ test("offer: parsePairOfferUrl — only <origin>/pair with a lone #offer= fragme
 
 test("offer: PairCodeIssue carries an optional bounded offerUrl alongside pairUrl", () => {
   const base = {
-    type: "pair.code", v: 1, codeId: uuid(), code: OFFER_CODE, expiresAt: 1,
-    hubOrigin: "https://h.example", pairUrl: `https://h.example/pair?code=${OFFER_CODE}&v=1`,
+    type: "pair.code",
+    v: 1,
+    codeId: uuid(),
+    code: OFFER_CODE,
+    expiresAt: 1,
+    hubOrigin: "https://h.example",
+    pairUrl: `https://h.example/pair?code=${OFFER_CODE}&v=1`,
   };
   assert.ok(checkPairingDto(PairCodeIssue, base), "offerUrl stays optional (transition)");
-  const withOffer = { ...base, offerUrl: `https://h.example/pair#offer=${encodePairOffer(offer())}` };
+  const withOffer = {
+    ...base,
+    offerUrl: `https://h.example/pair#offer=${encodePairOffer(offer())}`,
+  };
   assert.ok(checkPairingDto(PairCodeIssue, withOffer));
   assert.ok(!checkPairingDto(PairCodeIssue, { ...withOffer, offerUrl: "h".repeat(2049) }));
+});
+
+// --- Offer v3: the pinned hub identity (kfp) rides the same fragment ---
+
+const OFFER_KFP = `sha256:${"a1b2c3d4".repeat(8)}`;
+const offerV3 = (): PairOfferV3 => ({ ...offer(), v: 3, kfp: OFFER_KFP });
+
+test("offer v3: encode/decode round-trip — six canonical fields, kfp last", () => {
+  const raw = encodePairOffer(offerV3());
+  assert.match(raw, /^[A-Za-z0-9_-]+$/);
+  const json = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  assert.deepEqual(Object.keys(json), ["v", "hub", "id", "code", "exp", "kfp"]);
+  assert.equal(json.kfp, OFFER_KFP);
+  assert.deepEqual(decodePairOffer(raw, OFFER_NOW), offerV3());
+  // parsePairOfferUrl accepts v3 links unchanged
+  const parsed = parsePairOfferUrl(`${OFFER_HUB}/pair#offer=${raw}`, OFFER_NOW);
+  assert.ok(parsed);
+  assert.equal(parsed.offer.v, 3);
+  assert.equal((parsed.offer as { kfp?: string }).kfp, OFFER_KFP);
+});
+
+test("offer v3: a bad or missing kfp is refused, never thrown", () => {
+  const good = offerV3();
+  const tampers: [name: string, json: Record<string, unknown>][] = [
+    ["missing kfp", { v: 3, hub: OFFER_HUB, id: OFFER_ID, code: OFFER_CODE, exp: good.exp }],
+    ["uppercase kfp", { ...good, kfp: OFFER_KFP.toUpperCase() }],
+    ["short kfp", { ...good, kfp: `sha256:${"ab".repeat(31)}` }],
+    ["wrong prefix", { ...good, kfp: OFFER_KFP.replace("sha256:", "sha512:") }],
+    ["kfp on v2", { ...good, v: 2 }], // v2 is exactly five fields — kfp must not smuggle in
+    ["v3 with extra field", { ...good, extra: 1 }],
+  ];
+  for (const [name, json] of tampers) {
+    assert.equal(readPairOffer(rawOf(json)), undefined, name);
+    assert.equal(decodePairOffer(rawOf(json), OFFER_NOW), undefined, name);
+  }
+  // v2 untouched: still decodes, and never reports a kfp
+  const v2 = decodePairOffer(encodePairOffer(offer()), OFFER_NOW);
+  assert.ok(v2 && v2.v === 2 && (v2 as { kfp?: string }).kfp === undefined);
+});
+
+test("offer v3: PairRequest.hubNonce + PairChallenge/TokenIssue proof fields are optional and strict", () => {
+  const nonce = "A".repeat(43);
+  const req = {
+    type: "pair.request",
+    v: 1,
+    requestId: uuid(),
+    code: OFFER_CODE,
+    deviceUid: uuid(),
+    deviceName: "d",
+    publicKey: "-----BEGIN PUBLIC KEY-----",
+    keyFingerprint: `sha256:${"0a".repeat(32)}`,
+    clientTime: 1,
+  };
+  assert.ok(checkPairingDto(PairRequest, req), "no hubNonce (legacy v2 flow)");
+  assert.ok(checkPairingDto(PairRequest, { ...req, hubNonce: nonce }));
+  assert.ok(!checkPairingDto(PairRequest, { ...req, hubNonce: "short" }));
+  const challenge = {
+    type: "pair.challenge",
+    v: 1,
+    enrollmentId: uuid(),
+    nonce,
+    issuedAt: 1,
+    hubId: uuid(),
+  };
+  const proof = {
+    hubPublicKey: "-----BEGIN PUBLIC KEY-----",
+    hubKeyFingerprint: `sha256:${"0a".repeat(32)}`,
+    hubSignature: "B".repeat(86),
+  };
+  assert.ok(checkPairingDto(PairChallenge, challenge), "no proof fields (legacy v2 flow)");
+  assert.ok(checkPairingDto(PairChallenge, { ...challenge, ...proof }));
+  assert.ok(!checkPairingDto(PairChallenge, { ...challenge, hubSignature: "B".repeat(85) }));
+  assert.ok(!checkPairingDto(PairChallenge, { ...challenge, hubKeyFingerprint: "sha256:ab" }));
+  const issue = {
+    type: "pair.token",
+    v: 1,
+    enrollmentId: uuid(),
+    deviceUid: uuid(),
+    deviceId: "dev-1",
+    pairingEpoch: uuid(),
+    credentialId: uuid(),
+    generation: 1,
+    hubId: uuid(),
+    hubOrigin: OFFER_HUB,
+    hubUrl: `${OFFER_HUB}/api/tunnel`,
+    tunnelToken: `dpt_${"C".repeat(43)}`,
+    issuedAt: 1,
+    expiresAt: null,
+  };
+  assert.ok(checkPairingDto(TokenIssue, issue), "no hubKeyFingerprint (legacy)");
+  assert.ok(checkPairingDto(TokenIssue, { ...issue, hubKeyFingerprint: OFFER_KFP }));
+  assert.ok(!checkPairingDto(TokenIssue, { ...issue, hubKeyFingerprint: "nope" }));
+});
+
+test("hubProofSigningPayload — exact element order, ceremony and tunnel subjects", () => {
+  const pairSubject = `pair:${uuid()}`;
+  assert.equal(
+    hubProofSigningPayload({
+      hubOrigin: OFFER_HUB,
+      hubId: OFFER_ID,
+      subject: pairSubject,
+      nonce: "A".repeat(43),
+    }),
+    JSON.stringify(["dpi-hub-proof-v1", OFFER_HUB, OFFER_ID, pairSubject, "A".repeat(43)]),
+  );
+  const subject = `tunnel:dev-1:${uuid()}`;
+  assert.equal(
+    hubProofSigningPayload({
+      hubOrigin: OFFER_HUB,
+      hubId: OFFER_ID,
+      subject,
+      nonce: "N".repeat(43),
+    }),
+    JSON.stringify(["dpi-hub-proof-v1", OFFER_HUB, OFFER_ID, subject, "N".repeat(43)]),
+  );
 });

@@ -115,7 +115,7 @@ test("R03: an offline paired device with no sessions has an accessible credentia
   try {
     store.network.model.apply({ type: "network", devices: [device] });
     let rendered = await renderToString(createSSRApp(mod.default));
-    assert.match(rendered, /aria-label="Manage credentials for offline-box"/);
+    assert.match(rendered, /aria-label="Manage credentials for Offline box"/);
     store.ui.dialog = { kind: "credentials", deviceId: device.id };
     rendered = await renderToString(createSSRApp(mod.default));
     assert.match(rendered, /aria-label="Credential manager"/);

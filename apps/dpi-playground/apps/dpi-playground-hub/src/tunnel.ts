@@ -32,6 +32,8 @@ import {
   type TunnelFrame,
   type TunnelWireMessage,
 } from "../../../../dpi-sdk/src/protocol/tunnel.js";
+import { hubProofSigningPayload } from "../../../../dpi-sdk/src/protocol/pairing.js";
+import type { HubIdentity } from "./hub-identity.js";
 import {
   HANDSHAKE_DEADLINE_MS,
   IDLE_TIMEOUT_MS,
@@ -162,6 +164,9 @@ export class TunnelServer {
     handlers: TunnelHandlers = {},
     policy: Partial<TunnelPolicy> = {},
     hooks: TunnelTestHooks = {},
+    /** Offer-v3 pinning: signs hello proofs for proofNonce-carrying handshakes. */
+    private readonly hubOrigin: string = "",
+    private readonly identity?: HubIdentity,
   ) {
     this.policy = { ...DEFAULT_TUNNEL_POLICY, ...policy };
     if (policy.ipCapacity === undefined)
@@ -753,6 +758,25 @@ export class TunnelServer {
         hubId: this.hubId,
         connectionId: conn.connectionId,
         serverTime: this.now(),
+        // Offer-v3 pinning: a device that sent proofNonce gets the hub identity
+        // proof bound to ITS device+epoch, so a captured proof cannot replay.
+        ...(hs.proofNonce && this.identity && pairing
+          ? (() => {
+              const i = this.identity!;
+              return {
+                hubPublicKey: i.publicKeyPem,
+                hubKeyFingerprint: i.fingerprint,
+                hubSignature: i.signPayload(
+                  hubProofSigningPayload({
+                    hubOrigin: this.hubOrigin,
+                    hubId: this.hubId,
+                    subject: `tunnel:${conn.auth.device_id}:${pairing.pairing_epoch}`,
+                    nonce: hs.proofNonce,
+                  }),
+                ),
+              };
+            })()
+          : {}),
       } satisfies TunnelFrame),
     );
     this.handlers.onOpen?.(this.asConnection(conn));

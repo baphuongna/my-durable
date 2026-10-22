@@ -23,6 +23,7 @@ import {
   signSession,
   tokenEquals,
 } from "./admin-auth.js";
+import { bootstrapHubIdentity } from "./hub-identity.js";
 import { body as failureBody, describeFailure, errorMiddleware, safe } from "./http-errors.js";
 import { TokenBuckets } from "./limiter.js";
 import { PairingService } from "./pairing.js";
@@ -70,8 +71,7 @@ registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect f
 const adminToken = bootstrapAdminToken();
 // Gap #5: later boots point the operator at the file — the value itself only
 // ever appears on the first-boot mint line (admin-auth.ts).
-if (!adminToken.created)
-  console.log(`admin: login with the token in ${adminToken.path}`);
+if (!adminToken.created) console.log(`admin: login with the token in ${adminToken.path}`);
 const configFile = seedFromConfig(registry, appDir);
 const monitor = new DeviceMonitor(registry);
 monitor.start();
@@ -124,6 +124,9 @@ function auditFloorFromEnv(): { minFreeBytes?: number } {
 }
 const audit = new Audit(registry, auditFloorFromEnv());
 audit.startSweeper();
+// Gap #6: the hub's persistent identity key — its fingerprint is the `kfp`
+// pinned inside every v3 pairing offer and proven at ceremony + tunnel connect.
+const identity = bootstrapHubIdentity(undefined, audit);
 if (adminToken.created)
   audit.append({
     actor: "hub",
@@ -168,12 +171,13 @@ const hubId = (
   registry.db.prepare("SELECT value FROM hub_meta WHERE key='hub_id'").get() as { value: string }
 ).value;
 const hubOrigin = process.env.DPI_HUB_ORIGIN ?? `https://${hostname().toLowerCase()}`;
-const credentials = new CredentialService(registry, audit, hubOrigin, hubId);
+const credentials = new CredentialService(registry, audit, hubOrigin, hubId, undefined, identity);
 const pairing = new PairingService({
   registry,
   audit,
   hubOrigin,
   hubId,
+  identity,
   issue: async (e) => {
     const ticket = await credentials.issue(e);
     tunnel.closeConnection(ticket.deviceId, 1000, "pairing replaced");
@@ -455,7 +459,16 @@ app.use(errorMiddleware);
 // Tunnel endpoint (04 §4): /api/tunnel upgrades after hash-first credential
 // auth. In --dev mode Vite owns its own HMR upgrade path, so only the exact
 // tunnel path is claimed here and other upgrades are left alone.
-const tunnel = new TunnelServer(registry, audit, hubId, {}, { requireTls: requireTlsEnabled });
+const tunnel = new TunnelServer(
+  registry,
+  audit,
+  hubId,
+  {},
+  { requireTls: requireTlsEnabled },
+  {},
+  hubOrigin,
+  identity,
+);
 const dispatcher = new TunnelDispatcher(tunnel, { audit, budget: bufferBudget });
 const rotation = new RotationService(registry, audit, tunnel, {
   onChange: () => monitor.refresh(),

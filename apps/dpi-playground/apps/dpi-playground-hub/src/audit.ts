@@ -39,6 +39,7 @@ export const AUDIT_ACTIONS = [
   "tunnel.connect",
   "tunnel.disconnect",
   "admin.token_created",
+  "hub.identity_created",
   "admin.login",
   "auth.denied",
   "rate_limited",

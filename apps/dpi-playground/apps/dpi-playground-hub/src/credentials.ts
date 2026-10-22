@@ -22,6 +22,7 @@ import type { Audit } from "./audit.js";
 import { observeIdentity } from "./identity.js";
 import { newTunnelToken } from "./tunnel-token.js";
 import type { TokenIssue } from "../../../../dpi-sdk/src/protocol/pairing.js";
+import type { HubIdentity } from "./hub-identity.js";
 
 export interface IssueInput {
   enrollmentId: string;
@@ -50,6 +51,8 @@ export class CredentialService {
     private readonly hubOrigin: string,
     private readonly hubId: string,
     private readonly failAt?: IssueFailPoint,
+    /** Offer-v3 pinning: stamped into every issued TokenIssue. */
+    private readonly identity?: HubIdentity,
   ) {}
 
   /**
@@ -195,6 +198,7 @@ export class CredentialService {
       tunnelToken: token,
       issuedAt: now,
       expiresAt: null,
+      ...(this.identity ? { hubKeyFingerprint: this.identity.fingerprint } : {}),
     };
   }
 

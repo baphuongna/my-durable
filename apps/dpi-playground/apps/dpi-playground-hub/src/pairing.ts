@@ -33,6 +33,8 @@ import {
   PAIR_SIGNATURE_FAIL_LIMIT,
   PAIR_POLL_MS,
 } from "../../../../dpi-sdk/src/protocol/limits.js";
+import { hubProofSigningPayload } from "../../../../dpi-sdk/src/protocol/pairing.js";
+import type { HubIdentity } from "./hub-identity.js";
 import {
   PairApproval as PairApprovalSchema,
   PairCodeState as PairCodeStateSchema,
@@ -114,6 +116,8 @@ export interface PairingDeps {
   audit: Audit;
   hubOrigin: string;
   hubId: string;
+  /** Offer-v3 pinning: present on every real hub; absent only in legacy harnesses. */
+  identity?: HubIdentity;
   /**
    * Issuance boundary (P2-10 CredentialService). Returns the committed TokenIssue. It must reject with
    * `code: "identity_changed"` when `expectedIdentity` no longer matches the registry (GA-05).
@@ -206,18 +210,25 @@ export class PairingService {
   }
 
   /**
-   * v2 offer link, minted from the SAME values the v1 pairUrl uses (same code,
-   * same expiry): the whole handoff — hub origin, hubId, code, expiry — rides
-   * the #offer= fragment, which no server or CDN ever sees in a log.
+   * v3 offer link (v2 without an identity key), minted from the SAME values
+   * the v1 pairUrl uses (same code, same expiry): the whole handoff — hub
+   * origin, hubId, code, expiry, pinned hub-key fingerprint — rides the
+   * #offer= fragment, which no server or CDN ever sees in a log.
    */
   private offerUrlFor(code: string, expiresAt: number): string {
-    return `${this.deps.hubOrigin}/pair#offer=${encodePairOffer({
-      v: 2,
-      hub: this.deps.hubOrigin,
-      id: this.deps.hubId,
-      code,
-      exp: expiresAt,
-    })}`;
+    const identity = this.deps.identity;
+    return `${this.deps.hubOrigin}/pair#offer=${encodePairOffer(
+      identity
+        ? {
+            v: 3,
+            hub: this.deps.hubOrigin,
+            id: this.deps.hubId,
+            code,
+            exp: expiresAt,
+            kfp: identity.fingerprint,
+          }
+        : { v: 2, hub: this.deps.hubOrigin, id: this.deps.hubId, code, exp: expiresAt },
+    )}`;
   }
 
   /** POST /api/pair/code (admin) — mint a fresh single-use code. */
@@ -264,12 +275,7 @@ export class PairingService {
   resolveCode(body: unknown): { ok: true; value: PairCodeIssue } | PairingFailure {
     const raw = (body as { code?: unknown } | null)?.code;
     const code = typeof raw === "string" ? normalizePairCode(raw) : undefined;
-    if (
-      !body ||
-      typeof body !== "object" ||
-      Object.keys(body).length !== 1 ||
-      !isPairCode(code)
-    )
+    if (!body || typeof body !== "object" || Object.keys(body).length !== 1 || !isPairCode(code))
       return this.fail(400, "code_invalid", "Invalid pairing handoff");
     const codeId = this.byCode.get(code);
     const entry = codeId ? this.codes.get(codeId) : undefined;
@@ -297,6 +303,24 @@ export class PairingService {
     return entry;
   }
 
+  /** Hub-identity proof for a device that pinned kfp (offer v3): sign the canonical payload over the enrollment. */
+  private hubProof(hubNonce: string, enrollmentId: string) {
+    const identity = this.deps.identity;
+    if (!identity) return undefined;
+    return {
+      hubPublicKey: identity.publicKeyPem,
+      hubKeyFingerprint: identity.fingerprint,
+      hubSignature: identity.signPayload(
+        hubProofSigningPayload({
+          hubOrigin: this.deps.hubOrigin,
+          hubId: this.deps.hubId,
+          subject: `pair:${enrollmentId}`,
+          nonce: hubNonce,
+        }),
+      ),
+    };
+  }
+
   /** POST /api/pair/start — issue a challenge bound to one immutable tuple. */
   start(body: unknown, address: string): { ok: true; value: PairChallengeOut } | PairingFailure {
     const now = this.now();
@@ -319,6 +343,7 @@ export class PairingService {
       publicKey: string;
       keyFingerprint: string;
       clientTime: number;
+      hubNonce?: string;
     };
     const live = this.liveCode(req.code, now);
     if (live === "invalid") {
@@ -352,6 +377,7 @@ export class PairingService {
         nonce: existing.nonce,
         issuedAt: existing.nonceIssuedAt,
         hubId: this.deps.hubId,
+        ...(req.hubNonce ? this.hubProof(req.hubNonce, existing.enrollmentId) : {}),
       });
     }
 
@@ -407,6 +433,7 @@ export class PairingService {
       nonce: enrollment.nonce,
       issuedAt: enrollment.nonceIssuedAt,
       hubId: this.deps.hubId,
+      ...(req.hubNonce ? this.hubProof(req.hubNonce, enrollment.enrollmentId) : {}),
     });
   }
 

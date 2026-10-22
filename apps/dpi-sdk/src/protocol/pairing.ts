@@ -36,7 +36,11 @@ const DeviceId = Type.String({
 });
 const Fingerprint = Type.String({ pattern: "^sha256:[0-9a-f]{64}$", minLength: 71, maxLength: 71 });
 const Nonce = Type.String({ pattern: "^[A-Za-z0-9_-]{43}$", minLength: 43, maxLength: 43 });
-const TunnelToken = Type.String({ pattern: "^dpt_[A-Za-z0-9_-]{43}$", minLength: 47, maxLength: 47 });
+const TunnelToken = Type.String({
+  pattern: "^dpt_[A-Za-z0-9_-]{43}$",
+  minLength: 47,
+  maxLength: 47,
+});
 /**
  * Canonical lower-case UUID v4: any hex is NOT a code, so the version nibble must be 4 and the
  * variant nibble 8/9/a/b.
@@ -57,7 +61,8 @@ const PairCode = Type.String({
 
 const PAIR_CODE_RE = new RegExp(PAIR_CODE_PATTERN);
 /** Shape test for the UUID family — used to pick the normalisation rule, never to accept on its own. */
-const UUID_SHAPED_RE = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
+const UUID_SHAPED_RE =
+  /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
 
 /**
  * Exact-shape check for a pairing code, with NO trimming: a value with a leading/trailing space
@@ -100,6 +105,14 @@ export const PairRequest = Type.Object(
     publicKey: Type.String({ minLength: 1, maxLength: 256 }), // Ed25519 SPKI PEM
     keyFingerprint: Fingerprint,
     clientTime: Type.Integer(),
+    /**
+     * Hub-proof challenge (offer v3): present only when the offer pinned a hub
+     * key fingerprint. The hub answers with its public key + a signature over
+     * hubProofSigningPayload(...subject: enrollmentId) so the device can check
+     * the responder owns the pinned key BEFORE any credential is accepted.
+     * Optional keeps v1 wire shape: only v3-offer flows ever set it.
+     */
+    hubNonce: Type.Optional(Nonce),
   },
   Strict,
 );
@@ -112,6 +125,13 @@ export const PairChallenge = Type.Object(
     nonce: Nonce,
     issuedAt: Type.Integer(),
     hubId: Uuid, // deployment ID, not a cryptographic fingerprint
+    /** Present iff the request carried hubNonce (offer v3 pinning). */
+    hubPublicKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })), // Ed25519 SPKI PEM
+    hubKeyFingerprint: Type.Optional(Fingerprint),
+    /** Ed25519 over hubProofSigningPayload({..., subject: enrollmentId, nonce: request hubNonce}). */
+    hubSignature: Type.Optional(
+      Type.String({ pattern: "^[A-Za-z0-9_-]{86}$", minLength: 86, maxLength: 86 }),
+    ),
   },
   Strict,
 );
@@ -155,6 +175,8 @@ export const TokenIssue = Type.Object(
     tunnelToken: TunnelToken,
     issuedAt: Type.Integer(),
     expiresAt: Type.Null(),
+    /** Present for offer-v3 pairings: the pinned hub identity (same value the offer carried). */
+    hubKeyFingerprint: Type.Optional(Fingerprint),
   },
   Strict,
 );
@@ -337,7 +359,7 @@ export function parseHubOrigin(
  * code cannot reach server/CDN query logs, and the origin travels inside the
  * link (no --hub needed on the device).
  */
-export interface PairOffer {
+export interface PairOfferV2 {
   v: 2;
   /** Canonical HTTPS hub origin (the transport the device pairs against). */
   hub: string;
@@ -348,6 +370,20 @@ export interface PairOffer {
   /** Expiry, hub epoch ms. */
   exp: number;
 }
+
+/**
+ * v3 offer — v2 plus `kfp`: the sha256-of-SPKI fingerprint of the hub's
+ * persistent Ed25519 identity key. The device pins it: the hub must PROVE
+ * possession of that exact key during the ceremony (and on every tunnel
+ * connect), so a hub swap is detectable at the device even with TLS intact.
+ */
+export interface PairOfferV3 extends Omit<PairOfferV2, "v"> {
+  v: 3;
+  /** Pinned hub identity: `sha256:<64 hex>` of the hub key's SPKI DER. */
+  kfp: string;
+}
+
+export type PairOffer = PairOfferV2 | PairOfferV3;
 
 /** base64url (no padding) of UTF-8 bytes — browser-safe, no Node builtins. */
 function offerEncode(bytes: Uint8Array): string {
@@ -374,24 +410,34 @@ const OFFER_CODE_RE = new RegExp(`^${UUID_V4}$`);
 
 /**
  * Encode an offer to the exact fragment payload: canonical JSON (field order
- * v,hub,id,code,exp — byte-lean and deterministic), base64url, no padding.
+ * v,hub,id,code,exp[,kfp] — byte-lean and deterministic), base64url, no padding.
  * Pure encoder: it does not validate; callers mint from live hub values.
  */
 export function encodePairOffer(offer: PairOffer): string {
-  return offerEncode(
-    new TextEncoder().encode(
-      JSON.stringify({ v: offer.v, hub: offer.hub, id: offer.id, code: offer.code, exp: offer.exp }),
-    ),
-  );
+  const json =
+    offer.v === 3
+      ? {
+          v: offer.v,
+          hub: offer.hub,
+          id: offer.id,
+          code: offer.code,
+          exp: offer.exp,
+          kfp: offer.kfp,
+        }
+      : { v: offer.v, hub: offer.hub, id: offer.id, code: offer.code, exp: offer.exp };
+  return offerEncode(new TextEncoder().encode(JSON.stringify(json)));
 }
 
 /**
- * Structural decode (freshness-blind): exactly the five known fields, v===2,
- * canonical HTTPS origin (byte-exact, reusing the parseHubOrigin rules),
- * canonical UUIDs for id and code, safe-integer exp. Unknown or malformed
- * input → undefined, never a throw. Exported so a caller can tell an EXPIRED
- * offer apart from junk (decodePairOffer refuses both).
+ * Structural decode (freshness-blind): exactly the known fields for the
+ * declared version — five for v2, six for v3 (`kfp` must be a canonical
+ * `sha256:<64 hex>`) — canonical HTTPS origin (byte-exact, reusing the
+ * parseHubOrigin rules), canonical UUIDs for id and code, safe-integer exp.
+ * Unknown or malformed input → undefined, never a throw. Exported so a
+ * caller can tell an EXPIRED offer apart from junk (decodePairOffer refuses
+ * both).
  */
+const OFFER_KFP_RE = /^sha256:[0-9a-f]{64}$/;
 export function readPairOffer(raw: string): PairOffer | undefined {
   const bytes = offerDecode(raw);
   if (!bytes || bytes.length > PAIR_OFFER_MAX_JSON_BYTES) return undefined;
@@ -403,13 +449,19 @@ export function readPairOffer(raw: string): PairOffer | undefined {
   }
   if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
   const o = json as Record<string, unknown>;
-  if (Object.keys(o).length !== 5 || o.v !== 2) return undefined; // unknown/missing fields refuse
+  if (o.v !== 2 && o.v !== 3) return undefined;
+  const fieldCount = o.v === 3 ? 6 : 5;
+  if (Object.keys(o).length !== fieldCount) return undefined; // unknown/missing fields refuse
   if (typeof o.hub !== "string") return undefined;
   const origin = parseHubOrigin(o.hub);
   if (!origin.ok || origin.origin !== o.hub) return undefined; // canonical form, byte-exact
   if (typeof o.id !== "string" || !OFFER_UUID_RE.test(o.id)) return undefined;
   if (typeof o.code !== "string" || !OFFER_CODE_RE.test(o.code)) return undefined;
   if (typeof o.exp !== "number" || !Number.isSafeInteger(o.exp)) return undefined;
+  if (o.v === 3) {
+    if (typeof o.kfp !== "string" || !OFFER_KFP_RE.test(o.kfp)) return undefined;
+    return { v: 3, hub: o.hub, id: o.id, code: o.code, exp: o.exp, kfp: o.kfp };
+  }
   return { v: 2, hub: o.hub, id: o.id, code: o.code, exp: o.exp };
 }
 
@@ -455,7 +507,10 @@ export function pairOfferFragment(url: string): string | undefined {
  * undefined. The offer's hub must equal the link's own origin (the hub minted
  * this link); the fragment never travels server-side.
  */
-export function parsePairOfferUrl(url: string, now: number = Date.now()): ParsedPairOfferUrl | undefined {
+export function parsePairOfferUrl(
+  url: string,
+  now: number = Date.now(),
+): ParsedPairOfferUrl | undefined {
   let u: URL;
   try {
     u = new URL(url);
@@ -489,6 +544,27 @@ export function pairingSigningPayload(parts: {
     parts.issuedAt,
     parts.deviceUid,
     parts.keyFingerprint,
+  ]);
+}
+
+/**
+ * Exact Ed25519 payload the HUB signs to prove its identity key (offer v3).
+ * `subject` binds the proof to one ceremony ("pair:<enrollmentId>") or one
+ * tunnel session ("tunnel:<deviceId>:<pairingEpoch>") so a captured proof
+ * cannot be replayed elsewhere. Element order is normative.
+ */
+export function hubProofSigningPayload(parts: {
+  hubOrigin: string;
+  hubId: string;
+  subject: string;
+  nonce: string;
+}): string {
+  return JSON.stringify([
+    "dpi-hub-proof-v1",
+    parts.hubOrigin,
+    parts.hubId,
+    parts.subject,
+    parts.nonce,
   ]);
 }
 

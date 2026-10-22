@@ -35,7 +35,7 @@ const offerFixture = (): PairOffer => ({
   exp: 1760000240000,
 });
 
-test("append: all 16 required actions round-trip with correlation fields", async () => {
+test("append: all 17 required actions round-trip with correlation fields", async () => {
   const { registry, audit, cleanup } = await tempAudit();
   try {
     for (const action of AUDIT_ACTIONS) {
@@ -48,14 +48,21 @@ test("append: all 16 required actions round-trip with correlation fields", async
         detail: { x: 1 },
       });
     }
-    assert.equal(AUDIT_ACTIONS.length, 16);
+    assert.equal(AUDIT_ACTIONS.length, 17);
     const all = rows(registry);
-    assert.equal(all.length, 16);
+    assert.equal(all.length, 17);
     assert.equal(all[0].action, "pair.code_created");
-    assert.equal(all[12].action, "auth.denied");
-    assert.equal(all[15].action, "rotation.stale_cleared");
+    assert.equal(all[12].action, "admin.login");
+    assert.equal(all[13].action, "auth.denied");
+    assert.equal(all[16].action, "rotation.stale_cleared");
+    assert.equal(
+      all[11].action,
+      "hub.identity_created",
+      "the v3 pinning audit action is part of the contract",
+    );
     assert.ok(
-      all.some((r) => r.action === "admin.token_created") && all.some((r) => r.action === "admin.login"),
+      all.some((r) => r.action === "admin.token_created") &&
+        all.some((r) => r.action === "admin.login"),
       "the admin auth actions are part of the contract",
     );
     assert.equal(all[0].request_id, "req-1");
@@ -201,8 +208,11 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
     assert.ok(!stored.includes("ABCD2345EF67"));
     // a minted UUID v4 code is redacted too — but the row's own correlation ids stay readable
     assert.ok(!stored.includes("a1b2c3d4-e5f6-4789-abcd-eff012345678"));
-    const rowIds = rows(registry).map((r) => r.code_id).filter((id): id is string => !!id);
-    for (const id of rowIds) assert.ok(stored.includes(id), "audit correlation ids survive redaction");
+    const rowIds = rows(registry)
+      .map((r) => r.code_id)
+      .filter((id): id is string => !!id);
+    for (const id of rowIds)
+      assert.ok(stored.includes(id), "audit correlation ids survive redaction");
     assert.ok(!stored.includes("BEGIN PRIVATE KEY"));
     assert.ok(stored.includes("<redacted>") || stored.includes("<code-redacted>"));
     // unit-level substring checks
@@ -212,11 +222,19 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
     assert.ok(!scrubSecrets(`see ABCD2345EF67 later`).includes("ABCD2345EF67"));
     assert.ok(!scrubSecrets('{"code":"ABCD2345EF67"}').includes("ABCD2345EF67"));
     assert.ok(scrubSecrets('{"code":"ABCD2345EF67"}').includes("<code-redacted>"));
-    assert.ok(!scrubSecrets('{"code":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("a1b2c3d4"));
-    assert.ok(scrubSecrets('{"code":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("<code-redacted>"));
+    assert.ok(
+      !scrubSecrets('{"code":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("a1b2c3d4"),
+    );
+    assert.ok(
+      scrubSecrets('{"code":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("<code-redacted>"),
+    );
     assert.ok(!scrubSecrets("code=a1b2c3d4-e5f6-4789-abcd-eff012345678").includes("a1b2c3d4"));
     // an id that is NOT labelled a code is correlation, not a secret
-    assert.ok(scrubSecrets('{"codeId":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes("a1b2c3d4-e5f6-4789-abcd-eff012345678"));
+    assert.ok(
+      scrubSecrets('{"codeId":"a1b2c3d4-e5f6-4789-abcd-eff012345678"}').includes(
+        "a1b2c3d4-e5f6-4789-abcd-eff012345678",
+      ),
+    );
     // a #offer= fragment is redacted in any URL-bearing field, standalone or nested
     const payload = encodePairOffer(offerFixture());
     assert.ok(!stored.includes(payload));

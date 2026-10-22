@@ -7,7 +7,18 @@
  * resolves, and async latecomers must re-check the active operation before
  * committing (see pairing.ts).
  */
-import { chmodSync, closeSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
@@ -105,12 +116,15 @@ export function readKeypairFile(path: string): DeviceKeypair | undefined {
   } catch {
     throw keypairUnusable(path, "not valid JSON");
   }
-  if (!parsed?.privateKeyPem || !parsed.publicKeyPem || !parsed.fingerprint) throw keypairUnusable(path, "key fields are missing");
+  if (!parsed?.privateKeyPem || !parsed.publicKeyPem || !parsed.fingerprint)
+    throw keypairUnusable(path, "key fields are missing");
   return parsed as DeviceKeypair;
 }
 
 const keypairUnusable = (path: string, why: string) =>
-  new Error(`device keypair ${path} is unusable (${why}); refusing to replace it. Restore it from a backup, or move it away to enroll this device again.`);
+  new Error(
+    `device keypair ${path} is unusable (${why}); refusing to replace it. Restore it from a backup, or move it away to enroll this device again.`,
+  );
 
 /** Tighten a file that must hold secrets if a copy/restore loosened it. */
 export function ensureFileMode0600(path: string): void {
@@ -140,6 +154,14 @@ export interface PairingFile {
   tunnelToken: string;
   updatedAt: number;
   operationId: string;
+  /**
+   * Offer-v3 pin: `sha256:<64 hex>` of the hub identity key this device
+   * paired against. Verified on every tunnel connect (the hub proves
+   * possession in its `hello`); a mismatch is a hard abort. Absent on legacy
+   * pairings — adopted at the next successful connect through the already-
+   * authenticated tunnel, never from an unauthenticated response.
+   */
+  hubKeyFingerprint?: string;
 }
 
 export const keypairPath = (home: string) => join(home, "device-keypair.json");

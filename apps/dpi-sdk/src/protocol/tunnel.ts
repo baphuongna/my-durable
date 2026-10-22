@@ -26,7 +26,12 @@ const DeviceId = Type.String({
   maxLength: 32,
 });
 const Fingerprint = Type.String({ pattern: "^sha256:[0-9a-f]{64}$", minLength: 71, maxLength: 71 });
-const TunnelToken = Type.String({ pattern: "^dpt_[A-Za-z0-9_-]{43}$", minLength: 47, maxLength: 47 });
+const TunnelToken = Type.String({
+  pattern: "^dpt_[A-Za-z0-9_-]{43}$",
+  minLength: 47,
+  maxLength: 47,
+});
+const Nonce = Type.String({ pattern: "^[A-Za-z0-9_-]{43}$", minLength: 43, maxLength: 43 });
 const SubscriptionFields = {
   subscriptionId: Uuid,
   sub: Type.String({ minLength: 1, maxLength: 512 }),
@@ -60,37 +65,94 @@ export type TunnelAuthError = Static<typeof TunnelAuthError>;
  * models/api; the tunnel validates it only as a JSON object with a known
  * discriminator to avoid duplicating the full grammar here.
  */
-const FramePayload = Type.Object({
-  type: Type.Union([
-    Type.Literal("hello"), Type.Literal("fault"), Type.Literal("tree"), Type.Literal("activity"),
-    Type.Literal("session"), Type.Literal("agents"), Type.Literal("tasks"), Type.Literal("usage"),
-    Type.Literal("snapshot"), Type.Literal("batch"), Type.Literal("inbox"), Type.Literal("doc"),
-  ]),
-}, { additionalProperties: true });
+const FramePayload = Type.Object(
+  {
+    type: Type.Union([
+      Type.Literal("hello"),
+      Type.Literal("fault"),
+      Type.Literal("tree"),
+      Type.Literal("activity"),
+      Type.Literal("session"),
+      Type.Literal("agents"),
+      Type.Literal("tasks"),
+      Type.Literal("usage"),
+      Type.Literal("snapshot"),
+      Type.Literal("batch"),
+      Type.Literal("inbox"),
+      Type.Literal("doc"),
+    ]),
+  },
+  { additionalProperties: true },
+);
 
 /** Hub mux control frames must never be accepted from a device, even after chunk reassembly. */
-export function checkDeviceFrame(value: unknown): value is Exclude<Frame, { type: "network" | "disconnected" }> {
+export function checkDeviceFrame(
+  value: unknown,
+): value is Exclude<Frame, { type: "network" | "disconnected" }> {
   return Value.Check(FramePayload, value);
 }
 
 const TunnelControl = Type.Union([
-  Type.Object({ type: Type.Literal("control"), action: Type.Literal("subscribe"), ...SubscriptionFields }, Strict),
-  Type.Object({ type: Type.Literal("control"), action: Type.Literal("unsubscribe"), ...SubscriptionFields }, Strict),
-  Type.Object({ type: Type.Literal("control"), action: Type.Literal("revoked"), notice: Type.Object({
-    type: Type.Literal("pair.revoke"), v: Type.Literal(1), deviceId: DeviceId, pairingEpoch: Uuid,
-    reason: Type.Union([Type.Literal("user"), Type.Literal("compromise"), Type.Literal("hub_migrated")]),
-    revokedAt: Type.Integer(),
-  }, Strict) }, Strict),
   Type.Object(
-    { type: Type.Literal("control"), action: Type.Literal("token-rotate"), tunnelToken: TunnelToken, ...RotationFields },
+    { type: Type.Literal("control"), action: Type.Literal("subscribe"), ...SubscriptionFields },
     Strict,
   ),
-  Type.Object({ type: Type.Literal("control"), action: Type.Literal("token-rotate-ack"), ...RotationFields }, Strict),
-  Type.Object({
-    type: Type.Literal("control"), action: Type.Literal("unpair"),
-    pairingEpoch: Uuid, reason: Type.Literal("hub_migrated"),
-  }, Strict),
-  Type.Object({ type: Type.Literal("control"), action: Type.Literal("close"), reason: Type.String({ maxLength: 512 }) }, Strict),
+  Type.Object(
+    { type: Type.Literal("control"), action: Type.Literal("unsubscribe"), ...SubscriptionFields },
+    Strict,
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("control"),
+      action: Type.Literal("revoked"),
+      notice: Type.Object(
+        {
+          type: Type.Literal("pair.revoke"),
+          v: Type.Literal(1),
+          deviceId: DeviceId,
+          pairingEpoch: Uuid,
+          reason: Type.Union([
+            Type.Literal("user"),
+            Type.Literal("compromise"),
+            Type.Literal("hub_migrated"),
+          ]),
+          revokedAt: Type.Integer(),
+        },
+        Strict,
+      ),
+    },
+    Strict,
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("control"),
+      action: Type.Literal("token-rotate"),
+      tunnelToken: TunnelToken,
+      ...RotationFields,
+    },
+    Strict,
+  ),
+  Type.Object(
+    { type: Type.Literal("control"), action: Type.Literal("token-rotate-ack"), ...RotationFields },
+    Strict,
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("control"),
+      action: Type.Literal("unpair"),
+      pairingEpoch: Uuid,
+      reason: Type.Literal("hub_migrated"),
+    },
+    Strict,
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("control"),
+      action: Type.Literal("close"),
+      reason: Type.String({ maxLength: 512 }),
+    },
+    Strict,
+  ),
 ]);
 
 export const TunnelFrame = Type.Union([
@@ -106,6 +168,12 @@ export const TunnelFrame = Type.Union([
       apiVersion: Type.Literal(1),
       tunnelProto: Type.Literal(1),
       keyFingerprint: Fingerprint,
+      /**
+       * Hub-proof challenge (pinned pairings): the hub's `hello` must answer
+       * with proof of the pinned identity key over this nonce. Optional keeps
+       * the v1 wire shape for pre-pinning devices.
+       */
+      proofNonce: Type.Optional(Nonce),
     },
     Strict,
   ),
@@ -117,15 +185,30 @@ export const TunnelFrame = Type.Union([
       hubId: Uuid,
       connectionId: Uuid,
       serverTime: Type.Integer(),
+      /** Present iff the handshake carried proofNonce (hub identity proof). */
+      hubPublicKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+      hubKeyFingerprint: Type.Optional(Fingerprint),
+      hubSignature: Type.Optional(
+        Type.String({ pattern: "^[A-Za-z0-9_-]{86}$", minLength: 86, maxLength: 86 }),
+      ),
     },
     Strict,
   ),
-  Type.Object({ type: Type.Literal("tunnel-data"), frame: FramePayload, ...SubscriptionFields }, Strict),
+  Type.Object(
+    { type: Type.Literal("tunnel-data"), frame: FramePayload, ...SubscriptionFields },
+    Strict,
+  ),
   Type.Object(
     {
       type: Type.Literal("rest-request"),
       reqId: Uuid,
-      method: Type.Union([Type.Literal("GET"), Type.Literal("POST"), Type.Literal("PUT"), Type.Literal("PATCH"), Type.Literal("DELETE")]),
+      method: Type.Union([
+        Type.Literal("GET"),
+        Type.Literal("POST"),
+        Type.Literal("PUT"),
+        Type.Literal("PATCH"),
+        Type.Literal("DELETE"),
+      ]),
       path: Type.String({ minLength: 1, maxLength: 2048 }),
       idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
       body: Type.Optional(Type.Unknown()),
@@ -146,7 +229,10 @@ export const TunnelFrame = Type.Union([
   Type.Object(
     {
       type: Type.Literal("fault"),
-      error: Type.Object({ code: Type.String({ maxLength: 64 }), message: Type.String({ maxLength: 512 }) }, Strict),
+      error: Type.Object(
+        { code: Type.String({ maxLength: 64 }), message: Type.String({ maxLength: 512 }) },
+        Strict,
+      ),
       subscriptionId: Type.Optional(Uuid),
       reqId: Type.Optional(Uuid),
     },
@@ -167,7 +253,14 @@ const ChunkBase = {
 
 const TunnelChunk = Type.Union([
   Type.Object({ ...ChunkBase, kind: Type.Literal("tunnel-data"), ...SubscriptionFields }, Strict),
-  Type.Object({ ...ChunkBase, kind: Type.Union([Type.Literal("rest-request"), Type.Literal("rest-response")]), reqId: Uuid }, Strict),
+  Type.Object(
+    {
+      ...ChunkBase,
+      kind: Type.Union([Type.Literal("rest-request"), Type.Literal("rest-response")]),
+      reqId: Uuid,
+    },
+    Strict,
+  ),
 ]);
 export type TunnelChunk = Static<typeof TunnelChunk>;
 
@@ -211,7 +304,11 @@ function messageKey(msg: { type: string; action?: string; kind?: string }): stri
 }
 
 /** Returns the allowed direction(s), or null if the message type is unknown. */
-export function messageDirection(msg: { type: string; action?: string; kind?: string }): Direction[] {
+export function messageDirection(msg: {
+  type: string;
+  action?: string;
+  kind?: string;
+}): Direction[] {
   const key = messageKey(msg);
   const dirs: Direction[] = [];
   if (HUB_TO_DEVICE.has(key)) dirs.push("hub->device");
@@ -258,9 +355,13 @@ export function allowedInPhase(
  * the decision is made on exactly the bytes that will be requested, and only a route the device serves to a
  * remote caller (rest-routes.ts) with one of its methods passes.
  */
-export function validateRestRequest(input: { method: string; path: string }): { ok: true } | { ok: false; error: string } {
+export function validateRestRequest(input: {
+  method: string;
+  path: string;
+}): { ok: true } | { ok: false; error: string } {
   const refuse = (error: string) => ({ ok: false as const, error });
-  if (!/^(GET|POST|PUT|PATCH|DELETE)$/.test(input.method)) return refuse("rest: method not allowed");
+  if (!/^(GET|POST|PUT|PATCH|DELETE)$/.test(input.method))
+    return refuse("rest: method not allowed");
   const raw = input.path;
   if (raw.includes("..") || raw.includes("\\") || raw.includes("://") || raw.startsWith("//")) {
     return refuse("rest: path traversal or absolute URL rejected");
@@ -271,18 +372,27 @@ export function validateRestRequest(input: { method: string; path: string }): { 
   } catch {
     return refuse("rest: invalid percent-encoding");
   }
-  if (decoded.includes("..") || decoded.includes("\\") || decoded.includes("://") || decoded.startsWith("//")) {
+  if (
+    decoded.includes("..") ||
+    decoded.includes("\\") ||
+    decoded.includes("://") ||
+    decoded.startsWith("//")
+  ) {
     return refuse("rest: encoded traversal rejected");
   }
   if (!raw.startsWith(REST_PATH_PREFIX)) return refuse("rest: path outside /v1 rejected");
   if (!/^[\x21-\x7e]+$/.test(raw) || raw.includes("#")) {
-    return refuse("rest: path must be printable ASCII without a fragment (percent-encode everything else)");
+    return refuse(
+      "rest: path must be printable ASCII without a fragment (percent-encode everything else)",
+    );
   }
   const query = raw.indexOf("?");
   const pathname = query < 0 ? raw : raw.slice(0, query);
   if (pathname.includes(";")) return refuse("rest: path parameters are not accepted");
   const segments = pathname.slice(REST_PATH_PREFIX.length).split("/");
-  if (segments.some((segment) => segment === "" || segment.toLowerCase() === "%2e" || segment === ".")) {
+  if (
+    segments.some((segment) => segment === "" || segment.toLowerCase() === "%2e" || segment === ".")
+  ) {
     return refuse("rest: path is not canonical (empty or dot segment)");
   }
   if (matchesRestRoute(input.method, segments)) return { ok: true };
@@ -314,9 +424,10 @@ export function validateChunkEnvelope(chunk: {
   }
   const decodedLength = base64DecodedLength(chunk.data);
   if (decodedLength < 0) return { ok: false, error: "chunk: invalid base64" };
-  const expected = chunk.index === chunk.count - 1
-    ? chunk.totalBytes - CHUNK_RAW_BYTES * (chunk.count - 1)
-    : CHUNK_RAW_BYTES;
+  const expected =
+    chunk.index === chunk.count - 1
+      ? chunk.totalBytes - CHUNK_RAW_BYTES * (chunk.count - 1)
+      : CHUNK_RAW_BYTES;
   if (decodedLength !== expected) {
     return { ok: false, error: `chunk: size mismatch at index ${chunk.index}` };
   }
