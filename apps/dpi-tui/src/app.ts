@@ -26,7 +26,7 @@ import {
 } from "../../dpi-sdk/src/api.ts";
 import type { NetworkRegistry } from "../../dpi-sdk/src/node/registry.ts";
 import { COMMANDS, runCommand } from "./commands.ts";
-import { pickModel, pickSession, Prompt } from "./pickers.ts";
+import { pickModel, pickSession, Prompt, SecretPrompt } from "./pickers.ts";
 import { Line, spinner, TranscriptView } from "./render.ts";
 import { c, editorTheme } from "./theme.ts";
 
@@ -249,6 +249,11 @@ export class App {
     this.tui.requestRender();
   }
 
+  /** How many overlays are open (the welcome screen waits for panels to close). */
+  get overlayCount() {
+    return this.overlays.length;
+  }
+
   closeOverlay(exitIfNothing = false) {
     const overlay = this.overlays.pop();
     overlay?.handle.hide();
@@ -264,6 +269,25 @@ export class App {
         new Prompt(
           label,
           initial,
+          (value) => {
+            this.closeOverlay();
+            done(value.trim());
+          },
+          () => {
+            this.closeOverlay();
+            done(undefined);
+          },
+        ),
+      );
+    });
+  }
+
+  /** Like prompt(), but the value is only ever rendered as bullets (tokens). */
+  promptSecret(label: string) {
+    return new Promise<string | undefined>((done) => {
+      this.overlay(
+        new SecretPrompt(
+          label,
           (value) => {
             this.closeOverlay();
             done(value.trim());

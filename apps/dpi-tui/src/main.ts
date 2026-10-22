@@ -1,16 +1,23 @@
 // dpi-tui: a pi-like terminal client for one Durable Agent Network device.
+//   dpi-tui                                        the app; welcome screen when nothing to connect to,
+//                                                  the single saved device when there is exactly one
 //   dpi-tui <device>[:<session>[:<agent>]]        device from ~/.dpi/network.sqlite (seeded from dpi-network.yaml)
 //   dpi-tui --url <url> --token <token> [--save <id>]
 //   dpi-tui mac-mini --new triage                 create a session (in the device's first start dir) and attach
 import { parseArgs } from "node:util";
 import { DpiClient } from "../../dpi-sdk/src/client.ts";
+import type { DeviceInfo } from "../../dpi-sdk/src/api.ts";
 import { isDpiError } from "../../dpi-sdk/src/errors.ts";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.ts";
 import { syncConfigToRegistry, tryLoadNetworkConfig } from "../../dpi-sdk/src/node/config.ts";
 import { App, type DeviceRef } from "./app.ts";
+import { pickDevice } from "./pickers.ts";
+import { emptyDeviceInfo, resolveStartupAction, showWelcome, WELCOME_DEVICE } from "./welcome.ts";
 
-const USAGE = `usage: dpi-tui <device>[:<session>[:<agent>]] [options]
+const USAGE = `usage: dpi-tui [device[:session[:agent]]] [options]
        dpi-tui --url <url> --token <token> [--save <id>]
+       dpi-tui                 no arguments: the app opens (welcome screen when no
+                               device is saved; the one saved device when there is one)
 
   -s, --session <ref>   session id or name (else a picker opens)
   -a, --agent <ref>     agent id, "main" or name (default: the session's root agent)
@@ -59,11 +66,85 @@ const [deviceRef = "", sessionRef = values.session, agentRef = values.agent] = (
   positionals[0] ?? (url ? "" : (process.env.DPI_DEVICE ?? ""))
 ).split(":");
 
-let device: DeviceRef;
-if (url) {
+/** The shared tail of every path that has a device: --save, --new, the App, --pair, open. */
+async function start(device: DeviceRef, client: DpiClient, info: DeviceInfo, opts: { devicePicker?: boolean } = {}) {
+  if (values.save && url)
+    registry.upsert({ id: values.save, name: values.save, url: device.url, kind: "url", source: "ui", token: device.token });
+
+  let session = sessionRef;
+  if (values.new) {
+    const cwd = values.cwd ?? (await client.dirs("")).dirs[0]?.path;
+    if (!cwd) fail(`${device.id} has no start dirs; pass --cwd`);
+    const modelId = values.model ?? info.defaultModel;
+    const model = info.models.find((m) => m.id === modelId);
+    if (!model) fail(`Unknown model ${modelId}. Available: ${info.models.map((m) => m.id).join(", ")}`);
+    const created = await client
+      .createSession({ name: values.new, cwd, model: { provider: model.provider, modelId: model.id } })
+      .catch((e: Error) => fail(`Could not create the session: ${e.message}`));
+    session = created.id;
+  }
+
+  const app = new App(device, client, info, registry);
+
+  // Bootstrap local pairing (--pair CODE --hub ORIGIN [--force]): runs the same
+  // controller as /pair, against the LOCAL backend, before the UI opens. A bare
+  // --pair without a value points at the slash command instead of guessing.
+  if (values.pair !== undefined || values.hub !== undefined) {
+    const { runPairing, parsePairArgs, LocalPairing } = await import("./pairing.ts");
+    if (!values.pair) {
+      process.stdout.write("--pair needs the code from the hub wizard (or its pair URL).\nInside dpi-tui, run: /pair <CODE> --hub <origin>\n");
+      process.exit(1);
+    }
+    try {
+      LocalPairing.fromEnv();
+    } catch (e) {
+      fail((e as Error).message);
+    }
+    await app.open(session, agentRef);
+    await runPairing(app, parsePairArgs([values.pair, ...(values.hub ? ["--hub", values.hub] : []), ...(values.force ? ["--force"] : [])].join(" ")));
+    return;
+  }
+  await app.open(session, agentRef);
+  if (opts.devicePicker) pickDevice(app);
+}
+
+// The app opens first; connection is a state, not a precondition. With no explicit
+// device/url/pair: one saved device opens it directly, several open on the first
+// with the device picker on top, none open the welcome screen.
+const startup = resolveStartupAction({ devices: registry.list(), env: process.env, args: { deviceRef, url, pair: values.pair } });
+
+if (startup.kind === "welcome") {
+  showWelcome(new App(WELCOME_DEVICE, new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token), emptyDeviceInfo(), registry));
+} else if (startup.kind === "auto-open" || startup.kind === "picker") {
+  const row = startup.kind === "auto-open" ? startup.device : startup.devices[0]!;
+  const device: DeviceRef = { id: row.id, name: row.name, url: row.url!, token: row.token! };
+  const client = new DpiClient(device.url, device.token);
+  try {
+    const info = await client.device({ timeoutMs: 8000 });
+    await start(device, client, info, { devicePicker: startup.kind === "picker" });
+  } catch (e) {
+    // An auto-connected device that is unreachable falls back to a screen that says
+    // so and offers the picker + welcome actions — never back to usage text.
+    showWelcome(new App(WELCOME_DEVICE, new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token), emptyDeviceInfo(), registry), {
+      notice:
+        isDpiError(e) && e.code === "unauthorized"
+          ? `${device.id}: token rejected by ${device.url}`
+          : `${device.id} is offline at ${device.url} (${(e as Error).message})`,
+    });
+  }
+} else if (url) {
   const token = values.token ?? process.env.DPI_TOKEN ?? "";
   if (!token) fail("--url needs --token (or DPI_TOKEN)");
-  device = { id: values.save ?? "adhoc", name: values.save ?? new URL(url).host, url: url.replace(/\/+$/, ""), token };
+  const device: DeviceRef = { id: values.save ?? "adhoc", name: values.save ?? new URL(url).host, url: url.replace(/\/+$/, ""), token };
+  const client = new DpiClient(device.url, device.token);
+  const info = await client.device({ timeoutMs: 8000 }).catch((e: unknown) =>
+    fail(
+      isDpiError(e) && e.code === "unauthorized"
+        ? `${device.id}: token rejected by ${device.url}`
+        : `${device.id} is offline at ${device.url} (${(e as Error).message})`,
+    ),
+  );
+  await start(device, client, info);
 } else {
   const known = registry.list().map((d) => d.id);
   if (!deviceRef) fail(`${USAGE}\n\nKnown devices: ${known.join(", ") || "none"}`);
@@ -72,51 +153,14 @@ if (url) {
   if (!row.token) fail(`No token for ${row.id}. Run: just net register ${row.id}`);
   if (!row.url)
     fail(`Device ${row.id} is paired over the tunnel — it has no LAN URL. Attach through the hub web UI, or pair this machine directly.`);
-  device = { id: row.id, name: row.name, url: row.url, token: row.token };
-}
-
-const client = new DpiClient(device.url, device.token);
-const info = await client.device({ timeoutMs: 8000 }).catch((e: unknown) =>
-  fail(
-    isDpiError(e) && e.code === "unauthorized"
-      ? `${device.id}: token rejected by ${device.url}`
-      : `${device.id} is offline at ${device.url} (${(e as Error).message})`,
-  ),
-);
-if (values.save && url)
-  registry.upsert({ id: values.save, name: values.save, url: device.url, kind: "url", source: "ui", token: device.token });
-
-let session = sessionRef;
-if (values.new) {
-  const cwd = values.cwd ?? (await client.dirs("")).dirs[0]?.path;
-  if (!cwd) fail(`${device.id} has no start dirs; pass --cwd`);
-  const modelId = values.model ?? info.defaultModel;
-  const model = info.models.find((m) => m.id === modelId);
-  if (!model) fail(`Unknown model ${modelId}. Available: ${info.models.map((m) => m.id).join(", ")}`);
-  const created = await client
-    .createSession({ name: values.new, cwd, model: { provider: model.provider, modelId: model.id } })
-    .catch((e: Error) => fail(`Could not create the session: ${e.message}`));
-  session = created.id;
-}
-
-const app = new App(device, client, info, registry);
-
-// Bootstrap local pairing (--pair CODE --hub ORIGIN [--force]): runs the same
-// controller as /pair, against the LOCAL backend, before the UI opens. A bare
-// --pair without a value points at the slash command instead of guessing.
-if (values.pair !== undefined || values.hub !== undefined) {
-  const { runPairing, parsePairArgs, LocalPairing } = await import("./pairing.ts");
-  if (!values.pair) {
-    process.stdout.write("--pair needs the code from the hub wizard (or its pair URL).\nInside dpi-tui, run: /pair <CODE> --hub <origin>\n");
-    process.exit(1);
-  }
-  try {
-    LocalPairing.fromEnv();
-  } catch (e) {
-    fail((e as Error).message);
-  }
-  await app.open(session, agentRef);
-  await runPairing(app, parsePairArgs([values.pair, ...(values.hub ? ["--hub", values.hub] : []), ...(values.force ? ["--force"] : [])].join(" ")));
-} else {
-  await app.open(session, agentRef);
+  const device: DeviceRef = { id: row.id, name: row.name, url: row.url, token: row.token };
+  const client = new DpiClient(device.url, device.token);
+  const info = await client.device({ timeoutMs: 8000 }).catch((e: unknown) =>
+    fail(
+      isDpiError(e) && e.code === "unauthorized"
+        ? `${device.id}: token rejected by ${device.url}`
+        : `${device.id} is offline at ${device.url} (${(e as Error).message})`,
+    ),
+  );
+  await start(device, client, info);
 }

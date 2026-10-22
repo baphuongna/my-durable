@@ -4,6 +4,7 @@ import {
   Container,
   Input,
   matchesKey,
+  renderFakeCursor,
   SelectList,
   truncateToWidth,
   type Component,
@@ -35,6 +36,7 @@ export class Picker extends Box {
     onPick: (item: SelectItem) => void,
     onCancel: () => void,
     hint = "↑↓ move │ enter select │ type to filter │ esc close",
+    subtitle?: string,
   ) {
     super(1, 0, panelBg);
     this.title = new Title(c.bold(c.accent(label)));
@@ -42,6 +44,7 @@ export class Picker extends Box {
     this.list.onSelect = onPick;
     this.list.onCancel = onCancel;
     this.addChild(this.title);
+    if (subtitle) this.addChild(new Title(subtitle));
     this.addChild(this.list);
     this.addChild(new Title(c.muted(hint)));
   }
@@ -73,6 +76,101 @@ export class Prompt extends Box implements Focusable {
     this.input.onEscape = onCancel;
     this.addChild(this.input);
     this.addChild(new Title(c.muted("enter confirm │ esc cancel")));
+  }
+  handleInput(data: string) {
+    this.input.handleInput(data);
+  }
+}
+
+/** A single-line input that never renders its value — for tokens. */
+export class SecretInput implements Component, Focusable {
+  private value = "";
+  private cursor = 0;
+  private pasteBuffer?: string;
+  focused = false;
+  onSubmit?: (value: string) => void;
+  onEscape?: () => void;
+  getValue() {
+    return this.value;
+  }
+  handleInput(data: string) {
+    if (this.pasteBuffer !== undefined) {
+      this.pasteBuffer += data;
+      const end = this.pasteBuffer.indexOf("\x1b[201~");
+      if (end === -1) return;
+      const pasted = this.pasteBuffer.slice(0, end);
+      const rest = this.pasteBuffer.slice(end + 6);
+      this.pasteBuffer = undefined;
+      if (pasted) this.insert(pasted);
+      if (rest) this.handleInput(rest);
+      return;
+    }
+    if (data.startsWith("\x1b[200~")) {
+      const end = data.indexOf("\x1b[201~");
+      if (end === -1) {
+        this.pasteBuffer = data.slice(6);
+        return;
+      }
+      const pasted = data.slice(6, end);
+      const rest = data.slice(end + 6);
+      if (pasted) this.insert(pasted);
+      if (rest) this.handleInput(rest);
+      return;
+    }
+    if (matchesKey(data, "escape")) return this.onEscape?.();
+    if (data === "\n" || matchesKey(data, "enter")) return this.onSubmit?.(this.value);
+    if (matchesKey(data, "backspace")) {
+      if (this.cursor > 0) this.value = this.value.slice(0, this.cursor - 1) + this.value.slice(this.cursor--);
+      return;
+    }
+    if (matchesKey(data, "delete")) {
+      this.value = this.value.slice(0, this.cursor) + this.value.slice(this.cursor + 1);
+      return;
+    }
+    if (matchesKey(data, "left")) return (this.cursor = Math.max(0, this.cursor - 1));
+    if (matchesKey(data, "right")) return (this.cursor = Math.min(this.value.length, this.cursor + 1));
+    if (matchesKey(data, "home") || data === "\x01") return (this.cursor = 0);
+    if (matchesKey(data, "end") || data === "\x05") return (this.cursor = this.value.length);
+    if (data === "\x15") {
+      this.value = "";
+      this.cursor = 0;
+      return;
+    }
+    this.insert(data);
+  }
+  private insert(text: string) {
+    let clean = "";
+    for (const ch of text) if (ch >= " " && ch !== "\x7f") clean += ch;
+    if (!clean) return;
+    this.value = this.value.slice(0, this.cursor) + clean + this.value.slice(this.cursor);
+    this.cursor += clean.length;
+  }
+  render(width: number): string[] {
+    const bullets = "•".repeat(this.value.length);
+    const at = this.focused ? renderFakeCursor(bullets.slice(this.cursor, this.cursor + 1) || " ") : bullets.slice(this.cursor, this.cursor + 1) || " ";
+    return [truncateToWidth(bullets.slice(0, this.cursor) + at + bullets.slice(this.cursor + 1), width)];
+  }
+  invalidate() {}
+}
+
+/** Like Prompt, but the typed value is only ever shown as bullets. */
+export class SecretPrompt extends Box implements Focusable {
+  readonly input = new SecretInput();
+  private _focused = false;
+  get focused() {
+    return this._focused;
+  }
+  set focused(value: boolean) {
+    this._focused = value;
+    this.input.focused = value;
+  }
+  constructor(label: string, onSubmit: (value: string) => void, onCancel: () => void) {
+    super(1, 0, panelBg);
+    this.addChild(new Title(c.bold(c.accent(label))));
+    this.input.onSubmit = onSubmit;
+    this.input.onEscape = onCancel;
+    this.addChild(this.input);
+    this.addChild(new Title(c.muted("paste or type the token │ enter confirm │ esc cancel")));
   }
   handleInput(data: string) {
     this.input.handleInput(data);
