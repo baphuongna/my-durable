@@ -24,6 +24,7 @@ import type { Duplex } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
+import type { TunnelDiagnostics } from "../../../../dpi-sdk/src/api.js";
 import {
   checkTunnelMessage,
   allowedInPhase,
@@ -36,31 +37,47 @@ import {
   IDLE_TIMEOUT_MS,
   PING_INTERVAL_MS,
   PING_MISS_LIMIT,
+  IP_BUCKET_IDLE_TTL_MS,
+  IP_BUCKET_MAX_KEYS,
   WS_BACKPRESSURE_BYTES,
   WS_MAX_MESSAGE_BYTES,
+  WS_UPGRADE_LIMITS,
 } from "../../../../dpi-sdk/src/protocol/limits.js";
-import { Audit } from "./audit.js";
-import { clientIp } from "./client-ip.js";
+import { Audit, scrubSecrets, type AuditEvent } from "./audit.js";
+import { clientIp, ipKey, viaTls } from "./client-ip.js";
+import { TokenBuckets } from "./limiter.js";
 
 export interface TunnelPolicy {
-  /** Upgrade attempts per client IP per minute (token bucket). */
+  /** Upgrade attempts per client IP per minute (token bucket refill). */
   ipPerMinute: number;
-  /** Hub-wide upgrade attempts per minute. */
+  /** Burst allowance per client IP; defaults to the S-10 burst, never above `ipPerMinute`. */
+  ipCapacity: number;
+  /** Hub-wide upgrade attempts per minute (deployment safeguard on top of the per-IP policy). */
   globalPerMinute: number;
   /** Concurrent authenticated connections hub-wide. */
   maxAuthenticated: number;
-  /** Concurrent sockets between 101 and a valid handshake. */
+  /** Concurrent sockets between 101 and a valid handshake, hub-wide. */
   maxPendingHandshakes: number;
+  /** Pending + live connections per client IP; raise for a NAT that hides many devices. */
+  maxConnectionsPerIp: number;
   /** Upper bound for retryAfterMs in 429 bodies (bounded per 04 §6). */
   retryAfterMaxMs: number;
+  /** Refuse upgrades that a loopback TLS proxy did not vouch for (spec 05 §4.2). Off for plain local development. */
+  requireTls: boolean;
+  /** How long a closed connection's peer may take to answer the close handshake before the socket is destroyed. */
+  teardownGraceMs: number;
 }
 
-const DEFAULT_POLICY: TunnelPolicy = {
-  ipPerMinute: 30,
+export const DEFAULT_TUNNEL_POLICY: TunnelPolicy = {
+  ipPerMinute: WS_UPGRADE_LIMITS.perMinutePerIp,
+  ipCapacity: WS_UPGRADE_LIMITS.burstPerIp,
   globalPerMinute: 120,
-  maxAuthenticated: 256,
-  maxPendingHandshakes: 64,
+  maxAuthenticated: WS_UPGRADE_LIMITS.livePerHub,
+  maxPendingHandshakes: WS_UPGRADE_LIMITS.pendingPerHub,
+  maxConnectionsPerIp: WS_UPGRADE_LIMITS.connectionsPerIp,
   retryAfterMaxMs: 60_000,
+  requireTls: false,
+  teardownGraceMs: 3_000,
 };
 
 export interface TunnelHandlers {
@@ -96,11 +113,24 @@ interface AuthedRow {
   status: string;
 }
 
+/** An upgrade that passed path, rate, capacity and credential checks. */
+interface Admission {
+  row: AuthedRow;
+  deviceUid: string;
+  keyFingerprint: string;
+  ip: string;
+}
+
+const FAULT_LOG_INTERVAL_MS = 10_000;
+
 interface Conn {
   ws: WebSocket;
   auth: AuthedRow;
   deviceUid: string;
   connectionId: string;
+  ip: string;
+  /** True while this connection counts against its address's pending+live cap. */
+  ipCounted: boolean;
   phase: "awaiting-handshake" | "open" | "closed";
   handshakeTimer?: NodeJS.Timeout;
   pingTimer?: NodeJS.Timeout;
@@ -111,47 +141,17 @@ interface Conn {
   releasePending?: () => void;
 }
 
-/** Bounded token bucket (per key) with continuous refill. */
-class Buckets {
-  private map = new Map<string, { tokens: number; last: number }>();
-  constructor(
-    private readonly perMinute: number,
-    private readonly capacity: number,
-    private readonly maxKeys: number,
-    private readonly now: () => number,
-  ) {}
-  take(key: string): { ok: boolean; retryAfterMs: number } {
-    const t = this.now();
-    let b = this.map.get(key);
-    if (!b) {
-      if (this.map.size >= this.maxKeys) {
-        // Bound memory: evict fully-refilled (idle) buckets first.
-        for (const [k, v] of this.map)
-          if (v.tokens >= this.capacity) this.map.delete(k);
-        if (this.map.size >= this.maxKeys) return { ok: false, retryAfterMs: 60_000 };
-      }
-      b = { tokens: this.capacity, last: t };
-      this.map.set(key, b);
-    }
-    const refill = ((t - b.last) / 60_000) * this.perMinute;
-    if (refill > 0) {
-      b.tokens = Math.min(this.capacity, b.tokens + refill);
-      b.last = t;
-    }
-    if (b.tokens < 1) return { ok: false, retryAfterMs: Math.ceil(((1 - b.tokens) / this.perMinute) * 60_000) };
-    b.tokens -= 1;
-    return { ok: true, retryAfterMs: 0 };
-  }
-}
-
 export class TunnelServer {
   private readonly wss: WebSocketServer;
   private readonly openListeners: Array<(conn: TunnelConnection) => void> = [];
   private readonly frameListeners: Array<(conn: TunnelConnection, frame: TunnelWireMessage) => void> = [];
   private readonly connections = new Map<string, Conn>(); // deviceId → authenticated
-  private readonly ipBuckets: Buckets;
-  private readonly globalBuckets: Buckets;
+  private readonly ipBuckets: TokenBuckets;
+  private readonly globalBuckets: TokenBuckets;
+  /** Pending + live connections per client address (entries are removed at zero). */
+  private readonly ipConnections = new Map<string, number>();
   private pendingHandshakes = 0;
+  private faultLoggedAt = 0;
 
   constructor(
     private readonly registry: NetworkRegistry,
@@ -161,11 +161,18 @@ export class TunnelServer {
     policy: Partial<TunnelPolicy> = {},
     hooks: TunnelTestHooks = {},
   ) {
-    this.policy = { ...DEFAULT_POLICY, ...policy };
+    this.policy = { ...DEFAULT_TUNNEL_POLICY, ...policy };
+    if (policy.ipCapacity === undefined) this.policy.ipCapacity = Math.min(DEFAULT_TUNNEL_POLICY.ipCapacity, this.policy.ipPerMinute);
     this.handlers = handlers;
     this.now = hooks.now ?? Date.now;
-    this.ipBuckets = new Buckets(this.policy.ipPerMinute, this.policy.ipPerMinute, 1024, this.now);
-    this.globalBuckets = new Buckets(this.policy.globalPerMinute, this.policy.globalPerMinute, 1, this.now);
+    this.ipBuckets = new TokenBuckets(
+      { capacity: this.policy.ipCapacity, perMinute: this.policy.ipPerMinute, maxKeys: IP_BUCKET_MAX_KEYS, idleTtlMs: IP_BUCKET_IDLE_TTL_MS },
+      this.now,
+    );
+    this.globalBuckets = new TokenBuckets(
+      { capacity: this.policy.globalPerMinute, perMinute: this.policy.globalPerMinute, maxKeys: 1, idleTtlMs: IP_BUCKET_IDLE_TTL_MS },
+      this.now,
+    );
     this.wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_MESSAGE_BYTES, perMessageDeflate: false });
   }
 
@@ -186,6 +193,13 @@ export class TunnelServer {
   /** True when the device has an open, handshake-complete tunnel connection. */
   hasConnection(deviceId: string): boolean {
     return this.connections.get(deviceId)?.phase === "open";
+  }
+
+  diagnostics(deviceId: string): Omit<TunnelDiagnostics, "readerCount"> {
+    const conn = this.connections.get(deviceId);
+    return conn?.phase === "open"
+      ? { state: "connected", lastSeenAt: conn.lastByte }
+      : { state: "disconnected" };
   }
 
   /** Current authenticated connectionId, or undefined when offline. */
@@ -239,82 +253,18 @@ export class TunnelServer {
 
   /** Server 'upgrade' listener: exact path/method, then rate caps, then auth. */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    let path = "/";
+    let admitted: Admission | undefined;
     try {
-      path = new URL(req.url ?? "/", "http://hub.local").pathname;
-    } catch {
-      /* fall through to reject */
-    }
-    if (req.method !== "GET" || path !== "/api/tunnel") {
-      this.httpJson(socket, 404, { type: "tunnel.auth-error", v: 1, code: "token_unknown", message: "tunnel: wrong endpoint" });
+      admitted = this.admit(req, socket);
+    } catch (e) {
+      // Any fault before the 101 (registry read, audit storage, anything unexpected) fails THIS
+      // request closed with a plain 503; it must never escape into the server's 'upgrade' emitter.
+      this.reportFault("upgrade", e);
+      this.httpJson(socket, 503, { error: { code: "unavailable", message: "tunnel: temporarily unavailable" } });
       return;
     }
-    const ip = clientIp(req);
-    const ipCheck = this.ipBuckets.take(ip);
-    const globalCheck = this.globalBuckets.take("*");
-    const check = ipCheck.ok ? globalCheck : ipCheck;
-    if (!check.ok) {
-      this.audit.append({
-        actor: `ip:${ip}`,
-        action: "rate_limited",
-        outcome: "denied",
-        detail: { endpoint: "tunnel.upgrade", scope: ipCheck.ok ? "global" : "ip" },
-      });
-      this.httpJson(socket, 429, {
-        type: "tunnel.auth-error",
-        v: 1,
-        code: "rate_limited",
-        message: "tunnel: too many upgrade attempts",
-        retryAfterMs: Math.max(1, Math.min(this.policy.retryAfterMaxMs, check.retryAfterMs)),
-      });
-      return;
-    }
-    if (this.pendingHandshakes >= this.policy.maxPendingHandshakes || this.connections.size >= this.policy.maxAuthenticated) {
-      this.httpJson(socket, 429, {
-        type: "tunnel.auth-error",
-        v: 1,
-        code: "rate_limited",
-        message: "tunnel: hub at connection capacity",
-        retryAfterMs: Math.min(this.policy.retryAfterMaxMs, 5_000),
-      });
-      return;
-    }
-
-    const m = /^Bearer (dpt_[A-Za-z0-9_-]{43})$/.exec(String(req.headers.authorization ?? "").trim());
-    if (!m) {
-      this.deny(socket, ip, "token_unknown", "tunnel: missing or malformed bearer credential");
-      return;
-    }
-    // Hash exactly once; the unique token_hash index does the lookup.
-    const hash = createHash("sha256").update(m[1], "utf8").digest("hex");
-    const row = this.registry.db
-      .prepare(
-        "SELECT credential_id, device_id, pairing_epoch, generation, status FROM tunnel_credentials WHERE token_hash=?",
-      )
-      .get(hash) as AuthedRow | undefined;
-    if (!row || row.status === "retired") {
-      this.deny(socket, ip, "token_unknown", "tunnel: credential not recognized");
-      return;
-    }
-    if (row.status === "revoked") {
-      this.deny(socket, ip, "revoked", "tunnel: credential revoked; re-pair required");
-      return;
-    }
-    // Pairing must still be live and be THE epoch this credential belongs to.
-    const pairing = this.registry.db
-      .prepare("SELECT pairing_epoch, status, key_fingerprint FROM pairings WHERE device_id=?")
-      .get(row.device_id) as { pairing_epoch: string; status: string; key_fingerprint: string } | undefined;
-    if (!pairing || pairing.status !== "paired" || pairing.pairing_epoch !== row.pairing_epoch) {
-      this.deny(socket, ip, "revoked", "tunnel: pairing no longer active for this credential");
-      return;
-    }
-    const device = this.registry.db
-      .prepare("SELECT device_uid FROM devices WHERE id=?")
-      .get(row.device_id) as { device_uid: string | null } | undefined;
-    if (!device?.device_uid) {
-      this.deny(socket, ip, "token_unknown", "tunnel: device record incomplete");
-      return;
-    }
+    if (!admitted) return;
+    const { row, deviceUid, keyFingerprint, ip } = admitted;
 
     this.pendingHandshakes++;
     let released = false;
@@ -332,7 +282,7 @@ export class TunnelServer {
       this.wss.handleUpgrade(req, socket, head, (ws) => {
         upgraded = true;
         // Transfer the reservation to the APPLICATION handshake, not the 101.
-        this.onConnection(ws, row, device.device_uid as string, pairing.key_fingerprint, ip, releasePending);
+        this.onConnection(ws, row, deviceUid, keyFingerprint, ip, releasePending);
       });
     } catch {
       releasePending();
@@ -343,6 +293,125 @@ export class TunnelServer {
     }
   }
 
+  /**
+   * Everything that happens before the 101: path/method, rate caps, capacity,
+   * credential lookup. Writes the refusal itself and returns undefined when
+   * the request is not admitted. May throw; the caller fails closed.
+   */
+  private admit(req: IncomingMessage, socket: Duplex): Admission | undefined {
+    let path = "/";
+    try {
+      path = new URL(req.url ?? "/", "http://hub.local").pathname;
+    } catch {
+      /* fall through to reject */
+    }
+    if (req.method !== "GET" || path !== "/api/tunnel") {
+      this.httpJson(socket, 404, { type: "tunnel.auth-error", v: 1, code: "token_unknown", message: "tunnel: wrong endpoint" });
+      return undefined;
+    }
+    const ip = ipKey(clientIp(req));
+    // Before any bucket: a request that cannot show TLS must not be able to spend (or probe) a client's budget.
+    if (this.policy.requireTls && !viaTls(req)) {
+      this.audit.denied("auth.denied", ip, { endpoint: "tunnel.upgrade", code: "tls_required" }, "tunnel.upgrade:tls_required");
+      this.httpJson(socket, 403, { error: { code: "tls_required", message: "tunnel: this hub is only served over HTTPS" } });
+      return undefined;
+    }
+    // The only legitimate client is the device connector, which sends no Origin; browsers always do.
+    // Refused before any bucket is touched so such requests can neither drain nor probe the limits.
+    if (req.headers.origin !== undefined) {
+      this.audit.denied("auth.denied", ip, { endpoint: "tunnel.upgrade", code: "origin_forbidden" }, "tunnel.upgrade:origin_forbidden");
+      this.httpJson(socket, 403, { error: { code: "origin_forbidden", message: "tunnel: browser origins are not allowed" } });
+      return undefined;
+    }
+    // What an address can spend before it shows a credential is its OWN budget. The hub-wide bucket
+    // and the capacity caps are only charged below, once the credential resolves to a live pairing:
+    // otherwise a handful of addresses sending garbage would starve every real device (GA-03).
+    const ipCheck = this.ipBuckets.take(ip);
+    if (!ipCheck.ok) {
+      this.refuseRate(socket, ip, "ip", ipCheck.retryAfterMs);
+      return undefined;
+    }
+    if ((this.ipConnections.get(ip) ?? 0) >= this.policy.maxConnectionsPerIp) {
+      this.audit.denied("rate_limited", ip, { endpoint: "tunnel.upgrade", scope: "ip_connections" }, "tunnel.upgrade:ip_connections");
+      this.httpJson(socket, 429, {
+        type: "tunnel.auth-error",
+        v: 1,
+        code: "rate_limited",
+        message: "tunnel: too many connections from this address",
+        retryAfterMs: Math.min(this.policy.retryAfterMaxMs, 5_000),
+      });
+      return undefined;
+    }
+
+    const m = /^Bearer (dpt_[A-Za-z0-9_-]{43})$/.exec(String(req.headers.authorization ?? "").trim());
+    if (!m) {
+      this.deny(socket, ip, "token_unknown", "tunnel: missing or malformed bearer credential");
+      return undefined;
+    }
+    // Hash exactly once; the unique token_hash index does the lookup.
+    const hash = createHash("sha256").update(m[1], "utf8").digest("hex");
+    const row = this.registry.db
+      .prepare(
+        "SELECT credential_id, device_id, pairing_epoch, generation, status FROM tunnel_credentials WHERE token_hash=?",
+      )
+      .get(hash) as AuthedRow | undefined;
+    if (!row || row.status === "retired") {
+      this.deny(socket, ip, "token_unknown", "tunnel: credential not recognized");
+      return undefined;
+    }
+    if (row.status === "revoked") {
+      this.deny(socket, ip, "revoked", "tunnel: credential revoked; re-pair required");
+      return undefined;
+    }
+    // Pairing must still be live and be THE epoch this credential belongs to.
+    const pairing = this.registry.db
+      .prepare("SELECT pairing_epoch, status, key_fingerprint FROM pairings WHERE device_id=?")
+      .get(row.device_id) as { pairing_epoch: string; status: string; key_fingerprint: string } | undefined;
+    if (!pairing || pairing.status !== "paired" || pairing.pairing_epoch !== row.pairing_epoch) {
+      this.deny(socket, ip, "revoked", "tunnel: pairing no longer active for this credential");
+      return undefined;
+    }
+    const device = this.registry.db
+      .prepare("SELECT device_uid FROM devices WHERE id=?")
+      .get(row.device_id) as { device_uid: string | null } | undefined;
+    if (!device?.device_uid) {
+      this.deny(socket, ip, "token_unknown", "tunnel: device record incomplete");
+      return undefined;
+    }
+
+    // A live credential: from here the request is a real device's, and the shared budgets apply.
+    const globalCheck = this.globalBuckets.take("*");
+    if (!globalCheck.ok) {
+      this.refuseRate(socket, ip, "global", globalCheck.retryAfterMs);
+      return undefined;
+    }
+    // A device that already holds the live slot is replaced, not added.
+    const replacing = this.connections.has(row.device_id);
+    if (this.pendingHandshakes >= this.policy.maxPendingHandshakes || (!replacing && this.connections.size >= this.policy.maxAuthenticated)) {
+      this.audit.denied("rate_limited", ip, { endpoint: "tunnel.upgrade", scope: "capacity" }, "tunnel.upgrade:capacity");
+      this.httpJson(socket, 429, {
+        type: "tunnel.auth-error",
+        v: 1,
+        code: "rate_limited",
+        message: "tunnel: hub at connection capacity",
+        retryAfterMs: Math.min(this.policy.retryAfterMaxMs, 5_000),
+      });
+      return undefined;
+    }
+    return { row, deviceUid: device.device_uid, keyFingerprint: pairing.key_fingerprint, ip };
+  }
+
+  private refuseRate(socket: Duplex, ip: string, scope: "ip" | "global", retryAfterMs: number): void {
+    this.audit.denied("rate_limited", ip, { endpoint: "tunnel.upgrade", scope }, `tunnel.upgrade:${scope}`);
+    this.httpJson(socket, 429, {
+      type: "tunnel.auth-error",
+      v: 1,
+      code: "rate_limited",
+      message: "tunnel: too many upgrade attempts",
+      retryAfterMs: Math.max(1, Math.min(this.policy.retryAfterMaxMs, retryAfterMs)),
+    });
+  }
+
   /** Stop everything (hub shutdown). */
   close(): void {
     for (const c of this.connections.values()) this.teardown(c, 1001, "hub shutdown");
@@ -351,25 +420,58 @@ export class TunnelServer {
 
   // -- internals ----------------------------------------------------------
 
+  /** Pre-auth refusals are coalesced per (ip, reason, minute): a flood never costs a database write per request. */
   private deny(socket: Duplex, ip: string, code: "revoked" | "token_unknown", message: string): void {
-    this.audit.append({
-      actor: `ip:${ip}`,
-      action: "auth.denied",
-      outcome: "denied",
-      detail: { endpoint: "tunnel.upgrade", code },
-    });
+    this.audit.denied("auth.denied", ip, { endpoint: "tunnel.upgrade", code }, `tunnel.upgrade:${code}`);
     this.httpJson(socket, 401, { type: "tunnel.auth-error", v: 1, code, message });
   }
 
   /** Raw HTTP JSON response on the upgrade socket (≤4 KiB by construction). */
   private httpJson(socket: Duplex, status: number, body: Record<string, unknown>): void {
-    const reason = status === 401 ? "Unauthorized" : status === 404 ? "Not Found" : "Too Many Requests";
+    const reason =
+      status === 401 ? "Unauthorized"
+      : status === 403 ? "Forbidden"
+      : status === 404 ? "Not Found"
+      : status === 503 ? "Service Unavailable"
+      : "Too Many Requests";
     const payload = Buffer.from(JSON.stringify(body), "utf8");
-    socket.write(
-      `HTTP/1.1 ${status} ${reason}\r\nContent-Type: application/json\r\nContent-Length: ${payload.length}\r\nConnection: close\r\n\r\n`,
-    );
-    socket.write(payload);
-    socket.destroy();
+    try {
+      socket.write(
+        `HTTP/1.1 ${status} ${reason}\r\nContent-Type: application/json\r\nContent-Length: ${payload.length}\r\nConnection: close\r\n\r\n`,
+      );
+      socket.write(payload);
+    } catch {
+      /* the peer is already gone */
+    } finally {
+      socket.destroy();
+    }
+  }
+
+  /** Log a contained fault (rate-limited, secret-scrubbed). The caller has already failed closed. */
+  private reportFault(where: string, e: unknown): void {
+    const now = Date.now();
+    if (now - this.faultLoggedAt < FAULT_LOG_INTERVAL_MS) return;
+    this.faultLoggedAt = now;
+    console.error(`tunnel: ${where} failed closed: ${scrubSecrets(String((e as Error)?.message ?? e)).slice(0, 200)}`);
+  }
+
+  /** For events that describe something that already happened: a storage fault is logged, never thrown into a socket/timer callback. */
+  private auditBestEffort(event: AuditEvent): void {
+    try {
+      this.audit.append(event);
+    } catch (e) {
+      this.reportFault(`audit ${event.action}`, e);
+    }
+  }
+
+  /** Run connection-scoped work so an unexpected fault drops only this connection, never the process. */
+  private contain(conn: Conn, where: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (e) {
+      this.reportFault(where, e);
+      this.teardown(conn, 1011, "tunnel: internal error");
+    }
   }
 
   private onConnection(
@@ -385,20 +487,25 @@ export class TunnelServer {
       auth,
       deviceUid,
       connectionId: randomUUID(),
+      ip,
+      ipCounted: true,
       phase: "awaiting-handshake",
       pongMisses: 0,
       lastByte: this.now(),
       releasePending,
     };
+    this.ipConnections.set(ip, (this.ipConnections.get(ip) ?? 0) + 1);
     // 5 s to produce a valid handshake (04 §4).
     conn.handshakeTimer = setTimeout(() => {
-      this.failHandshake(conn, "handshake_timeout", "tunnel: no valid handshake within deadline", ip);
+      this.contain(conn, "handshake deadline", () =>
+        this.failHandshake(conn, "handshake_timeout", "tunnel: no valid handshake within deadline", ip),
+      );
     }, HANDSHAKE_DEADLINE_MS);
 
     ws.on("message", (data: Buffer, isBinary: boolean) => {
       conn.lastByte = this.now();
       void isBinary;
-      this.onFrame(conn, data, ip);
+      this.contain(conn, "frame", () => this.onFrame(conn, data, ip));
     });
     ws.on("pong", () => {
       conn.lastByte = this.now();
@@ -442,7 +549,7 @@ export class TunnelServer {
       try {
         fn(asConn2, frame);
       } catch (e) {
-        this.audit.append({
+        this.auditBestEffort({
           actor: "hub",
           action: "tunnel.listener_error",
           outcome: "denied",
@@ -461,10 +568,18 @@ export class TunnelServer {
     // Tuple must match the row the TOKEN authenticated — never caller-declared
     // identity. A previous-generation credential is fine: it is the row that
     // was looked up, and the pairing epoch must still be the live one.
+    // The auth snapshot was taken at the 101: a rotation completing or a revoke
+    // racing the upgrade may have ended this credential since, so its status is
+    // re-read here. 'current'→'previous' (a rotation in flight) stays admittable.
+    const credential = this.registry.db
+      .prepare("SELECT status FROM tunnel_credentials WHERE credential_id=?")
+      .get(conn.auth.credential_id) as { status: string } | undefined;
     const pairing = this.registry.db
       .prepare("SELECT pairing_epoch, status, key_fingerprint FROM pairings WHERE device_id=?")
       .get(conn.auth.device_id) as { pairing_epoch: string; status: string; key_fingerprint: string } | undefined;
     const problems: string[] = [];
+    if (!credential || credential.status === "retired" || credential.status === "revoked")
+      problems.push("credential no longer active");
     if (!pairing || pairing.status !== "paired") problems.push("pairing not active");
     else if (hs.pairingEpoch !== pairing.pairing_epoch) problems.push("pairing epoch mismatch");
     if (hs.deviceId !== conn.auth.device_id) problems.push("deviceId mismatch");
@@ -475,6 +590,22 @@ export class TunnelServer {
     if (pairing && hs.keyFingerprint !== pairing.key_fingerprint) problems.push("key fingerprint mismatch");
     if (problems.length > 0) {
       this.failHandshake(conn, "handshake_mismatch", `tunnel: ${problems.join("; ")}`, ip);
+      return;
+    }
+
+    // The connect is recorded BEFORE the device is admitted: when audit storage cannot take the
+    // row the new connection is refused (fail closed) and the device's current one is left alone.
+    try {
+      this.audit.append({
+        actor: `device:${conn.auth.device_id}`,
+        action: "tunnel.connect",
+        outcome: "ok",
+        connectionId: conn.connectionId,
+        detail: { credentialId: conn.auth.credential_id, generation: conn.auth.generation, ip },
+      });
+    } catch (e) {
+      this.reportFault("tunnel.connect audit", e);
+      this.failProtocol(conn, "unavailable", "tunnel: hub cannot record this connection; retry later", 1011);
       return;
     }
 
@@ -490,13 +621,6 @@ export class TunnelServer {
     conn.releasePending = undefined;
     this.connections.set(conn.auth.device_id, conn);
     this.registry.recordTunnelState(conn.auth.device_id, { connectionId: conn.connectionId, connectedAt: this.now() });
-    this.audit.append({
-      actor: `device:${conn.auth.device_id}`,
-      action: "tunnel.connect",
-      outcome: "ok",
-      connectionId: conn.connectionId,
-      detail: { credentialId: conn.auth.credential_id, generation: conn.auth.generation, ip },
-    });
 
     // Heartbeat: ping every 15 s; 2 unanswered pings close; 45 s byte-idle closes.
     conn.pingTimer = setInterval(() => {
@@ -534,7 +658,7 @@ export class TunnelServer {
       try {
         fn(asConn);
       } catch (e) {
-        this.audit.append({
+        this.auditBestEffort({
           actor: "hub",
           action: "tunnel.listener_error",
           outcome: "denied",
@@ -547,7 +671,7 @@ export class TunnelServer {
 
   /** Handshake-phase failure: fault + close(1008), nothing registered. */
   private failHandshake(conn: Conn, code: string, message: string, ip: string): void {
-    this.audit.append({
+    this.auditBestEffort({
       actor: `device:${conn.auth.device_id}`,
       action: "tunnel.disconnect",
       outcome: "denied",
@@ -557,21 +681,27 @@ export class TunnelServer {
     this.failProtocol(conn, code, message);
   }
 
-  /** Protocol violation on any phase: fault frame (if writable) + close 1008. */
-  private failProtocol(conn: Conn, code: string, message: string): void {
+  /** Protocol violation on any phase: fault frame (if writable) + close (1008 policy violation unless the hub itself is at fault). */
+  private failProtocol(conn: Conn, code: string, message: string, closeCode = 1008): void {
     if (conn.ws.readyState === conn.ws.OPEN) {
       try {
         conn.ws.send(JSON.stringify({ type: "fault", error: { code, message } } satisfies TunnelFrame));
-        conn.ws.close(1008, message.slice(0, 120));
+        conn.ws.close(closeCode, message.slice(0, 120));
       } catch {
         /* socket already gone */
       }
     }
-    this.teardown(conn, 1008, message);
+    this.teardown(conn, closeCode, message);
   }
 
   private teardown(conn: Conn, code: number, reason: string): void {
     conn.releasePending?.(); // F13: free the handshake reservation on ANY exit
+    if (conn.ipCounted) {
+      conn.ipCounted = false;
+      const left = (this.ipConnections.get(conn.ip) ?? 1) - 1;
+      if (left > 0) this.ipConnections.set(conn.ip, left);
+      else this.ipConnections.delete(conn.ip);
+    }
     if (conn.phase === "closed") return;
     conn.phase = "closed";
     if (conn.handshakeTimer) clearTimeout(conn.handshakeTimer);
@@ -579,17 +709,27 @@ export class TunnelServer {
     if (conn.idleTimer) clearInterval(conn.idleTimer);
     conn.handshakeTimer = conn.pingTimer = conn.idleTimer = undefined;
     // Identity check: an OLD socket must never remove a NEW connection.
+    // Cleanup is fault-tolerant: a storage or handler fault is logged but can neither
+    // skip the remaining steps nor escape into a socket/timer callback.
     if (this.connections.get(conn.auth.device_id) === conn) {
       this.connections.delete(conn.auth.device_id);
-      this.registry.clearTunnelStateFor(conn.auth.device_id, conn.connectionId);
-      this.audit.append({
+      try {
+        this.registry.clearTunnelStateFor(conn.auth.device_id, conn.connectionId);
+      } catch (e) {
+        this.reportFault("clear tunnel state", e);
+      }
+      this.auditBestEffort({
         actor: `device:${conn.auth.device_id}`,
         action: "tunnel.disconnect",
         outcome: "ok",
         connectionId: conn.connectionId,
         detail: { code, reason: reason.slice(0, 128) },
       });
-      this.handlers.onClose?.(conn.auth.device_id, conn.connectionId);
+      try {
+        this.handlers.onClose?.(conn.auth.device_id, conn.connectionId);
+      } catch (e) {
+        this.reportFault("close handler", e);
+      }
     }
     if (conn.ws.readyState === conn.ws.OPEN || conn.ws.readyState === conn.ws.CLOSING) {
       try {
@@ -597,6 +737,17 @@ export class TunnelServer {
       } catch {
         /* already closing */
       }
+      // The ping/idle/handshake timers are cleared above: a peer that never answers the close
+      // handshake would otherwise keep this dead socket (and its fd) open forever.
+      const force = setTimeout(() => {
+        try {
+          conn.ws.terminate();
+        } catch {
+          /* already gone */
+        }
+      }, this.policy.teardownGraceMs);
+      force.unref();
+      conn.ws.once("close", () => clearTimeout(force));
     }
   }
 

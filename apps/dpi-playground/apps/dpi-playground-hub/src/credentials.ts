@@ -16,9 +16,11 @@
  *   its credential is still current/previous AND its epoch is still the
  *   active pairing. Revoked/re-paired → never return the stale secret.
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { Audit } from "./audit.js";
+import { observeIdentity } from "./identity.js";
+import { newTunnelToken } from "./tunnel-token.js";
 import type { TokenIssue } from "../../../../dpi-sdk/src/protocol/pairing.js";
 
 export interface IssueInput {
@@ -29,6 +31,12 @@ export interface IssueInput {
   publicKeyPem: string;
   keyFingerprint: string;
   replaceKey: boolean;
+  /**
+   * `observeIdentity().stamp` the operator approved against. Re-checked inside the issuance
+   * transaction: if the identity moved since (revoke, re-pair, key replacement), nothing is issued.
+   * PairingService always supplies it; omit only for trusted in-process seeding.
+   */
+  expectedIdentity?: string;
 }
 
 export type IssueFailPoint = "preflight" | "after-prepare" | "after-commit";
@@ -67,7 +75,7 @@ export class CredentialService {
       throw Object.assign(new Error("injected: preflight"), { code: "injected" });
 
     // ---- prepare everything in RAM (secrets never touch the DB as plaintext)
-    const token = `dpt_${randomBytes(32).toString("base64url")}`;
+    const token = newTunnelToken();
     const tokenHash = createHash("sha256").update(token).digest("hex");
     const credentialId = randomUUID();
     const pairingEpoch = randomUUID();
@@ -79,6 +87,15 @@ export class CredentialService {
 
     // ---- one synchronous transaction: identity + pairing + credential + audit
     this.audit.withTransaction(() => {
+      // GA-05: judged inside the write lock, against what the operator actually approved.
+      const current = observeIdentity(this.registry, input.deviceUid);
+      if (input.expectedIdentity !== undefined && input.expectedIdentity !== current.stamp)
+        throw Object.assign(new Error("device identity changed since approval; a new approval is required"), { code: "identity_changed" });
+      const replacedKeyFingerprint =
+        current.storedFingerprint && current.storedFingerprint !== input.keyFingerprint ? current.storedFingerprint : undefined;
+      if (replacedKeyFingerprint && !input.replaceKey)
+        throw Object.assign(new Error("a different key is on record for this device; replaceKey is required"), { code: "key_replacement_required" });
+
       if (identity.existingRowId) {
         const row = this.registry.get(identity.existingRowId)!;
         if (row.transport === "lan") {
@@ -136,6 +153,7 @@ export class CredentialService {
           credentialId,
           keyFingerprint: input.keyFingerprint,
           replaceKey: input.replaceKey,
+          ...(replacedKeyFingerprint ? { replacedKeyFingerprint } : {}),
         },
       });
     });

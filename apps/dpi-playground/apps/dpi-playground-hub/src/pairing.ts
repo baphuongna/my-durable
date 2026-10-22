@@ -12,10 +12,16 @@
  * - Nonce consume, signature counting and phase transitions are synchronous
  *   (no await between check and set).
  * - TTL/rates/caps are hub policy (P2-03 limits); requests never override.
+ * - An approval is bound to the registry identity the operator saw (GA-05): issuance re-checks it
+ *   inside its transaction, so a revoke, re-pair or key replacement in between voids the approval.
+ * - Per-source limiter state is bounded (10,000 sources, 15 min idle TTL) and a full table refuses
+ *   new sources instead of forgetting counters that are being enforced (GA-06).
  */
 import { createHash, createPublicKey, randomBytes, randomUUID, verify as cryptoVerify } from "node:crypto";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import {
+  IP_BUCKET_IDLE_TTL_MS,
+  IP_BUCKET_MAX_KEYS,
   PAIR_RAM_CAPS,
   PAIR_RATE_LIMITS,
   PAIR_SIGNATURE_FAIL_LIMIT,
@@ -31,6 +37,10 @@ import {
 } from "../../../../dpi-sdk/src/protocol/pairing.js";
 import type { PairCodeIssue, TokenIssue } from "../../../../dpi-sdk/src/protocol/pairing.js";
 import type { Audit } from "./audit.js";
+import { AuditUnavailableError } from "./audit.js";
+import { ipKey } from "./client-ip.js";
+import { observeIdentity } from "./identity.js";
+import { SlidingWindows, TokenBuckets, type Take } from "./limiter.js";
 import type { PairCodeState } from "../../../../dpi-sdk/src/protocol/pairing.js";
 
 const CODE_TTL_MS = 300_000;
@@ -55,11 +65,14 @@ interface Enrollment {
   nonceConsumed: boolean;
   proofVerified: boolean;
   verifiedAt?: number;
+  /** Last ACCEPTED valid poll (S-3). The proof submission itself is not a poll; paced-out polls do not move it. */
+  lastPollAt?: number;
   badSignatures: number;
   cancelled: boolean;
   /** Terminal: issued credential later invalidated (revoke/re-pair). NEVER re-issue this enrollment. */
   invalidated?: boolean;
-  approval?: { fingerprint: string; replaceKey: boolean; at: number };
+  /** `identity` is the observeIdentity() stamp the operator approved against (GA-05). */
+  approval?: { fingerprint: string; replaceKey: boolean; at: number; identity: string };
   issued?: { tokenIssue: TokenIssue; at: number };
   /** In-flight issuance (F03): concurrent polls share ONE promise and ONE credential. */
   issuing?: Promise<TokenIssue>;
@@ -73,46 +86,15 @@ interface CodeEntry {
   enrollmentId?: string;
 }
 
-/** Small token bucket + fixed-window counters per key (rates are policy). */
-class RateLimiter {
-  private tokens = new Map<string, number>();
-  private lastRefill = new Map<string, number>();
-  private windows = new Map<string, number[]>();
-
-  constructor(private readonly capacity: number, private readonly perMinute: number) {}
-
-  take(key: string, now: number): boolean {
-    const last = this.lastRefill.get(key) ?? now;
-    const refill = ((now - last) / 60_000) * this.perMinute;
-    const t = Math.min(this.capacity, (this.tokens.get(key) ?? this.capacity) + refill);
-    if (t < 1) {
-      this.tokens.set(key, t);
-      this.lastRefill.set(key, now);
-      return false;
-    }
-    this.tokens.set(key, t - 1);
-    this.lastRefill.set(key, now);
-    return true;
-  }
-
-  countWindow(key: string, now: number, windowMs: number): number {
-    const list = (this.windows.get(key) ?? []).filter((ts) => now - ts < windowMs);
-    this.windows.set(key, list);
-    return list.length;
-  }
-  recordWindow(key: string, now: number) {
-    const list = (this.windows.get(key) ?? []);
-    list.push(now);
-    this.windows.set(key, list);
-  }
-}
-
 export interface PairingDeps {
   registry: NetworkRegistry;
   audit: Audit;
   hubOrigin: string;
   hubId: string;
-  /** Issuance boundary (P2-10 CredentialService). Returns the committed TokenIssue. */
+  /**
+   * Issuance boundary (P2-10 CredentialService). Returns the committed TokenIssue. It must reject with
+   * `code: "identity_changed"` when `expectedIdentity` no longer matches the registry (GA-05).
+   */
   issue?: (enrollment: {
     enrollmentId: string;
     codeId: string;
@@ -121,6 +103,7 @@ export interface PairingDeps {
     publicKeyPem: string;
     keyFingerprint: string;
     replaceKey: boolean;
+    expectedIdentity: string;
   }) => Promise<TokenIssue>;
   /** Cached-receipt validation (P2-10): replay only while the credential is live. */
   receiptValidator?: (tokenIssue: TokenIssue) => true | { code: string };
@@ -132,30 +115,45 @@ export class PairingService {
   private codes = new Map<string, CodeEntry>(); // by codeId
   private byCode = new Map<string, string>(); // code → codeId
   private enrollments = new Map<string, Enrollment>();
-  private createLimiter = new RateLimiter(PAIR_RATE_LIMITS.codeCreate.capacity, PAIR_RATE_LIMITS.codeCreate.perMinute);
-  private startLimiter = new RateLimiter(PAIR_RATE_LIMITS.start.capacity, PAIR_RATE_LIMITS.start.perMinute);
-  private verifyLimiter = new RateLimiter(PAIR_RATE_LIMITS.verifyTotal.capacity, PAIR_RATE_LIMITS.verifyTotal.perMinute);
-  /** Sliding-window failure counter, keyed by IP ONLY (changing code/UID must not reset it). */
-  private failWindows = new RateLimiter(0, 0);
-  private static readonly FAIL_WINDOW_MS = PAIR_RATE_LIMITS.verifyFails.windowMinutes * 60_000;
-
-  /** Recorded on auth failures only; a valid poll never counts. */
-  private noteFailure(ip: string, now: number): void {
-    this.failWindows.recordWindow(`ip:${ip}`, now);
-  }
-
-  /** S-1: >= perWindow failures inside the window → fail closed for that IP. */
-  private failureBlocked(ip: string, now: number): boolean {
-    return this.failWindows.countWindow(`ip:${ip}`, now, PairingService.FAIL_WINDOW_MS) >= PAIR_RATE_LIMITS.verifyFails.perWindow;
-  }
   private readonly now: () => number;
+  private readonly createLimiter: TokenBuckets;
+  private readonly startLimiter: TokenBuckets;
+  private readonly verifyLimiter: TokenBuckets;
+  /** Sliding-window failure counter, keyed by IP ONLY (changing code/UID must not reset it). */
+  private readonly failWindows: SlidingWindows;
 
   constructor(private readonly deps: PairingDeps) {
     this.now = deps.now ?? Date.now;
+    const perIp = (rate: { capacity: number; perMinute: number }) =>
+      new TokenBuckets({ ...rate, maxKeys: IP_BUCKET_MAX_KEYS, idleTtlMs: IP_BUCKET_IDLE_TTL_MS }, this.now);
+    this.createLimiter = perIp(PAIR_RATE_LIMITS.codeCreate);
+    this.startLimiter = perIp(PAIR_RATE_LIMITS.start);
+    this.verifyLimiter = perIp(PAIR_RATE_LIMITS.verifyTotal);
+    this.failWindows = new SlidingWindows(
+      { windowMs: PAIR_RATE_LIMITS.verifyFails.windowMinutes * 60_000, maxKeys: IP_BUCKET_MAX_KEYS },
+      this.now,
+    );
+  }
+
+  /** Recorded on auth failures only; a valid poll never counts. */
+  private noteFailure(ip: string): void {
+    this.failWindows.record(ip);
+  }
+
+  /**
+   * S-1: >= perWindow failures inside the window → fail closed for that IP. A source the full table
+   * cannot track is refused as well: forgetting an enforced counter would hand its owner a reset.
+   */
+  private failureBlocked(ip: string): boolean {
+    return this.failWindows.saturatedFor(ip) || this.failWindows.count(ip) >= PAIR_RATE_LIMITS.verifyFails.perWindow;
   }
 
   private fail(status: number, code: string, message: string, retryAfterMs?: number): PairingFailure {
     return { ok: false, error: { status, code, message, ...(retryAfterMs ? { retryAfterMs } : {}) } };
+  }
+
+  private rateLimited(taken: Extract<Take, { ok: false }>, tooMany: string): PairingFailure {
+    return this.fail(429, "rate_limited", taken.reason === "full" ? "Pairing is busy; retry later" : tooMany, taken.retryAfterMs);
   }
 
   private ok<T>(value: T): { ok: true; value: T } {
@@ -163,10 +161,10 @@ export class PairingService {
   }
 
   /** POST /api/pair/code (admin) — mint a fresh single-use code. */
-  createCode(ip: string): { ok: true; value: PairCodeIssue } | PairingFailure {
+  createCode(address: string): { ok: true; value: PairCodeIssue } | PairingFailure {
     const now = this.now();
-    if (!this.createLimiter.take(`ip:${ip}`, now))
-      return this.fail(429, "rate_limited", "Too many codes; slow down", 60_000);
+    const taken = this.createLimiter.take(ipKey(address));
+    if (!taken.ok) return this.rateLimited(taken, "Too many codes; slow down");
     if (this.codes.size >= PAIR_RAM_CAPS.codes)
       return this.fail(429, "rate_limited", "Pairing capacity reached; retry later", 60_000);
     let code = "";
@@ -174,13 +172,31 @@ export class PairingService {
       code = [...randomBytes(8)].map((b) => CODE_ALPHABET[b % 32]).join("");
     } while (this.byCode.has(code));
     const entry: CodeEntry = { codeId: randomUUID(), code, expiresAt: now + CODE_TTL_MS, cancelled: false };
+    // Audit row first: a code that cannot be audited must not exist (and must not eat the code capacity).
+    this.deps.audit.append({ actor: "admin", action: "pair.code_created", outcome: "ok", detail: { codeId: entry.codeId, expiresAt: entry.expiresAt } });
     this.codes.set(entry.codeId, entry);
     this.byCode.set(code, entry.codeId);
-    this.deps.audit.append({ actor: "admin", action: "pair.code_created", outcome: "ok", detail: { codeId: entry.codeId, expiresAt: entry.expiresAt } });
     return this.ok({
       type: "pair.code", v: 1, codeId: entry.codeId, code, expiresAt: entry.expiresAt,
       hubOrigin: this.deps.hubOrigin,
       pairUrl: `${this.deps.hubOrigin}/pair?code=${code}&v=1`,
+    });
+  }
+
+  /** Admin handoff lookup. Reuses a code; never creates an enrollment or approves it. */
+  resolveCode(body: unknown): { ok: true; value: PairCodeIssue } | PairingFailure {
+    const code = (body as { code?: unknown } | null)?.code;
+    if (!body || typeof body !== "object" || Object.keys(body).length !== 1
+      || typeof code !== "string" || !/^[A-Z2-7]{8}$/.test(code))
+      return this.fail(400, "code_invalid", "Invalid pairing handoff");
+    const codeId = this.byCode.get(code);
+    const entry = codeId ? this.codes.get(codeId) : undefined;
+    if (!entry) return this.fail(404, "code_invalid", "Unknown pairing code");
+    const state = this.status(entry.codeId);
+    if (!state.ok) return state;
+    return this.ok({
+      type: "pair.code", v: 1, codeId: entry.codeId, code: entry.code, expiresAt: entry.expiresAt,
+      hubOrigin: this.deps.hubOrigin, pairUrl: `${this.deps.hubOrigin}/pair?code=${entry.code}&v=1`,
     });
   }
 
@@ -194,24 +210,25 @@ export class PairingService {
   }
 
   /** POST /api/pair/start — issue a challenge bound to one immutable tuple. */
-  start(body: unknown, ip: string): { ok: true; value: PairChallengeOut } | PairingFailure {
+  start(body: unknown, address: string): { ok: true; value: PairChallengeOut } | PairingFailure {
     const now = this.now();
-    if (this.failureBlocked(ip, now))
+    const ip = ipKey(address);
+    if (this.failureBlocked(ip))
       return this.fail(429, "rate_limited", "Too many pairing failures; slow down", 60_000);
-    if (!this.startLimiter.take(`ip:${ip}`, now))
-      return this.fail(429, "rate_limited", "Too many pairing starts; slow down", 60_000);
+    const taken = this.startLimiter.take(ip);
+    if (!taken.ok) return this.rateLimited(taken, "Too many pairing starts; slow down");
     if (!checkPairingDto(PairRequestSchema, body)) {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(400, "invalid", "pair.request body failed schema validation");
     }
     const req = body as { requestId: string; code: string; deviceUid: string; deviceName: string; publicKey: string; keyFingerprint: string; clientTime: number };
     const live = this.liveCode(req.code, now);
     if (live === "invalid") {
-      this.noteFailure(ip, now); // code guessing
+      this.noteFailure(ip); // code guessing
       return this.fail(404, "code_invalid", "Unknown pairing code");
     }
     if (live === "expired") {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(410, "code_expired", "Pairing code expired");
     }
     if (live === "cancelled") return this.fail(410, "enrollment_cancelled", "Pairing code cancelled");
@@ -239,17 +256,17 @@ export class PairingService {
     try {
       const key = createPublicKey(req.publicKey);
       if (key.asymmetricKeyType !== "ed25519") {
-        this.noteFailure(ip, now);
+        this.noteFailure(ip);
         return this.fail(400, "invalid", "publicKey must be Ed25519");
       }
       const der = key.export({ format: "der", type: "spki" }) as Buffer;
       fingerprint = `sha256:${createHash("sha256").update(der).digest("hex")}`;
     } catch {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(400, "invalid", "publicKey is not a parseable SPKI PEM");
     }
     if (fingerprint !== req.keyFingerprint) {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(409, "fingerprint_mismatch", "Declared fingerprint does not match the submitted public key");
     }
 
@@ -282,20 +299,21 @@ export class PairingService {
   }
 
   /** POST /api/pair/verify — proof, poll, and (post-approval) issuance. */
-  async verify(body: unknown, ip: string): Promise<{ ok: true; value: PairPendingOut | TokenIssue; status: number } | PairingFailure> {
+  async verify(body: unknown, address: string): Promise<{ ok: true; value: PairPendingOut | TokenIssue; status: number } | PairingFailure> {
     const now = this.now();
-    if (this.failureBlocked(ip, now))
+    const ip = ipKey(address);
+    if (this.failureBlocked(ip))
       return this.fail(429, "rate_limited", "Too many pairing failures; slow down", 60_000);
-    if (!this.verifyLimiter.take(`ip:${ip}`, now))
-      return this.fail(429, "rate_limited", "Too many verify requests; slow down", 60_000);
+    const taken = this.verifyLimiter.take(ip);
+    if (!taken.ok) return this.rateLimited(taken, "Too many verify requests; slow down");
     if (!checkPairingDto(PairResponseSchema, body)) {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(400, "invalid", "pair.response body failed schema validation");
     }
     const req = body as { enrollmentId: string; nonce: string; signature: string };
     const enrollment = this.enrollments.get(req.enrollmentId);
     if (!enrollment) {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(410, "enrollment_lost", "Enrollment not found (hub restart or new code required)");
     }
     if (enrollment.cancelled) return this.fail(410, "enrollment_cancelled", "Enrollment cancelled");
@@ -307,7 +325,7 @@ export class PairingService {
       // never a bearer credential — the caller must hold the device private
       // key (spec 03 §4.3: poll bằng cùng body, retry đúng proof).
       if (req.nonce !== enrollment.nonce || !this.signatureOk(enrollment, req.signature)) {
-        this.noteFailure(ip, now);
+        this.noteFailure(ip);
         this.deps.audit.denied("auth.denied", ip, { stage: "pair.verify", enrollmentId: enrollment.enrollmentId, reason: "receipt_proof_mismatch" });
         return this.fail(401, "signature_invalid", "Proof does not match the verified enrollment");
       }
@@ -316,6 +334,15 @@ export class PairingService {
       // operator approval is required.
       if (enrollment.invalidated)
         return this.fail(410, "reauth_required", "Issued credential is no longer active; re-pair required");
+      // S-3: a valid poll is accepted at most once per PAIR_POLL_MS per enrollment. Judged only now that
+      // the proof checked out, so a caller without the device key can never burn the device's slot, and a
+      // paced-out poll is not an auth failure. A clock that stepped back never locks the device out.
+      if (enrollment.lastPollAt !== undefined) {
+        const elapsed = now - enrollment.lastPollAt;
+        if (elapsed >= 0 && elapsed < PAIR_POLL_MS)
+          return this.fail(429, "rate_limited", "Polling too fast; wait before the next poll", PAIR_POLL_MS - elapsed);
+      }
+      enrollment.lastPollAt = now;
       if (enrollment.issued) {
         if (now > code.expiresAt + RECEIPT_GRACE_MS) return this.fail(410, "code_expired", "Receipt grace window passed");
         // Re-validate before returning the cached secret: revoked/re-paired
@@ -337,6 +364,7 @@ export class PairingService {
       // — concurrent polls share ONE in-flight promise and get the SAME
       // credential (no await between the check and the assignment).
       if (!this.deps.issue) return this.fail(500, "invalid", "Issuance service unavailable");
+      const approval = enrollment.approval;
       const inflight =
         enrollment.issuing ??
         this.deps.issue({
@@ -346,7 +374,8 @@ export class PairingService {
           deviceName: enrollment.deviceName,
           publicKeyPem: enrollment.publicKeyPem,
           keyFingerprint: enrollment.computedFingerprint,
-          replaceKey: enrollment.approval.replaceKey,
+          replaceKey: approval.replaceKey,
+          expectedIdentity: approval.identity,
         }).then((tokenIssue) => {
           // pair.success is audited INSIDE the issuance transaction (P2-10).
           enrollment.issued = { tokenIssue, at: this.now() };
@@ -357,7 +386,18 @@ export class PairingService {
         const tokenIssue = await inflight;
         return { ok: true, value: tokenIssue, status: 200 };
       } catch (e) {
-        return this.fail(500, "internal", `Issuance failed: ${(e as Error).message}`);
+        const code = (e as { code?: unknown }).code;
+        if (code === "identity_changed" || code === "key_replacement_required") {
+          // GA-05: the registry moved since the operator approved (revoke, re-pair, key replacement,
+          // another enrollment). Nothing was issued; the approval is void and a new one, taken against
+          // the current state, is required.
+          if (enrollment.approval === approval) enrollment.approval = undefined;
+          return this.fail(409, "identity_changed", "Device identity changed since approval; approve again");
+        }
+        if (e instanceof AuditUnavailableError)
+          return this.fail(503, "audit_unavailable", "Audit storage is unavailable; the credential was not issued");
+        // Any other issuance fault is ours, not the caller's: fixed text, detail stays in the log.
+        return this.fail(500, "internal", "Issuance failed");
       } finally {
         if (enrollment.issuing === inflight) enrollment.issuing = undefined;
       }
@@ -365,15 +405,15 @@ export class PairingService {
 
     // First proof: nonce must be live; consume atomically (sync section).
     if (enrollment.nonceConsumed) {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(410, "challenge_expired", "Nonce already consumed");
     }
     if (req.nonce !== enrollment.nonce) {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(400, "invalid", "Nonce mismatch");
     }
     if (now - enrollment.nonceIssuedAt > NONCE_TTL_MS) {
-      this.noteFailure(ip, now);
+      this.noteFailure(ip);
       return this.fail(410, "challenge_expired", "Challenge expired; request a new code");
     }
     if (now >= code.expiresAt) return this.fail(410, "code_expired", "Pairing code expired");
@@ -395,7 +435,7 @@ export class PairingService {
     }
     if (!valid) {
       enrollment.badSignatures += 1;
-      this.noteFailure(ip, now); // sliding-window IP counter (S-1): code/UID change does not reset
+      this.noteFailure(ip); // sliding-window IP counter (S-1): code/UID change does not reset
       this.deps.audit.denied("auth.denied", ip, { stage: "pair.verify", enrollmentId: enrollment.enrollmentId });
       if (enrollment.badSignatures >= PAIR_SIGNATURE_FAIL_LIMIT) {
         enrollment.cancelled = true;
@@ -451,22 +491,26 @@ export class PairingService {
       return this.fail(409, "fingerprint_mismatch", "Approval tuple does not match the verified enrollment");
     if (enrollment.approval) return this.fail(409, "invalid", "Already approved");
 
-    // Re-pair with a DIFFERENT key than the stored one requires replaceKey=true (P-14).
-    let keyChanged = false;
-    const existing = this.findPairingByUid(enrollment.deviceUid);
-    if (existing && existing.public_key !== enrollment.publicKeyPem) {
-      keyChanged = true;
-      if (!approval.replaceKey)
-        return this.fail(409, "invalid", "Device is paired with a different key; re-confirm with replaceKey=true");
-    }
+    // A DIFFERENT key than the one on record — in ANY pairing state, a revoked pairing keeps its key —
+    // requires replaceKey=true (P-14).
+    const identity = observeIdentity(this.deps.registry, enrollment.deviceUid);
+    const keyChanged = identity.storedFingerprint !== undefined && identity.storedFingerprint !== enrollment.computedFingerprint;
+    if (keyChanged && !approval.replaceKey)
+      return this.fail(409, "invalid", "Device has a different key on record; re-confirm with replaceKey=true");
     if (approval.replaceKey && !keyChanged)
       return this.fail(409, "invalid", "replaceKey set but the key has not changed");
 
     // F04: the audit row commits FIRST. A failed append throws here with the
     // enrollment still un-approved — fail-closed means a storage outage can
     // never leave a silently-live approval behind.
-    this.deps.audit.append({ actor: "admin", action: "pair.approved", outcome: "ok", detail: { codeId, enrollmentId: enrollment.enrollmentId, keyFingerprint: enrollment.computedFingerprint, replaceKey: keyChanged } });
-    enrollment.approval = { fingerprint: enrollment.computedFingerprint, replaceKey: keyChanged, at: now };
+    this.deps.audit.append({
+      actor: "admin", action: "pair.approved", outcome: "ok",
+      detail: {
+        codeId, enrollmentId: enrollment.enrollmentId, keyFingerprint: enrollment.computedFingerprint, replaceKey: keyChanged,
+        ...(keyChanged ? { replacedKeyFingerprint: identity.storedFingerprint } : {}),
+      },
+    });
+    enrollment.approval = { fingerprint: enrollment.computedFingerprint, replaceKey: keyChanged, at: now, identity: identity.stamp };
     const s = this.status(codeId);
     return s.ok ? this.ok(s.value) : s;
   }
@@ -477,13 +521,14 @@ export class PairingService {
     if (!code) return this.fail(404, "code_invalid", "Unknown code");
     const enrollment = code.enrollmentId ? this.enrollments.get(code.enrollmentId) : undefined;
     if (enrollment?.issued) return this.fail(409, "already_issued", "Credential already issued; revoke it instead");
+    // Audit row first (as for approve): a cancel that cannot be audited does not take effect.
+    this.deps.audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok", detail: { codeId } });
     code.cancelled = true;
     if (enrollment) {
       enrollment.cancelled = true;
       enrollment.nonceConsumed = true;
       enrollment.invalidated = true;
     }
-    this.deps.audit.append({ actor: "admin", action: "pair.cancelled", outcome: "ok", detail: { codeId } });
     const s = this.status(codeId);
     return s.ok ? this.ok(s.value) : s;
   }
@@ -525,11 +570,11 @@ export class PairingService {
               keyFingerprint: enrollment.computedFingerprint,
               proofVerified: enrollment.proofVerified,
               // F14: key change is computed from the CURRENT enrollment key
-              // vs the stored pairing key — available BEFORE approval, so the
-              // wizard can offer the replace-key confirmation in time.
+              // vs the key on record (any pairing state) — available BEFORE
+              // approval, so the wizard can offer the replace-key confirmation in time.
               keyChanged: (() => {
-                const stored = this.findPairingByUid(enrollment.deviceUid);
-                return !!stored && stored.public_key !== enrollment.publicKeyPem;
+                const stored = observeIdentity(this.deps.registry, enrollment.deviceUid).storedFingerprint;
+                return stored !== undefined && stored !== enrollment.computedFingerprint;
               })(),
             },
           }
@@ -539,21 +584,16 @@ export class PairingService {
     return checkPairingDto(PairCodeStateSchema, state) ? { ok: true, value: state } : this.fail(500, "internal", "status serialization failed");
   }
 
-  private findPairingByUid(uid: string): { public_key: string } | undefined {
-    const row = this.deps.registry.db
-      .prepare(
-        `SELECT p.public_key FROM pairings p JOIN devices d ON d.id = p.device_id WHERE d.device_uid=? AND p.status='paired' LIMIT 2`,
-      )
-      .all(uid) as { public_key: string }[];
-    if (row.length !== 1) return undefined; // 0 → fresh pair; ≥2 → identity conflict is P2-10's preflight
-    return row[0];
-  }
-
   /** Drop expired entries (hub housekeeping). F15: past expiry+grace the
    * entry goes REGARDLESS of issued — receipts hold a plaintext token and
-   * grace is exactly how long the device may re-read it. */
+   * grace is exactly how long the device may re-read it. Also forgets idle
+   * per-source limiter state (GA-06). */
   sweep(): void {
     const now = this.now();
+    this.createLimiter.sweep();
+    this.startLimiter.sweep();
+    this.verifyLimiter.sweep();
+    this.failWindows.sweep();
     for (const [codeId, code] of this.codes) {
       if (now > code.expiresAt + RECEIPT_GRACE_MS) {
         this.byCode.delete(code.code);

@@ -13,11 +13,14 @@ import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { DeviceMonitor, TunnelTransportSource } from "./monitor.js";
 import { ByteBudget } from "../../../../dpi-sdk/src/node/chunk.js";
 import { createPacedSseWriter, type PacedSseWriter } from "../../../../dpi-sdk/src/node/sse-writer.js";
+import { checkDeviceFrame } from "../../../../dpi-sdk/src/protocol/tunnel.js";
+import { Backoff } from "../../../../dpi-sdk/src/protocol/backoff.js";
 import {
   HUB_BUFFER_BUDGET_BYTES,
   LOGICAL_MESSAGE_MAX_BYTES,
   READERS_PER_DEVICE,
   READERS_PER_HUB,
+  RECONNECT_BACKOFF_S,
   SSE_HUB_VIEWER_BYTES,
 } from "../../../../dpi-sdk/src/protocol/limits.js";
 
@@ -45,22 +48,24 @@ export function pacedSseWriter(res: Response, opts: { budget?: ByteBudget; onClo
 const KEY =
   /^([a-z0-9][a-z0-9-]{0,31})\/(device|session|agent)(?:\/([^/?]+))?(?:\/([^/?]+))?(?:\?docs=([a-z0-9.,-]*))?$/;
 
+const invalidKey = () => Object.assign(Error("Invalid subscription key"), { status: 400 });
+
 export function parseSubKey(key: string) {
   const m = key.match(KEY);
-  if (!m) throw Error(`Invalid subscription key: ${key}`);
+  if (!m) throw invalidKey();
   const [, deviceId, scope, a, b, docs] = m;
   const q = docs ? `?docs=${docs}` : "";
-  const enc = encodeURIComponent;
+  const enc = (part: string) => {
+    try {
+      return encodeURIComponent(decodeURIComponent(part));
+    } catch {
+      throw invalidKey();
+    }
+  };
   if (scope === "device") return { key, deviceId, path: `/v1/events${q}` };
-  if (scope === "session" && a && !b)
-    return { key, deviceId, path: `/v1/sessions/${enc(decodeURIComponent(a))}/events` };
-  if (scope === "agent" && a && b)
-    return {
-      key,
-      deviceId,
-      path: `/v1/sessions/${enc(decodeURIComponent(a))}/agents/${enc(decodeURIComponent(b))}/events${q}`,
-    };
-  throw Error(`Invalid subscription key: ${key}`);
+  if (scope === "session" && a && !b) return { key, deviceId, path: `/v1/sessions/${enc(a)}/events` };
+  if (scope === "agent" && a && b) return { key, deviceId, path: `/v1/sessions/${enc(a)}/agents/${enc(b)}/events${q}` };
+  throw invalidKey();
 }
 
 const sleep = (ms: number, signal: AbortSignal) =>
@@ -210,7 +215,7 @@ export class StreamMux {
     sub: ReturnType<typeof parseSubKey>,
     signal: AbortSignal,
   ) {
-    let backoff = 1_000;
+    const backoff = new Backoff(RECONNECT_BACKOFF_S);
     while (!signal.aborted) {
       await this.monitor.whenOnline(sub.deviceId, signal);
       if (signal.aborted) return;
@@ -222,8 +227,9 @@ export class StreamMux {
           { path: sub.path, consumerId: `mux:${sub.key}` },
           signal,
         )) {
+          if (!checkDeviceFrame(frame)) throw new DpiError("invalid", "Invalid device stream frame");
           stream.send({ sub: sub.key, frame });
-          if (frame.type === "hello") backoff = 1_000;
+          if (frame.type === "hello") backoff.reset();
         }
         if (signal.aborted) return;
         stream.send({ sub: sub.key, frame: { type: "disconnected", reason: "Stream ended" } });
@@ -240,8 +246,8 @@ export class StreamMux {
         }
         stream.send({ sub: sub.key, frame: { type: "disconnected", reason: err.message } });
       }
-      await sleep(backoff, signal);
-      backoff = Math.min(backoff * 2, 15_000);
+      await sleep(backoff.ms, signal);
+      backoff.advance();
     }
   }
 }

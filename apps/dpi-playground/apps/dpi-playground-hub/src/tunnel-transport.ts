@@ -13,14 +13,15 @@
 import { randomUUID } from "node:crypto";
 import { DpiError } from "../../../../dpi-sdk/src/errors.js";
 import type { Frame } from "../../../../dpi-sdk/src/api.js";
-import { validateRestRequest, type TunnelChunk } from "../../../../dpi-sdk/src/protocol/tunnel.js";
+import { checkDeviceFrame, validateRestRequest, type TunnelChunk } from "../../../../dpi-sdk/src/protocol/tunnel.js";
 import {
+  CONNECTION_BUFFER_BUDGET_BYTES,
   REST_BODY_MAX_BYTES,
   REST_PENDING_PER_DEVICE,
   REST_PENDING_PER_HUB,
   REST_TIMEOUT_MS,
 } from "../../../../dpi-sdk/src/protocol/limits.js";
-import { ByteBudget, ChunkReassembler, type ChunkCorrelation } from "../../../../dpi-sdk/src/node/chunk.js";
+import { ByteBudget, ChunkReassembler } from "../../../../dpi-sdk/src/node/chunk.js";
 import type { DeviceTransport, TransportRequest, TransportResponse } from "./transport.js";
 import type { TunnelConnection, TunnelServer } from "./tunnel.js";
 import type { Audit } from "./audit.js";
@@ -47,9 +48,10 @@ interface Subscription {
 
 /**
  * Routes inbound device→hub frames: rest-response resolves the matching
- * pending request, tunnel-data feeds the matching subscription. Frames for
- * foreign/dead correlations are dropped (P2-16 adds deny/audit for spoofed
- * owners).
+ * pending request, tunnel-data feeds the matching subscription. A frame for a
+ * correlation the sending connection does not own is denied, audited and cuts
+ * that connection (T-7); a late frame for its OWN just-settled request or
+ * just-closed subscription is dropped silently.
  */
 export interface DispatcherOptions {
   audit?: Audit;
@@ -57,6 +59,8 @@ export interface DispatcherOptions {
   deadlineMs?: number;
   /** Shared admission for REST payloads, reassembly and SSE output. */
   budget?: ByteBudget;
+  /** Per-connection share of `budget` (production: CANON 32 MiB). */
+  connectionBudgetBytes?: number;
 }
 
 export class TunnelDispatcher {
@@ -64,9 +68,17 @@ export class TunnelDispatcher {
   private pendingByDevice = new Map<string, Set<string>>();
   private subs = new Map<string, Subscription>();
   private readonly budget: ByteBudget;
+  private readonly connectionBudgetBytes: number;
+  /** connectionId → that connection's share of the hub budget (reassembly + pending REST payloads). */
+  private readonly connectionBudgets = new Map<string, ByteBudget>();
   private readonly reassemblers = new Map<string, ChunkReassembler>(); // connectionId → reassembler
   /** reqId → connectionId of recently settled requests (late-response grace). */
   private readonly settled = new Map<string, string>();
+  /** The same grace for ABANDONED requests (timeout/abort/connection loss): the device may still be
+   *  writing their response right now, and normal traffic must never churn these correlations away. */
+  private readonly abandoned = new Map<string, string>();
+  /** subscriptionId → connectionId of recently closed subscriptions (in-flight frames after an unsubscribe are benign). */
+  private readonly closedSubs = new Map<string, string>();
   private readonly deadlineMs: number;
   private readonly audit?: Audit;
 
@@ -74,13 +86,14 @@ export class TunnelDispatcher {
     this.audit = options.audit;
     this.deadlineMs = options.deadlineMs ?? REST_TIMEOUT_MS;
     this.budget = options.budget ?? new ByteBudget("rest", 64 * 1024 * 1024);
+    this.connectionBudgetBytes = options.connectionBudgetBytes ?? CONNECTION_BUFFER_BUDGET_BYTES;
     server.setHandlers({
       onMessage: (conn, frame) => this.route(conn, frame),
       onClose: (deviceId, connectionId) => this.dropConnection(deviceId, connectionId),
     });
   }
 
-  private settle(reqId: string): PendingRest | undefined {
+  private settle(reqId: string, outcome: "answered" | "abandoned" = "answered"): PendingRest | undefined {
     const p = this.pending.get(reqId);
     if (!p) return undefined;
     this.pending.delete(reqId);
@@ -92,13 +105,35 @@ export class TunnelDispatcher {
     this.reassemblers.get(p.connectionId)?.abort({ kind: "rest-response", reqId });
     // Remember recently-settled reqIds (bounded): a late response for an
     // aborted/timed-out OWN request on the SAME connection is benign and must
-    // not kill the connection; foreign reqIds still do (below).
-    this.settled.set(reqId, p.connectionId);
-    if (this.settled.size > 256) {
-      const oldest = this.settled.keys().next().value;
-      if (oldest !== undefined) this.settled.delete(oldest);
+    // not kill the connection; foreign reqIds still do (below). Abandoned
+    // correlations get their own FIFO so busy normal traffic cannot evict the
+    // correlation of a response that is still legitimately in flight.
+    const map = outcome === "abandoned" ? this.abandoned : this.settled;
+    map.set(reqId, p.connectionId);
+    if (map.size > 256) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
     }
     return p;
+  }
+
+  /**
+   * A device addressed a correlation it does not own: audit it (a storage
+   * fault must not decide whether the sender is cut) and close the connection.
+   */
+  private denyDevice(conn: TunnelConnection, code: string, detail: Record<string, unknown>, closeReason: string): void {
+    try {
+      this.audit?.append({
+        actor: `device:${conn.deviceId}`,
+        action: "auth.denied",
+        outcome: "denied",
+        connectionId: conn.connectionId,
+        detail: { endpoint: "tunnel.rest", code, ...detail },
+      });
+    } catch {
+      /* the close below is the enforcement; the row is evidence only */
+    }
+    this.server.closeConnection(conn.deviceId, 1008, closeReason);
   }
 
   private route(conn: TunnelConnection, frame: Record<string, unknown>): void {
@@ -111,20 +146,13 @@ export class TunnelDispatcher {
       if (!p || p.connectionId !== conn.connectionId) {
         // Late response for an OWN settled request on the same connection:
         // ignore silently (the caller already moved on).
-        if (p === undefined && this.settled.get(reqId) === conn.connectionId) return;
+        if (p === undefined && (this.settled.get(reqId) === conn.connectionId || this.abandoned.get(reqId) === conn.connectionId)) return;
         if (p !== undefined && p.connectionId !== conn.connectionId) {
           // A response claiming a reqId owned by ANOTHER connection: attack.
         }
         // A response for a request this connection never owned is a protocol
         // violation: deny, audit, and stop trusting the sender (04 §9).
-        this.audit?.append({
-          actor: `device:${conn.deviceId}`,
-          action: "auth.denied",
-          outcome: "denied",
-          connectionId: conn.connectionId,
-          detail: { endpoint: "tunnel.rest", code: "foreign_response", reqId },
-        });
-        this.server.closeConnection(conn.deviceId, 1008, "rest-response for a foreign reqId");
+        this.denyDevice(conn, "foreign_response", { reqId }, "rest-response for a foreign reqId");
         return;
       }
       this.settle(reqId)!.resolve({
@@ -139,16 +167,9 @@ export class TunnelDispatcher {
       if (chunk.kind === "rest-response") {
         const pending = this.pending.get(chunk.reqId);
         // Match the plain-response grace before allocating any assembly.
-        if (!pending && this.settled.get(chunk.reqId) === conn.connectionId) return;
+        if (!pending && (this.settled.get(chunk.reqId) === conn.connectionId || this.abandoned.get(chunk.reqId) === conn.connectionId)) return;
         if (!pending || pending.connectionId !== conn.connectionId) {
-          this.audit?.append({
-            actor: `device:${conn.deviceId}`,
-            action: "auth.denied",
-            outcome: "denied",
-            connectionId: conn.connectionId,
-            detail: { endpoint: "tunnel.rest", code: "foreign_chunk", reqId: chunk.reqId },
-          });
-          this.server.closeConnection(conn.deviceId, 1008, "tunnel-chunk for a foreign reqId");
+          this.denyDevice(conn, "foreign_chunk", { reqId: chunk.reqId }, "tunnel-chunk for a foreign reqId");
           return;
         }
         const out = this.reassemblerFor(conn).feed(chunk, (c) => {
@@ -156,18 +177,24 @@ export class TunnelDispatcher {
           return this.pending.get(c.reqId)?.connectionId === conn.connectionId;
         });
         if (!out.ok) {
-          const p = this.settle(chunk.reqId);
+          const p = this.settle(chunk.reqId, "abandoned");
           p?.resolve({ status: 502, body: { error: { code: "response_too_large", message: out.error } } });
           return;
         }
         if (out.done) {
           const p = this.settle(chunk.reqId);
-          // The chunked logical message IS the rest-response envelope.
-          const env = out.value as { status?: number; contentType?: string; body?: unknown } | undefined;
+          // The chunked logical message IS the rest-response envelope — and it travelled
+          // inside chunk data with no schema. A missing or non-numeric status is the device
+          // breaking contract: answer a bad gateway, never a silently defaulted 200.
+          const env = out.value as { status?: unknown; contentType?: unknown; body?: unknown } | undefined;
+          if (typeof env?.status !== "number" || !Number.isFinite(env.status)) {
+            p?.resolve({ status: 502, body: { error: { code: "invalid", message: "Device envelope out of contract (status)" } } });
+            return;
+          }
           p?.resolve({
-            status: typeof env?.status === "number" ? env.status : 200,
-            contentType: env?.contentType,
-            body: env?.body,
+            status: env.status,
+            contentType: typeof env.contentType === "string" ? env.contentType : undefined,
+            body: env.body,
             rawBytes: out.rawBytes,
           });
         }
@@ -177,36 +204,79 @@ export class TunnelDispatcher {
         // Large reader frames (big trees) arrive chunked; reassemble BEFORE
         // routing so consumers never see chunk plumbing. An oversize/invalid
         // assembly faults THIS reader only — the tunnel stays up.
-        const correlation: ChunkCorrelation = { kind: "tunnel-data", subscriptionId: chunk.subscriptionId, sub: chunk.sub };
+        const sub = this.ownSubscription(conn, chunk.subscriptionId);
+        if (!sub) return;
         const out = this.reassemblerFor(conn).feed(chunk, (c) => {
           if (c.kind !== "tunnel-data") return false;
           const s = this.subs.get(c.subscriptionId);
           return !!s && s.connectionId === conn.connectionId;
         });
-        const sub = this.subs.get(chunk.subscriptionId);
-        if (!sub || sub.connectionId !== conn.connectionId) return;
         if (!out.ok) {
           // Clear reader-level fault (bad chunk math/metadata/cap); the
           // tunnel stays up and the device may start a fresh assembly.
           sub.push({ type: "fault", error: { code: "invalid", message: out.error ?? "chunk assembly failed" } } as unknown as Frame);
           return;
         }
-        if (out.done) sub.push(out.value as Frame);
+        if (out.done) sub.push(checkDeviceFrame(out.value) ? out.value : {
+          type: "fault", error: { code: "invalid", message: "Invalid device stream frame" },
+        });
         return;
       }
       return;
     }
     if (type === "tunnel-data") {
-      const sub = this.subs.get(frame.subscriptionId as string);
-      if (!sub || sub.connectionId !== conn.connectionId) return;
-      sub.push(frame.frame as Frame);
+      const sub = this.ownSubscription(conn, frame.subscriptionId as string);
+      if (!sub) return;
+      sub.push(checkDeviceFrame(frame.frame) ? frame.frame : {
+        type: "fault", error: { code: "invalid", message: "Invalid device stream frame" },
+      });
     }
+  }
+
+  /**
+   * The live subscription a device frame addresses, if this connection owns it. A frame for a
+   * subscription it just closed is benign (the device had it in flight) and is dropped; anything
+   * else (never issued, or owned by another connection) is a protocol violation: deny, audit, cut (T-7).
+   */
+  private ownSubscription(conn: TunnelConnection, subscriptionId: string): Subscription | undefined {
+    const sub = this.subs.get(subscriptionId);
+    if (sub && sub.connectionId === conn.connectionId) return sub;
+    if (!sub && this.closedSubs.get(subscriptionId) === conn.connectionId) return undefined;
+    this.denyDevice(
+      conn,
+      "foreign_subscription",
+      { endpoint: "tunnel.subscription", subscriptionId },
+      "tunnel-data for a subscription this connection does not own",
+    );
+    return undefined;
+  }
+
+  private rememberClosedSubscription(subscriptionId: string, connectionId: string): void {
+    this.closedSubs.set(subscriptionId, connectionId);
+    if (this.closedSubs.size > 4_096) {
+      const oldest = this.closedSubs.keys().next().value;
+      if (oldest !== undefined) this.closedSubs.delete(oldest);
+    }
+  }
+
+  /**
+   * One device connection may hold at most its own 32 MiB inside the hub-wide
+   * 64 MiB (04 §3.3): a device that declares large messages exhausts its own
+   * share, never the whole hub's.
+   */
+  private budgetFor(connectionId: string): ByteBudget {
+    let budget = this.connectionBudgets.get(connectionId);
+    if (!budget) {
+      budget = new ByteBudget("connection", this.connectionBudgetBytes, this.budget);
+      this.connectionBudgets.set(connectionId, budget);
+    }
+    return budget;
   }
 
   private reassemblerFor(conn: TunnelConnection): ChunkReassembler {
     let re = this.reassemblers.get(conn.connectionId);
     if (!re) {
-      re = new ChunkReassembler(this.budget);
+      re = new ChunkReassembler(this.budgetFor(conn.connectionId));
       this.reassemblers.set(conn.connectionId, re);
     }
     return re;
@@ -217,9 +287,10 @@ export class TunnelDispatcher {
     this.reassemblers.delete(connectionId);
     for (const [reqId, p] of this.pending)
       if (p.connectionId === connectionId) {
-        this.settle(reqId);
+        this.settle(reqId, "abandoned");
         p.reject(new DpiError("offline", "Tunnel connection closed before the outcome is known", 503));
       }
+    this.connectionBudgets.delete(connectionId);
     for (const [id, s] of this.subs)
       if (s.connectionId === connectionId) {
         this.subs.delete(id);
@@ -233,9 +304,10 @@ export class TunnelDispatcher {
     for (const re of this.reassemblers.values()) re.abortAll();
     this.reassemblers.clear();
     for (const [reqId, p] of this.pending) {
-      this.settle(reqId);
+      this.settle(reqId, "abandoned");
       p.reject(new DpiError("offline", "Hub shutting down", 503));
     }
+    this.connectionBudgets.clear();
     for (const [id, s] of this.subs) {
       this.subs.delete(id);
       s.signal.removeEventListener("abort", s.onAbort);
@@ -246,8 +318,9 @@ export class TunnelDispatcher {
   pendingCount(): number {
     return this.pending.size;
   }
-  subscriptionCount(): number {
-    return this.subs.size;
+  subscriptionCount(deviceId?: string): number {
+    return deviceId === undefined ? this.subs.size
+      : [...this.subs.values()].filter((sub) => sub.deviceId === deviceId).length;
   }
 
   /** Request over the device's CURRENT connection; swap/timeout/offline reject. */
@@ -275,17 +348,17 @@ export class TunnelDispatcher {
       );
     const connectionId = this.server.connectionIdOf(deviceId)!;
     const reqId = randomUUID();
-    // Shared budget covers the outbound request bytes until settled.
-    const reservation = this.budget.reserve(Buffer.byteLength(serialized ?? "", "utf8") + 512);
+    // The connection's share (inside the hub budget) covers the outbound request bytes until settled.
+    const reservation = this.budgetFor(connectionId).reserve(Buffer.byteLength(serialized ?? "", "utf8") + 512);
     if (!reservation)
       return Promise.reject(new DpiError("rate_limited", "Hub REST buffer budget exhausted", 429));
     return new Promise<TransportResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.settle(reqId);
+        this.settle(reqId, "abandoned");
         reject(new DpiError("offline", `Tunnel REST deadline (${input.path})`, 504));
       }, this.deadlineMs);
       const onAbort = () => {
-        this.settle(reqId);
+        this.settle(reqId, "abandoned");
         reject(new DpiError("offline", "Aborted", 499));
       };
       this.pending.set(reqId, {
@@ -302,7 +375,7 @@ export class TunnelDispatcher {
         ...(input.body !== undefined ? { body: input.body } : {}),
       });
       if (!sent) {
-        this.settle(reqId);
+        this.settle(reqId, "abandoned");
         reject(new DpiError("offline", "Tunnel connection closed before the outcome is known", 503));
       }
     });
@@ -364,6 +437,8 @@ export class TunnelDispatcher {
       if (closed && closed !== "consumer aborted") throw new DpiError("offline", closed, 0);
     } finally {
       this.subs.delete(subscriptionId);
+      this.rememberClosedSubscription(subscriptionId, connectionId);
+      this.reassemblers.get(connectionId)?.abort({ kind: "tunnel-data", subscriptionId, sub: input.path });
       signal.removeEventListener("abort", sub.onAbort);
       // Best-effort unsubscribe so the device stops the reader it opened.
       if (this.server.hasConnection(deviceId))

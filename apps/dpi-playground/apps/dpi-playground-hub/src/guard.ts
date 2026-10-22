@@ -1,4 +1,5 @@
 import type { RequestHandler } from "express";
+import { viaTls } from "./client-ip.js";
 
 const err = (code: string, message: string) => ({ error: { code, message } });
 
@@ -26,5 +27,17 @@ export function guard(allowedHosts: Set<string>): RequestHandler {
     if (["POST", "PUT", "PATCH"].includes(req.method) && !req.is("application/json"))
       return void res.status(415).json(err("invalid", "JSON required"));
     next();
+  };
+}
+
+/**
+ * Second line behind the TLS proxy (spec 05 §4.2): refuse whatever cannot show it came through it
+ * over TLS. A plain-HTTP request, a LAN peer that sets its own X-Forwarded-Proto and a local process
+ * that skipped the proxy all end here instead of being served as if they were secure.
+ */
+export function requireTls(): RequestHandler {
+  return (req, res, next) => {
+    if (viaTls(req)) return void next();
+    res.status(403).json(err("tls_required", "This hub is only served over HTTPS"));
   };
 }

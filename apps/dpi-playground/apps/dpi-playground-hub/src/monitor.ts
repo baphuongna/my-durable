@@ -8,8 +8,11 @@ import type {
   DeviceStatus,
   DeviceTree,
   NetworkDevice,
+  TunnelDiagnostics,
 } from "../../../../dpi-sdk/src/api.js";
 import { toPublic, type NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
+import { Backoff } from "../../../../dpi-sdk/src/protocol/backoff.js";
+import { MONITOR_BACKOFF_S } from "../../../../dpi-sdk/src/protocol/limits.js";
 
 export interface LiveState {
   status: DeviceStatus;
@@ -30,6 +33,7 @@ export interface TunnelTransportSource {
   dispatcherFor(row: { id: string; transport: string }): DeviceTransport;
   /** True when the device currently has an authenticated tunnel connection. */
   hasLiveConnection(deviceId: string): boolean;
+  diagnostics?(deviceId: string): TunnelDiagnostics;
 }
 
 export class DeviceMonitor {
@@ -79,7 +83,13 @@ export class DeviceMonitor {
   }
 
   network(): NetworkDevice[] {
-    return this.registry.list().map((row) => toPublic(row, this.live.get(row.id)));
+    const pairings = this.registry.publicPairings();
+    return this.registry.list().map((row) => toPublic(row, this.live.get(row.id), {
+      pairing: pairings.get(row.id),
+      ...(row.transport === "tunnel" ? { tunnel: this.tunnel?.diagnostics?.(row.id) ?? {
+        state: this.tunnel?.hasLiveConnection(row.id) ? "connected" : "disconnected", readerCount: 0,
+      } } : {}),
+    }));
   }
 
   /** Wire the tunnel dispatcher source (main.ts, after construction). */
@@ -91,6 +101,11 @@ export class DeviceMonitor {
   onChange(fn: () => void) {
     this.listeners.add(fn);
     return () => void this.listeners.delete(fn);
+  }
+
+  /** Pairing/transport metadata changed independently of the device health loop. */
+  refresh() {
+    this.emit();
   }
 
   /** Resolve once the device is online (or the signal aborts). */
@@ -151,11 +166,11 @@ export class DeviceMonitor {
   }
 
   private async loop(id: string, signal: AbortSignal) {
-    let backoff = 1_000;
+    const backoff = new Backoff(MONITOR_BACKOFF_S);
     while (!signal.aborted) {
       const device = this.registry.get(id);
       if (!device) return;
-      let wait = backoff;
+      let wait = backoff.ms;
       if (device.transport === "tunnel" && this.tunnel) {
         // Park offline (never unauthorized) while no tunnel connection is
         // live, but wake within 5s of one appearing — the 30s backoff cap
@@ -245,7 +260,7 @@ export class DeviceMonitor {
           continue;
         }
         this.update(id, { status: "online", error: undefined, info, lastSeenAt: Date.now() });
-        backoff = 1_000;
+        backoff.reset();
         for await (const frame of transport.watch({ path: "/v1/events", consumerId: `monitor:${id}` }, signal)) {
           if (frame.type === "tree")
             this.update(id, {
@@ -281,7 +296,7 @@ export class DeviceMonitor {
         }
       }
       await sleep(wait, signal);
-      backoff = Math.min(backoff * 2, 30_000);
+      backoff.advance();
     }
   }
 }

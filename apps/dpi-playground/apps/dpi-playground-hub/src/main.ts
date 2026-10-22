@@ -4,16 +4,18 @@
 import express from "express";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import { hostname, networkInterfaces } from "node:os";
-import { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
+import { NetworkRegistry, UI_STATE_MAX_CHARS } from "../../../../dpi-sdk/src/node/registry.js";
 import { ByteBudget } from "../../../../dpi-sdk/src/node/chunk.js";
 import { DeviceMonitor } from "./monitor.js";
 import { StreamMux } from "./mux.js";
 import { proxy } from "./proxy.js";
-import { guard } from "./guard.js";
-import { isTrustedProxy } from "./client-ip.js";
+import { guard, requireTls } from "./guard.js";
+import { ipKey, isTrustedProxy } from "./client-ip.js";
 import { Audit, denialLogging } from "./audit.js";
+import { body as failureBody, describeFailure, errorMiddleware, safe } from "./http-errors.js";
+import { TokenBuckets } from "./limiter.js";
 import { PairingService } from "./pairing.js";
 import { CredentialService } from "./credentials.js";
 import { TunnelServer } from "./tunnel.js";
@@ -36,6 +38,17 @@ const host = option("--host", process.env.DPI_HUB_HOST ?? "127.0.0.1");
 // browser-facing host:port differs from this process's own port. The proxy
 // forwards the original Host header, so it must be allow-listed explicitly.
 const publicHost = option("--public-host", process.env.DPI_HUB_PUBLIC_HOST ?? "");
+// A public host means the hub sits behind the TLS proxy, so it then refuses anything the proxy did not
+// vouch for (spec 05 §4.2). DPI_HUB_REQUIRE_TLS=1/0 overrides either way; a typo stops the start instead of
+// silently picking a side.
+function tlsRequired(): boolean {
+  const raw = process.env.DPI_HUB_REQUIRE_TLS;
+  if (raw === undefined || raw === "") return publicHost !== "";
+  if (/^(1|true|yes|on)$/i.test(raw)) return true;
+  if (/^(0|false|no|off)$/i.test(raw)) return false;
+  throw Error("DPI_HUB_REQUIRE_TLS must be 1 or 0");
+}
+const requireTlsEnabled = tlsRequired();
 
 const registry = new NetworkRegistry();
 registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect from DB
@@ -63,20 +76,6 @@ const err = (code: string, message: string) => ({ error: { code, message } });
 // harness. No registry data, no tokens — safe behind the loopback bind and
 // the TLS reverse proxy.
 if (publicHost) allowedHosts.add(publicHost.toLowerCase());
-type Handler = (req: express.Request, res: express.Response) => unknown;
-const safe =
-  (fn: Handler): express.RequestHandler =>
-  async (req, res) => {
-    try {
-      await fn(req, res);
-    } catch (e) {
-      const status = (e as { status?: number }).status ?? 400;
-      if (!res.headersSent)
-        res
-          .status(status)
-          .json(err(status === 404 ? "not_found" : "invalid", (e as Error).message));
-    }
-  };
 
 const app = express();
 // F10: behind the reference TLS proxy (same-host Caddy) the socket address
@@ -84,30 +83,47 @@ const app = express();
 // real client via the proxy-overwritten X-Forwarded-For. Forged XFF from a
 // non-loopback direct connection is ignored (proxy-addr semantics).
 app.set("trust proxy", isTrustedProxy);
-app.get("/healthz", (_req, res) => res.json({ ok: true, pid: process.pid, uptime: process.uptime() }));
 app.disable("x-powered-by");
+// Every answer is non-sniffable; the admin API is never cacheable (it carries pairing codes and, on the
+// pairing routes, a credential). Registered first so that refusals made further down carry them too.
+app.use((req, res, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  if (req.path === "/api" || req.path.startsWith("/api/")) res.set("Cache-Control", "no-store");
+  next();
+});
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
 // All CANON limits must be sane or the hub refuses to start (P2-22: fail startup, not per-request).
 assertLimitsConfig();
-const audit = new Audit(registry);
+/** Operator floor for free space on the registry volume (bytes); below it audited changes are refused with 503. */
+function auditFloorFromEnv(): { minFreeBytes?: number } {
+  const raw = process.env.DPI_AUDIT_MIN_FREE_BYTES;
+  if (raw === undefined || raw === "") return {};
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw Error("DPI_AUDIT_MIN_FREE_BYTES must be a non-negative integer");
+  return { minFreeBytes: Number(raw) };
+}
+const audit = new Audit(registry, auditFloorFromEnv());
+audit.startSweeper();
+// Everything registered below needs proof of TLS; /healthz (above) stays reachable for supervisors.
+if (requireTlsEnabled) app.use(denialLogging(audit), requireTls());
 
-/** Per-IP admin-REST token bucket (API_RATE_LIMITS policy; never request-overridable). */
-const apiTokens = new Map<string, { tokens: number; last: number }>();
-const apiRate = ((req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
-  const ip = req.ip ?? req.socket.remoteAddress ?? "?";
-  const now = Date.now();
-  const b = apiTokens.get(ip) ?? { tokens: API_RATE_LIMITS.capacity, last: now };
-  b.tokens = Math.min(API_RATE_LIMITS.capacity, b.tokens + ((now - b.last) / 60_000) * API_RATE_LIMITS.perMinute);
-  b.last = now;
-  if (b.tokens < 1) {
-    apiTokens.set(ip, b);
-    res.set("Retry-After", "1");
-    return void res.status(429).json({ error: { code: "rate_limited", message: "Too many requests; slow down" } });
-  }
-  b.tokens -= 1;
-  apiTokens.set(ip, b);
-  if (apiTokens.size > 4_096) apiTokens.clear(); // bounded map: belt-and-braces against IP churn
-  next();
-}) as import("express").RequestHandler;
+/**
+ * Per-IP admin-REST token bucket (API_RATE_LIMITS policy; never request-overridable). Bounded to
+ * 10.000 addresses with a 15 minute idle TTL; a full table refuses new addresses instead of
+ * forgetting the ones that are being limited.
+ */
+const apiBuckets = new TokenBuckets({
+  capacity: API_RATE_LIMITS.capacity,
+  perMinute: API_RATE_LIMITS.perMinute,
+  maxKeys: 10_000,
+  idleTtlMs: 15 * 60_000,
+});
+setInterval(() => apiBuckets.sweep(), 60_000).unref();
+const apiRate: express.RequestHandler = (req, res, next) => {
+  const taken = apiBuckets.take(ipKey(req.ip ?? req.socket.remoteAddress ?? "?"));
+  if (taken.ok) return void next();
+  res.set("Retry-After", String(Math.max(1, Math.ceil(taken.retryAfterMs / 1000))));
+  res.status(429).json(err("rate_limited", taken.reason === "full" ? "Too many clients; retry later" : "Too many requests; slow down"));
+};
 // /healthz exempt (uptime probes must survive floods); one SSE open = one request;
 // stream frames are responses and never hit this middleware.
 
@@ -116,7 +132,12 @@ const hubOrigin = process.env.DPI_HUB_ORIGIN ?? `https://${hostname().toLowerCas
 const credentials = new CredentialService(registry, audit, hubOrigin, hubId);
 const pairing = new PairingService({
   registry, audit, hubOrigin, hubId,
-  issue: (e) => credentials.issue(e),
+  issue: async (e) => {
+    const ticket = await credentials.issue(e);
+    tunnel.closeConnection(ticket.deviceId, 1000, "pairing replaced");
+    monitor.watch(ticket.deviceId);
+    return ticket;
+  },
   receiptValidator: (t) =>
     credentials.receiptStillValid(t) ? true : { code: credentials.receiptFailure(t) },
 });
@@ -162,17 +183,38 @@ app.post("/api/pair/codes/:codeId/cancel", ...pairGuard, (req, res) => {
 
 // Admin /api surface: guarded, rate-bucketed per real client IP, 256 KiB JSON.
 app.use("/api", denialLogging(audit), guard(allowedHosts), apiRate, express.json({ limit: "256kb" }));
-app.post("/api/devices/:id/rotate", (req, res) => {
-  const r = rotation.startRotation(String(req.params.id), `admin:${req.ip ?? "unknown"}`);
-  return res.status(r.ok ? 202 : 400).json(r.ok ? r : { error: { code: "invalid", message: r.error } } as never);
+app.post("/api/pair/resolve", (req, res) => {
+  const r = pairing.resolveCode(req.body);
+  return r.ok ? res.json(r.value) : pairErr(r, res);
 });
-app.post("/api/devices/:id/revoke", express.json({ limit: "4kb" }), (req, res) => {
+app.get("/api/pairings", (_req, res) => res.json(monitor.network().flatMap((device) =>
+  device.pairing && device.deviceUid && device.tunnel ? [{
+    ...device.pairing, deviceId: device.id, deviceUid: device.deviceUid,
+    deviceName: device.name, tunnel: device.tunnel,
+  }] : [],
+)));
+// Keep the original device routes as aliases for existing clients.
+app.post(["/api/pairings/:id/rotate", "/api/devices/:id/rotate"], (req, res) => {
+  const r = rotation.startRotation(String(req.params.id), `admin:${req.ip ?? "unknown"}`);
+  if (r.ok) {
+    monitor.refresh();
+    return res.status(202).json(r);
+  }
+  // Honest statuses: an unknown device or a device with no active pairing is a 404,
+  // a second rotate while one is in flight is a 409, and only a request that names
+  // something that can never rotate (a non-tunnel device) is a 400.
+  const status = r.code === "unknown_device" || r.code === "no_pairing" ? 404 : r.code === "in_flight" ? 409 : 400;
+  const code = status === 404 ? "not_found" : status === 409 ? "conflict" : "invalid";
+  return res.status(status).json({ error: { code, message: r.error } });
+});
+app.post(["/api/pairings/:id/revoke", "/api/devices/:id/revoke"], express.json({ limit: "4kb" }), (req, res) => {
   const id = String(req.params.id);
   const pairingRow = registry.db.prepare("SELECT pairing_epoch FROM pairings WHERE device_id=? AND status='paired'").get(id) as { pairing_epoch: string } | undefined;
   try {
     credentials.revoke(id, req.body?.reason === "compromise" ? "compromise" : "user", `admin:${req.ip ?? "unknown"}`);
   } catch (e) {
-    return res.status((e as { status?: number }).status ?? 400).json({ error: { code: "invalid", message: (e as Error).message } });
+    const failure = describeFailure(e);
+    return res.status(failure.status).json(failureBody(failure));
   }
   // Durable revoke committed: notice the live transport for ITS epoch and cut
   // it immediately (<1 s). Authorization never waits for a notice ACK.
@@ -183,6 +225,7 @@ app.post("/api/devices/:id/revoke", express.json({ limit: "4kb" }), (req, res) =
       notice: { type: "pair.revoke", v: 1, deviceId: id, pairingEpoch: pairingRow.pairing_epoch, reason: req.body?.reason === "compromise" ? "compromise" : "user", revokedAt: Date.now() },
     });
   tunnel.closeConnection(id, 1000, "pairing revoked");
+  monitor.check(id);
   res.status(202).json({ ok: true });
 });
 
@@ -203,7 +246,10 @@ app.get("/api/ui-state/:key", (req, res) =>
 app.put(
   "/api/ui-state/:key",
   safe((req, res) => {
-    registry.uiSet(String(req.params.key), req.body?.value ?? null);
+    const value = req.body?.value ?? null;
+    if (JSON.stringify(value).length > UI_STATE_MAX_CHARS)
+      throw Object.assign(Error("UI state value too large"), { status: 413 });
+    registry.uiSet(String(req.params.key), value);
     res.json({ ok: true });
   }),
 );
@@ -228,18 +274,39 @@ if (args.includes("--dev")) {
   });
   app.use(vite.middlewares);
 } else {
+  // The shell is the page that holds the operator's credentials. It loads only its own script and
+  // styles (plus the stylesheet host of the brand fonts), talks only to this hub and cannot be framed.
+  const shellPolicy = [
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self' https://fonts.googleapis.com",
+    "font-src https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+  app.use((_req, res, next) => {
+    res.set({ "Content-Security-Policy": shellPolicy, "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" });
+    next();
+  });
   app.use(express.static(resolve(appDir, "apps/dpi-playground-fe/dist")));
-  app.get("/{*path}", (_req, res) =>
-    res.sendFile(resolve(appDir, "apps/dpi-playground-fe/dist/index.html")),
-  );
+  app.get("/{*path}", (req, res, next) => {
+    // A path that names a file is an asset that does not exist, not a page of the app.
+    if (extname(req.path)) return void next();
+    res.sendFile(resolve(appDir, "apps/dpi-playground-fe/dist/index.html"));
+  });
 }
+app.use((_req, res) => res.status(404).json(err("not_found", "Not found")));
+app.use(errorMiddleware);
 
 // Tunnel endpoint (04 §4): /api/tunnel upgrades after hash-first credential
 // auth. In --dev mode Vite owns its own HMR upgrade path, so only the exact
 // tunnel path is claimed here and other upgrades are left alone.
-const tunnel = new TunnelServer(registry, audit, hubId);
+const tunnel = new TunnelServer(registry, audit, hubId, {}, { requireTls: requireTlsEnabled });
 const dispatcher = new TunnelDispatcher(tunnel, { audit, budget: bufferBudget });
-const rotation = new RotationService(registry, audit, tunnel);
+const rotation = new RotationService(registry, audit, tunnel, { onChange: () => monitor.refresh() });
 mux.setTunnelSource({
   dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
   hasLiveConnection: (id) => tunnel.hasConnection(id),
@@ -247,6 +314,7 @@ mux.setTunnelSource({
 monitor.setTunnelSource({
   dispatcherFor: (row) => new TunnelTransport(row, dispatcher),
   hasLiveConnection: (id) => tunnel.hasConnection(id),
+  diagnostics: (id) => ({ ...tunnel.diagnostics(id), readerCount: dispatcher.subscriptionCount(id) }),
 });
 server.on("upgrade", (req, socket, head) => {
   let path = "/";
@@ -255,8 +323,16 @@ server.on("upgrade", (req, socket, head) => {
   } catch {
     /* reject below */
   }
-  if (path === "/api/tunnel") tunnel.handleUpgrade(req, socket, head);
-  else if (!vite) socket.destroy();
+  if (path !== "/api/tunnel") {
+    if (!vite) socket.destroy();
+    return;
+  }
+  // handleUpgrade fails closed on its own; this guard keeps a bug there from ever becoming an uncaught exception.
+  try {
+    tunnel.handleUpgrade(req, socket, head);
+  } catch {
+    socket.destroy();
+  }
 });
 
 server.listen(port, host, () => {
@@ -273,6 +349,7 @@ server.listen(port, host, () => {
         .join(", ") || "none"
     }`,
   );
+  if (requireTlsEnabled) console.log("TLS required: only requests the loopback TLS proxy marks X-Forwarded-Proto: https are served");
   if (host !== "127.0.0.1" && host !== "localhost")
     console.warn(
       `WARNING: the hub is listening on ${host}. Anyone who can reach it can drive every device it holds tokens for.`,
@@ -285,10 +362,12 @@ const shutdown = async () => {
   closing = true;
   dispatcher.close();
   tunnel.close();
+  rotation.close();
   monitor.stop();
   server.close();
   server.closeAllConnections();
   await vite?.close();
+  audit.flushDenials();
   registry.close();
   process.exit(0);
 };
