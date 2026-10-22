@@ -1,6 +1,6 @@
 {
   "name": "my-durable",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Durable Pi — the durable agent network: hub web UI, device backend daemon, TUI admin and the shared SDK, packaged as one runnable monorepo install",
   "license": "MIT",
   "repository": {
