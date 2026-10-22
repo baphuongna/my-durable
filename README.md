@@ -1,5 +1,8 @@
 # Durable Pi: The Durable Agent Network
 
+> [!NOTE]
+> **This repository (`my-durable`) is a fork of [disler/durable-pi](https://github.com/disler/durable-pi) by [IndyDevDan](https://www.youtube.com/@indydevdan), MIT-licensed — see [LICENSE](LICENSE).** All credit for the original architecture, code and docs belongs to the upstream author; upstream history is preserved in the git log. This fork carries the Durable Agent Network hardening work on top: the Gate A security remediation (SSE CRLF coalescing, fail-closed v0 registry preflight with schema-drift refusal, tunnel/pairing/rotation hardening, FE sanitizer policies), the local verification tooling (`scripts/verify.mjs`), and the `my-durable` npm packaging.
+
 > **Proactive agents start working before you sit down. They don't wait for you to work. They work for you, then wait.**
 > Durable pi agents on any machine you own, driven from a web UI, a terminal or one curl.
 
