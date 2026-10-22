@@ -55,6 +55,17 @@ async function call<T>(
 /** The only auth failure the browser treats as "authenticate again". */
 export const needsAuth = (e: unknown): boolean => e instanceof DpiError && e.status === 401;
 
+/**
+ * The wizard QR payload (gap #3): the v2 offer link when the hub minted one —
+ * the whole handoff rides the #offer= fragment, which no server, CDN or proxy
+ * ever logs — and only a legacy hub's v1 pairUrl as the fallback. This is the
+ * exact string "Copy link" writes to the clipboard, so the QR and the copied
+ * link are always the same handoff.
+ */
+export function qrPayload(issue: PairCodeIssue): string {
+  return issue.offerUrl ?? issue.pairUrl;
+}
+
 export type RevokeReason = "user" | "compromise";
 
 export const pairingAdmin = {

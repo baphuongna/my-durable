@@ -1,8 +1,12 @@
 /**
  * Minimal local QR encoder for the PairDeviceWizard (P2-24: "QR render local;
- * no remote QR service"). Byte mode, EC level L, versions 1–5 (pair URLs are
- * ≤ ~106 bytes). Pure function: text → boolean[size][size] module matrix.
- * Cross-validated against the reference `python-qrcode` implementation.
+ * no remote QR service"). Byte mode, EC level L, versions 1–12 — v1–5 covers
+ * legacy pair URLs (≤ ~106 bytes); v6–12 covers the v2 offer links whose whole
+ * handoff rides the #offer= fragment (~229 bytes today → v9; ~310 once the hub
+ * identity fingerprint rides the offer → v11; headroom to v12-L = 367 bytes).
+ * Pure function: text → boolean[size][size] module matrix.
+ * Cross-validated against the reference `python-qrcode` implementation
+ * (every module, every mask, every supported version).
  */
 
 // -- GF(256), poly 0x11D ------------------------------------------------------
@@ -48,20 +52,63 @@ function rsEncode(data: number[], ecLen: number): number[] {
   return rem;
 }
 
-// -- version tables (EC level L, single data block for v1–5) -------------------
+// -- version tables (EC level L, v1–12; transcribed from python-qrcode's
+//    RS_BLOCK_TABLE / PATTERN_POSITION_TABLE so encoder and cross-validation
+//    reference can never drift apart) ----------------------------------------
 
-const SIZES = [21, 25, 29, 33, 37];
-const DATA_CODEWORDS = [19, 34, 55, 80, 108];
-const EC_PER_BLOCK = [7, 10, 15, 20, 26];
-const ALIGN = [[], [6, 18], [6, 22], [6, 26], [6, 30]]; // alignment centers
-const REMAINDER_BITS = [0, 7, 7, 7, 7];
+const SIZES = [21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61, 65];
+/** Total DATA codewords per version (all blocks summed). */
+const DATA_CODEWORDS = [19, 34, 55, 80, 108, 136, 156, 194, 232, 274, 324, 370];
+/** Total EC codewords per version (all blocks summed). */
+const EC_CODEWORDS = [7, 10, 15, 20, 26, 36, 40, 48, 60, 72, 80, 96];
+/** EC codewords per single block (equal within a version). */
+const EC_PER_BLOCK = [7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24];
+/** Block groups per version: [count, dataCodewordsPerBlock], shorter first. */
+const BLOCKS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
+  [[1, 19]],
+  [[1, 34]],
+  [[1, 55]],
+  [[1, 80]],
+  [[1, 108]],
+  [[2, 68]],
+  [[2, 78]],
+  [[2, 97]],
+  [[2, 116]],
+  [
+    [2, 68],
+    [2, 69],
+  ],
+  [[4, 81]],
+  [
+    [2, 92],
+    [2, 93],
+  ],
+];
+const ALIGN = [
+  [],
+  [6, 18],
+  [6, 22],
+  [6, 26],
+  [6, 30],
+  [6, 34],
+  [6, 22, 38],
+  [6, 24, 42],
+  [6, 26, 46],
+  [6, 28, 50],
+  [6, 30, 54],
+  [6, 32, 58],
+]; // alignment centers
+
+/** Byte-mode character-count indicator width: 8 bits for v1–9, 16 for v10+. */
+const countBits = (version: number): number => (version <= 9 ? 8 : 16);
 
 function selectVersion(byteLen: number): number {
-  for (let v = 1; v <= 5; v++) {
-    // byte mode: 4-bit indicator + 8-bit count (v1–9) + payload
-    if (byteLen + 2 <= DATA_CODEWORDS[v - 1]) return v;
+  for (let v = 1; v <= SIZES.length; v++) {
+    // byte mode: 4-bit indicator + count (8/16 bits) + payload; the terminator
+    // may be truncated to zero bits, so it never forces a larger version.
+    if (4 + countBits(v) + byteLen * 8 <= DATA_CODEWORDS[v - 1] * 8) return v;
   }
-  throw new Error(`qr: payload too long (${byteLen} bytes; v5L max ${DATA_CODEWORDS[4] - 2})`);
+  throw new Error(`qr: payload too long (${byteLen} bytes; v12L max ${DATA_CODEWORDS[11] - 3})`);
 }
 
 // -- bit stream ---------------------------------------------------------------
@@ -73,7 +120,7 @@ function buildCodewords(text: string, version: number): number[] {
     for (let i = len - 1; i >= 0; i--) bits.push((value >> i) & 1);
   };
   push(0b0100, 4); // byte mode
-  push(bytes.length, 8);
+  push(bytes.length, countBits(version));
   for (const b of bytes) push(b, 8);
   const dataCodewords = DATA_CODEWORDS[version - 1];
   const capacityBits = dataCodewords * 8;
@@ -88,6 +135,26 @@ function buildCodewords(text: string, version: number): number[] {
     for (let j = 0; j < 8; j++) byte = (byte << 1) | bits[i * 8 + j];
     out.push(byte);
   }
+  return out;
+}
+
+/**
+ * Split the data codewords into the version's blocks, add per-block RS error
+ * correction, and interleave both block-wise (the spec's placement order for
+ * multi-block versions; for v1–5 this degenerates to the old single stream).
+ */
+function interleave(version: number, data: number[]): number[] {
+  const ecLen = EC_PER_BLOCK[version - 1];
+  const blocks: number[][] = [];
+  let offset = 0;
+  for (const [count, dataLen] of BLOCKS[version - 1])
+    for (let b = 0; b < count; b++) blocks.push(data.slice(offset, (offset += dataLen)));
+  const out: number[] = [];
+  const maxData = Math.max(...blocks.map((b) => b.length));
+  for (let i = 0; i < maxData; i++)
+    for (const block of blocks) if (i < block.length) out.push(block[i]);
+  const ecs = blocks.map((block) => rsEncode(block, ecLen));
+  for (let i = 0; i < ecLen; i++) for (const ec of ecs) out.push(ec[i]);
   return out;
 }
 
@@ -130,6 +197,21 @@ function placeFunctionPatterns(m: boolean[][], version: number): void {
     }
   // dark module
   m[size - 8][8] = true;
+  // version information (v≥7 only): 6-bit version + 12 BCH bits (G18 = 0x1f25), two copies
+  if (version >= 7) {
+    // long division of version·x¹² by G18, MSB first (same algorithm as the
+    // reference implementation's BCH_type_number)
+    let d = version << 12;
+    for (let bit = 17; bit >= 12; bit--) if ((d >> bit) & 1) d ^= 0x1f25 << (bit - 12);
+    const bits = (version << 12) | (d & 0xfff);
+    for (let i = 0; i < 18; i++) {
+      const bit = ((bits >> i) & 1) === 1;
+      const a = size - 11 + (i % 3);
+      const b = (i / 3) | 0;
+      m[a][b] = bit; // bottom-left strip: rows size-11..size-9, cols 0..5
+      m[b][a] = bit; // top-right strip: rows 0..5, cols size-11..size-9
+    }
+  }
 }
 
 // format info: EC level L (01) + mask, BCH(15,5), XOR 0x5412
@@ -177,7 +259,7 @@ function placeData(m: boolean[][], codewords: number[], version: number, mask: n
       const row = upward ? size - 1 - step : step;
       for (const c of [col, col - 1]) {
         if (isFunctionModule(row, c, version)) continue;
-        if (bitIndex >= (DATA_CODEWORDS[version - 1] + EC_PER_BLOCK[version - 1]) * 8) {
+        if (bitIndex >= (DATA_CODEWORDS[version - 1] + EC_CODEWORDS[version - 1]) * 8) {
           // past data+ec bits → remainder modules (decoders ignore them)
           bitIndex++;
           continue;
@@ -220,6 +302,14 @@ function isFunctionModule(row: number, col: number, version: number): boolean {
   if (row >= size - 8 && col <= 8) return true;
   // timing
   if (row === 6 || col === 6) return true;
+  // version information (v≥7): the two 3×6 strips beside the top-right and
+  // bottom-left finders
+  if (
+    version >= 7 &&
+    ((row >= size - 11 && row <= size - 9 && col <= 5) ||
+      (col >= size - 11 && col <= size - 9 && row <= 5))
+  )
+    return true;
   // alignment
   const centers = ALIGN[version - 1];
   for (const r of centers)
@@ -286,8 +376,7 @@ function matrixWithMask(text: string, mask: number): boolean[][] {
   const version = selectVersion(new TextEncoder().encode(text).length);
   const size = SIZES[version - 1];
   const data = buildCodewords(text, version);
-  const ec = rsEncode(data, EC_PER_BLOCK[version - 1]);
-  const all = [...data, ...ec];
+  const all = interleave(version, data);
   const m = makeMatrix(size);
   placeFunctionPatterns(m, version);
   placeData(m, all, version, mask);
@@ -295,7 +384,7 @@ function matrixWithMask(text: string, mask: number): boolean[][] {
   return m;
 }
 
-/** Encode text into a QR matrix (true = dark module), EC level L, versions 1–5. */
+/** Encode text into a QR matrix (true = dark module), EC level L, versions 1–12. */
 export function qrMatrix(text: string, maskOverride?: number): boolean[][] {
   if (maskOverride !== undefined) return matrixWithMask(text, maskOverride);
   let best: { m: boolean[][]; score: number } | undefined;

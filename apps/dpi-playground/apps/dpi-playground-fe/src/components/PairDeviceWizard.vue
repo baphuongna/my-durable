@@ -18,7 +18,13 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { CheckCircle2, Copy, RefreshCw, ShieldAlert, X } from "lucide-vue-next";
-import { createPairingSession, pairingAdmin, pollCode, type PairingSession } from "../client/pair";
+import {
+  createPairingSession,
+  pairingAdmin,
+  pollCode,
+  qrPayload,
+  type PairingSession,
+} from "../client/pair";
 import { qrSvg } from "../client/qrcode";
 import type { PairCodeIssue, PairCodeState } from "@sdk/api";
 import { DpiError } from "@sdk/errors";
@@ -55,7 +61,9 @@ const grouped = computed(() => {
 });
 const qrData = computed(() => {
   if (!issue.value) return "";
-  return issue.value.pairUrl;
+  // Gap #3: the QR rides the #offer= fragment (qrPayload) — never the v1
+  // pairUrl, whose ?code= query would land the pairing code in server logs.
+  return qrPayload(issue.value);
 });
 const qr = computed(() => (qrData.value ? qrSvg(qrData.value, 148) : ""));
 const fingerprint = computed(() => state.value?.enrollment?.keyFingerprint ?? "");
@@ -297,7 +305,12 @@ onBeforeUnmount(() => {
               <button type="button" class="small" @click="copyCode">
                 <Copy :size="14" /> {{ copied ? "Copied" : "Copy code" }}
               </button>
-              <button type="button" class="small" @click="copyLink" title="Self-contained link: hub, code and expiry all in the fragment — it never reaches server logs">
+              <button
+                type="button"
+                class="small"
+                @click="copyLink"
+                title="Self-contained link: hub, code and expiry all in the fragment — it never reaches server logs"
+              >
                 <Copy :size="14" /> {{ linkCopied ? "Copied link" : "Copy link" }}
               </button>
             </div>
@@ -305,7 +318,12 @@ onBeforeUnmount(() => {
               Run the device pairing command and scan, or enter this code on the device. Expires in
               5 minutes.
             </p>
-            <div class="pair-qr" aria-label="Pairing QR code" v-html="qr" />
+            <div
+              class="pair-qr"
+              aria-label="Pairing QR code"
+              title="Same offer link as Copy link: hub, code and expiry all in the #offer= fragment — it never reaches server logs"
+              v-html="qr"
+            />
           </div>
 
           <div class="pair-side">
