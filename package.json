@@ -1,0 +1,43 @@
+{
+  "name": "my-durable",
+  "version": "0.0.1",
+  "description": "Durable Pi — the durable agent network: hub web UI, device backend daemon, TUI admin and the shared SDK, packaged as one runnable monorepo install",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baphuongna/my-durable.git"
+  },
+  "bugs": {
+    "url": "https://github.com/baphuongna/my-durable/issues"
+  },
+  "homepage": "https://github.com/baphuongna/my-durable#readme",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "bin": {
+    "my-durable-hub": "bin/hub.mjs",
+    "my-durable-device": "bin/device.mjs",
+    "my-durable-tui": "bin/tui.mjs"
+  },
+  "scripts": {
+    "hub": "tsx apps/dpi-playground/apps/dpi-playground-hub/src/main.ts",
+    "device": "tsx apps/dpi-backend/src/main.ts",
+    "tui": "tsx apps/dpi-tui/src/main.ts",
+    "verify": "node scripts/verify.mjs --phase P2"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-durable": "1.3.0",
+    "@earendil-works/pi-tui": "1.3.0",
+    "@sinclair/typebox": "0.34.52",
+    "dompurify": "^3.2.0",
+    "express": "^5.1.0",
+    "lucide-vue-next": "^0.468.0",
+    "marked": "^17.0.0",
+    "tsx": "^4.20.0",
+    "vue": "3.5.43",
+    "ws": "8.22.0",
+    "yaml": "^2.8.0"
+  }
+}

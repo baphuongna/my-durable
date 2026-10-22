@@ -1,0 +1,34 @@
+# never ship
+**/node_modules/
+**/.git*/
+.git/
+artifacts/
+.crew/
+.claude/
+*.log
+*.tmp
+*.bak
+
+# heavy local tooling (43MB of local binaries; install caddy per docs/verification.md if needed)
+tools/
+
+# source-control / CI only
+.github/
+just/
+**/tests/
+**/tests/**
+**/*.test.ts
+apps/dpi-playground/tests/
+scripts/verify.test.mjs
+
+# dev-only configs
+**/.oxfmtrc.json
+**/tsconfig.tsbuildinfo
+**/eslint.config.*
+apps/dpi-playground/package-lock.json
+apps/dpi-backend/package-lock.json
+apps/dpi-sdk/package-lock.json
+apps/dpi-tui/package-lock.json
+
+# NOTE (deliberate): apps/dpi-playground/apps/dpi-playground-fe/dist IS shipped
+# (prebuilt web UI, <1MB) so a fresh install serves the UI without a build step.

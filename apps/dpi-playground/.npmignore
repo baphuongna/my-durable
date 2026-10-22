@@ -1,0 +1,6 @@
+# npm packing: this file overrides this directory's .gitignore — the prebuilt
+# FE dist IS part of the published package (served by the hub without a build step).
+!apps/*/dist/
+!apps/*/dist/**
+.data/
+test-results/
