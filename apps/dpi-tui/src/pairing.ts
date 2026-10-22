@@ -13,6 +13,7 @@
  *   truncated, and no token is ever rendered.
  */
 import type { App } from "./app.ts";
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Panel } from "./pickers.ts";
 import { c } from "./theme.ts";
 
@@ -48,7 +49,7 @@ export function wrapFingerprint(fp: string, width: number): string[] {
 
 /** Actionable text for every pairing failure code (03 §7). */
 export function describePairingError(e: unknown): string {
-  const code = (e as { code?: string } | null)?.code;
+  const code = typeof e === "string" ? e.split(":", 1)[0] : (e as { code?: string } | null)?.code;
   if (code) {
     switch (code) {
       case "clock_skew":
@@ -86,7 +87,8 @@ export interface PairingStatusDTO {
   deviceId?: string;
   pairingEpoch?: string;
   generation?: number;
-  pending?: { hubOrigin: string; startedAt: number; note: string };
+  pending?: { hubOrigin: string; startedAt: number; note?: string };
+  lastError?: string;
 }
 
 /** Local authenticated pairing endpoints (never the remote registry target). */
@@ -152,16 +154,20 @@ export function pairingViewLines(
   if (hubOrigin) lines.push(c.muted(`hub: ${hubOrigin}`));
   if (!status) {
     lines.push(c.muted(note));
-    return lines;
+    return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
   }
   lines.push(c.muted(`device: ${status.deviceName ?? status.deviceUid ?? "?"} · uid ${status.deviceUid ?? "?"}`));
   lines.push("");
   lines.push(c.bold("key fingerprint (compare with the hub wizard):"));
   for (const line of wrapFingerprint(status.fingerprint, width)) lines.push(`  ${c.secondary(line)}`);
   lines.push("");
-  if (status.state === "pairing" && status.pending) {
+  if (status.pending) {
     lines.push(c.warn("Awaiting approval on the hub…"));
-    lines.push(c.muted(`  ${status.pending.note}`));
+    if (status.pending.note) lines.push(c.muted(`  ${status.pending.note}`));
+  } else if (status.lastError) {
+    lines.push(c.err(describePairingError(status.lastError)));
+    if (status.state === "paired")
+      lines.push(c.muted(`Existing pairing to ${status.hubOrigin} is unchanged.`));
   } else if (status.state === "paired") {
     lines.push(c.ok(`Paired to ${status.hubOrigin} (generation ${status.generation}).`));
     lines.push(c.muted("The connector keeps the tunnel up; /pair again to re-pair."));
@@ -171,10 +177,20 @@ export function pairingViewLines(
     lines.push(c.muted(note));
   }
   if (note && status.state !== "pairing") lines.push(c.muted(note));
-  return lines;
+  return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
 }
 
-const TERMINAL_STATES = new Set(["paired", "revoked"]);
+const pairingActive = (status: PairingStatusDTO) => !!status.pending || status.state === "pairing";
+
+/** What closing the panel reports when there was no local operation left to cancel: a failure stays a failure. */
+function closedIdle(status: PairingStatusDTO): [text: string, error: boolean] {
+  if (status.lastError) {
+    const kept = status.state === "paired" ? "existing credentials are unchanged." : "nothing was paired.";
+    return [`Pairing did not complete: ${describePairingError(status.lastError)} No active local operation to cancel; ${kept}`, true];
+  }
+  if (status.state === "paired") return [`Pairing panel closed. Paired to ${status.hubOrigin} (generation ${status.generation}).`, false];
+  return ["Pairing panel closed. No active local operation to cancel; existing credentials are unchanged.", false];
+}
 
 /**
  * Run the local pairing flow in an overlay: start → poll the local status →
@@ -203,33 +219,61 @@ export async function runPairing(app: App, args: PairArgs): Promise<void> {
   } catch {
     hubOrigin = args.hub;
   }
+  const starting = local.start(args);
   const panel = new Panel(
     (w) => pairingViewLines(status, note, w, hubOrigin),
-    () => {
-      live = false;
-      // Best-effort LOCAL cancel; the hub side is NOT cancelled by this.
-      void local.cancel().catch(() => undefined);
-      app.flash("Pairing panel closed — the local operation was cancelled. The hub-side code stays until it expires; revoke there if it was already approved.", true);
-    },
+    () => app.closeOverlay(),
   );
-  app.overlay(panel);
+  app.overlay(panel, () => {
+    if (!live) return;
+    live = false;
+    void (async () => {
+      // A slow start may not have created its local operation yet. Wait for its
+      // response before deciding, instead of letting it outlive this panel.
+      let started: PairingStatusDTO;
+      try {
+        started = await starting;
+      } catch (e) {
+        // The backend answered and refused: nothing started, and the refusal was already shown.
+        if (typeof (e as { status?: unknown }).status === "number") return;
+        app.flash("Pairing panel closed — local cancel was not confirmed. Check the local backend and hub; the hub-side code was not cancelled.", true);
+        return;
+      }
+      const last = status ?? started;
+      if (!pairingActive(last)) {
+        const [text, error] = closedIdle(last);
+        app.flash(text, error);
+        return;
+      }
+      // Best-effort LOCAL cancel; the hub side is NOT cancelled by this.
+      try {
+        await local.cancel();
+        app.flash("Pairing panel closed — the local operation was cancelled. The hub-side code stays until it expires; revoke there if it was already approved.", true);
+      } catch {
+        app.flash("Pairing panel closed — local cancel was not confirmed. Check the local backend and hub; the hub-side code was not cancelled.", true);
+      }
+    })();
+  });
   const render = () => {
     panel.invalidate();
     app.tui.invalidate();
+    app.tui.requestRender();
   };
   try {
-    status = await local.start(args);
+    status = await starting;
+    if (!live) return;
     note = "";
     render();
     const deadline = Date.now() + 330_000;
     while (live && Date.now() < deadline) {
-      if (status.state && TERMINAL_STATES.has(status.state)) break;
+      if (!pairingActive(status)) break;
       await new Promise((r) => setTimeout(r, 1_000));
       if (!live) break;
       status = await local.status();
+      if (!live) break;
       render();
     }
-    if (live && status && !TERMINAL_STATES.has(status.state)) {
+    if (live && status && pairingActive(status)) {
       note = "Still waiting after 5 minutes — mint a fresh code if the hub wizard was closed.";
       render();
     }

@@ -59,7 +59,7 @@ export class App {
   private footer = new Line("");
   private connection: ConnectionState | "idle" = "idle";
   private streams?: AbortController;
-  private overlays: OverlayHandle[] = [];
+  private overlays: Array<{ handle: OverlayHandle; onClose?: () => void }> = [];
   private notice?: { text: string; error: boolean; at: number };
   private ticker?: ReturnType<typeof setInterval>;
   private sessions: SessionSummary[] = [];
@@ -241,13 +241,18 @@ export class App {
 
   // ------------------------------------------------------------------ overlays and helpers
 
-  overlay(component: Component) {
-    this.overlays.push(this.tui.showOverlay(component, { width: "70%", minWidth: 40, maxHeight: "80%" }));
+  overlay(component: Component, onClose?: () => void) {
+    this.overlays.push({
+      handle: this.tui.showOverlay(component, { width: "70%", minWidth: 40, maxHeight: "80%" }),
+      onClose,
+    });
     this.tui.requestRender();
   }
 
   closeOverlay(exitIfNothing = false) {
-    this.overlays.pop()?.hide();
+    const overlay = this.overlays.pop();
+    overlay?.handle.hide();
+    overlay?.onClose?.();
     if (!this.overlays.length) this.tui.setFocus(this.editor);
     if (exitIfNothing) return this.exit();
     this.tui.requestRender();
