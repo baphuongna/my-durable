@@ -12,10 +12,21 @@ default:
 # Type checks and unit tests, every app
 [no-cd]
 unit:
+    node --test scripts/verify.test.mjs
     cd apps/dpi-sdk && npm run check && npm test
     cd apps/dpi-backend && npm run check && npm test
     cd apps/dpi-playground && npm run build && npm run lint && npm test
     cd apps/dpi-tui && npm run check && npm test
+
+# R-1/M4 SIGKILL recovery timing, run alone: every sample is printed, strict < 2 s from before the kill
+[no-cd]
+timing:
+    cd apps/dpi-backend && npm run test:timing
+
+# Local verification only: all includes lint, browsers and PTY, never NAT/deploy
+[no-cd]
+verify PHASE="all":
+    node scripts/verify.mjs --phase "$1"
 
 # Web UI suite against two faux devices (builds the UI first)
 [no-cd]

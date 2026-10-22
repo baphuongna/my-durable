@@ -262,9 +262,20 @@ just test ui               # web UI suite against two faux devices (free)
 just test device <id>      # UI, agent-feature and browser-close suites on one device (real model)
 just test e2e <id>         # TUI + web + restart mid-tool + fork on one device (real model)
 just test smoke faux       # TUI end to end in tmux against a faux backend
+just test verify           # current fork: core + lint + browser + PTY, no NAT/deploy
 ```
 
-### What has been checked
+### Current fork verification
+
+Use `just test verify` (or `node scripts/verify.mjs --phase all`) for the full
+local matrix. `--phase P2` runs core checks only. A green local run does not
+approve Gate A/B or establish real NAT and performance acceptance.
+See [verification scope, prerequisites and evidence rules](docs/verification.md).
+
+### Historical checks (not current-fork acceptance)
+
+The records below describe earlier runs. They do not verify the current
+pairing/tunnel candidate, real-model behavior or a deployed environment.
 
 | Check | Result |
 |---|---|
@@ -286,11 +297,11 @@ just test smoke faux       # TUI end to end in tmux against a faux backend
 - **Durable means checkpointed, not exactly-once.** A `requestId` is admitted once, but an external effect (a payment, a page, a deploy) may have happened right before a crash. Replay-safe tools rerun and unsafe ones return an interrupted result. Effects still need their own idempotency.
 - **A token is a shell.** Anyone holding a device's token can run commands as that device's user. `start_dirs` only set where sessions begin. They are not a sandbox.
 - **LAN `ssh` devices speak plain HTTP**, so tokens cross the LAN in cleartext. exe.dev devices use HTTPS, and their proxy is public, so the token is the only gate.
-- **The hub holds every token.** It binds `127.0.0.1` and checks Host and Origin headers. Binding it to the LAN exposes every device it can reach.
+- **The hub remains a trusted controller.** It stores full LAN tokens and tunnel credential hashes at rest; tunnel mode does not remove its authority to run device commands. It binds `127.0.0.1` and checks Host and Origin headers. Public access requires the reviewed TLS/admin-auth deployment profile and separate gate approval.
 - **`dpi-backend` binds `127.0.0.1` unless told otherwise.** For `ssh` and `exe-dev` devices, `just net up` writes `DPI_HOST=0.0.0.0` (the default for the YAML's `host`) so clients can reach them, and the token guards everything under `/v1`.
 - **`jev-damage-control` is a guard, not a sandbox.** It sends each command to a third-party API, and when Jev is unreachable the command runs.
 - **macOS devices run as a LaunchAgent** in the logged-in session, so unattended reboots need auto-login.
-- **pi-durable is experimental.** This repo pins 1.0.3.
+- **pi-durable is experimental.** This fork pins 1.3.0.
 
 ---
 

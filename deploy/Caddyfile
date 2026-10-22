@@ -23,7 +23,13 @@
 }
 
 https://{$DPI_PUBLIC_HOST} {
-	tls {$DPI_TLS_CERT} {$DPI_TLS_KEY}
+	# TLS 1.2 is the declared floor (05 §4) rather than a Caddy default that a
+	# future build could change. Caddy adds a catch-all policy for handshakes whose
+	# SNI does not match; that one keeps Caddy's own default (also 1.2), and
+	# tests/caddy-tls.test.ts proves both paths refuse TLS 1.0/1.1.
+	tls {$DPI_TLS_CERT} {$DPI_TLS_KEY} {
+		protocols tls1.2 tls1.3
+	}
 
 	header {
 		Strict-Transport-Security "max-age=15552000; includeSubDomains"
@@ -32,6 +38,17 @@ https://{$DPI_PUBLIC_HOST} {
 		-Server
 		-X-Powered-By
 	}
+
+	# CSP is deliberately NOT set here. The hub owns content security per
+	# response: the app shell is served with a restrictive document CSP
+	# (script-src/style-src 'self' + fonts.googleapis.com, connect-src 'self',
+	# frame-ancestors 'none', X-Frame-Options: DENY — hub main.ts) while
+	# proxied device answers are locked down harder still (default-src 'none';
+	# sandbox — hub proxy.ts). This block runs after proxying, so a CSP line
+	# here would overwrite both of those per-route policies with one blanket
+	# value: either it weakens device responses or it breaks the app shell.
+	# Do not "harden" this file by adding one; the harness also runs without
+	# Caddy, so the hub must be correct on its own either way.
 
 	# Admin surface = everything except the four exact exemptions below.
 	@admin {
