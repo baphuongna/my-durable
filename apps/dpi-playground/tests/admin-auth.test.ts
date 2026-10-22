@@ -27,7 +27,7 @@ async function login(base: string, token: string) {
   return { status: r.status, cookie, value: /dpi_admin=([^;]+)/.exec(cookie)?.[1] };
 }
 
-test("first boot mints an owner-only admin token, logs it, and audits admin.token_created", async () => {
+test("first boot mints an owner-only admin token, prints its value exactly once, and audits admin.token_created", async () => {
   const hub = await bootHub();
   try {
     assert.match(hub.adminToken, /^adm_[A-Za-z0-9_-]{43}$/);
@@ -35,7 +35,15 @@ test("first boot mints an owner-only admin token, logs it, and audits admin.toke
     const file = await readFile(path, "utf8");
     assert.equal(file.trim(), hub.adminToken);
     assert.equal(statSync(path).mode & 0o777, 0o600, "admin.token is owner-only");
-    assert.ok(hub.log.tail(50).includes(`first run: created admin token in ${path}`));
+    // Gap #5: the mint log carries the token VALUE — the operator's first login
+    // needs no file read. The harness BoundedLog sanitizes adm_… on push, so the
+    // value being printed shows up as the redaction marker on this line.
+    assert.match(
+      hub.log.tail(50),
+      /first run: created admin token: adm_<redacted>/,
+      "first boot prints the token value exactly once (sanitized in captured logs)",
+    );
+    assert.ok(!hub.log.tail(50).includes(hub.adminToken), "the raw value never reaches captured logs");
     const db = new DatabaseSync(join(hub.home, "network.sqlite"), { readOnly: true });
     try {
       const rows = db
@@ -57,16 +65,37 @@ test("first boot mints an owner-only admin token, logs it, and audits admin.toke
   }
 });
 
-test("a second boot on the same home reuses the token; DPI_ADMIN_TOKEN_FILE relocates it", async () => {
+test("a second boot on the same home reuses the token and logs only the file path — never the value again", async () => {
   const hub = await bootHub();
   const first = hub.adminToken;
+  const path = join(hub.home, "admin.token");
+  const afterFirst = hub.log.tail(500);
   await hub.stop();
   // The file already exists: no second mint, same token, no second audit row.
   await hub.start();
   try {
     assert.equal(hub.adminToken, first);
+    const full = hub.log.tail(500);
+    assert.ok(
+      full.startsWith(afterFirst),
+      "the captured log is append-only across the restart (line budget not exceeded)",
+    );
+    const fresh = full.slice(afterFirst.length);
     assert.equal(
-      hub.log.tail(100).split("first run: created admin token").length - 1,
+      fresh.split("first run: created admin token").length - 1,
+      0,
+      "the second boot never mints or prints the token again",
+    );
+    assert.ok(
+      !fresh.includes("adm_"),
+      "the second boot adds no token material — raw or redacted (gap #5)",
+    );
+    assert.ok(
+      fresh.includes(`admin: login with the token in ${path}`),
+      "subsequent boots still tell the operator where the token lives",
+    );
+    assert.equal(
+      full.split("first run: created admin token").length - 1,
       1,
       "the mint happened exactly once (first boot), never on restart",
     );
@@ -348,6 +377,8 @@ test("redaction: adm_ tokens are scrubbed from audit details and sanitized out o
   assert.ok(!scrubSecrets(`login failed with ${token}`).includes(token));
   assert.ok(scrubSecrets(`login failed with ${token}`).includes("adm_<redacted>"));
   assert.ok(!sanitize(`hub: token ${token} rejected`).includes(token));
+  // Gap #5: the mint line now carries the value — the log sanitizer must cover it.
+  assert.ok(sanitize(`first run: created admin token: ${token}`).includes("adm_<redacted>"));
   // Device tokens keep their own rule.
   assert.ok(!scrubSecrets("dpt_" + "B".repeat(43)).includes("dpt_BBBB"));
 });

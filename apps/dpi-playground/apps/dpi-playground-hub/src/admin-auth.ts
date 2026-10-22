@@ -7,7 +7,8 @@
  *   configuration mistake and REFUSES to boot — it is never silently replaced.
  * - Otherwise the token is minted at first boot (`adm_` + 32 random bytes,
  *   base64url) into `<DPI_HOME>/admin.token` (or `DPI_ADMIN_TOKEN_FILE`),
- *   owner-only 0600, and logged once.
+ *   owner-only 0600, and its value is logged exactly once — at mint time only;
+ *   every later boot logs just the file path.
  *
  * Presentation:
  * - Browsers: `POST /api/session {token}` sets a stateless cookie `dpi_admin` =
@@ -92,7 +93,11 @@ export function bootstrapAdminToken(
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${token}\n`, { mode: 0o600 });
   chmodSync(path, 0o600); // a pre-existing (e.g. empty) file may carry wider bits
-  console.log(`first run: created admin token in ${path}`);
+  // Gap #5: first-login friction — the value appears exactly once, here at
+  // mint time (this line only ever runs on a first boot), so the operator can
+  // log into the web UI without reading a file off the hub machine. Restarts
+  // print only the file path (see the banner in main.ts).
+  console.log(`first run: created admin token: ${token}`);
   return { token, path, created: true };
 }
 

@@ -68,6 +68,10 @@ registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect f
 // The operator's own credential: minted at first boot into DPI_HOME/admin.token (0600),
 // overridable via DPI_ADMIN_TOKEN. A set-but-short token refuses to boot (admin-auth.ts).
 const adminToken = bootstrapAdminToken();
+// Gap #5: later boots point the operator at the file — the value itself only
+// ever appears on the first-boot mint line (admin-auth.ts).
+if (!adminToken.created)
+  console.log(`admin: login with the token in ${adminToken.path}`);
 const configFile = seedFromConfig(registry, appDir);
 const monitor = new DeviceMonitor(registry);
 monitor.start();
