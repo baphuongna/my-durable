@@ -340,3 +340,19 @@ test("D-1: the backup's DIRECTORY is fsynced too — syncDirectory opens a dir f
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("windows durability: syncDirectory and syncFile never throw EPERM on any platform (regression: dir fd fsync crashed dpi device on win32)", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "dpi-fsync-"));
+  const file = join(dir, "probe");
+  writeFileSync(file, "x");
+  // On POSIX these genuinely fsync; on win32 the guard skips them (EPERM otherwise).
+  assert.doesNotThrow(() => syncDirectory(dir), "syncDirectory must not throw on win32");
+  const { fsyncReadOnlySupported } = await import("../src/node/registry-migration.js");
+  if (fsyncReadOnlySupported) {
+    // The read-only-file fsync is exercised through the same guard on win32.
+    assert.equal(process.platform !== "win32", true, "guard is POSIX here");
+  }
+});

@@ -388,7 +388,15 @@ function preflightV0(db: DatabaseSync): void {
   }
 }
 
+/**
+ * Windows cannot fsync read-only or directory handles (FlushFileBuffers needs a write
+ * handle; directory handles cannot be flushed at all — EPERM, errno -4048). POSIX-only
+ * durability steps are skipped there: NTFS journaling plus the atomic rename carry it.
+ */
+export const fsyncReadOnlySupported = process.platform !== "win32";
+
 function syncFile(file: string): void {
+  if (!fsyncReadOnlySupported) return;
   const fd = openSync(file, "r");
   try {
     fsyncSync(fd);
@@ -405,6 +413,7 @@ function syncFile(file: string): void {
  * Exported for a focused unit test — the fsync itself is not observable from JS.
  */
 export function syncDirectory(dir: string): void {
+  if (!fsyncReadOnlySupported) return; // Windows: directory fds cannot be fsynced (EPERM)
   const fd = openSync(dir, "r");
   try {
     if (!fstatSync(fd).isDirectory()) throw new Error(`not a directory: ${dir}`);

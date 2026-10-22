@@ -11,6 +11,7 @@ import { chmodSync, closeSync, fsyncSync, openSync, readFileSync, readdirSync, r
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
+import { fsyncReadOnlySupported } from "../../dpi-sdk/src/node/registry-migration.js";
 
 export { ensurePrivateDir };
 
@@ -32,12 +33,15 @@ export function replaceFileAtomic(path: string, contents: string): void {
     closeSync(fd);
     fd = undefined;
     renameSync(temp, path);
-    // fsync the directory so the rename itself is durable.
-    const dirFd = openSync(dir, "r");
-    try {
-      fsyncSync(dirFd);
-    } finally {
-      closeSync(dirFd);
+    // fsync the directory so the rename itself is durable (POSIX only: Windows
+    // directory fds cannot be fsynced — EPERM; NTFS journaling carries it there).
+    if (fsyncReadOnlySupported) {
+      const dirFd = openSync(dir, "r");
+      try {
+        fsyncSync(dirFd);
+      } finally {
+        closeSync(dirFd);
+      }
     }
   } catch (e) {
     if (fd !== undefined) {
