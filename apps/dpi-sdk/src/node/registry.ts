@@ -1,13 +1,15 @@
 // The client-side device registry: ~/.dpi/network.sqlite. Shared by the playground hub,
 // dpi-tui and scripts/net.ts on this machine. Holds tokens (mode 0600), live status and UI state.
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { migrateRegistryFile } from "./registry-migration.js";
+import { ensurePrivateDir } from "./private-dir.js";
 import type { DeviceInfo, DeviceKind, DeviceStatus, DeviceTree, NetworkDevice, PublicPairingMetadata, TunnelDiagnostics } from "../api.js";
 
 export const dpiHome = () => process.env.DPI_HOME ?? join(homedir(), ".dpi");
+/** Largest UI-state value (in JSON characters) the registry stores. */
+export const UI_STATE_MAX_CHARS = 100_000;
 export const DEVICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const DEVICE_KINDS: readonly DeviceKind[] = ["local", "ssh", "exe-dev", "url"];
 
@@ -93,7 +95,7 @@ export class NetworkRegistry {
 
   constructor(path = join(dpiHome(), "network.sqlite")) {
     this.path = path;
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    ensurePrivateDir(dirname(path));
     // Bring the file to schema v1 first (WAL-safe backup + one-transaction
     // migration). Any failure throws — the hub/TUI must not boot on it.
     migrateRegistryFile(path);
@@ -300,12 +302,27 @@ export class NetworkRegistry {
 
   uiSet(key: string, value: unknown) {
     const json = JSON.stringify(value);
-    if (json.length > 100_000) throw Error("UI state value too large");
+    if (json.length > UI_STATE_MAX_CHARS) throw Error("UI state value too large");
     this.db
       .prepare(
         "INSERT INTO ui_state(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
       )
       .run(key, json, Date.now());
+  }
+
+  /** Select only browser-safe pairing fields, never key material or credential hashes. */
+  publicPairings(): Map<string, PublicPairingMetadata> {
+    const rows = this.db.prepare(
+      "SELECT device_id, status, key_fingerprint, paired_at, credential_generation, rotation_id, rotation_requested_at FROM pairings",
+    ).all() as {
+      device_id: string; status: PublicPairingMetadata["status"]; key_fingerprint: string;
+      paired_at: number; credential_generation: number; rotation_id: string | null; rotation_requested_at: number | null;
+    }[];
+    return new Map(rows.map((row) => [row.device_id, {
+      status: row.status, keyFingerprint: row.key_fingerprint, pairedAt: row.paired_at,
+      credentialGeneration: row.credential_generation,
+      rotationPending: row.status === "paired" && (row.rotation_id !== null || row.rotation_requested_at !== null),
+    }]));
   }
 
   /** Hub boot: live tunnel state is RAM-only; never resurrect consumers from DB. */

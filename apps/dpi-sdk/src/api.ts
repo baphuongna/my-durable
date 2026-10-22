@@ -575,6 +575,13 @@ export interface TunnelDiagnostics {
   readerCount: number;
 }
 
+export interface PublicPairing extends PublicPairingMetadata {
+  deviceId: string;
+  deviceUid: string;
+  deviceName: string;
+  tunnel: TunnelDiagnostics;
+}
+
 /** The public view of a registry device (the token never leaves the hub or TUI process). */
 export interface NetworkDevice {
   id: string;

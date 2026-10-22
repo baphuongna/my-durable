@@ -2,9 +2,12 @@
  * network.sqlite schema v0 → v1 migration and maintenance (spec 07 §5/§7.2).
  *
  * Contract (all enforced here):
- * - Writers must be stopped: a TRUNCATE checkpoint must succeed, otherwise abort.
- * - Cold backup: checkpoint → close → copy (0600) → verify the copy opens and
- *   passes integrity_check. Never hot-copy the main DB, never delete WAL/SHM.
+ * - Writers must be stopped: a v0 file is migrated only while this process
+ *   holds the file's EXCLUSIVE lock, which exists only when no other connection
+ *   (hub, TUI, net script; idle or not) has it open. Otherwise abort.
+ * - Backup under that lock: VACUUM INTO a 0600 file (a consistent snapshot that
+ *   includes the WAL, never a raw copy of the main file) → fsync → verify the
+ *   copy opens as v0 with every row and passes integrity_check. One file.
  * - One transaction rebuilds devices (15 legacy columns + transport='lan'),
  *   creates UID index, hub_meta, pairings, tunnel_credentials, tunnel_state,
  *   events + triggers; user_version=1 set INSIDE the transaction.
@@ -14,9 +17,10 @@
  * - This module never touches agent.sqlite / catalog / app-state (different domain).
  */
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, closeSync, existsSync, fstatSync, fsyncSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { ensurePrivateDir } from "./private-dir.js";
 
 export const REGISTRY_SCHEMA_VERSION = 1;
 const UUID_CANONICAL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -134,12 +138,73 @@ CREATE TABLE {name}(
         (transport='tunnel' AND url IS NULL AND token IS NULL))
 )`;
 
+/**
+ * Objects the v1 schema owns, derived FROM the v1 DDL itself (no second hand-maintained
+ * copy to drift), minus the two tables v0 already had. A v0 file that already contains
+ * one of these is not a v0 file: it is half-migrated or hand-edited, and migrating it
+ * with the IF-NOT-EXISTS DDL would silently carry the stray object into the new v1.
+ */
+const V1_ONLY_OBJECTS: readonly string[] = (() => {
+  const names = new Set<string>();
+  const ddl = `${DEVICES_V1_DDL.replace("{name}", "devices")};${V1_SCHEMA_SQL}`;
+  for (const m of ddl.matchAll(/\bCREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    names.add(m[1]);
+  }
+  names.delete("devices"); // v0 and v1 both have it
+  names.delete("ui_state"); // v0 and v1 both have it
+  return [...names].sort();
+})();
+
+/** Column names of `table` from its CREATE TABLE statement in `ddl` (table-constraint rows skipped). */
+function ddlColumns(ddl: string, table: string): readonly string[] {
+  const m = ddl.match(new RegExp(`\\bCREATE TABLE (?:IF NOT EXISTS )?${table}\\s*\\(([^;]*)\\)`, "i"));
+  if (!m) throw new Error(`cannot derive columns of ${table} from DDL`);
+  const cols: string[] = [];
+  let seg = "";
+  let depth = 0;
+  for (const ch of m[1]) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      cols.push(seg.trim().split(/\s+/)[0]);
+      seg = "";
+      continue;
+    }
+    seg += ch;
+  }
+  cols.push(seg.trim().split(/\s+/)[0]);
+  return cols.filter(
+    (c) => c && !/^(PRIMARY|UNIQUE|CHECK|FOREIGN|CONSTRAINT)$/i.test(c),
+  );
+}
+
+/**
+ * The exact column set each v0 table must have (order included), derived from the DDL
+ * constants above — devices from V0_COLUMNS, ui_state from the v1 DDL, whose ui_state is
+ * identical to v0's (the only other table v0 had). No second hand-maintained copy to drift.
+ */
+const V0_TABLE_COLUMNS: readonly (readonly [string, readonly string[]])[] = [
+  ["devices", V0_COLUMNS],
+  ["ui_state", ddlColumns(V1_SCHEMA_SQL, "ui_state")],
+];
+
 export type MigrationFailPoint =
   | "preflight"
   | "after-backup"
   | "mid-transaction"
   | "before-user-version"
   | "after-commit";
+
+export interface MigrationOptions {
+  /** Test seam: throw `injected: <point>` when that phase is reached. */
+  failAt?: MigrationFailPoint;
+  /** Test seam: called as each phase is reached (crash drills block here and get killed). */
+  onPhase?: (point: MigrationFailPoint) => void;
+  /** `false` skips the cold backup (tests only). */
+  backup?: boolean;
+  /** How long to wait for other connections before giving up. Default 3000. */
+  busyTimeoutMs?: number;
+}
 
 export interface RegistryMigrationResult {
   action: "fresh" | "migrated" | "noop";
@@ -153,6 +218,15 @@ class MigrationError extends Error {
     super(`registry migration: ${message}`);
   }
 }
+
+const DEFAULT_BUSY_TIMEOUT_MS = 3000;
+
+function reached(opts: MigrationOptions, point: MigrationFailPoint): void {
+  opts.onPhase?.(point);
+  if (opts.failAt === point) throw new MigrationError(`injected: ${point}`);
+}
+const WRITERS_STILL_RUNNING =
+  "another process still has the registry open — stop all registry writers (hub, TUI, net scripts) and retry";
 
 const tableExists = (db: DatabaseSync, name: string) =>
   !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
@@ -182,131 +256,289 @@ function validateV1(db: DatabaseSync): void {
   if (integrity(db) !== "ok") throw new MigrationError("integrity_check failed on v1 database");
 }
 
+const userTables = (db: DatabaseSync) =>
+  (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]).map(
+    (r) => r.name,
+  );
+
 /**
- * Bring the registry file at `path` to schema v1. Owns its connections so it
- * can do the cold-backup dance (checkpoint → close → copy → verify → reopen).
- * Throws on any failure; caller (hub/TUI boot) must not start on throw.
+ * Creates v1 directly in one transaction, so a crash or a starter arriving at
+ * the same moment never sees a half-built schema. Returns undefined when
+ * another starter built it first.
  */
-export function migrateRegistryFile(
-  path: string,
-  opts: { failAt?: MigrationFailPoint; backup?: boolean } = {},
-): RegistryMigrationResult {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+function createFresh(db: DatabaseSync): RegistryMigrationResult | undefined {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (userTables(db).length > 0) {
+      db.exec("ROLLBACK");
+      return undefined;
+    }
+    db.exec(DEVICES_V1_DDL.replace("{name}", "devices") + ";" + V1_SCHEMA_SQL);
+    const hubId = randomUUID();
+    db.prepare("INSERT INTO hub_meta(key,value) VALUES('hub_id',?)").run(hubId);
+    db.exec(`PRAGMA user_version=${REGISTRY_SCHEMA_VERSION};`);
+    db.exec("COMMIT");
+    return { action: "fresh", version: REGISTRY_SCHEMA_VERSION, hubId };
+  } catch (e) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* nothing was open */
+    }
+    throw e;
+  }
+}
+
+/** Only v0 migrates; a v1 file is validated, anything else is refused. */
+function assertMigratable(version: number): void {
+  if (version > REGISTRY_SCHEMA_VERSION) {
+    throw new MigrationError(`database schema v${version} is newer than supported v${REGISTRY_SCHEMA_VERSION}`);
+  }
+  if (version !== 0) throw new MigrationError(`unknown schema version ${version}`);
+}
+
+const sleepMs = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+const isBusy = (e: unknown) => {
+  const code = ((e as { errcode?: number }).errcode ?? 0) & 0xff;
+  return code === 5 || code === 6; // SQLITE_BUSY / SQLITE_LOCKED
+};
+
+/**
+ * Opens `path` and runs `ready` on it, closing and retrying with jitter while
+ * another process holds a lock. SQLite's own busy handler does not cover
+ * everything: the first switch of a new file to WAL fails at once, and a
+ * connection in EXCLUSIVE mode keeps its shared lock while it waits to upgrade,
+ * so two starters waiting that way would hold each other out until both timed out.
+ */
+function openWhenFree(path: string, busyTimeoutMs: number, ready: (db: DatabaseSync) => void): DatabaseSync {
+  const deadline = Date.now() + busyTimeoutMs;
+  for (;;) {
+    const db = new DatabaseSync(path);
+    try {
+      ready(db);
+      return db;
+    } catch (e) {
+      db.close();
+      if (!isBusy(e) || Date.now() >= deadline) throw e;
+      sleepMs(5 + Math.random() * 20);
+    }
+  }
+}
+
+/**
+ * Opens `path` as its only connection, or throws. In WAL mode every open
+ * connection, idle ones included, keeps a shared lock on the main file, so an
+ * EXCLUSIVE lock exists only while no hub, TUI or net script has the registry
+ * open. A TRUNCATE checkpoint cannot show that: it succeeds against idle
+ * connections.
+ */
+function openExclusive(path: string, busyTimeoutMs: number): DatabaseSync {
+  try {
+    return openWhenFree(path, busyTimeoutMs, (db) => {
+      db.exec("PRAGMA busy_timeout=0; PRAGMA locking_mode=EXCLUSIVE; PRAGMA foreign_keys=ON;");
+      db.prepare("SELECT count(*) FROM sqlite_master").get(); // the first read takes the lock
+    });
+  } catch (e) {
+    if (isBusy(e)) throw new MigrationError(WRITERS_STILL_RUNNING, e);
+    throw e;
+  }
+}
+
+/** v0 preflight: no stray v1 objects, exact column set per v0 table, canonical ids/uids, no duplicates. */
+function preflightV0(db: DatabaseSync): void {
+  // First: anything the v1 schema owns means this is not a v0 file at all. Refused before
+  // the backup is written and before any write touches the registry (the caller's
+  // `reached(opts, "preflight")` hook still fires only after preflightV0 returns).
+  const stray = db
+    .prepare(
+      `SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name IN (${V1_ONLY_OBJECTS.map(() => "?").join(",")}) ORDER BY name`,
+    )
+    .all(...V1_ONLY_OBJECTS) as { type: string; name: string }[];
+  if (stray.length > 0)
+    throw new MigrationError(
+      `v0 database already contains v1-only object(s): ${stray.map((s) => `${s.type} ${s.name}`).join(", ")}`,
+    );
+  if (!tableExists(db, "ui_state")) throw new MigrationError("unknown v0 schema: missing ui_state");
+  // Exact column set for every v0 table: extra (or missing/renamed) columns mean a
+  // hand-edited file or an unknown v0.x — refused like everything else here, never
+  // silently migrated or dropped.
+  for (const [table, expected] of V0_TABLE_COLUMNS) {
+    const cols = columns(db, table);
+    if (cols.length !== expected.length || expected.some((c, i) => cols[i] !== c)) {
+      const unknown = cols.filter((c) => !expected.includes(c));
+      throw new MigrationError(
+        `unknown v0 schema: table ${table} columns ${JSON.stringify(cols)}` +
+          (unknown.length > 0 ? ` — unknown column(s) ${unknown.join(", ")}` : ""),
+      );
+    }
+  }
+  const rows = db.prepare("SELECT id, url, device_uid FROM devices").all() as {
+    id: string; url: string | null; device_uid: string | null;
+  }[];
+  const seenUid = new Set<string>();
+  for (const row of rows) {
+    if (!DEVICE_ID_PATTERN.test(row.id)) throw new MigrationError(`non-canonical device id ${JSON.stringify(row.id)} — resolve manually (no trim)`);
+    if (row.url === null || row.url.trim() === "") throw new MigrationError(`device ${row.id} has empty/NULL url — resolve manually`);
+    if (row.device_uid !== null) {
+      if (!UUID_CANONICAL.test(row.device_uid)) throw new MigrationError(`non-canonical device_uid on ${row.id}: ${JSON.stringify(row.device_uid)} — resolve manually (no trim)`);
+      if (seenUid.has(row.device_uid)) throw new MigrationError(`duplicate device_uid ${row.device_uid} — operator must resolve before migration`);
+      seenUid.add(row.device_uid);
+    }
+  }
+}
+
+function syncFile(file: string): void {
+  const fd = openSync(file, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * fsyncs a DIRECTORY (POSIX: a read-only fd on a directory can be fsynced), so the
+ * directory entry of a file that was just created and fsynced survives power loss.
+ * Syncing only the file is not enough: the file's data can be durable while the
+ * link that names it is not, and the file then simply does not exist after a crash.
+ * Exported for a focused unit test — the fsync itself is not observable from JS.
+ */
+export function syncDirectory(dir: string): void {
+  const fd = openSync(dir, "r");
+  try {
+    if (!fstatSync(fd).isDirectory()) throw new Error(`not a directory: ${dir}`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Snapshots the registry with SQLite itself (VACUUM INTO), so the copy includes
+ * everything committed to the WAL and is taken without a second handle on the
+ * file: on POSIX, closing any descriptor of a file drops every lock the process
+ * holds on it, which would silently end the exclusive lock the caller relies on.
+ * Then proves the copy opens as v0 with every row. The copy is one file.
+ */
+function writeBackup(db: DatabaseSync, backupPath: string, expectedRows: number): void {
+  const sidecars = [`${backupPath}-wal`, `${backupPath}-shm`];
+  // Leftovers of an aborted earlier attempt must not be replayed onto the new copy.
+  // SQLite itself drops a WAL found beside a zero-page file, so removing the sidecars
+  // is belt and braces: the outcome (not this call) is what the stale-WAL test pins.
+  for (const stale of [backupPath, ...sidecars]) rmSync(stale, { force: true });
+  writeFileSync(backupPath, "", { mode: 0o600, flag: "wx" }); // VACUUM INTO fills an empty file; 0600 from the start
+  db.prepare("VACUUM INTO ?").run(backupPath);
+  syncFile(backupPath); // the only way back: durable before the registry is touched
+  syncDirectory(dirname(backupPath)); // and its directory entry too: a durable file no one can name is no backup
+  const bak = new DatabaseSync(backupPath, { readOnly: true });
+  try {
+    if (integrity(bak) !== "ok") throw new MigrationError("backup integrity_check failed");
+    const rows = (bak.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n;
+    if (rows !== expectedRows) throw new MigrationError(`backup row count ${rows} != ${expectedRows}`);
+    if (columns(bak, "devices").length !== 15) throw new MigrationError("backup is not readable as v0");
+  } finally {
+    bak.close();
+  }
+}
+
+/** Runs with the file's exclusive lock held; `db` is the only connection to it. */
+function migrateV0(db: DatabaseSync, path: string, opts: MigrationOptions): RegistryMigrationResult {
+  // What was read before the lock was taken may be stale: a peer that started
+  // at the same moment can have migrated while this process waited for it.
+  const version = userVersion(db);
+  if (version === REGISTRY_SCHEMA_VERSION) {
+    validateV1(db);
+    return { action: "noop", version };
+  }
+  assertMigratable(version);
+
+  preflightV0(db);
+  reached(opts, "preflight");
+
+  const preCount = (db.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n;
+
+  const backupPath = `${path}.pre-v1.bak`;
+  if (opts.backup !== false) writeBackup(db, backupPath, preCount);
+  reached(opts, "after-backup");
+
+  // ---- one-transaction migration
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(DEVICES_V1_DDL.replace("{name}", "devices_v1_new"));
+    db.exec(
+      `INSERT INTO devices_v1_new(id,name,kind,url,token,source,position,device_uid,
+         last_status,last_error,last_seen_at,last_info_json,last_tree_json,
+         created_at,updated_at,transport)
+       SELECT id,name,kind,url,token,source,position,device_uid,
+         last_status,last_error,last_seen_at,last_info_json,last_tree_json,
+         created_at,updated_at,'lan'
+       FROM devices`,
+    );
+    reached(opts, "mid-transaction");
+    db.exec("DROP TABLE devices; ALTER TABLE devices_v1_new RENAME TO devices;");
+    db.exec(V1_SCHEMA_SQL);
+    const hubId = randomUUID();
+    db.prepare("INSERT INTO hub_meta(key,value) VALUES('hub_id',?)").run(hubId);
+    reached(opts, "before-user-version");
+    db.exec(`PRAGMA user_version=${REGISTRY_SCHEMA_VERSION};`);
+    db.exec("COMMIT");
+  } catch (e) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* already rolled back by close */
+    }
+    throw e;
+  }
+  if (integrity(db) !== "ok") throw new MigrationError("integrity_check failed after migration");
+  const fk = db.prepare("PRAGMA foreign_key_check").all();
+  if (fk.length > 0) throw new MigrationError(`foreign_key_check failed: ${JSON.stringify(fk)}`);
+  // Re-validate the v1 invariants on the thing just produced — never hand back an
+  // action:"migrated" for a schema this module itself would refuse on a rerun.
+  validateV1(db);
+  reached(opts, "after-commit");
+  return {
+    action: "migrated",
+    version: REGISTRY_SCHEMA_VERSION,
+    backupPath,
+    hubId: (db.prepare("SELECT value FROM hub_meta WHERE key='hub_id'").get() as { value: string }).value,
+  };
+}
+
+/**
+ * Bring the registry file at `path` to schema v1. Owns its connections: a
+ * v0 file is migrated while holding the only connection to it (snapshot backup,
+ * then one transaction). Throws on any failure; the caller (hub/TUI boot)
+ * must not start on throw.
+ */
+export function migrateRegistryFile(path: string, opts: MigrationOptions = {}): RegistryMigrationResult {
+  const busyTimeoutMs = opts.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
+  ensurePrivateDir(dirname(path));
   const fresh = !existsSync(path);
-  let db = new DatabaseSync(path);
-  if (fresh) chmodSync(path, 0o600);
-  db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000; PRAGMA foreign_keys=ON;");
+  let db = openWhenFree(path, busyTimeoutMs, (c) => {
+    if (fresh) chmodSync(path, 0o600);
+    c.exec(`PRAGMA busy_timeout=${busyTimeoutMs}; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`);
+  });
 
   try {
-    const knownTables = ["devices", "ui_state"].filter((t) => tableExists(db, t));
-    const otherTables = (
-      db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]
-    ).map((r) => r.name);
-
-    // ---- fresh database: create v1 directly
-    if (otherTables.length === 0) {
-      db.exec(DEVICES_V1_DDL.replace("{name}", "devices") + ";" + V1_SCHEMA_SQL);
-      const hubId = randomUUID();
-      db.prepare("INSERT INTO hub_meta(key,value) VALUES('hub_id',?)").run(hubId);
-      db.exec(`PRAGMA user_version=${REGISTRY_SCHEMA_VERSION};`);
-      return { action: "fresh", version: REGISTRY_SCHEMA_VERSION, hubId };
+    if (userTables(db).length === 0) {
+      const created = createFresh(db);
+      if (created) return created;
     }
-    void knownTables;
 
     const version = userVersion(db);
     if (version === REGISTRY_SCHEMA_VERSION) {
       validateV1(db);
       return { action: "noop", version };
     }
-    if (version > REGISTRY_SCHEMA_VERSION) {
-      throw new MigrationError(`database schema v${version} is newer than supported v${REGISTRY_SCHEMA_VERSION}`);
-    }
-    if (version !== 0) throw new MigrationError(`unknown schema version ${version}`);
+    assertMigratable(version);
 
-    // ---- v0 preflight: exact column set, canonical ids/uids, no duplicates
-    const cols = columns(db, "devices");
-    const expected = [...V0_COLUMNS];
-    if (cols.length !== expected.length || expected.some((c, i) => cols[i] !== c)) {
-      throw new MigrationError(`unknown v0 schema: devices columns ${JSON.stringify(cols)}`);
-    }
-    if (!tableExists(db, "ui_state")) throw new MigrationError("unknown v0 schema: missing ui_state");
-    const v0Rows = db.prepare("SELECT id, url, device_uid FROM devices").all() as {
-      id: string; url: string | null; device_uid: string | null;
-    }[];
-    const seenUid = new Set<string>();
-    for (const row of v0Rows) {
-      if (!DEVICE_ID_PATTERN.test(row.id)) throw new MigrationError(`non-canonical device id ${JSON.stringify(row.id)} — resolve manually (no trim)`);
-      if (row.url === null || row.url.trim() === "") throw new MigrationError(`device ${row.id} has empty/NULL url — resolve manually`);
-      if (row.device_uid !== null) {
-        if (!UUID_CANONICAL.test(row.device_uid)) throw new MigrationError(`non-canonical device_uid on ${row.id}: ${JSON.stringify(row.device_uid)} — resolve manually (no trim)`);
-        if (seenUid.has(row.device_uid)) throw new MigrationError(`duplicate device_uid ${row.device_uid} — operator must resolve before migration`);
-        seenUid.add(row.device_uid);
-      }
-    }
-    if (opts.failAt === "preflight") throw new MigrationError("injected: preflight");
-
-    // ---- WAL-safe cold backup (writers must be stopped)
-    const checkpoint = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as { busy: number };
-    if (checkpoint.busy !== 0) throw new MigrationError("WAL checkpoint busy — stop all registry writers (hub/TUI/net) before migrating");
-    const preCount = (db.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n;
+    // v0: migrating needs the file to itself. Release this connection first so
+    // two processes starting together cannot each hold the other out.
     db.close();
-
-    const backupPath = `${path}.pre-v1.bak`;
-    if (opts.backup !== false) {
-      copyFileSync(path, backupPath);
-      chmodSync(backupPath, 0o600);
-      const walSidecar = `${path}-wal`;
-      if (existsSync(walSidecar)) copyFileSync(walSidecar, `${backupPath}-wal`);
-      // Verify the backup: opens, integrity ok, v0-readable with the WAL data folded in.
-      const bak = new DatabaseSync(backupPath, { readOnly: true });
-      try {
-        if (integrity(bak) !== "ok") throw new MigrationError("backup integrity_check failed");
-        const bakCount = (bak.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n;
-        if (bakCount !== preCount) throw new MigrationError(`backup row count ${bakCount} != ${preCount} (WAL not folded?)`);
-        const bakCols = columns(bak, "devices");
-        if (bakCols.length !== 15) throw new MigrationError("backup is not readable as v0");
-      } finally {
-        bak.close();
-      }
-    }
-    if (opts.failAt === "after-backup") throw new MigrationError("injected: after-backup");
-
-    // ---- one-transaction migration
-    db = new DatabaseSync(path);
-    db.exec("PRAGMA busy_timeout=3000; PRAGMA foreign_keys=ON;");
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(DEVICES_V1_DDL.replace("{name}", "devices_v1_new"));
-      db.exec(
-        `INSERT INTO devices_v1_new(id,name,kind,url,token,source,position,device_uid,
-           last_status,last_error,last_seen_at,last_info_json,last_tree_json,
-           created_at,updated_at,transport)
-         SELECT id,name,kind,url,token,source,position,device_uid,
-           last_status,last_error,last_seen_at,last_info_json,last_tree_json,
-           created_at,updated_at,'lan'
-         FROM devices`,
-      );
-      if (opts.failAt === "mid-transaction") throw new MigrationError("injected: mid-transaction");
-      db.exec("DROP TABLE devices; ALTER TABLE devices_v1_new RENAME TO devices;");
-      db.exec(V1_SCHEMA_SQL);
-      const hubId = randomUUID();
-      db.prepare("INSERT INTO hub_meta(key,value) VALUES('hub_id',?)").run(hubId);
-      if (opts.failAt === "before-user-version") throw new MigrationError("injected: before-user-version");
-      db.exec(`PRAGMA user_version=${REGISTRY_SCHEMA_VERSION};`);
-      db.exec("COMMIT");
-    } catch (e) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        /* already rolled back by close */
-      }
-      throw e;
-    }
-    if (integrity(db) !== "ok") throw new MigrationError("integrity_check failed after migration");
-    const fk = db.prepare("PRAGMA foreign_key_check").all();
-    if (fk.length > 0) throw new MigrationError(`foreign_key_check failed: ${JSON.stringify(fk)}`);
-    if (opts.failAt === "after-commit") throw new MigrationError("injected: after-commit");
-    return { action: "migrated", version: REGISTRY_SCHEMA_VERSION, backupPath, hubId: (db.prepare("SELECT value FROM hub_meta WHERE key='hub_id'").get() as { value: string }).value };
+    db = openExclusive(path, busyTimeoutMs);
+    return migrateV0(db, path, opts);
   } finally {
     try {
       db.close();

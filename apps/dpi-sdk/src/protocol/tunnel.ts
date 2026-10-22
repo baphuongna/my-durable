@@ -9,12 +9,9 @@
  */
 import { Type, type Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
-import {
-  CHUNK_RAW_BYTES,
-  MAX_CHUNKS_PER_MESSAGE,
-  REST_PATH_DENYLIST,
-  REST_PATH_PREFIX,
-} from "./limits.js";
+import type { Frame } from "../api.js";
+import { CHUNK_RAW_BYTES, MAX_CHUNKS_PER_MESSAGE, REST_PATH_PREFIX } from "./limits.js";
+import { matchesRestRoute, restRouteKind } from "./rest-routes.js";
 
 const Strict = { additionalProperties: false } as const;
 
@@ -63,7 +60,18 @@ export type TunnelAuthError = Static<typeof TunnelAuthError>;
  * models/api; the tunnel validates it only as a JSON object with a known
  * discriminator to avoid duplicating the full grammar here.
  */
-const FramePayload = Type.Record(Type.String(), Type.Unknown(), { minProperties: 1 });
+const FramePayload = Type.Object({
+  type: Type.Union([
+    Type.Literal("hello"), Type.Literal("fault"), Type.Literal("tree"), Type.Literal("activity"),
+    Type.Literal("session"), Type.Literal("agents"), Type.Literal("tasks"), Type.Literal("usage"),
+    Type.Literal("snapshot"), Type.Literal("batch"), Type.Literal("inbox"), Type.Literal("doc"),
+  ]),
+}, { additionalProperties: true });
+
+/** Hub mux control frames must never be accepted from a device, even after chunk reassembly. */
+export function checkDeviceFrame(value: unknown): value is Exclude<Frame, { type: "network" | "disconnected" }> {
+  return Value.Check(FramePayload, value);
+}
 
 const TunnelControl = Type.Union([
   Type.Object({ type: Type.Literal("control"), action: Type.Literal("subscribe"), ...SubscriptionFields }, Strict),
@@ -243,31 +251,49 @@ export function allowedInPhase(
 // ---------------------------------------------------------------------------
 // REST path/method validation for tunneled requests (04 §9).
 
+/**
+ * The connector passes `path` to fetch() unchanged, and Express then matches it case-insensitively. fetch()'s URL
+ * parser drops tab/CR/LF, trims edge spaces, reads "\" as "/", resolves "." and "%2e" segments and cuts a
+ * "#fragment". So a spelling that the parsers could read differently from this check is refused, not repaired:
+ * the decision is made on exactly the bytes that will be requested, and only a route the device serves to a
+ * remote caller (rest-routes.ts) with one of its methods passes.
+ */
 export function validateRestRequest(input: { method: string; path: string }): { ok: true } | { ok: false; error: string } {
-  if (!/^(GET|POST|PUT|PATCH|DELETE)$/.test(input.method)) {
-    return { ok: false, error: "rest: method not allowed" };
+  const refuse = (error: string) => ({ ok: false as const, error });
+  if (!/^(GET|POST|PUT|PATCH|DELETE)$/.test(input.method)) return refuse("rest: method not allowed");
+  const raw = input.path;
+  if (raw.includes("..") || raw.includes("\\") || raw.includes("://") || raw.startsWith("//")) {
+    return refuse("rest: path traversal or absolute URL rejected");
   }
-  let path = input.path;
-  if (path.includes("..") || path.includes("\\") || path.includes("://") || path.startsWith("//")) {
-    return { ok: false, error: "rest: path traversal or absolute URL rejected" };
-  }
+  let decoded: string;
   try {
-    path = decodeURIComponent(path);
+    decoded = decodeURIComponent(raw);
   } catch {
-    return { ok: false, error: "rest: invalid percent-encoding" };
+    return refuse("rest: invalid percent-encoding");
   }
-  if (path.includes("..") || path.includes("\\") || path.includes("://") || path.startsWith("//")) {
-    return { ok: false, error: "rest: encoded traversal rejected" };
+  if (decoded.includes("..") || decoded.includes("\\") || decoded.includes("://") || decoded.startsWith("//")) {
+    return refuse("rest: encoded traversal rejected");
   }
-  if (!path.startsWith(REST_PATH_PREFIX)) {
-    return { ok: false, error: "rest: path outside /v1 rejected" };
+  if (!raw.startsWith(REST_PATH_PREFIX)) return refuse("rest: path outside /v1 rejected");
+  if (!/^[\x21-\x7e]+$/.test(raw) || raw.includes("#")) {
+    return refuse("rest: path must be printable ASCII without a fragment (percent-encode everything else)");
   }
-  for (const denied of REST_PATH_DENYLIST) {
-    if (path === denied || path.startsWith(`${denied}/`) || path.startsWith(`${denied}?`)) {
-      return { ok: false, error: "rest: SSE endpoint must not be tunneled" };
-    }
+  const query = raw.indexOf("?");
+  const pathname = query < 0 ? raw : raw.slice(0, query);
+  if (pathname.includes(";")) return refuse("rest: path parameters are not accepted");
+  const segments = pathname.slice(REST_PATH_PREFIX.length).split("/");
+  if (segments.some((segment) => segment === "" || segment.toLowerCase() === "%2e" || segment === ".")) {
+    return refuse("rest: path is not canonical (empty or dot segment)");
   }
-  return { ok: true };
+  if (matchesRestRoute(input.method, segments)) return { ok: true };
+  const kind = restRouteKind(segments);
+  return refuse(
+    kind === "stream"
+      ? "rest: SSE endpoint must not be tunneled"
+      : kind === "local"
+        ? "rest: device-local control route must not be tunneled"
+        : "rest: route is not allowlisted",
+  );
 }
 
 // ---------------------------------------------------------------------------

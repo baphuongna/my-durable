@@ -209,6 +209,28 @@ test("byte admission: connection 32 MiB / hub 64 MiB aggregate; release restores
   assert.equal(hub.used, 0);
 });
 
+test("GA-04: a child budget draws from its parent; refusal at either level reserves nothing; release returns both", () => {
+  const hub = new ByteBudget("hub", 100);
+  const a = new ByteBudget("connection", 60, hub);
+  const b = new ByteBudget("connection", 60, hub);
+  const a1 = a.reserve(60);
+  assert.ok(a1);
+  assert.equal(a.reserve(1), null, "child cap reached");
+  assert.equal(hub.used, 60);
+  const b1 = b.reserve(40);
+  assert.ok(b1);
+  assert.equal(hub.used, 100);
+  assert.equal(b.reserve(1), null, "parent cap reached although the child has room");
+  assert.equal(b.used, 40, "a parent refusal leaves the child untouched");
+  a1!.release();
+  a1!.release(); // double release must not over-credit the parent
+  assert.equal(a.used, 0);
+  assert.equal(hub.used, 40);
+  assert.ok(b.reserve(20), "parent room freed by the other child is usable");
+  b1!.release();
+  assert.equal(hub.used, 20);
+});
+
 test("abort/abortAll release reservations; SseReader admits bytes before parse, handles Unicode + heartbeat comments", () => {
   const budget = new ByteBudget("t", 1024 * 1024);
   const re = new ChunkReassembler(budget);

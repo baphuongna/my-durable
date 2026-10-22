@@ -50,9 +50,15 @@ export class ByteBudget {
   private usedBytes = 0;
   private live = new Set<Reservation>();
 
+  /**
+   * A budget may draw from a `parent` (the per-connection cap inside the hub
+   * cap): a reservation must fit BOTH, and releasing it returns the bytes to
+   * both, so one connection can never hold more than its own share of the hub.
+   */
   constructor(
     readonly name: string,
     readonly capacity: number,
+    private readonly parent?: ByteBudget,
   ) {}
 
   get used(): number {
@@ -63,10 +69,12 @@ export class ByteBudget {
     return this.live.size;
   }
 
-  /** Try to admit `bytes`; returns a ticket or null when over capacity. */
+  /** Try to admit `bytes`; returns a ticket or null when over capacity (here or in a parent). */
   reserve(bytes: number): Reservation | null {
     if (!Number.isFinite(bytes) || bytes < 0) return null;
     if (this.usedBytes + bytes > this.capacity) return null;
+    const upstream = this.parent ? this.parent.reserve(bytes) : null;
+    if (this.parent && !upstream) return null;
     this.usedBytes += bytes;
     const ticket: Reservation = {
       bytes,
@@ -78,6 +86,7 @@ export class ByteBudget {
         ticketState = false;
         this.live.delete(ticket);
         this.usedBytes -= bytes;
+        upstream?.release();
       },
     };
     let ticketState = true;
@@ -103,17 +112,17 @@ export interface ChunkOptions {
   maxLogicalBytes?: number;
 }
 
+export type ChunkPlan =
+  | { ok: true; rawBytes: number; overheadBytes: number; chunks: Generator<TunnelChunk, void, void> }
+  | { ok: false; error: string };
+
 /**
- * Serialize `msg` once and emit chunk frames via `send`. Returns the wire
- * metrics (raw + overhead recorded SEPARATELY from byte accounting, per
- * W-2: parser/string overhead is not a hard heap limit).
+ * Serialize `msg` once and plan its chunk frames. Frames are encoded lazily, one per `next()`, so a
+ * sender can wait on the socket between frames (04 §10: pace, never enqueue a whole 16 MiB message
+ * at once). `chunks` is single-pass. Raw + overhead are recorded SEPARATELY from byte accounting,
+ * per W-2: parser/string overhead is not a hard heap limit.
  */
-export function sendChunked(
-  msg: unknown,
-  correlation: ChunkCorrelation,
-  send: ChunkSendFn,
-  opts: ChunkOptions = {},
-): { ok: true; rawBytes: number; overheadBytes: number } | { ok: false; error: string } {
+export function chunkMessage(msg: unknown, correlation: ChunkCorrelation, opts: ChunkOptions = {}): ChunkPlan {
   const chunkRaw = opts.chunkRawBytes ?? CHUNK_RAW_BYTES;
   const maxLogical = opts.maxLogicalBytes ?? LOGICAL_MESSAGE_MAX_BYTES;
   let buf: Buffer;
@@ -130,12 +139,12 @@ export function sendChunked(
   const overhead = count * ENVELOPE_OVERHEAD_BYTES;
   if (buf.length + overhead > maxLogical)
     return { ok: false, error: `chunk: message ${buf.length}B + envelope ${overhead}B exceeds logical cap ${maxLogical}B` };
-  for (let index = 0; index < count; index++) {
-    // Slice the BUFFER: a multi-byte UTF-8 sequence split across the boundary
-    // is re-joined byte-identically on decode (never split the string).
-    const slice = buf.subarray(index * chunkRaw, Math.min((index + 1) * chunkRaw, buf.length));
-    const chunk: TunnelChunk =
-      correlation.kind === "tunnel-data"
+  function* frames(): Generator<TunnelChunk, void, void> {
+    for (let index = 0; index < count; index++) {
+      // Slice the BUFFER: a multi-byte UTF-8 sequence split across the boundary
+      // is re-joined byte-identically on decode (never split the string).
+      const slice = buf.subarray(index * chunkRaw, Math.min((index + 1) * chunkRaw, buf.length));
+      yield correlation.kind === "tunnel-data"
         ? {
             type: "tunnel-chunk", v: 1, messageId: correlation.subscriptionId, index, count,
             totalBytes: buf.length, data: slice.toString("base64"), kind: "tunnel-data",
@@ -146,9 +155,22 @@ export function sendChunked(
             totalBytes: buf.length, data: slice.toString("base64"), kind: correlation.kind,
             reqId: correlation.reqId,
           };
-    send(chunk);
+    }
   }
-  return { ok: true, rawBytes: buf.length, overheadBytes: overhead };
+  return { ok: true, rawBytes: buf.length, overheadBytes: overhead, chunks: frames() };
+}
+
+/** Eager form of `chunkMessage`: emit every frame via `send` at once. Returns the wire metrics. */
+export function sendChunked(
+  msg: unknown,
+  correlation: ChunkCorrelation,
+  send: ChunkSendFn,
+  opts: ChunkOptions = {},
+): { ok: true; rawBytes: number; overheadBytes: number } | { ok: false; error: string } {
+  const plan = chunkMessage(msg, correlation, opts);
+  if (!plan.ok) return plan;
+  for (const chunk of plan.chunks) send(chunk);
+  return { ok: true, rawBytes: plan.rawBytes, overheadBytes: plan.overheadBytes };
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +338,10 @@ export class ChunkReassembler {
 // Bounded SSE reader (loopback ingress side of the connector, 04 §3.4).
 //
 // Raw bytes are admitted against `budget` BEFORE any JSON.parse: an oversized
-// or unterminated event is rejected as bytes, never buffered unboundedly.
+// or unterminated event is rejected as bytes, never buffered unboundedly. The
+// bytes of an event that has not ended yet stay charged to the shared budget
+// until it completes or the reader is closed, so many concurrent readers
+// cannot hold more than the budget between them.
 
 export interface SseEvent {
   event: string;
@@ -329,43 +354,118 @@ export interface SseReadResult {
   error: string | null;
 }
 
+/**
+ * Coalesces CRLF line endings to LF at the byte level: every CR immediately followed by
+ * an LF becomes that LF alone. A CR at the very end of a read is kept (it may pair with an
+ * LF that starts the next read); a lone CR is DATA, not a line ending, and stays verbatim.
+ */
+function coalesceCrlf(bytes: Buffer): Buffer {
+  if (!bytes.includes(0x0d)) return bytes;
+  const pieces: Buffer[] = [];
+  let start = 0;
+  for (let i = 0; i + 1 < bytes.length; i++) {
+    if (bytes[i] === 0x0d && bytes[i + 1] === 0x0a) {
+      pieces.push(bytes.subarray(start, i)); // up to the CR (dropped)
+      start = i + 1; // the LF survives
+    }
+  }
+  if (pieces.length === 0) return bytes; // only lone/trailing CRs
+  pieces.push(bytes.subarray(start));
+  return Buffer.concat(pieces);
+}
+
 export class SseReader {
-  private buf: Buffer = Buffer.from(new Uint8Array(0));
+  /** Bytes of the event in progress, as the reads that carried them (joined only when an event ends). */
+  private parts: Buffer[] = [];
+  private size = 0;
+  private lastByte = -1;
+  private held: Reservation | null = null;
+  private dead: string | null = null;
 
   constructor(
     private readonly budget: ByteBudget,
     private readonly maxEventBytes = LOGICAL_MESSAGE_MAX_BYTES,
   ) {}
 
-  /** Feed raw UTF-8 bytes; returns complete events and any admission error. */
-  feed(chunk: Buffer | string): SseReadResult {
-    const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    const ticket = this.budget.reserve(bytes.length);
-    if (!ticket) return { events: [], error: `sse: ingress budget ${this.budget.name} exhausted` };
-    let out: SseReadResult;
-    try {
-      this.buf = this.buf.length === 0 ? bytes : Buffer.concat([this.buf, bytes]);
-      if (this.buf.length > this.maxEventBytes) {
-        out = { events: [], error: `sse: event exceeds ${this.maxEventBytes}B before framing` };
-        this.buf = Buffer.from(new Uint8Array(0));
-        return out;
-      }
-      const events: SseEvent[] = [];
-      let start = 0;
-      while (true) {
-        const idx = this.buf.indexOf("\n\n", start);
-        if (idx < 0) break;
-        const block = this.buf.toString("utf8", start, idx);
-        start = idx + 2;
-        const ev = this.parseBlock(block);
-        if (ev) events.push(ev);
-      }
-      if (start > 0) this.buf = this.buf.subarray(start);
-      out = { events, error: null };
-      return out;
-    } finally {
-      ticket.release();
+  /**
+   * Feed raw UTF-8 bytes; returns complete events and any admission error. After an error the
+   * reader is finished (it keeps returning that error) and holds no budget.
+   */
+  feed(chunk: Uint8Array | string): SseReadResult {
+    if (this.dead) return { events: [], error: this.dead };
+    let bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    if (bytes.length === 0) return { events: [], error: null };
+    // The wire may end lines with CRLF: coalesce CR+LF → LF so the framing and the field
+    // values below only ever see LF, making \r\n\r\n exactly one event delimiter and
+    // keeping any CR out of the values. A CR dangling at the end of the previous feed
+    // pairs with an LF that starts this one; a lone CR is data, not a line ending.
+    if (this.lastByte === 0x0d && bytes[0] === 0x0a && this.parts.length > 0) {
+      const last = this.parts.pop()!;
+      const trimmed = last.subarray(0, last.length - 1); // drop the dangling CR
+      if (trimmed.length > 0) this.parts.push(trimmed);
+      this.size -= 1;
+      const head = this.parts.length > 0 ? this.parts[this.parts.length - 1] : undefined;
+      this.lastByte = head && head.length > 0 ? head[head.length - 1] : -1;
     }
+    bytes = coalesceCrlf(bytes);
+    const total = this.size + bytes.length;
+    const terminates = (this.lastByte === 0x0a && bytes[0] === 0x0a) || bytes.indexOf("\n\n") >= 0;
+    if (!terminates && total > this.maxEventBytes) return this.fail(`sse: event exceeds ${this.maxEventBytes}B before framing`);
+    // Admission precedes any copy of the pending bytes.
+    if (!this.retain(total)) return this.fail(`sse: ingress budget ${this.budget.name} exhausted`);
+    if (!terminates) {
+      this.parts.push(bytes);
+      this.size = total;
+      this.lastByte = bytes[bytes.length - 1];
+      return { events: [], error: null };
+    }
+    const joined = this.parts.length === 0 ? bytes : Buffer.concat([...this.parts, bytes], total);
+    this.parts = [];
+    this.size = 0;
+    const events: SseEvent[] = [];
+    let start = 0;
+    while (true) {
+      const idx = joined.indexOf("\n\n", start);
+      if (idx < 0) break;
+      if (idx - start > this.maxEventBytes) return this.fail(`sse: event exceeds ${this.maxEventBytes}B before framing`);
+      const ev = this.parseBlock(joined.toString("utf8", start, idx));
+      start = idx + 2;
+      if (ev) events.push(ev);
+    }
+    const remainder = joined.length - start;
+    if (remainder > this.maxEventBytes) return this.fail(`sse: event exceeds ${this.maxEventBytes}B before framing`);
+    if (remainder > 0) {
+      // A copy, so the remainder does not pin the whole joined buffer.
+      this.parts = [Buffer.from(joined.subarray(start))];
+      this.size = remainder;
+      this.lastByte = joined[joined.length - 1];
+    } else this.lastByte = -1;
+    if (!this.retain(remainder)) return this.fail(`sse: ingress budget ${this.budget.name} exhausted`);
+    return { events, error: null };
+  }
+
+  /** Release whatever an abandoned event still holds. Safe to call more than once. */
+  close(): void {
+    this.dead ??= "sse: reader closed";
+    this.parts = [];
+    this.size = 0;
+    this.held?.release();
+    this.held = null;
+  }
+
+  private fail(error: string): SseReadResult {
+    this.close();
+    this.dead = error;
+    return { events: [], error };
+  }
+
+  /** Charge `bytes` to the budget in place of the previous charge (release first: this is synchronous). */
+  private retain(bytes: number): boolean {
+    this.held?.release();
+    this.held = null;
+    if (bytes === 0) return true;
+    this.held = this.budget.reserve(bytes);
+    return this.held !== null;
   }
 
   private parseBlock(block: string): SseEvent | null {

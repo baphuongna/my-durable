@@ -32,6 +32,21 @@ test("parses events split across chunks, comments, multi-line data and CRLF", as
   ]);
 });
 
+test("CRLF split across reads coalesces — no CR leaks into field values (readSse)", async () => {
+  const body = streamOf(["event: tick\r", '\ndata: {"a":1}\r\n', "\r\n"]);
+  const out = [];
+  for await (const m of readSse(body)) out.push(m);
+  assert.deepEqual(out, [{ event: "tick", data: '{"a":1}', id: undefined }],
+    "the \\r | \\n pair across the read boundary must behave like one LF");
+});
+
+test("a lone CR is data, not a line ending (readSse)", async () => {
+  const body = streamOf(["data: a\rb\n\n"]);
+  const out = [];
+  for await (const m of readSse(body)) out.push(m);
+  assert.deepEqual(out, [{ event: "message", data: "a\rb", id: undefined }]);
+});
+
 test("ignores blocks without data", () => {
   assert.equal(parseBlock(": comment only"), undefined);
   assert.equal(parseBlock("event: x"), undefined);

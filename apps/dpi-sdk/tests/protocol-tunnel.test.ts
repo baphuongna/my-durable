@@ -153,9 +153,16 @@ test("W-2: limits — wire/logical/chunk invariants", () => {
   assert.ok(MAX_CHUNKS_PER_MESSAGE * CHUNK_RAW_BYTES >= LOGICAL_MESSAGE_MAX_BYTES);
 });
 
-test("W-2: tunnel-data requires subscription correlation; frame is passthrough object", () => {
-  const msg = { type: "tunnel-data", frame: { kind: "tree" }, subscriptionId: uuid(), sub: "dev-1/device" };
+test("W-2: tunnel-data requires subscription correlation and a known backend frame", () => {
+  const msg = { type: "tunnel-data", frame: { type: "tree", tree: { sessions: [] } }, subscriptionId: uuid(), sub: "dev-1/device" };
   assert.ok(checkTunnelMessage(msg));
   assert.ok(!checkTunnelMessage({ type: "tunnel-data", frame: { kind: "tree" } })); // missing correlation
   assert.ok(!checkTunnelMessage({ type: "tunnel-data", frame: {}, subscriptionId: uuid(), sub: "x" })); // empty frame
+});
+
+test("R01: device tunnel payloads cannot contain hub-only or unknown frame types", () => {
+  const envelope = { type: "tunnel-data", subscriptionId: uuid(), sub: "/v1/events" };
+  for (const frame of [{ type: "network", devices: [] }, { type: "stream", streamId: uuid() }, { type: "mystery" }, { kind: "tree" }])
+    assert.equal(checkTunnelMessage({ ...envelope, frame }), false, `${frame.type ?? "missing type"} is not a backend frame`);
+  assert.equal(checkTunnelMessage({ ...envelope, frame: { type: "doc", kind: "fixture", value: {} } }), true);
 });

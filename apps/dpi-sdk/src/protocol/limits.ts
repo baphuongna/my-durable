@@ -30,6 +30,11 @@ export const HUB_BUFFER_BUDGET_BYTES = 67_108_864;
 export const SSE_HUB_VIEWER_BYTES = 4_000_000;
 /** Hub ↔ device WS buffered-output cap per direction before close(1011). 4 MB. */
 export const WS_BACKPRESSURE_BYTES = 4_000_000;
+/**
+ * Pacing mark for the connector's outbound WS queue: a sender holds back while more than this is queued,
+ * so a valid message up to the 16 MiB logical cap flows through without ever reaching the close above. 1 MiB.
+ */
+export const WS_PACE_LOW_WATER_BYTES = 1_048_576;
 /** Backend → SSE viewer cap (LAN or connector). 2 MB. */
 export const BACKEND_SSE_VIEWER_BYTES = 2_000_000;
 /** Paced write segment for SSE/WS writers. 64 KiB. */
@@ -59,12 +64,13 @@ export const PING_INTERVAL_MS = 15_000;
 export const PING_MISS_LIMIT = 2;
 /** No-byte idle safety net. 45 s. */
 export const IDLE_TIMEOUT_MS = 45_000;
-/** Connector reconnect backoff sequence, seconds. Reset to 1 s on hello. */
-export const CONNECTOR_BACKOFF_S = [1, 2, 4, 8, 15, 15] as const;
-/** Mux reader retry backoff (init / cap), seconds. */
-export const MUX_READER_BACKOFF_S = { init: 1, cap: 15 } as const;
-/** Monitor probe backoff (init / cap), seconds. */
-export const MONITOR_BACKOFF_S = { init: 1, cap: 30 } as const;
+/**
+ * Reconnect backoff shared by the device connector, the hub's mux reader and the SDK stream follower:
+ * 1, 2, 4, 8, 15, 15 s, back to 1 s on hello (see `Backoff`).
+ */
+export const RECONNECT_BACKOFF_S = { initS: 1, capS: 15 } as const;
+/** Monitor probe backoff: the same curve with a 30 s cap. */
+export const MONITOR_BACKOFF_S = { initS: 1, capS: 30 } as const;
 
 /** Pairing code TTL by hub clock. 5 min. */
 export const PAIR_CODE_TTL_MS = 300_000;
@@ -98,17 +104,31 @@ export const PAIR_POLL_MS = 1_000;
 /** Hub admin REST rate limit (per real IP): refill 60/min, burst capacity 120. */
 export const API_RATE_LIMITS = { perMinute: 60, capacity: 120 } as const;
 
+/** Per-address limiter tables (pairing, admin API, tunnel upgrade): key cap and idle TTL. A full table refuses new keys. */
+export const IP_BUCKET_MAX_KEYS = 10_000;
+export const IP_BUCKET_IDLE_TTL_MS = 900_000;
+
+/**
+ * Tunnel upgrade allocation (05 §4.3 / S-10): attempts per real IP (refill and burst), pending+live
+ * connections per real IP, and the hub-wide pending-handshake and authenticated-connection caps.
+ */
+export const WS_UPGRADE_LIMITS = {
+  perMinutePerIp: 30,
+  burstPerIp: 10,
+  connectionsPerIp: 5,
+  pendingPerHub: 100,
+  livePerHub: 1_000,
+} as const;
+
 /** Routine credential rotation interval. 90 days. */
 export const ROTATION_INTERVAL_DAYS = 90;
 
-/** Tunnel REST path allowlist. */
-export const REST_PATH_PREFIX = "/v1/";
 /**
- * Paths under /v1 that must never be tunneled: SSE endpoints (streams are
- * subscription-based) and the device-LOCAL control surface (pairing/tunnel
- * status) which belongs to the device operator, not to remote hub callers.
+ * Tunneled REST paths live under /v1 and must match the route allowlist (rest-routes.ts). SSE endpoints (streams
+ * are subscription-based) and the device-LOCAL control surface (pairing/tunnel status) are not on it: they belong
+ * to the device operator, not to remote hub callers.
  */
-export const REST_PATH_DENYLIST = ["/v1/events", "/v1/pairing", "/v1/tunnel"];
+export const REST_PATH_PREFIX = "/v1/";
 
 /** Canonical snapshot of every startup-validated number (testability: callers may pass mutated copies to validateLimits). */
 export interface LimitsSnapshot {
@@ -141,7 +161,7 @@ const CANON_SNAPSHOT: LimitsSnapshot = {
   readersPerHub: READERS_PER_HUB,
   restPendingPerDevice: REST_PENDING_PER_DEVICE,
   restPendingPerHub: REST_PENDING_PER_HUB,
-  connectorBackoffFirstS: CONNECTOR_BACKOFF_S[0],
+  connectorBackoffFirstS: RECONNECT_BACKOFF_S.initS,
   pairVerifyFailsPerWindow: PAIR_RATE_LIMITS.verifyFails.perWindow,
   pairVerifyFailWindowMinutes: PAIR_RATE_LIMITS.verifyFails.windowMinutes,
   apiPerMinute: API_RATE_LIMITS.perMinute,

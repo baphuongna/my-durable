@@ -1,54 +1,18 @@
 /**
- * D-1/D-2/D-3: registry v0→v1 migration — 15 legacy fields preserved, WAL-safe
- * backup, injected-failure rollback, canonical/duplicate identity aborts,
+ * D-2/D-3: registry v0→v1 migration — 15 legacy fields preserved,
+ * injected-failure rollback, canonical/duplicate identity aborts,
  * idempotent rerun, partial-schema detection, FK/constraint enforcement.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, copyFile } from "node:fs/promises";
-import { statSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { NetworkRegistry } from "../src/node/registry.js";
-import { migrateRegistryFile } from "../src/node/registry-migration.js";
-
-/** Exact v0 bootstrap DDL (from registry.ts @ 37165c6) for true-v0 fixtures. */
-const V0_DDL = `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;
-CREATE TABLE IF NOT EXISTS devices(
-  id TEXT PRIMARY KEY, name TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('local','ssh','exe-dev','url')),
-  url TEXT NOT NULL, token TEXT,
-  source TEXT NOT NULL DEFAULT 'ui' CHECK(source IN ('config','ui')),
-  position INTEGER NOT NULL DEFAULT 0, device_uid TEXT,
-  last_status TEXT NOT NULL DEFAULT 'checking', last_error TEXT,
-  last_seen_at INTEGER, last_info_json TEXT, last_tree_json TEXT,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS ui_state(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);`;
-
-async function tempDir() {
-  return mkdtemp(join(tmpdir(), "dpi-mig-"));
-}
-
-function makeV0(path: string, rows: Record<string, unknown>[] = [], uiState: [string, string][] = []) {
-  const db = new DatabaseSync(path);
-  db.exec(V0_DDL);
-  const insert = db.prepare(
-    `INSERT INTO devices(id,name,kind,url,token,source,position,device_uid,last_status,last_error,last_seen_at,last_info_json,last_tree_json,created_at,updated_at)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  );
-  const V = (v: unknown): string | number | null => (v === undefined || v === null ? null : (v as string | number));
-  for (const r of rows)
-    insert.run(
-      (r.id ?? "dev-a") as string, (r.name ?? "A") as string, (r.kind ?? "url") as string,
-      (r.url ?? "http://10.0.0.5:7900") as string, V(r.token), (r.source ?? "ui") as string,
-      V(r.position) ?? 0, V(r.device_uid), (r.last_status ?? "online") as string, V(r.last_error),
-      V(r.last_seen_at) ?? 1760000000000, V(r.last_info_json), V(r.last_tree_json),
-      V(r.created_at) ?? 1759999999000, V(r.updated_at) ?? 1760000001000,
-    );
-  for (const [k, v] of uiState) db.prepare("INSERT INTO ui_state(key,value,updated_at) VALUES(?,?,1)").run(k, v);
-  return db;
-}
+import { migrateRegistryFile, syncDirectory } from "../src/node/registry-migration.js";
+import { makeClosedV0, makeV0, tempDir } from "./fixtures/registry-v0.js";
+// D-1 (WAL-safe backup, writer ownership) lives in registry-writers.test.ts: it needs real second processes.
 
 test("fresh registry creates v1 directly with hub_id, FK on, rerun no-op", async () => {
   const dir = await tempDir();
@@ -80,7 +44,7 @@ test("D-2: v0→v1 preserves all 15 fields, ui_state, order; transport='lan' mak
       { id: "a-dev", name: "Alpha", position: 0, source: "config", last_status: "offline", last_error: "boom" },
       { id: "c-dev", name: "Charlie", position: 1, token: null },
     ];
-    makeV0(path, rows, [["ui.openPanel", '{"tab":"tasks"}']]);
+    makeClosedV0(path, rows, [["ui.openPanel", '{"tab":"tasks"}']]);
     const before = new DatabaseSync(path);
     const beforeRows = (before.prepare("SELECT * FROM devices ORDER BY position,id").all() as Record<string, unknown>[]);
     before.close();
@@ -114,59 +78,14 @@ test("D-2: v0→v1 preserves all 15 fields, ui_state, order; transport='lan' mak
   }
 });
 
-test("D-1: WAL counterexample — naive main-file copy misses WAL rows; migration backup contains them", async () => {
-  const dir = await tempDir();
-  try {
-    const path = join(dir, "network.sqlite");
-    const db = makeV0(path, [{ id: "dev-a" }]);
-    // Commit a row that stays in the WAL (no checkpoint, connection still open).
-    db.exec("PRAGMA wal_autocheckpoint=0;");
-    db.prepare(
-      `INSERT INTO devices(id,name,kind,url,token,source,position,created_at,updated_at) VALUES('dev-wal','W','url','http://1.2.3.4:1',NULL,'ui',5,1,1)`,
-    ).run();
-
-    // Counterexample: copying only the main DB file loses dev-wal.
-    const naivePath = join(dir, "naive.sqlite");
-    await copyFile(path, naivePath);
-    db.close();
-    // The naive copy may lack even the schema (DDL itself can sit in the WAL).
-    // Either way it must NOT see the WAL-committed row dev-wal.
-    const naive = new DatabaseSync(naivePath, { readOnly: true });
-    let naiveSeesWalRow = false;
-    try {
-      naiveSeesWalRow =
-        (naive.prepare("SELECT count(*) AS n FROM devices WHERE id='dev-wal'").get() as { n: number }).n > 0;
-    } catch {
-      naiveSeesWalRow = false; // no such table — even stronger counterexample
-    }
-    naive.close();
-    assert.equal(naiveSeesWalRow, false); // dev-wal is missing — the documented failure mode
-
-    const result = migrateRegistryFile(path);
-    const bak = new DatabaseSync(result.backupPath!, { readOnly: true });
-    const bakCount = (bak.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n;
-    const bakCols = (bak.prepare("PRAGMA table_info(devices)").all() as unknown[]).length;
-    bak.close();
-    assert.equal(bakCount, 2); // WAL commits folded into the backup
-    assert.equal(bakCols, 15); // backup opens as v0
-    const mode = statSync(result.backupPath!).mode & 0o777;
-    assert.equal(mode, 0o600);
-
-    const after = new DatabaseSync(path);
-    assert.equal((after.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n, 2);
-    after.close();
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("D-3: injected failures roll back to intact v0 (except after-commit)", async () => {
   const dir = await tempDir();
   try {
     for (const failAt of ["preflight", "after-backup", "mid-transaction", "before-user-version"] as const) {
       const path = join(dir, `${failAt}.sqlite`);
-      makeV0(path, [{ id: "dev-a", token: "t".repeat(40) }]);
-      assert.throws(() => migrateRegistryFile(path, { failAt }), /injected|registry migration/);
+      makeClosedV0(path, [{ id: "dev-a", token: "t".repeat(40) }]);
+      // Exact message: an abort for any other reason (a lock, a stale handle) must not pass as the injected one.
+      assert.throws(() => migrateRegistryFile(path, { failAt }), new RegExp(`injected: ${failAt}$`));
       const db = new DatabaseSync(path);
       const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
       const cols = (db.prepare("PRAGMA table_info(devices)").all() as unknown[]).length;
@@ -180,8 +99,8 @@ test("D-3: injected failures roll back to intact v0 (except after-commit)", asyn
     }
     // after-commit: DB is a valid v1 (the failure is post-state)
     const path = join(dir, "after-commit.sqlite");
-    makeV0(path, [{ id: "dev-a" }]);
-    assert.throws(() => migrateRegistryFile(path, { failAt: "after-commit" }), /injected/);
+    makeClosedV0(path, [{ id: "dev-a" }]);
+    assert.throws(() => migrateRegistryFile(path, { failAt: "after-commit" }), /injected: after-commit$/);
     assert.equal(migrateRegistryFile(path).action, "noop");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -192,17 +111,17 @@ test("D-3: duplicate UID / non-canonical UID / bad id / empty url abort before m
   const dir = await tempDir();
   try {
     const uid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
-    const cases: { name: string; rows: Record<string, unknown>[] }[] = [
-      { name: "duplicate-uid", rows: [{ id: "a", device_uid: uid }, { id: "b", device_uid: uid }] },
-      { name: "uid-trailing-space", rows: [{ id: "a", device_uid: `${uid} ` }] },
-      { name: "uid-uppercase", rows: [{ id: "a", device_uid: uid.toUpperCase() }] },
-      { name: "id-trailing-space", rows: [{ id: "a " }] },
-      { name: "empty-url", rows: [{ id: "a", url: "" }] },
+    const cases: { name: string; rows: Record<string, unknown>[]; reason: RegExp }[] = [
+      { name: "duplicate-uid", rows: [{ id: "a", device_uid: uid }, { id: "b", device_uid: uid }], reason: /duplicate device_uid/ },
+      { name: "uid-trailing-space", rows: [{ id: "a", device_uid: `${uid} ` }], reason: /non-canonical device_uid/ },
+      { name: "uid-uppercase", rows: [{ id: "a", device_uid: uid.toUpperCase() }], reason: /non-canonical device_uid/ },
+      { name: "id-trailing-space", rows: [{ id: "a " }], reason: /non-canonical device id/ },
+      { name: "empty-url", rows: [{ id: "a", url: "" }], reason: /empty\/NULL url/ },
     ];
     for (const c of cases) {
       const path = join(dir, `${c.name}.sqlite`);
-      makeV0(path, c.rows);
-      assert.throws(() => migrateRegistryFile(path), /registry migration/, c.name);
+      makeClosedV0(path, c.rows);
+      assert.throws(() => migrateRegistryFile(path), c.reason, c.name);
       const db = new DatabaseSync(path);
       assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 0, c.name);
       db.close();
@@ -238,6 +157,87 @@ test("unknown / higher / partial schema aborts (no IF-NOT-EXISTS masking)", asyn
     db4.exec("DROP TABLE pairings");
     db4.close();
     assert.throws(() => migrateRegistryFile(partial), /partial schema/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a v0 file that already carries v1-only objects is refused BEFORE the backup, naming the object", async () => {
+  const dir = await tempDir();
+  try {
+    const cases: { name: string; ddl: string; offender: RegExp }[] = [
+      { name: "stray-pairings-table", ddl: "CREATE TABLE pairings(x)", offender: /table pairings/ },
+      { name: "stray-hub-meta-table", ddl: "CREATE TABLE hub_meta(key TEXT, value TEXT)", offender: /table hub_meta/ },
+      { name: "stray-trigger", ddl: "CREATE TRIGGER events_no_update BEFORE UPDATE ON ui_state BEGIN SELECT RAISE(ABORT,'x'); END", offender: /trigger events_no_update/ },
+      { name: "stray-index", ddl: "CREATE INDEX devices_uid_unique ON devices(id)", offender: /index devices_uid_unique/ },
+      { name: "stray-view-named-like-v1-object", ddl: "CREATE VIEW tunnel_state AS SELECT 1 AS x", offender: /view tunnel_state/ },
+    ];
+    for (const c of cases) {
+      const path = join(dir, `${c.name}.sqlite`);
+      const db = makeV0(path, [{ id: "dev-a" }]);
+      db.exec(c.ddl);
+      db.close();
+      assert.throws(
+        () => migrateRegistryFile(path),
+        (e: unknown) => /v1-only/.test(String(e)) && c.offender.test(String(e)),
+        `${c.name}: refusal must be a MigrationError naming the object`,
+      );
+      const after = new DatabaseSync(path);
+      assert.equal((after.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 0, `${c.name}: registry untouched`);
+      after.close();
+      assert.equal(existsSync(`${path}.pre-v1.bak`), false, `${c.name}: no backup was written`);
+    }
+    // The refusal happens inside preflightV0, BEFORE the "preflight" phase hook: a stray object
+    // must win over an injected failAt at the same point, so the ordering of the check is pinned.
+    const stray = join(dir, "hook-order.sqlite");
+    const hookDb = makeV0(stray, [{ id: "dev-a" }]);
+    hookDb.exec("CREATE TABLE pairings(x)");
+    hookDb.close();
+    assert.throws(() => migrateRegistryFile(stray, { failAt: "preflight" }), /table pairings/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a v0 file with unknown extra columns in devices or ui_state is refused BEFORE the backup, naming table and column", async () => {
+  const dir = await tempDir();
+  try {
+    // Drift: one extra column per v0 table, each holding a value nobody intended
+    // to carry (or drop) into v1. Same fail-closed rule as stray v1-only objects.
+    const cases: { name: string; table: string; column: string; alter: string }[] = [
+      { name: "devices-stray-column", table: "devices", column: "stray", alter: "ALTER TABLE devices ADD COLUMN stray TEXT" },
+      { name: "ui-state-stray-column", table: "ui_state", column: "note", alter: "ALTER TABLE ui_state ADD COLUMN note TEXT" },
+    ];
+    for (const c of cases) {
+      const path = join(dir, `${c.name}.sqlite`);
+      const db = makeV0(path, [{ id: "dev-a" }], [["ui.panel", '"tasks"']]);
+      db.exec(c.alter);
+      db.prepare(`UPDATE ${c.table} SET ${c.column}='unintended'`).run();
+      db.close();
+      assert.throws(
+        () => migrateRegistryFile(path),
+        (e: unknown) => {
+          const msg = String(e);
+          return (
+            msg.includes("registry migration: unknown v0 schema") &&
+            msg.includes(c.table) &&
+            msg.includes(`unknown column(s) ${c.column}`)
+          );
+        },
+        `${c.name}: refusal must name the table and the offending column`,
+      );
+      const after = new DatabaseSync(path);
+      assert.equal((after.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 0, `${c.name}: still v0`);
+      after.close();
+      assert.equal(existsSync(`${path}.pre-v1.bak`), false, `${c.name}: no backup was written`);
+    }
+    // Ordering, mirroring the stray-v1-object pin: the drift refusal happens inside
+    // preflightV0, BEFORE the "preflight" phase hook, so it wins over an injected failAt.
+    const drift = join(dir, "hook-order.sqlite");
+    const hookDb = makeV0(drift, [{ id: "dev-a" }]);
+    hookDb.exec("ALTER TABLE ui_state ADD COLUMN note TEXT");
+    hookDb.close();
+    assert.throws(() => migrateRegistryFile(drift, { failAt: "preflight" }), /unknown column/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -293,7 +293,7 @@ test("existing registry keeps working after auto-migration (upsert/list/ui)", as
   const dir = await tempDir();
   try {
     const path = join(dir, "network.sqlite");
-    makeV0(path, [{ id: "dev-old", token: "k".repeat(44) }], [["k1", '"v1"']]);
+    makeClosedV0(path, [{ id: "dev-old", token: "k".repeat(44) }], [["k1", '"v1"']]);
     const reg = new NetworkRegistry(path); // constructor migrates
     const rows = reg.list();
     assert.equal(rows.length, 1);
@@ -305,6 +305,37 @@ test("existing registry keeps working after auto-migration (upsert/list/ui)", as
     reg.uiSet("k2", { a: 1 });
     assert.deepEqual(reg.uiGet<{ a: number }>("k2"), { a: 1 });
     reg.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("D-1: the backup is one self-contained file — no -wal/-shm left beside it", async () => {
+  const dir = await tempDir();
+  try {
+    const path = join(dir, "network.sqlite");
+    makeClosedV0(path, [{ id: "dev-a" }]);
+    const result = migrateRegistryFile(path);
+    assert.equal(result.action, "migrated");
+    const beside = readdirSync(dir).filter((name) => name.startsWith("network.sqlite.pre-v1.bak"));
+    assert.deepEqual(beside, ["network.sqlite.pre-v1.bak"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("D-1: the backup's DIRECTORY is fsynced too — syncDirectory opens a dir fd read-only, fsyncs it, and refuses a non-directory", async () => {
+  const dir = await tempDir();
+  try {
+    const path = join(dir, "network.sqlite");
+    makeClosedV0(path, [{ id: "dev-a" }]);
+    const result = migrateRegistryFile(path);
+    assert.equal(result.action, "migrated");
+    assert.ok(result.backupPath);
+    // A real directory: open+fsync+close succeeds on POSIX (an fsync that fails would throw).
+    assert.doesNotThrow(() => syncDirectory(dir));
+    // A regular file is refused — the durability call must not silently fsync the wrong object class.
+    assert.throws(() => syncDirectory(result.backupPath!), /not a directory/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -21,6 +21,17 @@ The apps import it by relative path (`../../dpi-sdk/src/client.ts`, or `@sdk/*` 
 | `src/node/drivers.ts`, `ops.ts` | One driver per device kind (`local`, `ssh`, `exe-dev`, `url`) with the steps behind `just net` |
 | `scripts/net.ts` | The ops CLI behind every `just net` recipe. From this folder: `npx tsx scripts/net.ts <verb> [device]` or `npm run net -- <verb> [device]`. `help` lists the verbs |
 
+## The registry file
+
+`~/.dpi/network.sqlite` is schema **v1**. A v0 file is migrated automatically on first open, and the migration is deliberately strict:
+
+- **Stop every writer first** (hub, TUI, `just net`): a v0 file is migrated only while the process holds the file's exclusive lock, which exists only when no other connection has it open. Otherwise the open aborts — it never migrates a live file.
+- Before touching anything it writes a verified backup to `network.sqlite.pre-v1.bak` (0600, `VACUUM INTO` + fsync, re-opened and row-checked). Keep that file until you have verified the v1 registry.
+- The rebuild runs in one transaction and `user_version=1` is set inside it; any failure rolls back to an intact v0 file. Re-running on a valid v1 is a no-op; an unknown or partial schema aborts instead of guessing.
+- The v0 preflight is fail-closed the same way: a v0 file that already carries stray v1-only objects, or unknown extra columns in its tables (`devices`, `ui_state`), is refused before the backup is written, with the offending object / table and column named in the error.
+
+`~/.dpi` itself is enforced 0700 on every start (created that way, or tightened; a directory owned by another account is refused), and the database file is kept 0600.
+
 ## Use it
 
 Send work and wait for the answer in one request:

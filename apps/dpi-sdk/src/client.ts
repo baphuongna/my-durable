@@ -20,6 +20,8 @@ import type {
   WireEntry,
 } from "./api.js";
 import { DpiError } from "./errors.js";
+import { Backoff } from "./protocol/backoff.js";
+import { RECONNECT_BACKOFF_S } from "./protocol/limits.js";
 import { readSse } from "./sse.js";
 
 export interface RequestOptions {
@@ -300,13 +302,13 @@ export async function follow(
   onState: (state: ConnectionState, error?: DpiError) => void,
   signal: AbortSignal,
 ) {
-  let backoff = 1_000;
+  const backoff = new Backoff(RECONNECT_BACKOFF_S);
   while (!signal.aborted) {
     onState("connecting");
     try {
       for await (const frame of open(signal)) {
         if (frame.type === "hello") {
-          backoff = 1_000;
+          backoff.reset();
           onState("live");
         }
         onFrame(frame);
@@ -322,7 +324,7 @@ export async function follow(
       if (e.code === "not_found") return onState("gone", e);
       onState("offline", e);
     }
-    await sleep(backoff, signal);
-    backoff = Math.min(backoff * 2, 15_000);
+    await sleep(backoff.ms, signal);
+    backoff.advance();
   }
 }
