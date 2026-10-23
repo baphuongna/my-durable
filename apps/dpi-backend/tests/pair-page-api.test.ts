@@ -28,6 +28,24 @@ const offerUrl = (hub: string = ORIGIN) =>
     exp: PAIR_NOW + 300_000,
   })}`;
 
+test("GET /: the base URL lands on the pair page, not a JSON 404", async () => {
+  const t = await tempStore();
+  const server = await bootServer({
+    home: join(t.root, "home"),
+    startDirs: t.work,
+    token: newToken(),
+    name: "root-box",
+  });
+  try {
+    const res = await fetch(`${server.base}/`, { redirect: "manual" });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get("location"), "/pair");
+  } finally {
+    await server.stop();
+    await t.cleanup();
+  }
+});
+
 test("GET /pair: the static enrollment page, no token needed", async () => {
   const t = await tempStore();
   const token = newToken();

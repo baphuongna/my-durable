@@ -35,6 +35,9 @@ const store = await Store.open({
 const app = express();
 app.disable("x-powered-by");
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
+// The base URL is what people type first; a JSON 404 reads like a broken
+// daemon. Land them on the one real page (unpaired: enroll; paired: status).
+app.get("/", (_req, res) => res.redirect("/pair"));
 const pairing = new DevicePairing(store, config.home, config.name, process.env.DPI_HUB_URL, {
   // Forced hub change (P-5): once the new pairing is persisted the OLD
   // connector is stopped — never two live tunnels for one device, and the old
