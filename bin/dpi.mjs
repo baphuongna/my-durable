@@ -100,6 +100,10 @@ if (command === "update" || command === "upgrade") {
     });
     if (!res.ok) throw new Error(`registry responded ${res.status}`);
     latest = (await res.json()).version;
+    // This string is later interpolated into a command line (shell on Windows):
+    // anything that is not a plain semver must stop the update, not run.
+    if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(String(latest)))
+      throw new Error(`registry returned a malformed version: ${latest}`);
   } catch (error) {
     process.stderr.write(`dpi update: cannot reach the npm registry (${error.message})\n`);
     process.exit(1);
@@ -132,7 +136,15 @@ if (command === "update" || command === "upgrade") {
     process.exit(0);
   }
 
-  const child = spawn("npm", ["install", "-g", `my-durable@${latest}`], { stdio: "inherit" });
+  // Windows: npm is npm.cmd and cmd.exe only executes batch files through a
+  // shell — a bare spawn("npm") dies with ENOENT (CreateProcess does no
+  // PATHEXT resolution). Args are literals plus the strictly-validated
+  // version above, so shell: true has no injection surface here.
+  const onWindows = process.platform === "win32";
+  const child = spawn(onWindows ? "npm.cmd" : "npm", ["install", "-g", `my-durable@${latest}`], {
+    stdio: "inherit",
+    shell: onWindows,
+  });
   child.on("error", (error) => {
     process.stderr.write(`dpi update: cannot run npm (${error.message})\n`);
     process.exit(1);
