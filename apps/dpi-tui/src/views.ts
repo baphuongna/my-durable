@@ -142,6 +142,16 @@ export function renderHerd(
     if (showAge) line += `  ${fit(c.muted(ageOf(s.createdAt)), cols.age)}`;
     lines.push(atCursor && !selected ? c.inverse(fit(line, w)) : fit(line, w));
   }
+  if (!rows.length && !opts.filter) {
+    // herdr never shows a bare header over nothing: the empty state points at
+    // the next move instead of a wall of blank rows.
+    lines.push(
+      "",
+      `  ${c.muted("no sessions yet on this device")}`,
+      "",
+      `  ${c.accent("n")} ${c.muted("new session")}   ${c.accent(":")} ${c.muted("palette")}   ${c.accent("N")} ${c.muted("network view")}`,
+    );
+  }
   if (opts.filter) lines.push(c.warn(`filter: ${opts.filter}`));
   // herdr frames pad EVERY line to the exact width — the caller paints rows as-is.
   return lines.map((l) => fit(l, w));
@@ -273,8 +283,23 @@ export function renderHerdPanel(
   h: number,
   s: SessionSummary | undefined,
   ctxLeft?: number,
+  device?: string,
 ): string[] {
-  if (!s) return Array.from({ length: Math.max(0, h) }, () => rep(" ", w));
+  // No session selected: a blank panel next to the divider is what made the
+  // wide layout look broken — herdr's panel always carries a device header.
+  if (!s) {
+    const lines = [
+      c.muted(" OVERVIEW"),
+      ` ${c.bold(device ?? "device")}`,
+      ` ${c.muted("no session selected")}`,
+      "",
+      ` ${c.muted("n")}        ${c.text("new session")}`,
+      ` ${c.muted("↵")}        ${c.text("open the cursor row")}`,
+      ` ${c.muted("j/k")}      ${c.text("move")}`,
+      ` ${c.muted(":")}        ${c.text("palette")}`,
+    ];
+    return lines.slice(0, h).map((l) => fit(l, w));
+  }
   const agents = s.agents.map((a) =>
     a.kind === "fork" ? `⑂ ${a.name}` : a.kind === "subagent" ? `↳ ${a.name}` : `● ${a.name}`,
   );

@@ -136,6 +136,16 @@ const SUITES = {
     cmd: ["node", "tests/pairing-ui.mjs"],
     title: "real PTY pairing lifecycle and 40/80/200-column resize",
   },
+  "ui:tui-session": {
+    cwd: "apps/dpi-tui",
+    cmd: ["node", "tests/newsession-ui.mjs"],
+    title: "real PTY session creation on a keyless device + empty-state layout",
+  },
+  "ui:tui-welcome": {
+    cwd: "apps/dpi-tui",
+    cmd: ["node", "tests/welcome-ui.mjs"],
+    title: "real PTY welcome screen, detect-local and quit",
+  },
 };
 
 const PHASE_GATES = ["test:verification", "check:sdk", "check:backend", "contract:backend", "build:playground", "check:tui"];
@@ -143,7 +153,20 @@ const PHASE_SUITES = {
   P0: ["sdk"],
   P1: ["sdk", "playground"],
   P2: ["sdk", "backend", "playground", "tui"],
-  ALL: ["sdk", "backend", "timing:backend", "playground", "tui", "lint:playground", "lint:core", "ui:network", "ui:pairing", "ui:tui"],
+  ALL: [
+    "sdk",
+    "backend",
+    "timing:backend",
+    "playground",
+    "tui",
+    "lint:playground",
+    "lint:core",
+    "ui:network",
+    "ui:pairing",
+    "ui:tui",
+    "ui:tui-session",
+    "ui:tui-welcome",
+  ],
 };
 
 function run(name, suite) {

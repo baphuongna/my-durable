@@ -25,35 +25,91 @@ class Title implements Component {
   invalidate() {}
 }
 
-/** A titled SelectList; typing filters it. */
+/**
+ * A titled list with local filtering. Two deliberate departures from pi-tui's
+ * SelectList defaults, both found by driving the real picker:
+ *  - it filters on `value.startsWith`, so typing "pro" found nothing in a
+ *    directory named "project/"; we filter on the LABEL (substring), which is
+ *    what the user reads;
+ *  - its empty message is "No matching commands" — the wrong vocabulary for a
+ *    directory or model list, so the theme names the filter instead.
+ * j/k move (as the app advertises) instead of being swallowed as filter text.
+ */
 export class Picker extends Box {
-  readonly list: SelectList;
+  list: SelectList;
   private filter = "";
   private title: Title;
+  private readonly hintText: string;
   constructor(
     private label: string,
-    items: SelectItem[],
-    onPick: (item: SelectItem) => void,
-    onCancel: () => void,
-    hint = "↑↓ move │ enter select │ type to filter │ esc close",
-    subtitle?: string,
+    private readonly allItems: SelectItem[],
+    private onPick: (item: SelectItem) => void,
+    private readonly onCancel: () => void,
+    hint = "↑↓/j/k move │ enter select │ type to filter │ esc close",
+    private readonly subtitle?: string,
   ) {
     super(1, 0, panelBg);
+    this.hintText = hint;
     this.title = new Title(c.bold(c.accent(label)));
-    this.list = new SelectList(items, Math.max(1, Math.min(14, items.length)), selectTheme);
-    this.list.onSelect = onPick;
-    this.list.onCancel = onCancel;
+    this.list = this.makeList(this.allItems);
+    this.rebuild();
+  }
+  private makeList(items: SelectItem[]): SelectList {
+    const theme = {
+      ...selectTheme,
+      // Name the filter: "no match for “pro”" beats a command-palette phrase.
+      noMatch: (s: string) => c.muted(this.filter ? `  no match for “${this.filter}”` : s),
+    };
+    const list = new SelectList(items, Math.max(1, Math.min(14, items.length)), theme);
+    list.onSelect = this.onPick;
+    list.onCancel = this.onCancel;
+    return list;
+  }
+  /** Rebuild typing the children in order — the filter changes the item set. */
+  private rebuild() {
+    this.clear();
     this.addChild(this.title);
-    if (subtitle) this.addChild(new Title(subtitle));
+    if (this.subtitle) this.addChild(new Title(this.subtitle));
     this.addChild(this.list);
-    this.addChild(new Title(c.muted(hint)));
+    this.addChild(new Title(c.muted(this.hintText)));
+    this.invalidate();
+  }
+  /** Every item this picker was built with (shortcut lookups need the whole set). */
+  items(): SelectItem[] {
+    return this.allItems;
+  }
+  /** Run the same path a click/enter takes. */
+  pick(item: SelectItem) {
+    this.onPick(item);
+  }
+  private applyFilter() {
+    const needle = this.filter.toLowerCase();
+    const items = needle
+      ? this.allItems.filter((i) => `${i.label} ${i.description ?? ""}`.toLowerCase().includes(needle))
+      : this.allItems;
+    this.list = this.makeList(items);
+    this.title.text =
+      c.bold(c.accent(this.label)) + (this.filter ? c.muted(`  /${this.filter}`) : "");
+    this.rebuild();
   }
   handleInput(data: string) {
-    if (matchesKey(data, "backspace")) this.filter = this.filter.slice(0, -1);
-    else if (data.length === 1 && data >= " " && data !== "\x7f") this.filter += data;
-    else return this.list.handleInput(data);
-    this.list.setFilter(this.filter);
-    this.title.text = c.bold(c.accent(this.label)) + (this.filter ? c.muted(`  /${this.filter}`) : "");
+    // Navigation first: j/k are movement everywhere else in the app, so a list
+    // must not swallow them as filter characters.
+    // SelectList only knows arrows/enter/esc, so vim keys are translated to the
+    // arrow sequences it already understands.
+    if (data === "j") return this.list.handleInput("\x1b[B");
+    if (data === "k") return this.list.handleInput("\x1b[A");
+    if (matchesKey(data, "up") || matchesKey(data, "down") || matchesKey(data, "enter") || matchesKey(data, "escape"))
+      return this.list.handleInput(data);
+    if (matchesKey(data, "backspace")) {
+      this.filter = this.filter.slice(0, -1);
+      return this.applyFilter();
+    }
+    if (data.length === 1 && data >= " " && data !== "\x7f") {
+      this.filter += data;
+      return this.applyFilter();
+    }
+    this.list.handleInput(data);
   }
 }
 
@@ -216,17 +272,25 @@ export async function pickSession(app: App) {
   );
 }
 
-export async function newSession(app: App) {
-  const name = await app.prompt("Session name", "");
+export async function newSession(app: App, presetName?: string) {
+  // The `n` input line already carries the typed name — never re-ask for it.
+  const name = presetName !== undefined ? presetName : await app.prompt("Session name", "");
   if (name === undefined) return app.sessionId ? undefined : pickSession(app);
   const cwd = await walkDirs(app, "");
   if (!cwd) return app.sessionId ? undefined : pickSession(app);
-  const model = await chooseModel(app, app.info.defaultModel);
+  // A device without a provider key (the Windows default) lists ZERO models —
+  // the picker would be empty and creation dead-ends. Fall back to the device's
+  // own default exactly like the web dialog's "(device default)" option.
+  const models = app.info.models;
+  const model = models.length
+    ? await chooseModel(app, app.info.defaultModel)
+    : { provider: (app.info as { provider?: string }).provider ?? "openrouter", id: app.info.defaultModel, name: "(device default)" };
   if (!model) return;
   await app.run(async () => {
     const s = await app.client.createSession({ name: name || "New session", cwd, model: { provider: model.provider, modelId: model.id } });
     await app.attach(s.id, s.agents.find((a) => a.kind === "root")?.id ?? 1);
     app.flash(`Session created in ${cwd}`);
+    if (!models.length) app.flash(`no model catalog on the device — using its default (${app.info.defaultModel})`);
   });
 }
 
@@ -241,7 +305,7 @@ function walkDirs(app: App, path: string): Promise<string | undefined> {
         ...listing.dirs.map((d) => ({ value: d.path, label: `${d.name}/` })),
       ];
       app.overlay(
-        new Picker(`Working directory on ${app.device.id}`, items, (item) => {
+        new Picker(`Working directory on ${app.device.name}`, items, (item) => {
           app.closeOverlay();
           if (item.value.startsWith("use:")) done(item.value.slice(4));
           else void step(item.value);

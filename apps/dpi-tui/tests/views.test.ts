@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { SessionSummary, AgentSummary } from "../../dpi-sdk/src/api.ts";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
+import { Picker } from "../src/pickers.ts";
 import { slashSuggestions } from "../src/app.ts";
 import {
   ageOf,
@@ -242,4 +243,28 @@ test("toDeviceRows maps the hub's NetworkDevice list into network-view rows", as
   const net = networkRows(rows, "adhoc");
   assert.equal(net.filter((r) => r.kind === "device").length, 2);
   assert.ok(net.some((r) => r.kind === "session" && r.sessionId === "s1"));
+});
+
+test("Picker: filters on the LABEL (substring), j/k move — never swallowed as filter text", () => {
+  const items = [
+    { value: "use:/tmp/work", label: "✓ Use /tmp/work" },
+    { value: "/tmp/work/project", label: "project/" },
+    { value: "/tmp/work/notes", label: "notes/" },
+  ];
+  const p = new Picker("Working directory", items, () => {}, () => {});
+  // "pro" must find "project/" even though its VALUE starts with "/tmp/…".
+  p.handleInput("p");
+  p.handleInput("r");
+  p.handleInput("o");
+  assert.match(p.render(60).join("\n"), /project\//);
+  assert.doesNotMatch(p.render(60).join("\n"), /notes\//);
+  // The empty message speaks the picker's language, naming the filter.
+  p.handleInput("z");
+  assert.match(p.render(60).join("\n"), /no match for “proz”/);
+  // j/k move the selection, they never extend the filter.
+  const q = new Picker("List", items, () => {}, () => {});
+  q.handleInput("j");
+  assert.equal(q.list.getSelectedItem()?.label, "project/");
+  q.handleInput("k");
+  assert.equal(q.list.getSelectedItem()?.label, "✓ Use /tmp/work");
 });

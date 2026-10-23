@@ -22,9 +22,13 @@ const waitUntilGone = async (pattern, timeout = 5000) => {
 };
 try {
   // Empty registry: scratch DPI_HOME; INIT_CWD stops the dpi-network.yaml walk-up.
+  // DPI_PORT pins the probe to a port nothing listens on: a developer box very
+  // often HAS a device on 4780, and "[d] with nothing listening" must not depend
+  // on the host being idle.
+  const deadPort = 47123;
   await tui(
     "launch",
-    `env -u DPI_TOKEN -u DPI_PORT -u DPI_URL -u DPI_DEVICE DPI_HOME=${root} INIT_CWD=${root} node --import tsx src/main.ts`,
+    `env -u DPI_TOKEN -u DPI_URL -u DPI_DEVICE DPI_PORT=${deadPort} DPI_HOME=${root} INIT_CWD=${root} node --import tsx src/main.ts`,
     "--background",
     "--cols",
     "100",
@@ -40,9 +44,10 @@ try {
   console.log("PASS bare dpi-tui with no saved devices opens the welcome screen, not usage");
 
   // [d] with nothing listening: the plain failure line, then welcome returns.
+  // The bracket letter IS the shortcut (no enter needed) — pressing enter too
+  // would hit the freshly re-shown welcome and pick its first row.
   await tui("type", "d");
-  await tui("press", "enter");
-  await tui("wait", "no local dpi-backend on 127.0.0.1:4780", "--timeout", "5000");
+  await tui("wait", `no local dpi-backend on 127.0.0.1:${deadPort}`, "--timeout", "8000");
   await tui("wait", "No device yet.", "--timeout", "5000");
   console.log("PASS detect-local with no backend says how to start one and returns to welcome");
 

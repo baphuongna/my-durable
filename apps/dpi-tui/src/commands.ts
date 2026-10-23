@@ -61,6 +61,11 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       pickDevice(app);
       break;
     case "new":
+      // "new agent" needs an open session; the n KEY (new session) is the other door.
+      if (!app.sessionId) {
+        app.notify("no session open — press n to create one");
+        break;
+      }
       await app.run(async () => {
         const created = await app.client.session(app.sessionId!).createAgent(arg ? { name: arg } : {});
         await app.attach(app.sessionId!, created.id);

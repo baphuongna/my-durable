@@ -194,8 +194,8 @@ export function validateDeviceInput(urlAnswer: string, tokenAnswer: string): { u
 // ------------------------------------------------------------------ the welcome screen
 
 export function welcomeItems(deviceCount: number, port: number): SelectItem[] {
-  // Values lead with the bracket letter, so typing it jumps to the action (the
-  // Picker filters on the value); enter selects it.
+  // The bracket letter is a real shortcut (see WelcomePicker) — typing it runs
+  // the action instead of relying on filter order.
   const items: SelectItem[] = [
     { value: "pair", label: "[p] Pair this machine", description: "code or pair URL from the hub wizard" },
     { value: "add-url", label: "[a] Add a device by URL", description: "http://host:port + its DPI_TOKEN" },
@@ -219,6 +219,12 @@ export class WelcomePicker extends Picker {
   }
   handleInput(data: string) {
     if (data === "q" || matchesKey(data, "escape")) return this.cancel();
+    // Letters in the labels are shortcuts, not filter text: "[d] Detect" must
+    // DETECT regardless of which other label happens to contain a "d".
+    if (data.length === 1) {
+      const item = this.items().find((i) => i.label.startsWith(`[${data}]`));
+      if (item) return this.pick(item);
+    }
     return super.handleInput(data);
   }
 }

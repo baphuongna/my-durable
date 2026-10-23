@@ -26,7 +26,7 @@ import {
 } from "../../dpi-sdk/src/api.ts";
 import type { DeviceRow, NetworkRegistry } from "../../dpi-sdk/src/node/registry.ts";
 import { COMMANDS, runCommand } from "./commands.ts";
-import { Prompt, SecretPrompt, pickModel } from "./pickers.ts";
+import { Prompt, SecretPrompt, pickModel, newSession } from "./pickers.ts";
 import { renderHeader, renderHerd, renderHerdPanel, renderNetwork, renderStatusbar, renderViewbar, herdRows, joinPanel, networkRows } from "./views.ts";
 import { fetchHubNetwork } from "./hub-feed.ts";
 import { HubMux } from "./hub-mux.ts";
@@ -587,7 +587,7 @@ export class App {
       } else if (input.kind === "kill") {
         if (value.trim().toLowerCase().startsWith("y")) void this.command("reset");
         else this.notify("reset cancelled");
-      } else if (input.kind === "new") void this.command("new");
+      } else if (input.kind === "new") void newSession(this, value);
       return true;
     }
     if (data === "\x7f" || matchesKey(data, "backspace")) (input.value = input.value.slice(0, -1)), (this.suggIndex = 0);
@@ -855,7 +855,7 @@ export class App {
     }).slice(0, h);
     if (!wide) return table;
     const selected = this.sessions.find((s) => s.id === (this.selectedId ?? this.sessionId));
-    const panel = renderHerdPanel(panelW, h, selected, this.contextLeft());
+    const panel = renderHerdPanel(panelW, h, selected, this.contextLeft(), this.device.name);
     return joinPanel(table, panel, tableW, w, h);
   }
 
