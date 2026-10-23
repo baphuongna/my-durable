@@ -553,6 +553,20 @@ export class App {
       this.toast = "";
       return true;
     }
+    // The slash suggestion list is a MENU while it is open: ↑/↓ steer it and
+    // enter picks — history recall waits until the list is gone. (Reported:
+    // "danh sách slash command không điều hướng được, enter không autocomplete".)
+    const sugg = input.kind === "message" ? slashSuggestions(input.value, COMMANDS) : null;
+    if (sugg && matchesKey(data, "up")) {
+      this.suggIndex = Math.max(0, this.suggIndex - 1);
+      this.requestRender();
+      return true;
+    }
+    if (sugg && matchesKey(data, "down")) {
+      this.suggIndex = Math.min(sugg.names.length - 1, this.suggIndex + 1);
+      this.requestRender();
+      return true;
+    }
     // ↑/↓ recall sent messages; the current draft survives the round-trip.
     if (input.kind === "message" && matchesKey(data, "up")) {
       if (this.inputHistory.length) {
@@ -575,13 +589,11 @@ export class App {
     }
     // Tab completes the selected slash suggestion; shift+tab cycles it.
     if (input.kind === "message" && matchesKey(data, "shift+tab")) {
-      const sugg = slashSuggestions(input.value, COMMANDS);
       if (sugg) this.suggIndex = (this.suggIndex + 1) % sugg.names.length;
       this.requestRender();
       return true;
     }
     if (input.kind === "message" && matchesKey(data, "tab")) {
-      const sugg = slashSuggestions(input.value, COMMANDS);
       if (sugg) {
         const pick = sugg.names[this.suggIndex % sugg.names.length]!;
         input.value = `/${pick} `;
@@ -599,6 +611,21 @@ export class App {
       return true;
     }
     if (matchesKey(data, "enter")) {
+      // Enter completes the highlighted suggestion (the completed text gains a
+      // trailing space, the list closes, and the NEXT enter submits). An exact
+      // command ("/model") runs immediately instead — completing it would force
+      // a pointless second enter.
+      if (
+        sugg &&
+        input.kind === "message" &&
+        !COMMANDS.some((c) => `/${c.name}` === input.value)
+      ) {
+        const pick = sugg.names[this.suggIndex % sugg.names.length]!;
+        input.value = `/${pick} `;
+        this.suggIndex = 0;
+        this.requestRender();
+        return true;
+      }
       const value = input.value;
       this.input = null;
       this.toast = "";

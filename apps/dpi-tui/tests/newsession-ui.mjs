@@ -66,9 +66,12 @@ try {
   assert.ok(up, "backend booted: " + (await readFile(devLog, "utf8").catch(() => "")));
 
   // The regression ONLY reproduces with the Windows shape: openrouter, no key.
+  // Since the built-in-catalog fallback, such a device lists its models and
+  // flags providerKeyMissing — creation must work THROUGH the picker now.
   const info = await (await fetch(`${url}/v1/device`, { headers: auth })).json();
   assert.equal(info.provider, "openrouter", "provider default");
-  assert.equal(info.models.length, 0, `models must be empty without a key (got ${info.models.length})`);
+  assert.ok(info.models.length > 0, `the built-in catalog must show without a key (got ${info.models.length})`);
+  assert.equal(info.providerKeyMissing, true, "the device says chat needs a key");
 
   const session = `dpi-newsess-${Date.now()}`;
   const tui = async (...args) => String(await run("tuistory", ["-s", session, ...args]));
@@ -107,7 +110,11 @@ try {
   await tui("press", "enter");
   await tui("wait", "✓ Use", "--timeout", "5000");
   await new Promise((r) => setTimeout(r, 300));
-  // Typing filters on what the user sees; j/k move. Both are regressions now.
+  await tui("press", "enter");
+  // The model picker now shows the BUILT-IN catalog on a keyless device, with
+  // the hint that chat needs a key; enter takes the first model.
+  await tui("wait", "Model (", "--timeout", "5000");
+  assert.match(await tui("snapshot", "--trim"), /no API key on this device/, "the keyless hint must be visible");
   await tui("press", "enter");
   // A successful create attaches straight into the agent view — waiting for the
   // flash text is a race; the attached session address is the real signal.
@@ -117,9 +124,8 @@ try {
   });
   const after = await tui("snapshot", "--trim");
   assert.doesNotMatch(after, /No session "undefined"/, "the reported error must be gone");
-  assert.doesNotMatch(after, /Model \(nokey-box\)/, "model picker must be skipped: catalog is empty");
   assert.match(after, /1 session/, "the header counts the new session");
-  console.log("PASS R02 n › name › directory creates a session with no model catalog (device default)");
+  console.log("PASS R02 n › name › directory › model picker (built-in catalog, keyless hint) creates a session");
 
   const sessions = await (await fetch(`${url}/v1/sessions`, { headers: auth })).json();
   assert.ok(sessions.some((s) => s.name === "scratch"), "the session exists on the device");

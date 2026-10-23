@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import type { Store } from "../src/store.js";
+import { Store } from "../src/store.js";
 import { JOB_RUNS_DOC, type JobRunsDoc } from "../../dpi-sdk/src/jobs.js";
 import { faux, tempStore, until } from "./helpers.js";
 
@@ -254,6 +254,29 @@ test("read only: the agent is offered only tools that read; turning it off resto
     assert.equal((await store.agentDetail(row, c)).config.readOnly, false);
   } finally {
     await store.close();
+    await t.cleanup();
+  }
+});
+
+test("openrouter without a key: the model list is the built-in catalog, flagged keyless", async () => {
+  // The Windows configuration: provider default, no OPENROUTER_API_KEY
+  // anywhere. getAvailable lists only AUTHENTICATED providers, so before this
+  // fallback the picker went empty and session creation dead-ended.
+  const t = await tempStore();
+  const env = { ...process.env };
+  delete env.OPENROUTER_API_KEY;
+  const previous = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    const store = await Store.open({ ...t.options, provider: "openrouter" });
+    const info = store.deviceInfo();
+    assert.ok(info.models.length > 0, `expected the built-in catalog, got ${info.models.length}`);
+    assert.equal(info.providerKeyMissing, true, "the flag tells clients chat needs a key");
+    assert.equal(store.keyless, true);
+    await store.close();
+  } finally {
+    if (previous !== undefined) process.env.OPENROUTER_API_KEY = previous;
+    void env;
     await t.cleanup();
   }
 });

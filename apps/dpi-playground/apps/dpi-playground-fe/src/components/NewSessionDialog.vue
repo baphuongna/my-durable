@@ -38,6 +38,8 @@ const models = computed(() => {
 const catalogEmpty = computed(
   () => !models.value.length || (device.value?.info?.models?.length ?? 0) === 0,
 );
+/** The device lists its built-in catalog but chat needs the key (0.0.12+ devices). */
+const keyless = computed(() => !!(device.value?.info as { providerKeyMissing?: boolean } | undefined)?.providerKeyMissing);
 const key = (m: { provider: string; id: string }) => `${m.provider}/${m.id}`;
 const draft = ref({ name: "", cwd: "", model: "" });
 const pending = ref(false);
@@ -121,10 +123,10 @@ async function create() {
         </div>
         <label
           >Model<span
-            v-if="catalogEmpty"
+            v-if="catalogEmpty || keyless"
             class="hint"
-            title="The device reports no usable models — create still works with its default; add the provider key on the device (e.g. OPENROUTER_API_KEY) to see the catalog"
-            >no key on device — using default</span
+            title="The device has no provider key — it lists its built-in catalog, and chat needs OPENROUTER_API_KEY set in the device's env file"
+            >no API key on device — chat needs one</span
           ><select v-model="draft.model" aria-label="New session model">
             <option v-for="m in models" :key="key(m)" :value="key(m)">
               {{ m.tier }} / {{ m.name }}

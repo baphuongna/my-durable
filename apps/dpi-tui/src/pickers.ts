@@ -333,6 +333,12 @@ function chooseModel(app: App, current?: string) {
         app.closeOverlay();
         done(undefined);
       },
+      undefined,
+      // The keyless device still lists the built-in catalog — say why chat
+      // will fail, instead of letting the first request be the messenger.
+      (app.info as { providerKeyMissing?: boolean }).providerKeyMissing
+        ? "no API key on this device — chat needs OPENROUTER_API_KEY in its env file"
+        : undefined,
     );
     const index = models.findIndex((m) => m.id === current);
     if (index >= 0) picker.list.setSelectedIndex(index);

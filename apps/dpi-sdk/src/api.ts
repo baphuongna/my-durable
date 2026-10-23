@@ -96,6 +96,8 @@ export interface DeviceInfo {
   defaultModel: string;
   /** Provider id of this device ("openrouter" | "faux"); FE model fallback. */
   provider?: string;
+  /** No provider key on the device: the catalog shown is the built-in list and chat needs the key. */
+  providerKeyMissing?: boolean;
   storage: { dataDir: string; catalogPath: string; appStatePath: string };
   /** The checkout the backend runs from (repo root locally, `code_dir` on deployed devices). */
   codeDir?: string;

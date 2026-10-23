@@ -286,6 +286,52 @@ try {
     await press("g");
   });
 
+  // ------------------------------------------------------ slash autocomplete
+  // "/" alone lists every command, so the rows are deterministic:
+  // sessions, agents, model, devices, new, fork, … (COMMANDS order).
+  await check("slash: ↓ steers the list, enter completes the highlighted row", async () => {
+    await press("enter"); // the agent view
+    await press("m");
+    await type("/");
+    assert.match(await body(), /\/sessions/, "the suggestion list did not open for /");
+    await press("down"); // onto "agents"
+    await press("enter"); // complete → "/agents "
+    const screen = await body();
+    assert.match(screen, /follow-up ❯ \/agents/, "enter did not complete the second row");
+    assert.doesNotMatch(screen, /no command/, "enter submitted instead of completing");
+    await press("escape");
+  });
+
+  await check("slash: completed text runs on the second enter", async () => {
+    await press("enter");
+    await press("m");
+    await type("/mo"); // one match: model
+    await press("enter"); // complete → "/model "
+    assert.match(await body(), /follow-up ❯ \/model/, "the row was not completed");
+    await press("enter"); // run it
+    assert.match(await body(), /Model \(/, "the completed /model did not run");
+    await press("escape");
+    await press("escape");
+  });
+
+  await check("slash: tab completes row 1; ↑ walks back up after ↓↓", async () => {
+    await press("enter");
+    await press("m");
+    await type("/");
+    await press("tab");
+    assert.match(await body(), /follow-up ❯ \/sessions/, "tab did not complete the first row");
+    await press("backspace"); // "/sessions" → the list reopens with one row… type a fresh prefix instead
+    for (let i = 0; i < 9; i += 1) await press("backspace");
+    await type("/");
+    await press("down");
+    await press("down"); // onto "model"
+    await press("up"); // back onto "agents"
+    await press("enter");
+    assert.match(await body(), /follow-up ❯ \/agents/, "↑ did not walk back up the list");
+    await press("escape");
+    await press("escape");
+  });
+
   await check("herd: q quits the app", async () => {
     await press("q");
     await new Promise((r) => setTimeout(r, 800));

@@ -277,6 +277,7 @@ export class Store {
       models: this.modelList,
       defaultModel: this.defaultModel(),
       provider: this.options.provider,
+      ...(this.modelsKeyless ? { providerKeyMissing: true } : {}),
       storage: { dataDir: this.options.dataDir, catalogPath: this.catalogPath, appStatePath: this.sharedStatePath },
       codeDir: CODE_DIR,
       capabilities: ["events", "docs", "demo", "jobs"],
@@ -284,9 +285,19 @@ export class Store {
     };
   }
 
+  /** The device has no provider key: its catalog is the built-in list. */
+  get keyless(): boolean {
+    return this.modelsKeyless;
+  }
+
   private defaultModel() {
     return this.options.provider === "faux" ? fauxModels[0].id : defaultModelId;
   }
+
+  /** True when the device has no provider key: the catalog shown is the built-in
+   *  list, and chat requests will fail until a key is set (deviceInfo carries it
+   *  so every client can say so instead of showing a mystery empty picker). */
+  private modelsKeyless = false;
 
   private async loadModels(): Promise<ModelInfo[]> {
     if (this.options.provider === "faux")
@@ -300,7 +311,25 @@ export class Store {
         reasoning: false,
         cost: { input: 0, output: 0 },
       }));
-    const available = await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) });
+    // getAvailable only lists AUTHENTICATED providers — no OPENROUTER_API_KEY
+    // means an empty list even though the built-in catalog needs no key. Fall
+    // back to it (static metadata) so picking a model is never blocked; the
+    // keyless flag tells the client chat will need the key.
+    const hasChatFields = (
+      m: unknown,
+    ): m is { id: string; contextWindow: number; reasoning: boolean; cost: { input: number; output: number } } =>
+      typeof m === "object" && m !== null && "contextWindow" in m && "reasoning" in m;
+    let available: ReadonlyArray<{ id: string; contextWindow: number; reasoning: boolean; cost: { input: number; output: number } }> =
+      await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) }).catch(() => []);
+    if (!available.length) {
+      this.modelsKeyless = true;
+      // The provider's static catalog (no key, no network): chat models only —
+      // image/classifier entries carry no context window.
+      available = this.models
+        .getAllModels("openrouter")
+        .filter((m) => hasChatFields(m))
+        .map((m) => ({ id: m.id, contextWindow: m.contextWindow, reasoning: m.reasoning, cost: { input: m.cost.input, output: m.cost.output } }));
+    }
     return curatedModels.flatMap((c) => {
       const m = available.find((m) => m.id === c.id);
       return m

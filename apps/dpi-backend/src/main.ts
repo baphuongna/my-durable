@@ -170,6 +170,10 @@ server.listen(config.port, config.host, () => {
         if (a.family === "IPv4" && !a.internal)
           console.log(`LAN: http://${a.address}:${config.port}`);
   console.log(`background: dpi device start | stop | status | install (service)`);
+  if (store.keyless)
+    console.log(
+      `no provider key: the model list is the built-in catalog; set OPENROUTER_API_KEY in ${config.envFile} to chat`,
+    );
 
   // Enrollment guidance: an unpaired machine must be told exactly what to do,
   // and — when a hub is configured — it asks for a code ITSELF so the operator
