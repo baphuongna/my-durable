@@ -29,6 +29,7 @@ import { COMMANDS, runCommand } from "./commands.ts";
 import { Prompt, SecretPrompt, pickModel } from "./pickers.ts";
 import { renderHeader, renderHerd, renderHerdPanel, renderNetwork, renderStatusbar, renderViewbar, herdRows, joinPanel, networkRows } from "./views.ts";
 import { fetchHubNetwork } from "./hub-feed.ts";
+import { HubMux } from "./hub-mux.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 
 export interface DeviceRef {
@@ -128,6 +129,10 @@ export class App {
   private suggIndex = 0;
   /** Hub feed (multi-host display parity with the web sidebar). */
   private hub?: { url: string; token: string };
+  /** The hub's /api/stream mux — tunnel-device attach (same transport as the web). */
+  private mux?: HubMux;
+  /** True while the current device is reached through the hub proxy. */
+  private viaHub = false;
   private hubRows: DeviceRow[] = [];
   private hubTick = 0;
 
@@ -210,8 +215,18 @@ export class App {
     this.scrollOffset = 0;
     void this.refreshSessions();
     const handle = this.handle;
+    // Hub-routed devices stream through the mux (same upstreams the web rides);
+    // direct devices stream straight from the device.
+    const agentEvents = (signal: AbortSignal) =>
+      this.viaHub && this.mux
+        ? this.mux.events(`${this.device.id}/agent/${sessionId}/${agentId}`, signal)
+        : handle.events(signal);
+    const sessionEvents = (signal: AbortSignal) =>
+      this.viaHub && this.mux
+        ? this.mux.events(`${this.device.id}/session/${sessionId}`, signal)
+        : this.client.session(sessionId).events(signal);
     void follow(
-      (signal) => handle.events(signal),
+      agentEvents,
       (frame) => this.model.apply(frame),
       (state, error) => {
         this.connection = state;
@@ -221,7 +236,7 @@ export class App {
       streams.signal,
     );
     void follow(
-      (signal) => this.client.session(sessionId).events(signal),
+      sessionEvents,
       (frame) => this.session.apply(frame),
       () => {},
       streams.signal,
@@ -231,15 +246,39 @@ export class App {
   }
 
   async switchDevice(id: string) {
-    const row = this.registry?.get(id);
-    if (!row?.token) return this.notify(`No token for ${id}. Run: just net register ${id}`, true);
-    if (!row.url) return this.notify(`${id} is tunnel-only (no LAN URL) — use the hub web UI.`, true);
+    const row = this.registry?.get(id) ?? this.hubRows.find((d) => d.id === id);
+    if (!row) return this.notify(`Unknown device ${id}`, true);
+    if (!row.url) {
+      // Tunnel device: no LAN endpoint here — reach it through the hub proxy
+      // (REST) + the hub's stream mux (events), exactly like the web FE.
+      if (!this.hub) return this.notify(`${row.name} is tunnel-only — start the TUI with --hub-url/--hub-token`, true);
+      const client = new DpiClient(`${this.hub.url}/api/devices/${row.id}`, this.hub.token);
+      this.mux ??= new HubMux(this.hub);
+      return void this.run(async () => {
+        this.info = await client.device({ timeoutMs: 10_000 });
+        this.streams?.abort();
+        this.device = { id: row.id, name: row.name, url: client.baseUrl, token: this.hub!.token };
+        this.client = client;
+        this.viaHub = true;
+        this.sessionId = undefined;
+        this.agentId = undefined;
+        this.handle = undefined;
+        this.model.clear();
+        this.session.clear();
+        this.sessions = [];
+        this.notify(`attached ${row.name} through the hub`);
+        await this.refreshSessions();
+        this.setView("herd");
+      });
+    }
+    if (!row.token) return this.notify(`No token for ${id}. Run: just net register ${id}`, true);
     const client = new DpiClient(row.url, row.token);
     await this.run(async () => {
       this.info = await client.device({ timeoutMs: 8000 });
       this.streams?.abort();
       this.device = { id: row.id, name: row.name, url: row.url!, token: row.token! };
       this.client = client;
+      this.viaHub = false;
       this.sessionId = undefined;
       this.agentId = undefined;
       this.handle = undefined;
@@ -328,14 +367,14 @@ export class App {
   private openCursor() {
     const rows = this.rows();
     const row = rows[this.cursor] ?? rows.find((r) => r.sessionId);
-    if (row?.sessionId) return this.openSession(row.sessionId);
+    if (row?.sessionId) return this.openSession(row.sessionId, row.deviceId);
     if (row?.deviceId && this.view === "network") {
       const target = this.devicesCache.find((d) => d.id === row.deviceId);
       if (!target) return;
       if (target.id === this.device.id) return this.setView("herd");
-      if (!target.token || !target.url)
+      if (!target.url && !this.hub)
         return this.notify(
-          `${target.name} reaches this machine only through the hub tunnel — open it from the hub web UI`,
+          `${target.name} reaches this machine only through the hub tunnel — start the TUI with --hub-url/--hub-token`,
           true,
         );
       void this.switchDevice(target.id);
@@ -345,9 +384,18 @@ export class App {
     if (first?.sessionId) this.openSession(first.sessionId);
   }
 
-  private openSession(sessionId: string) {
-    const agentId = this.sessions.find((s) => s.id === sessionId)?.agents.find((a) => a.kind === "root")?.id;
+  private openSession(sessionId: string, deviceId?: string) {
+    // A network row may name a session on ANOTHER device: switching first is
+    // what makes the attach land on the right host (live bug: the session was
+    // requested from the current device and the stream answered `gone`).
+    const target = deviceId && deviceId !== this.device.id ? deviceId : undefined;
     void this.run(async () => {
+      if (target) {
+        await this.switchDevice(target);
+        if (this.device.id !== target) return; // switch refused (offline/tunnel without hub)
+      }
+      const summary = this.sessions.find((s) => s.id === sessionId);
+      const agentId = summary?.agents.find((a) => a.kind === "root")?.id;
       await this.attach(sessionId, agentId ?? 1);
     });
   }
@@ -356,7 +404,7 @@ export class App {
   private jump(n: number) {
     const rows = this.rows().filter((r) => r.sessionId);
     const nth = rows[n - 1];
-    if (nth?.sessionId) this.openSession(nth.sessionId);
+    if (nth?.sessionId) this.openSession(nth.sessionId, nth.deviceId);
     else this.notify(`no session #${n} in this view`);
   }
 
@@ -682,6 +730,7 @@ export class App {
 
   exit() {
     this.streams?.abort();
+    this.mux?.stop();
     clearInterval(this.ticker);
     this.tui.stop();
     const ref = this.reattachRef();
