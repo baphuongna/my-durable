@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { Store } from "../src/store.js";
 import { JOB_RUNS_DOC, type JobRunsDoc } from "../../dpi-sdk/src/jobs.js";
@@ -263,10 +264,13 @@ test("openrouter without a key: the model list is the built-in catalog, flagged 
   // anywhere. getAvailable lists only AUTHENTICATED providers, so before this
   // fallback the picker went empty and session creation dead-ended.
   const t = await tempStore();
-  const env = { ...process.env };
-  delete env.OPENROUTER_API_KEY;
+  // Isolate from THIS machine's pi credentials: an empty PI_AGENT_DIR means
+  // "no pi auth anywhere", which is exactly the keyless shape under test.
+  const emptyPi = await mkdtemp(join(tmpdir(), "dpi-nopi-"));
   const previous = process.env.OPENROUTER_API_KEY;
+  const previousPi = process.env.PI_AGENT_DIR;
   delete process.env.OPENROUTER_API_KEY;
+  process.env.PI_AGENT_DIR = emptyPi;
   try {
     const store = await Store.open({ ...t.options, provider: "openrouter" });
     const info = store.deviceInfo();
@@ -276,7 +280,9 @@ test("openrouter without a key: the model list is the built-in catalog, flagged 
     await store.close();
   } finally {
     if (previous !== undefined) process.env.OPENROUTER_API_KEY = previous;
-    void env;
+    if (previousPi !== undefined) process.env.PI_AGENT_DIR = previousPi;
+    else delete process.env.PI_AGENT_DIR;
+    await rm(emptyPi, { recursive: true, force: true });
     await t.cleanup();
   }
 });

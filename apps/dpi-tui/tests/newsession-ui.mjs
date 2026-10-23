@@ -15,6 +15,11 @@ import { once } from "node:events";
 
 const root = await mkdtemp(join(tmpdir(), "dpi-newsess-"));
 await mkdir(join(root, "work", "project"), { recursive: true });
+// Isolate from the host's pi credentials: the keyless shape under test is
+// "no provider key ANYWHERE", and the dev machine running this suite has a
+// fully-authenticated ~/.pi/agent.
+const emptyPi = join(root, "no-pi");
+await mkdir(emptyPi, { recursive: true });
 const backendDir = resolve(import.meta.dirname, "../../dpi-backend");
 
 const freePort = async () => {
@@ -38,6 +43,7 @@ const env = {
   DPI_TOKEN: token,
   DPI_START_DIRS: join(root, "work"),
   DPI_DEVICE_NAME: "nokey-box",
+  PI_AGENT_DIR: emptyPi,
 };
 const devLog = join(root, "device.log");
 const dev = spawn(process.execPath, ["--import", "tsx", "src/main.ts", "--port", String(port), "--host", "127.0.0.1"], {

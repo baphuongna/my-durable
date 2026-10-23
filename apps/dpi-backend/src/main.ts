@@ -170,6 +170,11 @@ server.listen(config.port, config.host, () => {
         if (a.family === "IPv4" && !a.internal)
           console.log(`LAN: http://${a.address}:${config.port}`);
   console.log(`background: dpi device start | stop | status | install (service)`);
+  {
+    const providers = [...new Set(store.modelList.map((m) => m.provider))];
+    if (providers.length) console.log(`providers: ${providers.join(", ")} (pi auth/models.json + env)`);
+    for (const s of store.pi.skipped) console.log(`  custom provider ${s.id} skipped: ${s.reason}`);
+  }
   if (store.keyless)
     console.log(
       `no provider key: the model list is the built-in catalog; set OPENROUTER_API_KEY in ${config.envFile} to chat`,

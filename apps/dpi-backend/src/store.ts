@@ -41,6 +41,8 @@ import { createRequire } from "node:module";
 import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { loadPiConfig } from "./pi-config.js";
 import { curatedModels, defaultModelId } from "./model-catalog.js";
 import { fauxModels, installFaux } from "./faux.js";
 import {
@@ -161,7 +163,9 @@ const decodeCursor = (cursor?: string) => {
 };
 
 export class Store {
-  readonly models = createModels();
+  /** pi's credentials + custom providers on THIS machine (auth.json / models.json). */
+  readonly pi = loadPiConfig();
+  readonly models = createModels({ credentials: this.pi.credentials });
   readonly opened = new Map<string, Opened>();
   readonly errors = new Map<string, string>();
   readonly catalog: DatabaseSync;
@@ -199,6 +203,12 @@ export class Store {
   private constructor(readonly options: StoreOptions) {
     if (options.provider === "faux") installFaux(this.models);
     else {
+      // The device is pi: register EVERY built-in provider (the same registry
+      // the pi CLI uses), then keep OpenRouter narrowed to the curated list.
+      // Credentials arrive through pi's own files via the credential store;
+      // env keys still work through each provider.
+      for (const provider of builtinProviders()) this.models.setProvider(provider);
+      for (const provider of this.pi.customProviders) this.models.setProvider(provider);
       const provider = openrouterProvider();
       const catalog = provider.getModels();
       for (const model of curatedModels)
@@ -311,30 +321,82 @@ export class Store {
         reasoning: false,
         cost: { input: 0, output: 0 },
       }));
-    // getAvailable only lists AUTHENTICATED providers — no OPENROUTER_API_KEY
-    // means an empty list even though the built-in catalog needs no key. Fall
-    // back to it (static metadata) so picking a model is never blocked; the
-    // keyless flag tells the client chat will need the key.
-    const hasChatFields = (
-      m: unknown,
-    ): m is { id: string; contextWindow: number; reasoning: boolean; cost: { input: number; output: number } } =>
-      typeof m === "object" && m !== null && "contextWindow" in m && "reasoning" in m;
-    let available: ReadonlyArray<{ id: string; contextWindow: number; reasoning: boolean; cost: { input: number; output: number } }> =
-      await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) }).catch(() => []);
-    if (!available.length) {
-      this.modelsKeyless = true;
-      // The provider's static catalog (no key, no network): chat models only —
-      // image/classifier entries carry no context window.
-      available = this.models
-        .getAllModels("openrouter")
-        .filter((m) => hasChatFields(m))
-        .map((m) => ({ id: m.id, contextWindow: m.contextWindow, reasoning: m.reasoning, cost: { input: m.cost.input, output: m.cost.output } }));
+    // The device serves every provider pi can authenticate on this machine:
+    // OpenRouter (the curated default) plus each provider pi holds a credential
+    // for (auth.json / models.json). Asking per-provider keeps providers with
+    // no credential out of the auth check entirely.
+    const ids = new Set(["openrouter", ...this.pi.credentialed]);
+    const out: ModelInfo[] = [];
+    let authenticated = false;
+    for (const id of ids) {
+      const available = await this.models
+        .getAvailable(id, { signal: AbortSignal.timeout(10_000) })
+        .catch(() => [] as ReadonlyArray<{ id: string }>);
+      if (!available.length) continue;
+      authenticated = true;
+      if (id === "openrouter") {
+        // The curated list, with live context/pricing when the key allows it.
+        out.push(
+          ...curatedModels.flatMap((c) => {
+            const m = available.find((x) => x.id === c.id) as
+              | { id: string; contextWindow?: number; reasoning?: boolean; cost?: { input: number; output: number } }
+              | undefined;
+            return m
+              ? [{
+                  id: c.id,
+                  provider: "openrouter",
+                  name: c.name,
+                  tier: c.tier,
+                  icon: c.icon,
+                  contextWindow: m.contextWindow ?? 128000,
+                  reasoning: m.reasoning ?? false,
+                  cost: { input: m.cost?.input ?? 0, output: m.cost?.output ?? 0 },
+                }]
+              : [];
+          }),
+        );
+      } else {
+        for (const m of available as ReadonlyArray<{
+          id: string;
+          name?: string;
+          contextWindow?: number;
+          reasoning?: boolean;
+          cost?: { input: number; output: number };
+        }>)
+          out.push({
+            id: m.id,
+            provider: id,
+            name: m.name ?? m.id,
+            tier: "·",
+            icon: "lab.png",
+            contextWindow: m.contextWindow ?? 128000,
+            reasoning: m.reasoning ?? false,
+            cost: { input: m.cost?.input ?? 0, output: m.cost?.output ?? 0 },
+          });
+      }
     }
-    return curatedModels.flatMap((c) => {
-      const m = available.find((m) => m.id === c.id);
-      return m
-        ? [
-            {
+    if (!authenticated) {
+      this.modelsKeyless = true;
+      // No credential anywhere: the built-in curated catalog (static metadata)
+      // so picking a model is never blocked; chat needs a key.
+      const hasChatFields = (m: unknown): m is { id: string; contextWindow: number; reasoning: boolean; cost: { input: number; output: number } } =>
+        typeof m === "object" && m !== null && "contextWindow" in m && "reasoning" in m;
+      out.push(
+        ...this.models
+          .getAllModels("openrouter")
+          .filter((m) => hasChatFields(m) && curatedModels.some((c) => c.id === m.id))
+          .map(
+            (m) =>
+              hasChatFields(m)
+                ? { id: m.id, contextWindow: m.contextWindow, reasoning: m.reasoning, cost: { input: m.cost.input, output: m.cost.output } }
+                : undefined,
+          )
+          .filter(
+            (m): m is { id: string; contextWindow: number; reasoning: boolean; cost: { input: number; output: number } } => !!m,
+          )
+          .map((m) => {
+            const c = curatedModels.find((x) => x.id === m.id)!;
+            return {
               id: m.id,
               provider: "openrouter",
               name: c.name,
@@ -343,10 +405,11 @@ export class Store {
               contextWindow: m.contextWindow,
               reasoning: m.reasoning,
               cost: { input: m.cost.input, output: m.cost.output },
-            },
-          ]
-        : [];
-    });
+            } satisfies ModelInfo;
+          }),
+      );
+    }
+    return out;
   }
 
   routedModel(model?: ModelRef): ModelRef {
@@ -354,6 +417,10 @@ export class Store {
       const id = fauxModels.some((m) => m.id === model?.modelId) ? model!.modelId : fauxModels[0].id;
       return { provider: "faux", modelId: id };
     }
+    // A model the device actually serves (pi provider or curated openrouter)
+    // keeps its provider; everything else routes to the OpenRouter default.
+    if (model && this.modelList.some((m) => m.provider === model.provider && m.id === model.modelId))
+      return { provider: model.provider, modelId: model.modelId };
     const exact = model?.provider === "openrouter" ? model.modelId : `${model?.provider}/${model?.modelId}`;
     return {
       provider: "openrouter",
@@ -365,12 +432,9 @@ export class Store {
     const m = model as ModelRef | undefined;
     if (!m || typeof m.provider !== "string" || typeof m.modelId !== "string")
       throw invalid("model must be { provider, modelId }");
-    const known =
-      this.options.provider === "faux"
-        ? m.provider === "faux" && fauxModels.some((f) => f.id === m.modelId)
-        : m.provider === "openrouter" &&
-          curatedModels.some((c) => c.id === m.modelId) &&
-          !!this.models.getModel(m.provider, m.modelId);
+    // Known = listed in this device's catalog (faux models, curated OpenRouter,
+    // or any provider pi authenticated here). The list IS the contract.
+    const known = this.modelList.some((x) => x.provider === m.provider && x.id === m.modelId);
     if (!known) throw invalid(`Unknown model ${m.provider}/${m.modelId}. Choose one from GET /v1/device models`);
     return { provider: m.provider, modelId: m.modelId };
   }
