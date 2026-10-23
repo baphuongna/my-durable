@@ -22,3 +22,5 @@ export function daemonControl(
   dpiPath: string,
   port: number,
 ): { running: () => Promise<boolean>; stop: () => Promise<number>; start: () => Promise<number> };
+/** Below this the app cannot run at all (node:sqlite). The only hard block. */
+export const REQUIRED_NODE_FLOOR: string;

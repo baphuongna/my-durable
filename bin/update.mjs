@@ -32,6 +32,12 @@ export function compareVersions(a, b) {
 }
 
 /**
+ * The floor we KNOW breaks: below 22.5.0 there is no node:sqlite, and the
+ * device dies at boot. This — and only this — is a hard block.
+ */
+export const REQUIRED_NODE_FLOOR = "22.5.0";
+
+/**
  * Does `current` satisfy `required` when required looks like ">=22.19.0" /
  * ">=22" / "22.x"? Only the forms our own package.json can carry are supported;
  * an unknown form is treated as satisfied so a future syntax never blocks an
@@ -94,14 +100,21 @@ export async function runUpdate(deps) {
     return 0;
   }
 
-  // Refuse before touching npm: a warned-about engine is a broken install later.
+  // pi's philosophy, which we follow: engines metadata is ADVICE. pi declares
+  // node >=22.19.0 too, npm only warns, and nothing enforces it at runtime —
+  // so an update proceeds with a visible warning. We hard-block ONLY below the
+  // floor we know is broken (no node:sqlite ⇒ the device cannot even boot).
   const required = pkg.engines?.node;
-  if (required && !satisfiesEngine(deps.nodeVersion, required)) {
+  if (compareVersions(deps.nodeVersion, REQUIRED_NODE_FLOOR) < 0) {
     printErr(
-      `dpi update: this release needs Node ${required}, you have ${deps.nodeVersion}.`,
+      `dpi update: Node ${deps.nodeVersion} is too old — durable needs Node >= ${REQUIRED_NODE_FLOOR} (node:sqlite).`,
     );
-    printErr("  Upgrade Node first (nvm install --lts / winget upgrade OpenJS.NodeJS.LTS), then retry.");
+    printErr("  Upgrade Node (nvm install --lts / winget upgrade OpenJS.NodeJS.LTS) and retry.");
     return 1;
+  }
+  if (required && !satisfiesEngine(deps.nodeVersion, required)) {
+    print(`note: this release declares Node ${required}, you have ${deps.nodeVersion}.`);
+    print(`      like pi, it installs and runs anyway; upgrade Node if anything misbehaves.`);
   }
 
   // Windows: the daemon (and a TUI) hold files inside the package folder, so npm

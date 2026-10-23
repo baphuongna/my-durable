@@ -94,13 +94,21 @@ test("isBusyFailure: the EBUSY/EPERM shapes npm prints on Windows", () => {
   assert.equal(isBusyFailure("npm error code E404"), false);
 });
 
-test("update: refuses a too-old Node BEFORE npm runs", async () => {
+test("update: a Node older than the declared engines WARNS and proceeds (pi's philosophy)", async () => {
   const h = harness({ deps: { nodeVersion: "22.14.0" } });
+  const code = await runUpdate(h.deps);
+  assert.equal(code, 0, "22.14 installs like pi: engines are advice, not law");
+  assert.match(h.out.join("\n"), /declares Node >=22\.19\.0, you have 22\.14\.0/);
+  assert.match(h.out.join("\n"), /installs and runs anyway/);
+  assert.deepEqual(h.events, ["daemon.running", "daemon.stop", "npm 0.0.10", "daemon.start"]);
+});
+
+test("update: below the KNOWN floor (no node:sqlite) it still refuses before npm", async () => {
+  const h = harness({ deps: { nodeVersion: "22.4.0" } });
   const code = await runUpdate(h.deps);
   assert.equal(code, 1);
   assert.deepEqual(h.events, [], "no daemon stop, no npm call");
-  assert.match(h.err.join("\n"), /needs Node >=22\.19\.0, you have 22\.14\.0/);
-  assert.match(h.err.join("\n"), /Upgrade Node first/);
+  assert.match(h.err.join("\n"), /needs Node >= 22\.5\.0 \(node:sqlite\)/);
 });
 
 test("update: stops the daemon, installs, restarts it", async () => {
