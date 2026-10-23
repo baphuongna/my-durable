@@ -242,25 +242,37 @@ function pidFrom(paths: DaemonPaths): number | undefined {
 
 // ---------------------------------------------------------------- commands
 
+/** The spawn `dpi device start` performs — exported so the TUI can bring the
+ *  local backend up itself instead of telling the user to open another shell. */
+export function startBackendDetached(
+  env: Record<string, string | undefined>,
+  rest: string[] = [],
+): { ok: boolean; pid?: number; log: string; reason?: string } {
+  const paths = daemonPaths(env);
+  const dpi = env.DPI_BIN ?? (process.argv[1]?.endsWith(".mjs") ? process.argv[1] : "");
+  if (!dpi || !existsSync(dpi))
+    return { ok: false, log: paths.log, reason: "no dpi launcher found" };
+  mkdirSync(paths.home, { recursive: true, mode: 0o700 });
+  const fd = openSync(paths.log, "a");
+  const child = spawn(process.execPath, [dpi, "device", ...rest], {
+    detached: true,
+    stdio: ["ignore", fd, fd],
+    env: cleanChildEnv(env),
+    cwd: dirname(dpi),
+  });
+  child.unref();
+  closeSync(fd);
+  return { ok: true, pid: child.pid, log: paths.log };
+}
+
 async function cmdStart(io: Io, rest: string[]): Promise<number> {
   const paths = daemonPaths(io.env);
   if ((await health(io))?.ok) {
     io.print(`already running (pid ${pidFrom(paths) ?? "?"}) on port ${portOf(io)}`);
     return 0;
   }
-  const dpi = io.env.DPI_BIN ?? (process.argv[1]?.endsWith(".mjs") ? process.argv[1] : "");
-  if (!dpi || !existsSync(dpi))
-    return io.print("start needs the dpi launcher (run via `dpi device start`)"), 1;
-  mkdirSync(paths.home, { recursive: true, mode: 0o700 });
-  const fd = openSync(paths.log, "a");
-  const child = spawn(process.execPath, [dpi, "device", ...rest], {
-    detached: true,
-    stdio: ["ignore", fd, fd],
-    env: cleanChildEnv(io.env),
-    cwd: dirname(dpi),
-  });
-  child.unref();
-  closeSync(fd);
+  const started = startBackendDetached(io.env, rest);
+  if (!started.ok) return io.print(started.reason ?? "start failed"), 1;
   io.print(`starting dpi device … (log: ${paths.log})`);
   if (await waitHealthUp(io, 20_000)) {
     io.print(`running on http://127.0.0.1:${portOf(io)} (pid ${pidFrom(paths) ?? "?"})`);

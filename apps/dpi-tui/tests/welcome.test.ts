@@ -10,6 +10,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { dpiHome } from "../../dpi-sdk/src/node/registry.ts";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
 import { encodePairOffer } from "../../dpi-sdk/src/protocol/pairing.ts";
 import {
@@ -191,8 +192,13 @@ test("probeLocalBackend: 401 vs down vs erroring transport", async () => {
 });
 
 test("describeLocalProbe: failure says plainly how to start one, with the real port", () => {
-  assert.equal(describeLocalProbe({ ok: false, reason: "unreachable" }, 4780), "no local dpi-backend on 127.0.0.1:4780 — start one with: dpi device");
-  assert.equal(describeLocalProbe({ ok: false, reason: "unreachable" }, 5000), "no local dpi-backend on 127.0.0.1:5000 — start one with: dpi device");
+  // since the TUI auto-starts the backend, reaching this text means the start
+  // FAILED — it must point at the log, not just a bare command
+  assert.equal(
+    describeLocalProbe({ ok: false, reason: "unreachable" }, 4780),
+    `no local dpi-backend on 127.0.0.1:4780 — auto-start failed; run \`dpi device start\` and check ${join(dpiHome(), "device.log")}`,
+  );
+  assert.match(describeLocalProbe({ ok: false, reason: "unreachable" }, 5000), /no local dpi-backend on 127\.0\.0\.1:5000 — auto-start failed/);
   assert.match(describeLocalProbe({ ok: false, reason: "unauthorized" }, 4780), /rejected the token/);
   assert.match(describeLocalProbe({ ok: true, info: { ...info } as never }, 4780), /local dpi-backend on 127\.0\.0\.1:4780/);
   assert.match(describeLocalProbe({ ok: true, info: { ...info } as never }, 4780), /mac-mini/);

@@ -112,6 +112,16 @@ async function start(device: DeviceRef, client: DpiClient, info: DeviceInfo, opt
   if (opts.devicePicker) pickDevice(app);
 }
 
+/** Loopback = the device this very machine runs; the TUI may start it itself. */
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h === "127.0.0.1" || h === "localhost" || h === "[::1]" || h === "::1";
+  } catch {
+    return false;
+  }
+}
+
 // The app opens first; connection is a state, not a precondition. With no explicit
 // device/url/pair: one saved device opens it directly, several open on the first
 // with the device picker on top, none open the welcome screen.
@@ -127,6 +137,19 @@ if (startup.kind === "welcome") {
     const info = await client.device({ timeoutMs: 8000 });
     await start(device, client, info, { devicePicker: startup.kind === "picker" });
   } catch (e) {
+    // The device this machine itself runs is loopback: nobody else can start
+    // it, so we do — exactly what `dpi device start` would, without leaving
+    // the TUI. A remote (tunnel) device stays an offline notice.
+    let info2: Awaited<ReturnType<typeof client.device>> | undefined;
+    if (isLoopbackUrl(device.url)) {
+      const { ensureLocalBackend } = await import("./welcome.ts");
+      const port = Number(new URL(device.url).port) || 4780;
+      const r = await ensureLocalBackend({ port, token: device.token });
+      if (r.probe.ok) info2 = await client.device({ timeoutMs: 8000 });
+    }
+    if (info2) {
+      await start(device, client, info2, { devicePicker: startup.kind === "picker" });
+    } else {
     // An auto-connected device that is unreachable falls back to a screen that says
     // so and offers the picker + welcome actions — never back to usage text.
     showWelcome(new App(WELCOME_DEVICE, new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token), emptyDeviceInfo(), registry), {
@@ -135,6 +158,7 @@ if (startup.kind === "welcome") {
           ? `${device.id}: token rejected by ${device.url}`
           : `${device.id} is offline at ${device.url} (${(e as Error).message})`,
     });
+    }
   }
 } else if (url) {
   const token = values.token ?? process.env.DPI_TOKEN ?? "";

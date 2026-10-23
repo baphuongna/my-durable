@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { matchesKey, type SelectItem } from "@earendil-works/pi-tui";
+import { startBackendDetached } from "../../dpi-backend/src/daemon.ts";
 import { DpiClient } from "../../dpi-sdk/src/client.ts";
 import type { DeviceInfo } from "../../dpi-sdk/src/api.ts";
 import { isDpiError } from "../../dpi-sdk/src/errors.ts";
@@ -156,7 +157,41 @@ export function describeLocalProbe(probe: LocalProbe, port: number): string {
   if (probe.ok) return `local dpi-backend on 127.0.0.1:${port}: ${probe.info.name || probe.info.hostname || "unnamed device"}`;
   if (probe.reason === "unauthorized")
     return `the local dpi-backend on 127.0.0.1:${port} rejected the token — check DPI_TOKEN (env or ${join(dpiHome(), "backend.env")})`;
-  return `no local dpi-backend on 127.0.0.1:${port} — start one with: dpi device`;
+  return `no local dpi-backend on 127.0.0.1:${port} — auto-start failed; run \`dpi device start\` and check ${join(dpiHome(), "device.log")}`;
+}
+
+export type EnsureStarter = () => { ok: boolean; log: string; pid?: number; reason?: string };
+export type EnsureResult = { probe: LocalProbe; started: boolean; log?: string; reason?: string };
+
+/**
+ * Probe the local backend and, if nothing answers, START one the way
+ * `dpi device start` does (detached, log to <home>/device.log) and wait for it.
+ * herdr spawns its own server; we do the same for the loopback device. A token
+ * rejection is never auto-started away — that's a credential problem.
+ */
+export async function ensureLocalBackend(
+  opts: { port?: number; token?: string; fetchImpl?: typeof fetch; start?: EnsureStarter; waitMs?: number } = {},
+): Promise<EnsureResult> {
+  const port = opts.port ?? applyBackendEnv().port;
+  const probeOf = async (): Promise<LocalProbe> => {
+    // a first boot WRITES backend.env, so the token can appear mid-wait
+    const token = opts.token ?? applyBackendEnv({ ...process.env, ...(opts.token ? { DPI_TOKEN: opts.token } : {}) }).token;
+    if (!token) return { ok: false, reason: "unreachable" };
+    return probeLocalBackend(localBackendUrl(port), token, opts.fetchImpl);
+  };
+  const first = await probeOf();
+  if (first.ok || first.reason === "unauthorized") return { probe: first, started: false };
+  const start: EnsureStarter = opts.start ?? (() => startBackendDetached(process.env));
+  const r = start();
+  if (!r.ok) return { probe: first, started: false, reason: r.reason, log: r.log };
+  const deadline = Date.now() + (opts.waitMs ?? 15_000);
+  let last: LocalProbe = first;
+  while (Date.now() < deadline) {
+    await new Promise((res) => setTimeout(res, 400));
+    last = await probeOf();
+    if (last.ok) return { probe: last, started: true, log: r.log, reason: `pid ${r.pid}` };
+  }
+  return { probe: last, started: true, log: r.log };
 }
 
 // ------------------------------------------------------------------ ids and device input
@@ -354,20 +389,22 @@ async function welcomeAddUrl(app: App) {
 async function welcomeLocal(app: App) {
   const local = applyBackendEnv();
   app.flash(`Probing 127.0.0.1:${local.port}…`);
-  const probe = local.token
-    ? await probeLocalBackend(localBackendUrl(local.port), local.token)
-    : ({ ok: false, reason: "unreachable" } as const);
-  if (!probe.ok) {
-    app.flash(describeLocalProbe(probe, local.port), true);
+  const ensured = await ensureLocalBackend({ port: local.port, token: local.token });
+  if (ensured.started && ensured.probe.ok) app.flash(`started the local dpi-backend (${ensured.reason})`);
+  if (!ensured.probe.ok) {
+    app.flash(describeLocalProbe(ensured.probe, local.port), true);
     return showWelcome(app);
   }
+  const probe = ensured.probe;
   const url = localBackendUrl(local.port);
   const id = suggestDeviceId(probe.info.hostname, probe.info.name);
   stepPicker(
     app,
     `Local backend: ${probe.info.name || probe.info.hostname || url}`,
     [{ value: "open", label: `Save as "${id}" and open`, description: `${url} │ token from DPI_TOKEN / backend.env` }],
-    () => void saveAndOpen(app, id, url, local.token!, probe.info.name),
+    // local.token was read BEFORE a first boot may have written backend.env —
+    // re-resolve, the file exists now.
+    () => void saveAndOpen(app, id, url, applyBackendEnv().token!, probe.info.name),
   );
 }
 

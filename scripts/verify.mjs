@@ -151,6 +151,11 @@ const SUITES = {
     cmd: ["node", "tests/welcome-ui.mjs"],
     title: "real PTY welcome screen, detect-local and quit",
   },
+  "ui:tui-ensure": {
+    cwd: "apps/dpi-tui",
+    cmd: ["node", "tests/ensure-ui.mjs"],
+    title: "real PTY [d] auto-starts the local dpi-backend and opens it",
+  },
 };
 
 const PHASE_GATES = ["test:verification", "check:sdk", "check:backend", "contract:backend", "build:playground", "check:tui"];
@@ -172,6 +177,7 @@ const PHASE_SUITES = {
     "ui:tui-session",
     "ui:tui-keymap",
     "ui:tui-welcome",
+    "ui:tui-ensure",
   ],
 };
 
