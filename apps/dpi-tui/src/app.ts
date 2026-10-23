@@ -361,7 +361,7 @@ export class App {
       this.exit();
       return { consume: true };
     }
-    if (data === "q" && this.view !== "agent") {
+    if (data === "q") {
       this.exit();
       return { consume: true };
     }
