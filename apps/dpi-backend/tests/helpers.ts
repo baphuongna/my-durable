@@ -93,5 +93,5 @@ export async function bootServer(opts: {
     }
   };
   await start();
-  return { base, port, start, stop, output: () => output };
+  return { base, port, start, stop, output: () => output, exitCode: () => child?.exitCode ?? null };
 }

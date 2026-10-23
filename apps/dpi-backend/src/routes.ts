@@ -24,9 +24,22 @@ const int = (value: unknown, name: string) => {
   return n;
 };
 
-export function v1(store: Store, pairing?: DevicePairing, connector?: { status(): unknown }) {
+export function v1(
+  store: Store,
+  pairing?: DevicePairing,
+  connector?: { status(): unknown },
+  stop?: () => void,
+) {
   const r = Router();
   const create = idempotent(store);
+  // `dpi device stop`: graceful local shutdown (token-authed like every /v1
+  // route). The response flushes BEFORE the daemon tears down so the caller
+  // always sees 200 instead of a dropped connection.
+  if (stop)
+    r.post("/shutdown", (_req, res) => {
+      res.json({ ok: true });
+      setImmediate(stop);
+    });
 
   // Local pairing control point (03 §7): the TUI never touches crypto or the
   // pairing files directly — everything flows through these token-authed routes.

@@ -3,6 +3,7 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { assertLimitsConfig } from "../../dpi-sdk/src/protocol/limits.js";
 import { createServer } from "node:http";
+import { writeFileSync, rmSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { loadConfig } from "./config.js";
 import { Store } from "./store.js";
@@ -12,6 +13,14 @@ import { v1 } from "./routes.js";
 import { DevicePairing } from "./pairing.js";
 import { DeviceConnector, readCaPem } from "./tunnel.js";
 import { PAIR_PAGE_HTML } from "./pair-page.js";
+import { parseDeviceSub, runDeviceCommand, daemonPaths } from "./daemon.js";
+
+// `dpi device start|stop|status|install|uninstall` manage a background daemon
+// and exit; everything else (bare `dpi device` or flags) runs the daemon here.
+{
+  const { sub, rest } = parseDeviceSub(process.argv.slice(2));
+  if (sub !== "run") process.exit(await runDeviceCommand(sub, rest));
+}
 
 assertLimitsConfig();
 
@@ -128,7 +137,7 @@ app.use(
   "/v1",
   bearerAuth(config.token),
   express.json({ limit: "256kb" }),
-  v1(store, pairing, connector),
+  v1(store, pairing, connector, () => void shutdown()),
 );
 app.use((_req, res) =>
   res.status(404).json({ error: { code: "not_found", message: "Route not found" } }),
@@ -138,6 +147,12 @@ app.use(errorMiddleware);
 const server = createServer(app);
 server.keepAliveTimeout = 65_000;
 server.listen(config.port, config.host, () => {
+  // Pid file for `dpi device stop/status` (written fresh every boot).
+  try {
+    writeFileSync(daemonPaths(process.env).pid, String(process.pid));
+  } catch {
+    /* read-only home: stop falls back to the HTTP shutdown */
+  }
   console.log(
     `dpi-backend "${config.name}" (uid ${store.uid}) on http://${config.host}:${config.port}`,
   );
@@ -151,6 +166,7 @@ server.listen(config.port, config.host, () => {
       for (const a of addresses ?? [])
         if (a.family === "IPv4" && !a.internal)
           console.log(`LAN: http://${a.address}:${config.port}`);
+  console.log(`background: dpi device start | stop | status | install (service)`);
 
   // Enrollment guidance: an unpaired machine must be told exactly what to do,
   // and — when a hub is configured — it asks for a code ITSELF so the operator
@@ -192,6 +208,11 @@ const shutdown = async () => {
   server.close();
   server.closeAllConnections();
   await store.close();
+  try {
+    rmSync(daemonPaths(process.env).pid, { force: true });
+  } catch {
+    /* nothing to clean */
+  }
   process.exit(0);
 };
 process.on("SIGTERM", () => void shutdown());

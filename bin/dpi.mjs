@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // `dpi` — one command for the Durable Pi stack.
 //   dpi hub    [--port N] [--host H] [--public-host H]   web UI + device tunnel server
-//   dpi device                                            device-side daemon
+//   dpi device [start|stop|status|install|uninstall]     device-side daemon
 //   dpi tui                                               terminal admin client
 // Every subcommand runs the TypeScript entry through tsx, so no build step is needed.
 import { access } from "node:fs/promises";
@@ -19,8 +19,9 @@ const HELP = `dpi — Durable Pi (bare "dpi" opens the TUI)
 Usage:
   dpi hub [--port 4781] [--host 127.0.0.1] [--public-host <host>]
       Web UI + device tunnel server (devices dial this).
-  dpi device
-      Device-side daemon (pairs to a hub, serves one machine's agents).
+  dpi device                                          run the device daemon (foreground)
+  dpi device start | stop | status                    background daemon without a terminal
+  dpi device install | uninstall                      OS service (systemd/launchd/startup)
   dpi tui
       Terminal admin client.
   dpi help | dpi --help | dpi -h
@@ -149,6 +150,9 @@ if (command === "update" || command === "upgrade") {
 } else {
   // The entries parse process.argv.slice(2) themselves: hand them their own args.
   process.argv = [process.argv[0], process.argv[1], ...commandRest];
+  // The device daemon respawns and installs services through this launcher:
+  // hand it the absolute path before the module loads.
+  process.env.DPI_BIN = fileURLToPath(import.meta.url);
   const { register } = await loadTsx();
   register();
   await import(COMMANDS[command]);
