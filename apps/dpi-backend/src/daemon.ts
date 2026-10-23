@@ -122,12 +122,6 @@ ${envXml}
 `;
 }
 
-export function windowsStartupVbs(o: { node: string; dpi: string; log: string }): string {
-  // VBS doubles quotes; cmd strips the outer pair, leaving the redirect intact.
-  const cmd = `cmd /c ""${o.node}" "${o.dpi}" device >> "${o.log}" 2>&1"`;
-  return `' Durable Pi device daemon — starts hidden at every logon (no console flash).\n' Remove with: dpi device uninstall\nCreateObject("WScript.Shell").Run "${cmd.replaceAll('"', '""')}", 0, False\n`;
-}
-
 // ---------------------------------------------------------------- command IO
 
 export interface RunOpts {
@@ -344,11 +338,22 @@ async function cmdStatus(io: Io): Promise<number> {
 
 async function cmdInstall(io: Io): Promise<number> {
   const env = serviceEnv(io.env);
+  const p = io.platform;
+  if (p === "win32") {
+    // The reference clients register NO OS autostart either: their daemon lives
+    // inside a desktop app the user opens by hand. We are a console daemon with
+    // no GUI host, so the honest equivalent on Windows is `dpi device start`
+    // after login — no hidden scripts, no registry entries, nothing to forget
+    // about at uninstall time.
+    io.print("Windows: no OS autostart is installed (the reference clients install none either).");
+    io.print("Start the daemon after login with:  dpi device start");
+    io.print("Stop it with:                       dpi device stop");
+    return 0;
+  }
   const node = process.execPath;
   const dpi = io.env.DPI_BIN ?? "";
   if (!dpi || !existsSync(dpi)) return io.print("install needs the dpi launcher (run via `dpi device install`)"), 1;
   if (!env.DPI_HOME) env.DPI_HOME = daemonPaths(io.env).home;
-  const p = io.platform;
   if (p === "linux") {
     const unit = join(homedir(), ".config/systemd/user/dpi-device.service");
     await io.writeFile(unit, systemdUnit({ node, dpi, env }));
@@ -380,17 +385,6 @@ async function cmdInstall(io: Io): Promise<number> {
     io.print(`installed LaunchAgent (${plist}) — starts at login`);
     return 0;
   }
-  if (p === "win32") {
-    const paths = daemonPaths(io.env);
-    const startup = join(
-      io.env.APPDATA ?? join(homedir(), "AppData", "Roaming"),
-      "Microsoft/Windows/Start Menu/Programs/Startup/dpi-device.vbs",
-    );
-    await io.writeFile(startup, windowsStartupVbs({ node, dpi, log: paths.log }));
-    io.print(`installed Startup script (${startup}) — starts hidden at every logon`);
-    await cmdStart(io, []);
-    return 0;
-  }
   io.print(`no service installer for platform ${p} — use \`dpi device start\` after login`);
   return 1;
 }
@@ -412,12 +406,7 @@ async function cmdUninstall(io: Io): Promise<number> {
     if (existsSync(plist)) rmSync(plist);
     io.print("removed LaunchAgent");
   } else if (p === "win32") {
-    const startup = join(
-      io.env.APPDATA ?? join(homedir(), "AppData", "Roaming"),
-      "Microsoft/Windows/Start Menu/Programs/Startup/dpi-device.vbs",
-    );
-    if (existsSync(startup)) rmSync(startup);
-    io.print("removed Startup script");
+    io.print("Windows installs nothing at the OS level — only the daemon was stopped");
   }
   return 0;
 }

@@ -68,7 +68,7 @@ const registry = new NetworkRegistry();
 registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect from DB
 // The operator's own credential: minted at first boot into DPI_HOME/admin.token (0600),
 // overridable via DPI_ADMIN_TOKEN. A set-but-short token refuses to boot (admin-auth.ts).
-const adminToken = bootstrapAdminToken();
+const adminToken = await bootstrapAdminToken();
 // Gap #5: later boots point the operator at the file — the value itself only
 // ever appears on the first-boot mint line (admin-auth.ts).
 if (!adminToken.created) console.log(`admin: login with the token in ${adminToken.path}`);
@@ -126,7 +126,7 @@ const audit = new Audit(registry, auditFloorFromEnv());
 audit.startSweeper();
 // Gap #6: the hub's persistent identity key — its fingerprint is the `kfp`
 // pinned inside every v3 pairing offer and proven at ceremony + tunnel connect.
-const identity = bootstrapHubIdentity(undefined, audit);
+const identity = await bootstrapHubIdentity(undefined, audit);
 if (adminToken.created)
   audit.append({
     actor: "hub",

@@ -22,6 +22,7 @@ import {
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
+import { restrictToOwner } from "../../dpi-sdk/src/node/private-file.js";
 import { fsyncReadOnlySupported } from "../../dpi-sdk/src/node/registry-migration.js";
 
 export { ensurePrivateDir };
@@ -44,6 +45,9 @@ export function replaceFileAtomic(path: string, contents: string): void {
     closeSync(fd);
     fd = undefined;
     renameSync(temp, path);
+    // Windows ignores 0600: install the owner-only DACL after every publish
+    // (posix: chmod is a no-op on the already-0600 file).
+    void restrictToOwner(path);
     // fsync the directory so the rename itself is durable (POSIX only: Windows
     // directory fds cannot be fsynced — EPERM; NTFS journaling carries it there).
     if (fsyncReadOnlySupported) {

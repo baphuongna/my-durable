@@ -15,7 +15,6 @@ import {
   daemonPaths,
   systemdUnit,
   launchdPlist,
-  windowsStartupVbs,
   serviceEnv,
   cleanChildEnv,
   runDeviceCommand,
@@ -84,21 +83,6 @@ test("launchdPlist: ProgramArguments node+dpi device, env dict, RunAtLoad, log p
   assert.match(xml, /<key>DPI_HOME<\/key><string>\/Users\/x\/\.dpi<\/string>/);
   assert.match(xml, /<key>RunAtLoad<\/key><true\/>/);
   assert.match(xml, /<key>StandardOutPath<\/key><string>\/Users\/x\/\.dpi\/device\.log<\/string>/);
-});
-
-test("windowsStartupVbs: hidden window (style 0), node+dpi device, append to the log", () => {
-  const vbs = windowsStartupVbs({
-    node: "C:\\Program Files\\nodejs\\node.exe",
-    dpi: "C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\my-durable\\bin\\dpi.mjs",
-    log: "C:\\Users\\x\\.dpi\\device.log",
-  });
-  assert.match(vbs, /WScript\.Shell/);
-  assert.match(vbs, /, 0, False/, "window style 0 = hidden, no console flash at logon");
-  assert.match(vbs, /node\.exe/);
-  assert.match(vbs, /dpi\.mjs/);
-  assert.match(vbs, /device/);
-  assert.match(vbs, /device\.log/);
-  assert.match(vbs, /2>&1/);
 });
 
 test("cleanChildEnv: strips the Electron-node hazard env the references strip", () => {
@@ -190,6 +174,23 @@ test("status: reports a live daemon's health and pairing state", async () => {
   assert.match(out, /running/i);
   assert.match(out, /unpaired|paired/);
   await server.stop();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("install (win32): installs NOTHING — guidance only, like the reference clients", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dpi-winst-"));
+  const wrote: { path: string; body: string }[] = [];
+  const code = await runDeviceCommand("install", [], {
+    env: { DPI_HOME: join(dir, "home"), APPDATA: join(dir, "appdata") },
+    platform: "win32",
+    execImpl: async () => ({ ok: true, output: "", code: 0 }),
+    writeFileImpl: async (path: string, body: string) => {
+      wrote.push({ path, body });
+    },
+    quiet: true,
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(wrote, [], "no startup script, no service file, no registry writes");
   await rm(dir, { recursive: true, force: true });
 });
 

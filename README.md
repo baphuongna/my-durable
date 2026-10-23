@@ -17,8 +17,9 @@ dpi hub                 # web UI + device tunnel server  → http://127.0.0.1:47
 dpi device              # device daemon (pairs to a hub, serves this machine)
 dpi device start        # run it in the background — no terminal needed (log: <home>/device.log)
 dpi device stop|status  # graceful stop (token-authed local API) · health + pairing state
-dpi device install      # OS service: systemd --user (Linux) · LaunchAgent (macOS) · hidden
-                        # Startup script (Windows) — starts at logon, survives logout (linger)
+dpi device install      # OS service: systemd --user + linger (Linux) · LaunchAgent (macOS).
+                        # Windows installs no autostart (like the reference clients) —
+                        # run `dpi device start` after login
 dpi device uninstall
 dpi tui                 # terminal admin client
 dpi --help              # commands, flags and environment variables

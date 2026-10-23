@@ -24,7 +24,7 @@ import { parseDeviceSub, runDeviceCommand, daemonPaths } from "./daemon.js";
 
 assertLimitsConfig();
 
-const config = loadConfig();
+const config = await loadConfig();
 const store = await Store.open({
   dataDir: config.dataDir,
   startDirs: config.startDirs,

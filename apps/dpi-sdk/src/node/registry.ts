@@ -1,6 +1,7 @@
 // The client-side device registry: ~/.dpi/network.sqlite. Shared by the playground hub,
 // dpi-tui and scripts/net.ts on this machine. Holds tokens (mode 0600), live status and UI state.
 import { DatabaseSync } from "node:sqlite";
+import { restrictToOwner } from "./private-file.js";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { migrateRegistryFile } from "./registry-migration.js";
@@ -100,6 +101,11 @@ export class NetworkRegistry {
     // migration). Any failure throws — the hub/TUI must not boot on it.
     migrateRegistryFile(path);
     this.db = new DatabaseSync(path);
+    // The registry carries device tokens: sqlite owns the file's creation mode,
+    // so tighten it here — 0600 on POSIX is ensurePrivateDir's job for the
+    // directory; on Windows this installs the owner-only DACL (registry.ts is
+    // shared by the hub, so keep it fire-and-forget and non-fatal).
+    void restrictToOwner(path);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000; PRAGMA foreign_keys=ON;");
   }
 

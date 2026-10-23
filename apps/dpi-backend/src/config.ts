@@ -1,10 +1,11 @@
 // Device configuration: ~/.dpi/backend.env (or $DPI_ENV_FILE) plus CLI flags.
 // Nothing here knows about specific machines; dpi-network.yaml on the operator's laptop
 // writes this env file through `just net up <device>`.
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { writePrivateFileAtomic } from "../../dpi-sdk/src/node/private-file.js";
 
 export interface BackendConfig {
   name: string;
@@ -22,7 +23,7 @@ export interface BackendConfig {
 
 const expand = (p: string) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
-export function loadConfig(argv = process.argv.slice(2), env = process.env): BackendConfig {
+export async function loadConfig(argv = process.argv.slice(2), env = process.env): Promise<BackendConfig> {
   const flag = (key: string, fallback: string) => {
     const i = argv.indexOf(key);
     if (i < 0) return fallback;
@@ -44,7 +45,13 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env): Bac
     token = `dpi_${randomBytes(32).toString("base64url")}`;
     tokenCreated = true;
     if (!existsSync(home)) mkdirSync(home, { recursive: true, mode: 0o700 });
-    appendFileSync(envFile, `DPI_TOKEN=${token}\n`, { mode: 0o600 });
+    // Atomic, content-preserving (orca STA-3941 / paseo writePrivateFileAtomicSync): a
+    // plain append could glue the token onto an unterminated last line or leave a
+    // half-written token if the boot dies mid-write. The shared writer publishes the
+    // new bytes only via rename and also enforces owner-only access on Windows.
+    const prior = existsSync(envFile) ? readFileSync(envFile, "utf8") : "";
+    const glued = prior !== "" && !prior.endsWith("\n") ? "\n" : "";
+    await writePrivateFileAtomic(envFile, `${prior}${glued}DPI_TOKEN=${token}\n`);
   }
   const config: BackendConfig = {
     name: flag("--name", env.DPI_DEVICE_NAME ?? hostname().replace(/\.local$/, "")),

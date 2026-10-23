@@ -24,7 +24,8 @@
  * both compared in constant time.
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writePrivateFileAtomic, restrictToOwner } from "../../../../dpi-sdk/src/node/private-file.js";
 import { dirname, join } from "node:path";
 import type { RequestHandler } from "express";
 import { homedir } from "node:os";
@@ -58,9 +59,9 @@ export interface AdminTokenInfo {
  * Resolve the admin token at boot: env override (>= 32 chars or throw), the
  * existing token file, or a freshly minted one written 0600.
  */
-export function bootstrapAdminToken(
+export async function bootstrapAdminToken(
   home = process.env.DPI_HOME ?? join(homedir(), ".dpi"),
-): AdminTokenInfo {
+): Promise<AdminTokenInfo> {
   const path = process.env.DPI_ADMIN_TOKEN_FILE ?? join(home, "admin.token");
   const env = process.env.DPI_ADMIN_TOKEN;
   if (env !== undefined && env !== "") {
@@ -78,21 +79,17 @@ export function bootstrapAdminToken(
     /* first run (or an unreadable file): mint below */
   }
   if (existing) {
-    // The token file must stay 0600 — tighten quietly if a copy restored looser bits
-    // (the same quiet re-tightening Audit applies to the registry file).
-    try {
-      if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600);
-    } catch {
-      /* best effort */
-    }
+    // The token file must stay owner-only — tighten quietly if a copy restored
+    // looser bits (POSIX mode or, on Windows, the owner-only DACL — the same
+    // shared primitive every secret write in the stack uses).
+    void restrictToOwner(path);
     return { token: existing, path, created: false };
   }
   const token = `adm_${randomBytes(32).toString("base64url")}`;
-  // DPI_ADMIN_TOKEN_FILE may name a directory that does not exist yet — create it
-  // owner-only rather than refusing the operator's explicit choice of location.
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${token}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600); // a pre-existing (e.g. empty) file may carry wider bits
+  // Atomic, owner-only mint (DPI_ADMIN_TOKEN_FILE may name a directory that does
+  // not exist yet — the shared writer creates it owner-only rather than refusing
+  // the operator's explicit choice of location).
+  await writePrivateFileAtomic(path, `${token}\n`);
   // Gap #5: first-login friction — the value appears exactly once, here at
   // mint time (this line only ever runs on a first boot), so the operator can
   // log into the web UI without reading a file off the hub machine. Restarts

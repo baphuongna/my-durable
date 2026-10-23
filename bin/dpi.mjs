@@ -21,7 +21,8 @@ Usage:
       Web UI + device tunnel server (devices dial this).
   dpi device                                          run the device daemon (foreground)
   dpi device start | stop | status                    background daemon without a terminal
-  dpi device install | uninstall                      OS service (systemd/launchd/startup)
+  dpi device install | uninstall                      OS service (systemd/launchd); Windows: no
+                                                      autostart — run "dpi device start" after login
   dpi tui
       Terminal admin client.
   dpi help | dpi --help | dpi -h

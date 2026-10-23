@@ -19,7 +19,8 @@ import {
   generateKeyPairSync,
   sign as edSign,
 } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { restrictToOwner, writePrivateFileAtomic } from "../../../../dpi-sdk/src/node/private-file.js";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Audit } from "./audit.js";
@@ -38,11 +39,11 @@ function fingerprintOf(publicKeyPem: string): string {
   return `sha256:${createHash("sha256").update(der).digest("hex")}`;
 }
 
-export function bootstrapHubIdentity(
+export async function bootstrapHubIdentity(
   home: string = process.env.DPI_HOME ?? join(homedir(), ".dpi"),
   audit?: Audit,
   hooks: { envFile?: string | undefined; existsSync?: typeof existsSync; now?: () => number } = {},
-): HubIdentity {
+): Promise<HubIdentity> {
   const privPath =
     hooks.envFile ?? process.env.DPI_HUB_IDENTITY_FILE ?? join(home, "hub-identity.pem");
   const pubPath = `${privPath}.pub.pem`;
@@ -62,13 +63,15 @@ export function bootstrapHubIdentity(
     const kp = generateKeyPairSync("ed25519");
     privateKeyPem = kp.privateKey.export({ type: "pkcs8", format: "pem" }) as string;
     mkdirSync(dirname(privPath), { recursive: true, mode: 0o700 });
-    writeFileSync(privPath, privateKeyPem, { mode: 0o600 });
+    // The hub's signing key is the highest-value secret on disk: publish it
+    // atomically and owner-only on every platform (Windows DACL included).
+    await writePrivateFileAtomic(privPath, privateKeyPem);
     writeFileSync(pubPath, kp.publicKey.export({ type: "spki", format: "pem" }) as string, {
       mode: 0o600,
     });
     created = true;
   }
-  chmodSync(privPath, 0o600);
+  await restrictToOwner(privPath); // 0600 on POSIX, owner-only DACL on Windows
   const publicKeyPem = createPublicKey(createPrivateKey(privateKeyPem)).export({
     type: "spki",
     format: "pem",
