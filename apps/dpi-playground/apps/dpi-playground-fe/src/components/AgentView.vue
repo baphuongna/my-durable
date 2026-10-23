@@ -162,7 +162,7 @@ watch(
               <span class="crumb-kind">device</span>
               <span class="crumb-main"
                 ><DeviceIcon :device="device" :size="18" /><span class="device-chip">{{
-                  device?.id
+                  device?.name ?? device?.id
                 }}</span></span
               >
             </button>

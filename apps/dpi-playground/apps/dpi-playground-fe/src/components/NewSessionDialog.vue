@@ -79,7 +79,7 @@ async function create() {
         <label
           >Device<select v-model="deviceId" aria-label="Device">
             <option v-for="d in devices" :key="d.id" :value="d.id">
-              {{ d.id }} · {{ d.info?.hostname ?? d.url }}
+              {{ d.name }}{{ d.info?.hostname && d.info.hostname !== d.name ? ` · ${d.info.hostname}` : "" }}
             </option>
           </select></label
         >
@@ -91,7 +91,7 @@ async function create() {
             maxlength="100"
         /></label>
         <div class="field">
-          <span>Working directory on {{ deviceId }}</span>
+          <span>Working directory on {{ devices.find((d) => d.id === deviceId)?.name ?? deviceId }}</span>
           <DirBrowser v-model="draft.cwd" :device-id="deviceId" />
         </div>
         <label

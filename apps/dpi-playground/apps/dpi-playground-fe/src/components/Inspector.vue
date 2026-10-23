@@ -239,7 +239,7 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
               <span class="status-pill" :class="{ working: busy }"
                 ><i />{{ busy ? "Working" : "Idle" }}</span
               ><span v-if="background" class="background-pill">{{ background }} background</span
-              ><span class="saved"><Server :size="18" />{{ device?.id }}</span>
+              ><span class="saved" :title="device?.id"><Server :size="18" />{{ device?.name ?? device?.id }}</span>
               <TunnelStatusBar v-if="device" :device="device" />
             </div>
           </section>
@@ -318,7 +318,7 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
             <Braces :size="18" />
           </div>
           <p class="hint app-state-description">
-            One shared JSON object for every agent, session and fork on {{ device?.id }}. You and
+            One shared JSON object for every agent, session and fork on {{ device?.name ?? device?.id }}. You and
             your agents can read, create, update or delete values and fields. Changes appear live
             and persist across closed browsers, interrupted agents and backend restarts.
           </p>
