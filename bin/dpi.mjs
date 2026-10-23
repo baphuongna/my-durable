@@ -88,75 +88,22 @@ if (command === "version" || command === "--version" || command === "-v") {
 
 if (command === "update" || command === "upgrade") {
   const { readFileSync } = await import("node:fs");
-  const { spawn } = await import("node:child_process");
+  const { runUpdate, fetchLatestVersion, spawnNpm, daemonControl } = await import("./update.mjs");
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const current = pkg.version;
-  const checkOnly = commandRest.includes("--check") || commandRest.includes("-c");
-
-  let latest;
-  try {
-    const res = await fetch("https://registry.npmjs.org/my-durable/latest", {
-      headers: { accept: "application/json" },
-    });
-    if (!res.ok) throw new Error(`registry responded ${res.status}`);
-    latest = (await res.json()).version;
-    // This string is later interpolated into a command line (shell on Windows):
-    // anything that is not a plain semver must stop the update, not run.
-    if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(String(latest)))
-      throw new Error(`registry returned a malformed version: ${latest}`);
-  } catch (error) {
-    process.stderr.write(`dpi update: cannot reach the npm registry (${error.message})\n`);
-    process.exit(1);
-  }
-
-  // Numeric triple compare; a prerelease tag on either side counts as older.
-  const rank = (v) => {
-    const [core, ...pre] = String(v).split("-");
-    const nums = core.split(".").map((n) => Number.parseInt(n, 10) || 0);
-    return { nums: [nums[0] ?? 0, nums[1] ?? 0, nums[2] ?? 0], pre: pre.length > 0 };
-  };
-  const a = rank(current);
-  const b = rank(latest);
-  let order = 0;
-  for (let i = 0; i < 3; i += 1) {
-    if (a.nums[i] !== b.nums[i]) {
-      order = a.nums[i] < b.nums[i] ? -1 : 1;
-      break;
-    }
-  }
-  if (order === 0 && a.pre !== b.pre) order = a.pre ? -1 : 1;
-
-  if (order >= 0) {
-    process.stdout.write(`dpi ${current} is up to date (latest ${latest}).\n`);
-    process.exit(0);
-  }
-  process.stdout.write(`dpi ${current} -> ${latest} available.\n`);
-  if (checkOnly) {
-    process.stdout.write("Run `dpi update` to install it.\n");
-    process.exit(0);
-  }
-
-  // Windows: npm is npm.cmd and cmd.exe only executes batch files through a
-  // shell — a bare spawn("npm") dies with ENOENT (CreateProcess does no
-  // PATHEXT resolution). Args are literals plus the strictly-validated
-  // version above, so shell: true has no injection surface here.
-  const onWindows = process.platform === "win32";
-  const child = spawn(onWindows ? "npm.cmd" : "npm", ["install", "-g", `my-durable@${latest}`], {
-    stdio: "inherit",
-    shell: onWindows,
+  const port = Number(process.env.DPI_PORT ?? "4780");
+  const code = await runUpdate({
+    argv: commandRest,
+    pkg,
+    nodeVersion: process.versions.node,
+    fetchLatest: fetchLatestVersion,
+    // Stop/start through this same launcher: the daemon must not block npm's
+    // rename on Windows, and it must come back afterwards.
+    daemon: daemonControl(fileURLToPath(import.meta.url), port),
+    runNpm: (version) => spawnNpm(["install", "-g", `my-durable@${version}`]),
+    print: (line) => process.stdout.write(`${line}\n`),
+    printErr: (line) => process.stderr.write(`${line}\n`),
   });
-  child.on("error", (error) => {
-    process.stderr.write(`dpi update: cannot run npm (${error.message})\n`);
-    process.exit(1);
-  });
-  child.on("exit", (code) => {
-    if (code !== 0) {
-      process.stderr.write(`dpi update: npm exited ${code}; still on ${current}.\n`);
-      process.exit(code ?? 1);
-    }
-    process.stdout.write(`dpi updated ${current} -> ${latest}.\n`);
-    process.exit(0);
-  });
+  process.exit(code);
 } else if (!Object.hasOwn(COMMANDS, command)) {
   process.stderr.write(`dpi: unknown command '${command}'\n\n${HELP}`);
   process.exit(2);

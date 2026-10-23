@@ -28,6 +28,7 @@ import type { DeviceRow, NetworkRegistry } from "../../dpi-sdk/src/node/registry
 import { COMMANDS, runCommand } from "./commands.ts";
 import { Prompt, SecretPrompt, pickModel, newSession } from "./pickers.ts";
 import { renderHeader, renderHerd, renderHerdPanel, renderNetwork, renderStatusbar, renderViewbar, herdRows, joinPanel, networkRows } from "./views.ts";
+import { appendFileSync } from "node:fs";
 import { fetchHubNetwork } from "./hub-feed.ts";
 import { HubMux } from "./hub-mux.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
@@ -358,7 +359,13 @@ export class App {
     ];
   }
 
-  private rows(): Array<{ sessionId?: string; deviceId?: string; label: string }> {
+  /** Herd and network rows share a shape; `kind` tells a header from an entry. */
+  private rows(): Array<{
+    kind: "group" | "session" | "device";
+    sessionId?: string;
+    deviceId?: string;
+    label: string;
+  }> {
     if (this.view === "herd") return herdRows(this.sessions, this.filter);
     if (this.view === "network") return networkRows(this.devicesCache, this.device.id, this.filter);
     return [];
@@ -368,6 +375,14 @@ export class App {
     const rows = this.rows();
     const row = rows[this.cursor] ?? rows.find((r) => r.sessionId);
     if (row?.sessionId) return this.openSession(row.sessionId, row.deviceId);
+    // A group header opens its first session — pressing enter on a header used
+    // to do literally nothing.
+    if (row?.kind === "group") {
+      // The next session row after the header belongs to that group.
+      const at = rows.indexOf(row);
+      const target = rows.slice(at + 1).find((r) => r.kind !== "group");
+      if (target?.sessionId) return this.openSession(target.sessionId, target.deviceId);
+    }
     if (row?.deviceId && this.view === "network") {
       const target = this.devicesCache.find((d) => d.id === row.deviceId);
       if (!target) return;
@@ -402,7 +417,11 @@ export class App {
 
   /** 1-9 jump: the nth session row of the current view. */
   private jump(n: number) {
-    const rows = this.rows().filter((r) => r.sessionId);
+    // Digits address sessions, so they work from the agent view as well — that
+    // is the fastest way out of a session you no longer want.
+    const rows = (this.view === "herd" ? this.rows() : herdRows(this.sessions, this.filter)).filter(
+      (r): r is { kind: "session"; sessionId: string; deviceId?: string; label: string } => !!r.sessionId,
+    );
     const nth = rows[n - 1];
     if (nth?.sessionId) this.openSession(nth.sessionId, nth.deviceId);
     else this.notify(`no session #${n} in this view`);
@@ -454,6 +473,17 @@ export class App {
   // ------------------------------------------------------------------- input
 
   handleInput(data: string): TuiInputListenerResult {
+    // DPI_TUI_KEYS=<file> traces every key the app receives — the fastest way to
+    // tell "the terminal never sent it" from "a branch swallowed it".
+    if (process.env.DPI_TUI_KEYS)
+      try {
+        appendFileSync(
+          process.env.DPI_TUI_KEYS,
+          `${JSON.stringify({ data, view: this.view, tab: this.tab, input: this.input?.kind ?? null, overlays: this.overlays.length })}\n`,
+        );
+      } catch {
+        /* tracing must never break input */
+      }
     // pi-tui overlays (welcome screen, pickers, prompts) own the keyboard while
     // open; only ctrl+c still closes them from here.
     if (this.overlays.length) {
@@ -489,7 +519,7 @@ export class App {
     else if (data === "/") {
       this.beginInput("message", "follow-up ❯ ");
       this.input!.value = "/";
-    } else if (data === "f") this.beginInput("filter", "/ ");
+    } else if (data === "f") this.beginInput("filter", "filter ❯ ");
     else if (data === "n") this.beginInput("new", "new session › ");
     else if (data === "x") this.beginInput("kill", `reset ${this.sessionSummary()?.name ?? "context"}? y/n`);
     else if (data === "g") this.setView("herd");
@@ -508,12 +538,9 @@ export class App {
     else if (data === "]" || matchesKey(data, "tab")) this.cycleTab(1);
     else if (data === "[" || matchesKey(data, "shift+tab")) this.cycleTab(-1);
     else if (/^[1-9]$/.test(data)) this.jump(Number(data));
-    // Agent view keeps pi muscle memory: any other printable char opens the
-    // message line seeded with itself (herdr requires "m"; typing talks here).
-    else if (this.view === "agent" && /^[^\x00-\x1f]$/.test(data)) {
-      this.beginInput("message", "follow-up ❯ ");
-      this.input!.value = data;
-    }
+    // No catch-all: a stray letter used to jump views or open the composer with
+    // itself as the first character. herdr and piggery both require an explicit
+    // key (m, / or enter), and so do we now.
     return { consume: true };
   }
 
@@ -607,15 +634,27 @@ export class App {
     this.requestRender();
   }
 
+  /**
+   * esc is BACK, the way every list/detail client behaves (piggery: "esc back").
+   * Interrupting a running turn is a destructive action and keeps its own key
+   * (i) — folding it into esc meant "leave this screen" did nothing at all while
+   * an agent was idle.
+   */
   private escape() {
     if (this.filter) {
       this.filter = "";
       this.notify("filter cleared");
-    } else if (this.view === "agent") {
-      if (this.busy()) void this.interrupt();
-    } else this.setView("agent");
+    } else if (this.view === "agent" || this.view === "log") {
+      this.setView("herd");
+    }
   }
 
+  /**
+   * Move the cursor. Group rows ("~/project/ · 3 agents") are headers, not
+   * entries: stepping onto one left the marker and the OVERVIEW panel frozen on
+   * the previous session, which reads as "navigation is dead". Skip them, the
+   * way piggery's list only ever has real rows under the cursor.
+   */
   private move(delta: number) {
     if (this.view === "agent" && this.tab === "transcript") {
       // Scroll the transcript instead of moving a cursor (herdr H04's lesson).
@@ -625,9 +664,24 @@ export class App {
     }
     const rows = this.rows();
     if (!rows.length) return;
-    this.cursor = Math.max(0, Math.min(this.cursor + delta, rows.length - 1));
-    const row = rows[this.cursor];
-    if (row?.sessionId) this.selectedId = row.sessionId;
+    const selectable = (i: number) => !!rows[i] && rows[i].kind !== "group";
+    let next = this.cursor;
+    for (let step = 0; step < rows.length; step += 1) {
+      next += delta;
+      if (next < 0 || next >= rows.length) break;
+      if (selectable(next)) {
+        this.cursor = next;
+        this.selectedId = rows[next]!.sessionId ?? this.selectedId;
+        this.requestRender();
+        return;
+      }
+    }
+    // Nothing selectable in that direction: still clamp to a valid row so the
+    // highlight never points past the list.
+    if (!selectable(this.cursor)) {
+      const first = rows.findIndex((_, i) => selectable(i));
+      if (first >= 0) this.cursor = first;
+    }
     this.requestRender();
   }
 

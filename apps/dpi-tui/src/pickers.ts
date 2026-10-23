@@ -323,7 +323,7 @@ function chooseModel(app: App, current?: string) {
   return new Promise<(typeof app.info.models)[number] | undefined>((done) => {
     const models = app.info.models;
     const picker = new Picker(
-      `Model (${app.device.id})`,
+      `Model (${app.device.name})`,
       models.map((m) => ({ value: `${m.provider}/${m.id}`, label: m.name, description: `${m.tier} │ ${m.provider}` })),
       (item) => {
         app.closeOverlay();

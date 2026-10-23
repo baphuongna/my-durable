@@ -141,6 +141,11 @@ const SUITES = {
     cmd: ["node", "tests/newsession-ui.mjs"],
     title: "real PTY session creation on a keyless device + empty-state layout",
   },
+  "ui:tui-keymap": {
+    cwd: "apps/dpi-tui",
+    cmd: ["node", "tests/keymap-ui.mjs"],
+    title: "real PTY keymap: every advertised key drives a real backend",
+  },
   "ui:tui-welcome": {
     cwd: "apps/dpi-tui",
     cmd: ["node", "tests/welcome-ui.mjs"],
@@ -165,6 +170,7 @@ const PHASE_SUITES = {
     "ui:pairing",
     "ui:tui",
     "ui:tui-session",
+    "ui:tui-keymap",
     "ui:tui-welcome",
   ],
 };

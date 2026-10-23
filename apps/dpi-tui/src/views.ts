@@ -121,9 +121,10 @@ export function renderHerd(
     if (row.kind === "group") {
       const group = sessions.filter((s) => basename(s.cwd) === row.label);
       const busy = group.filter((s) => s.busy).length;
-      lines.push(
-        `${c.muted("~/")}${c.text(row.label)}${c.muted("/")}  ${c.muted(`· ${group.length} agent${group.length === 1 ? "" : "s"} · ${busy} busy`)}`,
-      );
+      const header = `${c.muted("~/")}${c.text(row.label)}${c.muted("/")}  ${c.muted(`· ${group.length} agent${group.length === 1 ? "" : "s"} · ${busy} busy`)}`;
+      // The cursor is drawn on headers too: a keypress must always be visible,
+      // even though j/k skips them (they are not selectable entries).
+      lines.push(cursorRow === row ? c.inverse(fit(header, w)) : fit(header, w));
       continue;
     }
     const s = sessions.find((x) => x.id === row.sessionId);
