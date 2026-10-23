@@ -27,6 +27,20 @@ export const c = {
   underline: wrap("4", "24"),
   strike: wrap("9", "29"),
   userBg: (s: string) => `\x1b[48;2;42;32;33m${s}\x1b[49m`,
+  inverse: wrap("7", "27"),
+  accentBg: (s: string) => `\x1b[48;2;255;137;151;38;2;26;20;21m${s}\x1b[49;39m`,
+};
+
+// herdr-style chrome tokens (apps/tui/src/theme.ts of the reference), mapped onto
+// this project's brand palette. STATE_* drives every agent/session glyph row.
+export const box = { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" } as const;
+
+export type RowState = "busy" | "idle" | "error";
+export const STATE_GLYPH: Record<RowState, string> = { busy: "●", idle: "·", error: "✗" };
+export const STATE_COLOR: Record<RowState, (s: string) => string> = {
+  busy: c.accent,
+  idle: c.muted,
+  error: c.err,
 };
 
 export const markdownTheme: MarkdownTheme = {
