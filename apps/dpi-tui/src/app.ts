@@ -26,7 +26,7 @@ import {
 } from "../../dpi-sdk/src/api.ts";
 import type { DeviceRow, NetworkRegistry } from "../../dpi-sdk/src/node/registry.ts";
 import { runCommand } from "./commands.ts";
-import { Prompt, SecretPrompt } from "./pickers.ts";
+import { Prompt, SecretPrompt, pickModel } from "./pickers.ts";
 import { renderHeader, renderHerd, renderHerdPanel, renderNetwork, renderStatusbar, renderViewbar, herdRows, joinPanel, networkRows } from "./views.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 
@@ -106,6 +106,8 @@ export class App {
   toast = "";
   toastTicks = 0;
   scrollOffset = 0;
+  /** ctrl+o: show full tool output instead of the first lines. */
+  expand = false;
 
   device: DeviceRef;
   client: DpiClient;
@@ -302,7 +304,7 @@ export class App {
     else this.notify(`no session #${n} in this view`);
   }
 
-  private async submit(text: string) {
+  private async submit(text: string, mode?: "followUp") {
     const content = text.trim();
     if (!content) return;
     if (content.startsWith("/") && (await runCommand(this, content))) return;
@@ -310,7 +312,7 @@ export class App {
     const requestId = newId();
     for (let attempt = 1; ; attempt++) {
       try {
-        await this.handle.send(content, this.busy() ? "steer" : "followUp", requestId);
+        await this.handle.send(content, this.busy() && mode !== "followUp" ? "steer" : "followUp", requestId);
         this.logEvent("turn", `${this.sessionSummary()?.name ?? this.sessionId} ← message`);
         if (this.busy()) this.notify("steering: joins after the current tool round");
         return;
@@ -349,6 +351,13 @@ export class App {
     if (this.overlays.length) {
       if (matchesKey(data, "ctrl+c")) return this.closeOverlay(), { consume: true };
       return { consume: false };
+    }
+    // pi chords that work in both modes: model picker + transcript expand.
+    if (matchesKey(data, "ctrl+l")) return (void pickModel(this), { consume: true });
+    if (matchesKey(data, "ctrl+o")) {
+      this.expand = !this.expand;
+      this.notify(`expand ${this.expand ? "on — full tool output" : "off"}`);
+      return { consume: true };
     }
     if (this.handleTyping(data)) return { consume: true };
     if (this.helpOpen) {
@@ -409,6 +418,14 @@ export class App {
       this.toast = "";
       return true;
     }
+    if (matchesKey(data, "alt+enter")) {
+      // pi muscle memory: send NOW as a follow-up even mid-turn (enter steers).
+      const value = input.value;
+      this.input = null;
+      this.toast = "";
+      void this.submit(value, "followUp");
+      return true;
+    }
     if (matchesKey(data, "enter")) {
       const value = input.value;
       this.input = null;
@@ -431,7 +448,11 @@ export class App {
     if (data === "\x7f" || matchesKey(data, "backspace")) input.value = input.value.slice(0, -1);
     // Whole chunks append (bracketed paste and multi-byte chars both arrive
     // as long strings — herdr H03's lesson: never filter by data.length === 1).
-    else if (data >= " " || [...data].some((ch) => ch >= " ")) input.value += data;
+    // Newlines survive paste (sent through to the agent); the line shows ⏎.
+    else {
+      const chunk = data.replace(/\r\n?/g, "\n");
+      if (chunk >= " " || [...chunk].some((ch) => ch >= " ") || chunk.includes("\n")) input.value += chunk;
+    }
     return true;
   }
 
@@ -748,11 +769,12 @@ export class App {
             else if (b.type === "text") lines.push(...wrap(b.text));
             else if (b.type === "tool") {
               const glyph = b.call.status === "error" ? c.err("✗") : b.call.status === "running" ? c.warn("◐") : c.ok("✓");
-              const args = JSON.stringify(b.call.args ?? {}).slice(0, Math.max(10, w - 20));
-              lines.push(`  ${glyph} ${c.bold(b.call.name)} ${c.muted(args)}`);
+              const args = JSON.stringify(b.call.args ?? {}) || "";
+              lines.push(`  ${glyph} ${c.bold(b.call.name)} ${c.muted(this.expand ? args.slice(0, w - 8) : args.slice(0, Math.max(10, w - 20)))}`);
               const out = b.call.output ?? b.call.result ?? "";
               if (typeof out === "string" && out)
-                for (const l of out.split("\n").slice(0, 6)) lines.push(`    ${c.muted(l.slice(0, w - 6))}`);
+                for (const l of (this.expand ? out.split("\n") : out.split("\n").slice(0, 6)))
+                  lines.push(`    ${c.muted(l.slice(0, w - 6))}`);
             }
           }
           if (item.error) lines.push(`  ${c.err(item.error.slice(0, w - 4))}`);
@@ -834,7 +856,7 @@ export class App {
 
   private messageLine(w: number): string {
     if (this.input) {
-      const shown = this.input.value.slice(-(w - 14));
+      const shown = this.input.value.replace(/\n/g, "\u23ce").slice(-(w - 14));
       return " " + `${c.muted(this.toast)}${c.text(shown)}${c.accent("▌")}`.slice(0, w);
     }
     if (this.toast) return " " + `${this.toast.startsWith("✗") ? c.err(this.toast) : c.accent("◆") + " " + c.text(this.toast)}`.slice(0, w);
@@ -893,6 +915,8 @@ export class App {
       `${c.accent("esc")}     back/interrupt ${c.accent("i")}    interrupt ≠ kill`,
       `${c.accent("F")}       fork           ${c.accent("c")}    compact context`,
       `${c.accent("y")}       thinking level ${c.accent("x")}    reset (y/n confirm)`,
+      `${c.muted("alt+↵")}     send now, no steer ${c.muted("ctrl+l")}  model picker`,
+      `${c.muted("ctrl+o")}    expand tool output`,
       `${c.accent(":")}       palette        ${c.accent("f")}    filter rows`,
       `${c.accent("n")}       new session    ${c.accent("/")}    message // commands`,
       "",
