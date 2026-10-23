@@ -7,12 +7,13 @@ import type { SessionSummary } from "../../dpi-sdk/src/api.ts";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
 import { c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 
-export type View = "herd" | "network" | "agent";
+export type View = "herd" | "network" | "agent" | "log";
 
 export const VIEW_TABS: { id: View; label: string }[] = [
   { id: "herd", label: "herd" },
   { id: "network", label: "network" },
   { id: "agent", label: "agent" },
+  { id: "log", label: "log" },
 ];
 
 const rep = (ch: string, n: number) => ch.repeat(Math.max(0, n));
@@ -222,13 +223,15 @@ export function renderViewbar(w: number, view: View, right: string): string {
 /** The inverse status bar: mode chip + per-view keymap + right context. */
 export function renderStatusbar(
   w: number,
-  opts: { view: View; device: string; ctxLeft?: number; background?: number },
+  opts: { view: View; device: string; ctxLeft?: number; background?: number; mode?: "NORMAL" | "INSERT" },
 ): string {
-  const chip = c.accentBg(c.bold(" NORMAL "));
-  const keys =
-    opts.view === "agent"
-      ? ["g herd", "N network", "a agents", "esc interrupt", "/cmd"]
-      : ["j/k move", "↵ open", "1-9 jump", "g/N views", "esc agent"];
+  const insert = opts.mode === "INSERT";
+  const chip = insert ? c.warn(" INSERT ") : c.accentBg(c.bold(" NORMAL "));
+  const keys = insert
+    ? ["enter send", "esc cancel"]
+    : opts.view === "agent"
+      ? ["g herd", "N network", "L log", "[ ] tabs", "m message"]
+      : ["j/k move", "↵ open", "1-9 jump", "g/N/L views", "esc agent"];
   const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("—") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(opts.device, 18))}`;
   const left = `${chip} ${keys.map((k) => c.muted(k)).join(c.muted(" • "))}`;
   const gap = Math.max(1, w - visibleWidth(left) - visibleWidth(right));
