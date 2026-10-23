@@ -94,6 +94,8 @@ export interface DeviceInfo {
   startDirs: string[];
   models: ModelInfo[];
   defaultModel: string;
+  /** Provider id of this device ("openrouter" | "faux"); FE model fallback. */
+  provider?: string;
   storage: { dataDir: string; catalogPath: string; appStatePath: string };
   /** The checkout the backend runs from (repo root locally, `code_dir` on deployed devices). */
   codeDir?: string;

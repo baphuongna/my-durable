@@ -363,12 +363,16 @@ export function validateRestRequest(input: {
   if (!/^(GET|POST|PUT|PATCH|DELETE)$/.test(input.method))
     return refuse("rest: method not allowed");
   const raw = input.path;
-  if (raw.includes("..") || raw.includes("\\") || raw.includes("://") || raw.startsWith("//")) {
+  // Traversal and absolute-URL checks apply to the ROUTED PATH only. The query
+  // string is data (fs/dirs carries `path=C:\Users\…` on Windows devices) and
+  // never influences routing, so backslashes and %5C are legal there.
+  const rawPath = raw.split("?")[0]!;
+  if (rawPath.includes("..") || rawPath.includes("\\") || rawPath.includes("://") || rawPath.startsWith("//")) {
     return refuse("rest: path traversal or absolute URL rejected");
   }
   let decoded: string;
   try {
-    decoded = decodeURIComponent(raw);
+    decoded = decodeURIComponent(rawPath);
   } catch {
     return refuse("rest: invalid percent-encoding");
   }
@@ -379,6 +383,15 @@ export function validateRestRequest(input: {
     decoded.startsWith("//")
   ) {
     return refuse("rest: encoded traversal rejected");
+  }
+  // The query is data, but its percent-encoding must still be well-formed.
+  const queryAt = raw.indexOf("?");
+  if (queryAt >= 0) {
+    try {
+      decodeURIComponent(raw.slice(queryAt + 1));
+    } catch {
+      return refuse("rest: invalid percent-encoding");
+    }
   }
   if (!raw.startsWith(REST_PATH_PREFIX)) return refuse("rest: path outside /v1 rejected");
   if (!/^[\x21-\x7e]+$/.test(raw) || raw.includes("#")) {

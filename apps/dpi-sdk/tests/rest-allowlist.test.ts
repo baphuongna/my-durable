@@ -212,11 +212,16 @@ test("GA-07: a parameter segment is one decoded name: no separators, controls, d
   assert.equal(allowed("GET", "/v1/sessions/%252e%252e/agents"), true);
 });
 
-test("GA-07: the query string is carried but cannot smuggle a fragment, a traversal or an absolute URL", () => {
+test("GA-07: the query is ENCODING-checked, not content-banned (Windows paths ride it)", () => {
   assert.equal(allowed("GET", "/v1/tree?a=1&b=%20x"), true);
+  // A Windows device's dir browser sends path=C:\Users\… — backslash and
+  // drive letters are legal DATA; routing never sees the query. The filesystem
+  // boundary is store.browse's realpath on the device, not this validator.
+  assert.equal(allowed("GET", "/v1/fs/dirs?path=C:\\Users\\phuong\\work"), true);
+  assert.equal(allowed("GET", "/v1/fs/dirs?path=C%3A%5CUsers%5Cphuong"), true);
+  assert.equal(allowed("GET", "/v1/fs/dirs?path=../../etc"), true); // browse() realpaths; absolute paths are equally allowed
+  // Encoding hygiene still enforced on the whole raw string.
   assert.equal(allowed("GET", "/v1/tree?a=1#x"), false);
-  assert.equal(allowed("GET", "/v1/tree?next=../../x"), false);
-  assert.equal(allowed("GET", "/v1/tree?next=http://example.invalid/"), false);
   assert.equal(allowed("GET", "/v1/tree?a=100%"), false);
   assert.equal(allowed("GET", "/v1/tree?a=\tb"), false);
 });
@@ -332,4 +337,17 @@ test("GA-07: fuzz — an accepted path is requested exactly as validated and is 
   }
   assert.ok(accepted > 3_000, `the fuzz must exercise accepted paths too (accepted ${accepted}, refused ${refused})`);
   assert.ok(refused > 5_000, `and refused ones (accepted ${accepted}, refused ${refused})`);
+});
+
+test("Windows device paths ride the query string unharmed (fs/dirs?path=C:\\Users\\…)", () => {
+  // The query never influences routing; backslashes there are legal data.
+  const ok = validateRestRequest({ method: "GET", path: "/v1/fs/dirs?path=C%3A%5CUsers%5Cphuong%5Cwork" });
+  assert.equal(ok.ok, true);
+  const ok2 = validateRestRequest({ method: "GET", path: "/v1/fs/dirs?path=C:\\Users\\phuong" });
+  assert.equal(ok2.ok, true);
+  // The routed path itself stays strict.
+  const bad = validateRestRequest({ method: "GET", path: "/v1/fs/dirs\\?x=1" });
+  assert.match(bad.ok === false ? bad.error : "", /traversal/);
+  const dots = validateRestRequest({ method: "GET", path: "/v1/sessions/..%2Fx" });
+  assert.match(dots.ok === false ? dots.error : "", /traversal|not allowlisted/);
 });

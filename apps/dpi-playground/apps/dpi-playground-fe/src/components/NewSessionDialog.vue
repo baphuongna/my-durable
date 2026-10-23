@@ -13,7 +13,31 @@ const deviceId = ref(
   devices.value.find((d) => d.id === props.deviceId)?.id ?? devices.value[0]?.id ?? "",
 );
 const device = computed(() => devices.value.find((d) => d.id === deviceId.value));
-const models = computed(() => device.value?.info?.models ?? []);
+const models = computed(() => {
+  const list = device.value?.info?.models ?? [];
+  if (list.length) return list;
+  // No usable catalog (device has no provider key): still offer the device's
+  // default so a session can be created — chatting needs the key, creating
+  // must not. Caught live: the dropdown went empty and create always failed.
+  const info = device.value?.info;
+  if (info?.defaultModel && info.provider)
+    return [
+      {
+        id: info.defaultModel,
+        provider: info.provider,
+        name: `${info.defaultModel} (device default)`,
+        tier: "—",
+        icon: "lab.png",
+        contextWindow: 0,
+        reasoning: false,
+        cost: { input: 0, output: 0 },
+      },
+    ];
+  return [];
+});
+const catalogEmpty = computed(
+  () => !models.value.length || (device.value?.info?.models?.length ?? 0) === 0,
+);
 const key = (m: { provider: string; id: string }) => `${m.provider}/${m.id}`;
 const draft = ref({ name: "", cwd: "", model: "" });
 const pending = ref(false);
@@ -22,8 +46,9 @@ const error = ref("");
 watch(
   device,
   (d) => {
+    const list = models.value;
     const fallback =
-      d?.info?.models.find((m) => m.id === d.info?.defaultModel) ?? d?.info?.models[0];
+      list.find((m) => m.id === d?.info?.defaultModel) ?? list[0];
     draft.value.model = fallback ? key(fallback) : "";
     draft.value.cwd = "";
   },
@@ -35,7 +60,7 @@ async function create() {
   pending.value = true;
   error.value = "";
   try {
-    const model = models.value.find((m) => key(m) === draft.value.model);
+    const model = models.value.find((m) => key(m) === draft.value.model) ?? models.value[0];
     if (!model) throw Error("Choose a model");
     const created = await deviceClient(device.value.id).createSession({
       name: draft.value.name.trim() || "New session",
@@ -95,7 +120,12 @@ async function create() {
           <DirBrowser v-model="draft.cwd" :device-id="deviceId" />
         </div>
         <label
-          >Model<select v-model="draft.model" aria-label="New session model">
+          >Model<span
+            v-if="catalogEmpty"
+            class="hint"
+            title="The device reports no usable models — create still works with its default; add the provider key on the device (e.g. OPENROUTER_API_KEY) to see the catalog"
+            >no key on device — using default</span
+          ><select v-model="draft.model" aria-label="New session model">
             <option v-for="m in models" :key="key(m)" :value="key(m)">
               {{ m.tier }} / {{ m.name }}
             </option>
