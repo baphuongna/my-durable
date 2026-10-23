@@ -48,6 +48,8 @@ const { values, positionals } = parseArgs({
     model: { type: "string" },
     pair: { type: "string" },
     hub: { type: "string" },
+    "hub-url": { type: "string" },
+    "hub-token": { type: "string" },
     force: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
@@ -84,7 +86,9 @@ async function start(device: DeviceRef, client: DpiClient, info: DeviceInfo, opt
     session = created.id;
   }
 
-  const app = new App(device, client, info, registry);
+  const hubUrl = values["hub-url"] ?? process.env.DPI_HUB_URL;
+  const hubToken = values["hub-token"] ?? process.env.DPI_HUB_TOKEN;
+  const app = new App(device, client, info, registry, hubUrl && hubToken ? { url: hubUrl, token: hubToken } : undefined);
 
   // Bootstrap local pairing (--pair CODE --hub ORIGIN [--force]): runs the same
   // controller as /pair, against the LOCAL backend, before the UI opens. A bare

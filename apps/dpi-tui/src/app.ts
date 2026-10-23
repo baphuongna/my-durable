@@ -28,6 +28,7 @@ import type { DeviceRow, NetworkRegistry } from "../../dpi-sdk/src/node/registry
 import { COMMANDS, runCommand } from "./commands.ts";
 import { Prompt, SecretPrompt, pickModel } from "./pickers.ts";
 import { renderHeader, renderHerd, renderHerdPanel, renderNetwork, renderStatusbar, renderViewbar, herdRows, joinPanel, networkRows } from "./views.ts";
+import { fetchHubNetwork } from "./hub-feed.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 
 export interface DeviceRef {
@@ -125,6 +126,11 @@ export class App {
   expand = false;
   /** Slash autocomplete: which suggestion row is selected (0 = first). */
   private suggIndex = 0;
+  /** Hub feed (multi-host display parity with the web sidebar). */
+  private hub?: { url: string; token: string };
+  private hubRows: DeviceRow[] = [];
+  private hubTick = 0;
+
   /** Sent-message history for ↑ recall (drafts preserved while browsing). */
   private inputHistory: string[] = [];
   private histIndex = -1;
@@ -145,11 +151,18 @@ export class App {
   private events: { at: string; glyph: string; text: string }[] = [];
   private selectedId?: string;
 
-  constructor(device: DeviceRef, client: DpiClient, info: DeviceInfo, registry?: NetworkRegistry) {
+  constructor(
+    device: DeviceRef,
+    client: DpiClient,
+    info: DeviceInfo,
+    registry?: NetworkRegistry,
+    hub?: { url: string; token: string },
+  ) {
     this.device = device;
     this.client = client;
     this.info = info;
     this.registry = registry;
+    this.hub = hub;
     this.tui.addChild(this.root);
     this.tui.setFocus(this.root);
     // herdr render model: every keystroke and every tick repaint, so plain
@@ -162,6 +175,10 @@ export class App {
     this.model.subscribe(() => this.requestRender());
     this.session.subscribe(() => this.requestRender());
     this.ticker = setInterval(() => this.tick(), 120);
+    if (this.hub)
+      void fetchHubNetwork(this.hub.url, this.hub.token).then((rows) => {
+        if (rows) (this.hubRows = rows), this.requestRender();
+      });
     this.tui.start();
     void this.refreshSessions();
     this.requestRender();
@@ -268,7 +285,14 @@ export class App {
   }
 
   private networkDevices(): DeviceRow[] {
-    const rows = this.registry ? this.registry.list() : [];
+    // The hub feed is the same source the web sidebar renders; fall back to
+    // the local registry when no hub is configured or before the first poll.
+    let rows = this.hubRows.length ? this.hubRows : this.registry ? this.registry.list() : [];
+    // The current device also appears as a hub row (same deviceUid) — drop
+    // that one and keep the direct LAN row, but inherit the hub's tree so its
+    // sessions still list here.
+    const mine = this.info?.uid ? rows.find((r) => r.deviceUid === this.info!.uid) : undefined;
+    if (mine) rows = rows.filter((r) => r !== mine);
     if (this.device.id !== "adhoc" || rows.some((r) => r.id === "adhoc")) return rows;
     return [
       ...rows,
@@ -286,7 +310,9 @@ export class App {
         lastError: null,
         lastSeenAt: Date.now(),
         lastInfo: this.info,
-        lastTree: { uid: this.device.id, name: this.info?.name || this.device.id, sessions: this.sessions, at: Date.now() },
+        lastTree:
+          mine?.lastTree ??
+          { uid: this.device.id, name: this.info?.name || this.device.id, sessions: this.sessions, at: Date.now() },
         createdAt: 0,
         updatedAt: 0,
       },
@@ -308,7 +334,10 @@ export class App {
       if (!target) return;
       if (target.id === this.device.id) return this.setView("herd");
       if (!target.token || !target.url)
-        return this.notify(`${target.name} is tunnel-only — open it from the hub web UI`, true);
+        return this.notify(
+          `${target.name} reaches this machine only through the hub tunnel — open it from the hub web UI`,
+          true,
+        );
       void this.switchDevice(target.id);
       return;
     }
@@ -689,6 +718,16 @@ export class App {
 
   tick() {
     if (this.toastTicks > 0 && --this.toastTicks === 0) this.toast = "";
+    if (this.hub && ++this.hubTick >= 125) {
+      this.hubTick = 0;
+      void fetchHubNetwork(this.hub.url, this.hub.token).then((rows) => {
+        if (rows) {
+          this.hubRows = rows;
+          if (this.view === "network") this.devicesCache = this.networkDevices();
+          this.requestRender();
+        }
+      });
+    }
     this.requestRender();
   }
 

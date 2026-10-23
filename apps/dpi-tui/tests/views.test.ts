@@ -203,3 +203,43 @@ test("slashSuggestions: null outside slash context — args, plain text, unknown
 test("slashSuggestions: matching is case-insensitive on the prefix", () => {
   assert.deepEqual(slashSuggestions("/PA", [{ name: "pair" }])?.names, ["pair"]);
 });
+
+// ---------- hub-feed: multi-host display parity ----------
+
+test("toDeviceRows maps the hub's NetworkDevice list into network-view rows", async () => {
+  const { toDeviceRows } = await import("../src/hub-feed.ts");
+  const rows = toDeviceRows([
+    {
+      id: "laptop-win",
+      name: "PhuongNB-Laptop",
+      kind: "url",
+      transport: "tunnel",
+      url: null,
+      source: "ui",
+      status: "online",
+      tree: { sessions: [{ id: "s1", name: "demo" }] },
+    },
+    {
+      id: "srv",
+      name: "build-box",
+      kind: "url",
+      transport: "lan",
+      url: "http://10.0.0.4:4780",
+      source: "ui",
+      status: "offline",
+      error: "connect timeout",
+    },
+  ]);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]!.transport, "tunnel");
+  assert.equal(rows[0]!.url, null);
+  assert.equal(rows[0]!.lastStatus, "online");
+  assert.equal(rows[0]!.lastTree?.sessions[0]!.name, "demo");
+  assert.equal(rows[1]!.transport, "lan");
+  assert.equal(rows[1]!.url, "http://10.0.0.4:4780");
+  assert.equal(rows[1]!.lastStatus, "offline");
+  // networkRows renders both devices and the tunnel device's session
+  const net = networkRows(rows, "adhoc");
+  assert.equal(net.filter((r) => r.kind === "device").length, 2);
+  assert.ok(net.some((r) => r.kind === "session" && r.sessionId === "s1"));
+});
