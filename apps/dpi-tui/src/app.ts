@@ -25,7 +25,7 @@ import {
   type WireAssistantMessage,
 } from "../../dpi-sdk/src/api.ts";
 import type { DeviceRow, NetworkRegistry } from "../../dpi-sdk/src/node/registry.ts";
-import { runCommand } from "./commands.ts";
+import { COMMANDS, runCommand } from "./commands.ts";
 import { Prompt, SecretPrompt, pickModel } from "./pickers.ts";
 import { renderHeader, renderHerd, renderHerdPanel, renderNetwork, renderStatusbar, renderViewbar, herdRows, joinPanel, networkRows } from "./views.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
@@ -55,6 +55,21 @@ const VIEW_TABS: { id: View; label: string }[] = [
   { id: "agent", label: "agent" },
   { id: "log", label: "log" },
 ];
+
+/**
+ * Slash-command autocomplete: the commands whose name extends the typed
+ * prefix. Live only before the first space — after that you are typing
+ * arguments, not a command.
+ */
+export function slashSuggestions(
+  value: string,
+  commands: { name: string }[],
+): { names: string[]; prefix: string } | null {
+  if (!value.startsWith("/") || value.includes(" ")) return null;
+  const prefix = value.slice(1).toLowerCase();
+  const names = commands.map((c) => c.name).filter((n) => n.startsWith(prefix));
+  return names.length ? { names, prefix } : null;
+}
 
 const PALETTE: { name: string; hint: string; run: (a: App) => void }[] = [
   { name: "herd", hint: "session dashboard", run: (a) => a.setView("herd") },
@@ -108,6 +123,12 @@ export class App {
   scrollOffset = 0;
   /** ctrl+o: show full tool output instead of the first lines. */
   expand = false;
+  /** Slash autocomplete: which suggestion row is selected (0 = first). */
+  private suggIndex = 0;
+  /** Sent-message history for ↑ recall (drafts preserved while browsing). */
+  private inputHistory: string[] = [];
+  private histIndex = -1;
+  private inputDraft = "";
 
   device: DeviceRef;
   client: DpiClient;
@@ -131,7 +152,13 @@ export class App {
     this.registry = registry;
     this.tui.addChild(this.root);
     this.tui.setFocus(this.root);
-    this.tui.addInputListener((data) => this.handleInput(data));
+    // herdr render model: every keystroke and every tick repaint, so plain
+    // typing (append chars, no explicit notify) is never left off-screen.
+    this.tui.addInputListener((data) => {
+      const result = this.handleInput(data);
+      this.requestRender();
+      return result;
+    });
     this.model.subscribe(() => this.requestRender());
     this.session.subscribe(() => this.requestRender());
     this.ticker = setInterval(() => this.tick(), 120);
@@ -307,6 +334,10 @@ export class App {
   private async submit(text: string, mode?: "followUp") {
     const content = text.trim();
     if (!content) return;
+    if (this.inputHistory[this.inputHistory.length - 1] !== content) this.inputHistory.push(content);
+    if (this.inputHistory.length > 200) this.inputHistory.shift();
+    this.histIndex = -1;
+    this.inputDraft = "";
     if (content.startsWith("/") && (await runCommand(this, content))) return;
     if (!this.handle) return this.notify("Pick a session first (g, then ↵).", true);
     const requestId = newId();
@@ -418,6 +449,43 @@ export class App {
       this.toast = "";
       return true;
     }
+    // ↑/↓ recall sent messages; the current draft survives the round-trip.
+    if (input.kind === "message" && matchesKey(data, "up")) {
+      if (this.inputHistory.length) {
+        if (this.histIndex < 0) (this.inputDraft = input.value), (this.histIndex = this.inputHistory.length);
+        this.histIndex = Math.max(0, this.histIndex - 1);
+        input.value = this.inputHistory[this.histIndex] ?? input.value;
+        this.suggIndex = 0;
+        this.requestRender();
+      }
+      return true;
+    }
+    if (input.kind === "message" && matchesKey(data, "down")) {
+      if (this.histIndex >= 0) {
+        this.histIndex += 1;
+        if (this.histIndex >= this.inputHistory.length) (this.histIndex = -1), (input.value = this.inputDraft);
+        else input.value = this.inputHistory[this.histIndex] ?? input.value;
+        this.requestRender();
+      }
+      return true;
+    }
+    // Tab completes the selected slash suggestion; shift+tab cycles it.
+    if (input.kind === "message" && matchesKey(data, "shift+tab")) {
+      const sugg = slashSuggestions(input.value, COMMANDS);
+      if (sugg) this.suggIndex = (this.suggIndex + 1) % sugg.names.length;
+      this.requestRender();
+      return true;
+    }
+    if (input.kind === "message" && matchesKey(data, "tab")) {
+      const sugg = slashSuggestions(input.value, COMMANDS);
+      if (sugg) {
+        const pick = sugg.names[this.suggIndex % sugg.names.length]!;
+        input.value = `/${pick} `;
+        this.suggIndex = 0;
+        this.requestRender();
+      }
+      return true;
+    }
     if (matchesKey(data, "alt+enter")) {
       // pi muscle memory: send NOW as a follow-up even mid-turn (enter steers).
       const value = input.value;
@@ -445,13 +513,13 @@ export class App {
       } else if (input.kind === "new") void this.command("new");
       return true;
     }
-    if (data === "\x7f" || matchesKey(data, "backspace")) input.value = input.value.slice(0, -1);
+    if (data === "\x7f" || matchesKey(data, "backspace")) (input.value = input.value.slice(0, -1)), (this.suggIndex = 0);
     // Whole chunks append (bracketed paste and multi-byte chars both arrive
     // as long strings — herdr H03's lesson: never filter by data.length === 1).
     // Newlines survive paste (sent through to the agent); the line shows ⏎.
     else {
       const chunk = data.replace(/\r\n?/g, "\n");
-      if (chunk >= " " || [...chunk].some((ch) => ch >= " ") || chunk.includes("\n")) input.value += chunk;
+      if (chunk >= " " || [...chunk].some((ch) => ch >= " ") || chunk.includes("\n")) (input.value += chunk), (this.suggIndex = 0);
     }
     return true;
   }
@@ -620,10 +688,8 @@ export class App {
   // ------------------------------------------------------------------ tick
 
   tick() {
-    if (this.toastTicks > 0 && --this.toastTicks === 0) {
-      this.toast = "";
-      this.requestRender();
-    }
+    if (this.toastTicks > 0 && --this.toastTicks === 0) this.toast = "";
+    this.requestRender();
   }
 
   private requestRender() {
@@ -643,6 +709,8 @@ export class App {
     for (let i = 0; i < bodyHeight; i += 1) lines[2 + i] = body[i] ?? "";
     lines[h - 2] = this.messageLine(w);
     lines[h - 1] = this.statusbar(w);
+    const sugg = this.suggestionLines(w);
+    for (let i = 0; i < sugg.length; i += 1) lines[h - 3 - sugg.length + 1 + i] = sugg[i];
     const overlay = this.frameOverlay(w, bodyHeight);
     if (overlay) for (let i = 0; i < overlay.length; i += 1) {
       const row = 2 + i;
@@ -854,6 +922,21 @@ export class App {
 
   // ---------------------------------------------------------------- chrome
 
+  /** In-frame slash autocomplete list, drawn just above the message line. */
+  private suggestionLines(w: number): string[] {
+    if (!this.input || this.input.kind !== "message") return [];
+    const sugg = slashSuggestions(this.input.value, COMMANDS);
+    if (!sugg) return [];
+    const shown = sugg.names.slice(0, 5);
+    const idx = this.suggIndex % shown.length;
+    const desc = (name: string) => COMMANDS.find((c) => c.name === name)?.description ?? "";
+    const width = Math.min(w - 2, 44);
+    return shown.map((name, i) => {
+      const row = ` /${name.padEnd(11)} ${desc(name)}`.slice(0, width);
+      return i === idx ? " " + c.accentBg(row) : " " + c.muted(row);
+    });
+  }
+
   private messageLine(w: number): string {
     if (this.input) {
       const shown = this.input.value.replace(/\n/g, "\u23ce").slice(-(w - 14));
@@ -916,6 +999,7 @@ export class App {
       `${c.accent("F")}       fork           ${c.accent("c")}    compact context`,
       `${c.accent("y")}       thinking level ${c.accent("x")}    reset (y/n confirm)`,
       `${c.muted("alt+↵")}     send now, no steer ${c.muted("ctrl+l")}  model picker`,
+      `${c.muted("tab")}     complete /command  ${c.muted("↑")}      recall sent`,
       `${c.muted("ctrl+o")}    expand tool output`,
       `${c.accent(":")}       palette        ${c.accent("f")}    filter rows`,
       `${c.accent("n")}       new session    ${c.accent("/")}    message // commands`,

@@ -228,7 +228,7 @@ export function renderStatusbar(
   const insert = opts.mode === "INSERT";
   const chip = insert ? c.warn(" INSERT ") : c.accentBg(c.bold(" NORMAL "));
   const keys = insert
-    ? ["enter send", "esc cancel"]
+    ? ["tab complete", "↑ history", "enter send", "esc cancel"]
     : opts.view === "agent"
       ? ["g herd", "N network", "L log", "[ ] tabs", "m message"]
       : ["j/k move", "↵ open", "1-9 jump", "g/N/L views", "esc agent"];

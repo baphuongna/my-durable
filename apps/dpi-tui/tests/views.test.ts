@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { SessionSummary, AgentSummary } from "../../dpi-sdk/src/api.ts";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
+import { slashSuggestions } from "../src/app.ts";
 import {
   ageOf,
   herdRows,
@@ -182,4 +183,23 @@ test("ageOf: compact human ages", () => {
   assert.equal(ageOf(now - 65_000, now), "1m");
   assert.equal(ageOf(now - 7_200_000, now), "2h");
   assert.equal(ageOf(now - 90_000_000, now), "1d");
+});
+
+// ---------- slashSuggestions ----------
+
+test("slashSuggestions: prefix filters command names", () => {
+  const cmds = [{ name: "pair" }, { name: "sessions" }, { name: "compact" }];
+  assert.deepEqual(slashSuggestions("/p", cmds)?.names, ["pair"]);
+  assert.deepEqual(slashSuggestions("/", cmds)?.names, ["pair", "sessions", "compact"]);
+});
+
+test("slashSuggestions: null outside slash context — args, plain text, unknown prefix", () => {
+  const cmds = [{ name: "pair" }];
+  assert.equal(slashSuggestions("/pair http://x", cmds), null); // after a space you type args
+  assert.equal(slashSuggestions("hello", cmds), null);
+  assert.equal(slashSuggestions("/zzz", cmds), null);
+});
+
+test("slashSuggestions: matching is case-insensitive on the prefix", () => {
+  assert.deepEqual(slashSuggestions("/PA", [{ name: "pair" }])?.names, ["pair"]);
 });
