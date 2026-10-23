@@ -821,7 +821,9 @@ export class App {
 
   tick() {
     if (this.toastTicks > 0 && --this.toastTicks === 0) this.toast = "";
-    if (this.hub && ++this.hubTick >= 125) {
+    // Live network: refresh the hub feed every ~5 s (tick = 120 ms), so a device
+    // paired from the CLI shows up while the operator is looking at the list.
+    if (this.hub && ++this.hubTick >= 42) {
       this.hubTick = 0;
       void fetchHubNetwork(this.hub.url, this.hub.token).then((rows) => {
         if (rows) {

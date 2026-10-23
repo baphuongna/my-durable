@@ -383,7 +383,12 @@ export function parseHubOrigin(
     return { ok: false, error: "origin: not a valid URL" };
   }
   if (url.protocol !== "https:") {
-    return { ok: false, error: "origin: HTTPS origin required" };
+    // Loopback dev hubs (one machine running both ends) speak plain HTTP. The
+    // same rule as the device's own origin check: only 127.0.0.1/[::1]/localhost
+    // qualify, so a hub another machine can reach is still HTTPS-only.
+    const loopback =
+      url.protocol === "http:" && /^(127\.0\.0\.1|\[::1\]|localhost)$/.test(url.hostname);
+    if (!loopback) return { ok: false, error: "origin: HTTPS origin required" };
   }
   if (url.username || url.password) {
     return { ok: false, error: "origin: userinfo not allowed" };

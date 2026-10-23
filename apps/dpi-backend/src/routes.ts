@@ -59,14 +59,18 @@ export function v1(
           const input = req.body as { code?: string; hub?: string; pairUrl?: string; force?: boolean };
           // A pasted pair URL (v1) or offer link (v2) carries the code itself — a pairUrl-only body
           // is the TUI/daemon paste path, so code is required only when pairUrl is absent.
+          // Three shapes: a code (+ optional hub), a pasted pair URL, or just
+          // `{hub}` — the device asks the hub itself (device-initiated), which is
+          // what `dpi pair --hub <origin>` sends. Nothing is copied between
+          // machines in that last form.
           if (
             !input ||
             (input.code !== undefined && typeof input.code !== "string") ||
             (input.hub !== undefined && typeof input.hub !== "string") ||
             (input.pairUrl !== undefined && typeof input.pairUrl !== "string") ||
-            (input.code === undefined && input.pairUrl === undefined)
+            (input.code === undefined && input.pairUrl === undefined && !input.hub)
           )
-            throw invalid("body: { code: string, hub?: string, pairUrl?: string, force?: boolean } — code or pairUrl required");
+            throw invalid("body: { code?: string, hub?: string, pairUrl?: string, force?: boolean } — code, pairUrl or hub required");
           await pairing.start({ code: input.code ?? "", hub: input.hub, pairUrl: input.pairUrl, force: input.force });
           res.json(pairing.status());
         } catch (e) {

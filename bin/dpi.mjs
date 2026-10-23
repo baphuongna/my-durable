@@ -23,6 +23,10 @@ Usage:
   dpi device start | stop | status                    background daemon without a terminal
   dpi device install | uninstall                      OS service (systemd/launchd); Windows: no
                                                       autostart — run "dpi device start" after login
+  dpi pair <code|link> [--hub <origin>]               pair THIS machine from the CLI (no browser)
+  dpi pair --hub <origin>                             this machine asks the hub itself
+  dpi pair offer|list|approve|revoke                  operator side, from the CLI (dpi pair --help)
+  dpi devices [--watch] [--hub <origin>]              paired machines + live status (CLI, no web)
   dpi tui
       Terminal admin client.
   dpi help | dpi --help | dpi -h
@@ -104,6 +108,32 @@ if (command === "update" || command === "upgrade") {
     printErr: (line) => process.stderr.write(`${line}\n`),
   });
   process.exit(code);
+} else if (command === "devices") {
+  // The CLI view of the network: same data the web sidebar and the TUI show.
+  process.argv = [process.argv[0], process.argv[1], ...commandRest];
+  const { register } = await loadTsx();
+  register();
+  const { listDevices } = await import("../apps/dpi-backend/src/pair-cli.ts");
+  const hubIdx = commandRest.indexOf("--hub");
+  process.exit(
+    await listDevices({}, hubIdx >= 0 ? commandRest[hubIdx + 1] : undefined, commandRest.includes("--watch")),
+  );
+} else if (command === "pair") {
+  // Pairing is its own surface: it runs headless (no TUI, no browser) and both
+  // directions live in one command — this machine, and the operator's side.
+  if (commandRest.includes("--help") || commandRest.includes("-h")) {
+    process.argv = [process.argv[0], process.argv[1], ...commandRest];
+    const { register } = await loadTsx();
+    register();
+    const { PAIR_USAGE } = await import("../apps/dpi-backend/src/pair-cli.ts");
+    process.stdout.write(PAIR_USAGE);
+    process.exit(0);
+  }
+  process.argv = [process.argv[0], process.argv[1], ...commandRest];
+  const { register } = await loadTsx();
+  register();
+  const { runPairCommand } = await import("../apps/dpi-backend/src/pair-cli.ts");
+  process.exit(await runPairCommand(commandRest));
 } else if (!Object.hasOwn(COMMANDS, command)) {
   process.stderr.write(`dpi: unknown command '${command}'\n\n${HELP}`);
   process.exit(2);
