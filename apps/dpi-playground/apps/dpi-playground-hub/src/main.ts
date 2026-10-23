@@ -227,6 +227,17 @@ app.post("/api/pair/verify", ...pairGuard, express.json({ limit: "16kb" }), asyn
   if (r.ok) return res.status(r.status).json(r.value);
   pairErr(r, res);
 });
+/**
+ * Device-INITIATED enrollment (public, same guard stack as pair/start): the
+ * machine asks for a code, so the operator reads its full identity in the list
+ * below instead of carrying a secret between machines.
+ */
+app.post("/api/pair/request", ...pairGuard, express.json({ limit: "16kb" }), (req, res) => {
+  const r = pairing.requestForDevice(req.body, req.ip ?? "unknown");
+  return r.ok ? res.json(r.value) : pairErr(r, res);
+});
+/** Every live request with the identity to approve against (no codes, no key material). */
+app.get("/api/pair/codes", ...adminPairGuard, (_req, res) => res.json({ codes: pairing.listPending() }));
 app.get("/api/pair/codes/:codeId", ...adminPairGuard, (req, res) => {
   const r = pairing.status(String(req.params.codeId));
   return r.ok ? res.json(r.value) : pairErr(r, res);

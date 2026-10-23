@@ -24,6 +24,7 @@ import {
   pollCode,
   qrPayload,
   type PairingSession,
+  type PendingPairing,
 } from "../client/pair";
 import { qrSvg } from "../client/qrcode";
 import DeviceHandoff from "./DeviceHandoff.vue";
@@ -51,6 +52,8 @@ const replaceKey = ref(false);
 const copied = ref(false);
 const linkCopied = ref(false);
 const watcher = ref<(() => void) | undefined>();
+/** Machines that asked the hub for a code themselves (device-initiated enrollment). */
+const pending = ref<PendingPairing[]>([]);
 
 const grouped = computed(() => {
   const code = issue.value?.code ?? "";
@@ -258,7 +261,40 @@ async function close(): Promise<void> {
 
 defineExpose({ close });
 
+let pendingTimer: ReturnType<typeof setInterval> | undefined;
+async function refreshPending(): Promise<void> {
+  try {
+    pending.value = (await pairingAdmin.pending()).codes;
+  } catch {
+    // The list is a convenience; a failure must never break the manual flow.
+  }
+}
+/** Open the approval flow for a machine that already asked (no code to carry). */
+async function reviewPending(p: PendingPairing): Promise<void> {
+  issue.value = undefined;
+  state.value = undefined;
+  error.value = "";
+  const s = createPairingSession();
+  session.value = s;
+  step.value = p.phase === "approved_ready" ? "approve" : "proof";
+  void pollCode(s, p.codeId, {
+    intervalMs: 1_000,
+    onState: (st) => {
+      state.value = st;
+      if (st.phase === "awaiting_proof") step.value = "proof";
+      else if (st.phase === "awaiting_approval" || st.phase === "approved") step.value = "approve";
+      else if (st.phase === "issued" || st.phase === "connected") step.value = "issued";
+      else if (st.phase === "cancelled") step.value = "cancelled";
+      else if (st.phase === "expired") step.value = "expired";
+    },
+  }).catch((e) => {
+    error.value = e instanceof Error ? e.message : String(e);
+  });
+}
+
 onMounted(() => {
+  void refreshPending();
+  pendingTimer = setInterval(() => void refreshPending(), 3_000);
   if (props.handoff && "error" in props.handoff) {
     error.value = props.handoff.error;
     step.value = "expired";
@@ -267,6 +303,7 @@ onMounted(() => {
   void createCode(props.handoff?.code);
 });
 onBeforeUnmount(() => {
+  clearInterval(pendingTimer);
   const s = session.value;
   if (s && !s.closed() && issue.value && !settled()) {
     void cancelLive(true).then((result) => {
@@ -293,6 +330,32 @@ onBeforeUnmount(() => {
         v-if="props.handoff && 'offerFragment' in props.handoff && props.handoff.offerFragment"
         :offer-fragment="props.handoff.offerFragment"
       />
+
+      <!-- Machines that asked the hub for a code themselves. This is the
+           device-initiated enrollment: the operator reads WHO is asking (name,
+           host, platform, hub-computed fingerprint) before approving — the shape
+           the reference clients put in their QR/offer. -->
+      <section v-if="pending.length" class="pair-pending" aria-label="Machines waiting for approval">
+        <h3>Machines waiting for you</h3>
+        <ul>
+          <li v-for="p in pending" :key="p.codeId">
+            <div class="who">
+              <strong>{{ p.deviceName ?? "unnamed device" }}</strong>
+              <span v-if="p.hostname" class="muted">{{ p.hostname }}</span>
+              <span v-if="p.platform" class="muted">{{ p.platform }}</span>
+            </div>
+            <div class="fp">{{ p.keyFingerprint }}</div>
+            <div class="row">
+              <span class="phase">{{ p.phase.replaceAll("_", " ") }}</span>
+              <button type="button" class="small" @click="reviewPending(p)">Review</button>
+            </div>
+          </li>
+        </ul>
+        <p class="hint">
+          Compare each fingerprint with the machine's own terminal before approving. Codes are
+          minted by the hub — nothing has to be copied to the machine.
+        </p>
+      </section>
 
       <p v-if="step === 'boot'" class="hint">Minting a pairing code…</p>
 
@@ -482,4 +545,19 @@ onBeforeUnmount(() => {
     transform: rotate(360deg);
   }
 }
+
+.pair-pending {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid #2a3442;
+  border-radius: 12px;
+}
+.pair-pending h3 { margin: 0 0 10px; font-size: 14px; }
+.pair-pending ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.pair-pending li { display: grid; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid #222b36; }
+.pair-pending li:last-child { border-bottom: 0; padding-bottom: 0; }
+.pair-pending .who { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.pair-pending .fp { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; color: #7ee2a8; }
+.pair-pending .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.pair-pending .phase { font-size: 12px; color: #8fa0b5; }
 </style>

@@ -21,6 +21,7 @@ import {
   sign as edSign,
   verify as edVerify,
 } from "node:crypto";
+import { hostname, platform } from "node:os";
 import type { Store } from "./store.js";
 import {
   ensureFileMode0600,
@@ -53,8 +54,26 @@ import type { TokenIssue } from "../../dpi-sdk/src/protocol/pairing.js";
 
 const CLOCK_SKEW_MS = 60_000;
 
+interface Challenge {
+  type: string;
+  enrollmentId: string;
+  nonce: string;
+  issuedAt: number;
+  hubId: string;
+  hubPublicKey?: string;
+  hubKeyFingerprint?: string;
+  hubSignature?: string;
+}
+
+interface Keypair {
+  publicKeyPem: string;
+  privateKeyPem: string;
+  fingerprint: string;
+}
+
 export interface PairingStartInput {
-  code: string;
+  /** Empty means DEVICE-INITIATED: the device asks the hub for a code. */
+  code?: string;
   hub?: string;
   pairUrl?: string;
   force?: boolean;
@@ -299,6 +318,10 @@ export class DevicePairing {
       );
     const o = this.originOf(origin);
     if (!o.ok) throw err("invalid", o.error);
+    // Device-initiated: no code yet — the hub mints one and answers with it.
+    // Only an explicit hub origin can start this flow; the hub choice is already
+    // validated above, so an empty code is legitimate here and nowhere else.
+    if (code.trim() === "") return { origin: o.origin, code: "", ...(kfp ? { kfp } : {}) };
     // A typed code may be grouped/lower case (`abcd-2345-ef67`); the hub only ever sees the canonical form.
     // `normalizePairCode` is the SDK's exact validator: UUID v4 | legacy 12-char | legacy 8-char base32.
     const canonical = normalizePairCode(code);
@@ -347,7 +370,18 @@ export class DevicePairing {
     // Accept bare origins and full pair URLs; canonicalize via the shared validator.
     const candidate = raw.includes("/pair?") || raw.includes("/pair/") ? new URL(raw).origin : raw;
     const parsed = parseHubOrigin(candidate);
-    return parsed.ok ? { ok: true, origin: parsed.origin } : { ok: false, error: parsed.error };
+    if (parsed.ok) return { ok: true, origin: parsed.origin };
+    // Loopback harnesses (local hub + local device on one machine) speak plain
+    // HTTP. Only 127.0.0.1/[::1]/localhost qualifies — never a reachable host, so
+    // a network hub still has to be HTTPS, exactly as before.
+    try {
+      const url = new URL(candidate);
+      if (url.protocol === "http:" && isLoopbackHost(url.hostname) && !url.username && !url.password)
+        return { ok: true, origin: url.origin };
+    } catch {
+      /* fall through to the validator's error */
+    }
+    return { ok: false, error: parsed.error };
   }
 
   /**
@@ -401,7 +435,8 @@ export class DevicePairing {
 
   /** POST /v1/pairing/start — kick off (or restart) pairing. */
   async start(input: PairingStartInput): Promise<PairingStatus> {
-    const { origin, code, kfp } = this.resolveOrigin(input);
+    const { origin, kfp, code: resolvedCode } = this.resolveOrigin(input);
+    let code = resolvedCode;
 
     if (this.pending) throw err("busy", "A pairing operation is already running; cancel it first");
     // A revoked pairing no longer binds the device to its hub.
@@ -420,27 +455,76 @@ export class DevicePairing {
     // Offer v3: challenge the hub to prove it owns the pinned identity key.
     const hubNonce = kfp ? randomBytes(32).toString("base64url") : undefined;
 
-    const challenge = (await this.hubFetch(origin, "/api/pair/start", {
-      type: "pair.request",
-      v: 1,
+    // Device-initiated enrollment (code-less): the hub mints the code and answers
+    // with its challenge in ONE round trip, so the request carries the machine's
+    // full identity — the shape the operator approves against.
+    const body = {
       requestId,
-      code,
       deviceUid,
       deviceName: this.deviceName,
+      hostname: hostname(),
+      platform: `${platform()}-${process.arch} node ${process.version}`,
       publicKey: keypair.publicKeyPem,
       keyFingerprint: keypair.fingerprint,
       clientTime: this.now(),
       ...(hubNonce ? { hubNonce } : {}),
-    })) as {
-      type: string;
-      enrollmentId: string;
-      nonce: string;
-      issuedAt: number;
-      hubId: string;
-      hubPublicKey?: string;
-      hubKeyFingerprint?: string;
-      hubSignature?: string;
     };
+    if (!code) {
+      const ack = (await this.hubFetch(origin, "/api/pair/request", {
+        type: "pair.device-request",
+        v: 1,
+        ...body,
+      })) as { code?: string; challenge?: unknown };
+      if (typeof ack.code !== "string" || !ack.challenge)
+        throw err("invalid", `Unexpected hub response: ${JSON.stringify(ack).slice(0, 200)}`);
+      code = ack.code;
+      return this.completeChallenge(
+        origin,
+        ack.challenge as Challenge,
+        code,
+        kfp,
+        hubNonce,
+        operationId,
+        requestId,
+        deviceUid,
+        keypair,
+      );
+    }
+    const challenge = (await this.hubFetch(origin, "/api/pair/start", {
+      type: "pair.request",
+      v: 1,
+      ...body,
+      code,
+    })) as Challenge;
+    return this.completeChallenge(
+      origin,
+      challenge,
+      code,
+      kfp,
+      hubNonce,
+      operationId,
+      requestId,
+      deviceUid,
+      keypair,
+    );
+  }
+
+  /**
+   * Shared tail of BOTH enrollment directions (operator-minted code and
+   * device-initiated): validate the challenge, verify the pinned hub proof,
+   * sign, and start polling for the issuance.
+   */
+  private completeChallenge(
+    origin: string,
+    challenge: Challenge,
+    code: string,
+    kfp: string | undefined,
+    hubNonce: string | undefined,
+    operationId: string,
+    requestId: string,
+    deviceUid: string,
+    keypair: Keypair,
+  ): PairingStatus {
     if (challenge.type !== "pair.challenge")
       throw err("invalid", `Unexpected hub response: ${JSON.stringify(challenge).slice(0, 200)}`);
     if (typeof challenge.issuedAt !== "number" || !Number.isFinite(challenge.issuedAt))

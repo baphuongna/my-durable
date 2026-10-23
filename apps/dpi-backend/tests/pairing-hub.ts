@@ -10,6 +10,8 @@ import { randomUUID } from "node:crypto";
 export const PAIR_UID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
 export const PAIR_HUB_ID = "1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d";
 export const PAIR_NOW = 1760000000000;
+/** The code the harness mints for a device-initiated request (same canonical UUID family). */
+const CODE = "c1d2e3f4-a5b6-4789-abcd-eff012345678";
 
 export interface PairHubOptions {
   origin: string;
@@ -50,6 +52,16 @@ export function pairHub(options: PairHubOptions) {
   const sign = (payload: string, k: typeof idKey) =>
     edSign(null, Buffer.from(payload), k.privateKey).toString("base64url");
   const identity = options.identity;
+  const challengePayload = (proofFields: Record<string, unknown>) => ({
+    type: "pair.challenge",
+    v: 1,
+    enrollmentId,
+    nonce: "N".repeat(43),
+    issuedAt: now,
+    hubId,
+    ...proofFields,
+    ...options.challenge,
+  });
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : {};
@@ -90,15 +102,20 @@ export function pairHub(options: PairHubOptions) {
             hubSignature: "B".repeat(86),
           });
       }
+      return json(200, challengePayload(proofFields));
+    }
+    if (url.endsWith("/api/pair/request")) {
+      // Device-INITIATED: the harness mints a code and answers with the challenge.
+      request = body;
       return json(200, {
-        type: "pair.challenge",
+        type: "pair.device-ack",
         v: 1,
-        enrollmentId,
-        nonce: "N".repeat(43),
-        issuedAt: now,
+        codeId: randomUUID(),
+        code: CODE,
+        expiresAt: now + 300_000,
+        hubOrigin: options.origin,
         hubId,
-        ...proofFields,
-        ...options.challenge,
+        challenge: challengePayload({}),
       });
     }
     if (url.endsWith("/api/pair/verify")) {

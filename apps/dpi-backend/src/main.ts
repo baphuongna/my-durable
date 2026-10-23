@@ -151,6 +151,37 @@ server.listen(config.port, config.host, () => {
       for (const a of addresses ?? [])
         if (a.family === "IPv4" && !a.internal)
           console.log(`LAN: http://${a.address}:${config.port}`);
+
+  // Enrollment guidance: an unpaired machine must be told exactly what to do,
+  // and — when a hub is configured — it asks for a code ITSELF so the operator
+  // reads this machine's identity in the hub's approval list (no secret to carry).
+  const boot = pairing.status();
+  if (boot.state === "unpaired") {
+    const hubOrigin = process.env.DPI_HUB_URL;
+    console.log("");
+    console.log(`unpaired: open http://${config.host === "0.0.0.0" ? "127.0.0.1" : config.host}:${config.port}/pair`);
+    if (hubOrigin) {
+      console.log(`requesting a pairing code from ${hubOrigin} …`);
+      void pairing
+        .start({ hub: hubOrigin })
+        .then((s) => {
+          if (s.state !== "pairing") return;
+          console.log("");
+          console.log(`  APPROVE THIS MACHINE ON THE HUB (${s.pending?.hubOrigin ?? hubOrigin}):`);
+          console.log(`    device    ${s.deviceName}`);
+          console.log(`    fingerprint ${s.fingerprint}`);
+          console.log("  Compare that fingerprint with the hub's approval card, then approve there.");
+          console.log("  This command keeps running; the credential is saved automatically.");
+        })
+        .catch((e: Error) => {
+          console.log(`pairing request failed: ${e.message}`);
+          console.log(`retry from the TUI (dpi tui, then /pair --hub ${hubOrigin}) or open /pair`);
+        });
+    } else {
+      console.log(`  then pair from the hub wizard, or run: dpi tui  →  /pair <code> --hub <origin>`);
+      console.log("  set DPI_HUB_URL=<https origin> to let this machine request a code by itself");
+    }
+  }
 });
 
 let closing = false;

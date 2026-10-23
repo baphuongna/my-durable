@@ -68,7 +68,25 @@ export function qrPayload(issue: PairCodeIssue): string {
 
 export type RevokeReason = "user" | "compromise";
 
+/** One device-initiated request as the hub lists it (identity only — no secrets). */
+export interface PendingPairing {
+  codeId: string;
+  expiresAt: number;
+  phase: "awaiting_device" | "awaiting_proof" | "approved_ready" | "cancelled";
+  enrollmentId?: string;
+  deviceUid?: string;
+  deviceName?: string;
+  hostname?: string;
+  platform?: string;
+  keyFingerprint?: string;
+  proofVerified?: boolean;
+  startedAt?: number;
+}
+
 export const pairingAdmin = {
+  /** Machines that asked for a code themselves — the identity the operator approves. */
+  pending: (signal?: AbortSignal) =>
+    call<{ codes: PendingPairing[] }>("GET", "/pair/codes", undefined, signal),
   pairings: (signal?: AbortSignal) => call<PublicPairing[]>("GET", "/pairings", undefined, signal),
   /** Operator opens the wizard: mint a code (admin-gated upstream by Caddy). */
   createCode: (signal?: AbortSignal) => call<PairCodeIssue>("POST", "/pair/code", {}, signal),

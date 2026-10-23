@@ -35,8 +35,9 @@ const fp = () => "sha256:" + "ab".repeat(32);
 const nonce = () => "A".repeat(43);
 const dpt = () => "dpt_" + "A".repeat(43);
 
-test("W-3: ten DTOs exported for coverage", () => {
-  assert.equal(PAIRING_DTOS.length, 10);
+test("W-3: twelve DTOs exported for coverage", () => {
+  // + PairDeviceRequest / PairDeviceRequestAck (device-initiated enrollment).
+  assert.equal(PAIRING_DTOS.length, 12);
 });
 
 test("W-3: PairRequest valid round-trip", () => {

@@ -102,6 +102,9 @@ export const PairRequest = Type.Object(
     code: PairCode,
     deviceUid: Uuid,
     deviceName: Type.String({ minLength: 1, maxLength: 64 }),
+    /** Machine description the operator sees BEFORE approving (like orca/paseo offers). */
+    hostname: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    platform: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
     publicKey: Type.String({ minLength: 1, maxLength: 256 }), // Ed25519 SPKI PEM
     keyFingerprint: Fingerprint,
     clientTime: Type.Integer(),
@@ -112,6 +115,31 @@ export const PairRequest = Type.Object(
      * the responder owns the pinned key BEFORE any credential is accepted.
      * Optional keeps v1 wire shape: only v3-offer flows ever set it.
      */
+    hubNonce: Type.Optional(Nonce),
+  },
+  Strict,
+);
+
+/**
+ * Device-INITIATED enrollment (the shape orca/paseo use): the machine asks the
+ * hub for a code instead of waiting for an operator-minted one, so the operator
+ * never has to carry a secret across machines. The tuple is still the full
+ * identity — name, hostname, platform, public key — and the hub still computes
+ * the fingerprint itself and still requires a human approval.
+ */
+export const PairDeviceRequest = Type.Object(
+  {
+    type: Type.Literal("pair.device-request"),
+    v: Type.Literal(1),
+    requestId: Uuid,
+    deviceUid: Uuid,
+    deviceName: Type.String({ minLength: 1, maxLength: 64 }),
+    hostname: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    platform: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+    publicKey: Type.String({ minLength: 1, maxLength: 256 }),
+    keyFingerprint: Fingerprint,
+    clientTime: Type.Integer(),
+    /** Offer-v3 hub pinning, exactly as the operator-minted flow carries it. */
     hubNonce: Type.Optional(Nonce),
   },
   Strict,
@@ -132,6 +160,21 @@ export const PairChallenge = Type.Object(
     hubSignature: Type.Optional(
       Type.String({ pattern: "^[A-Za-z0-9_-]{86}$", minLength: 86, maxLength: 86 }),
     ),
+  },
+  Strict,
+);
+
+/** The hub's answer to a device-initiated request: the code it minted, plus the challenge. */
+export const PairDeviceRequestAck = Type.Object(
+  {
+    type: Type.Literal("pair.device-ack"),
+    v: Type.Literal(1),
+    codeId: Uuid,
+    code: PairCode,
+    expiresAt: Type.Integer(),
+    hubOrigin: Type.String(),
+    hubId: Uuid,
+    challenge: PairChallenge,
   },
   Strict,
 );
@@ -309,6 +352,8 @@ export const PAIRING_DTOS = [
   PairError,
   PairCodeIssue,
   PairCodeState,
+  PairDeviceRequest,
+  PairDeviceRequestAck,
 ] as const;
 
 export function checkPairingDto<T extends (typeof PAIRING_DTOS)[number]>(

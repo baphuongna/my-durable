@@ -33,7 +33,7 @@ import {
   PAIR_SIGNATURE_FAIL_LIMIT,
   PAIR_POLL_MS,
 } from "../../../../dpi-sdk/src/protocol/limits.js";
-import { hubProofSigningPayload } from "../../../../dpi-sdk/src/protocol/pairing.js";
+import { hubProofSigningPayload, PairDeviceRequest as PairDeviceRequestSchema } from "../../../../dpi-sdk/src/protocol/pairing.js";
 import type { HubIdentity } from "./hub-identity.js";
 import {
   PairApproval as PairApprovalSchema,
@@ -82,6 +82,9 @@ interface Enrollment {
   code: string;
   deviceUid: string;
   deviceName: string;
+  /** Machine description shown to the operator before approval (device-initiated flow). */
+  hostname?: string;
+  platform?: string;
   publicKeyPem: string;
   computedFingerprint: string;
   declaredFingerprint: string;
@@ -109,6 +112,32 @@ interface CodeEntry {
   expiresAt: number;
   cancelled: boolean;
   enrollmentId?: string;
+}
+
+/** One live pairing request as the admin list renders it (no secrets). */
+export interface PendingPairing {
+  codeId: string;
+  expiresAt: number;
+  phase: "awaiting_device" | "awaiting_proof" | "approved_ready" | "cancelled";
+  enrollmentId?: string;
+  deviceUid?: string;
+  deviceName?: string;
+  hostname?: string;
+  platform?: string;
+  keyFingerprint?: string;
+  proofVerified?: boolean;
+  startedAt?: number;
+}
+
+export interface PairDeviceAck {
+  type: "pair.device-ack";
+  v: 1;
+  codeId: string;
+  code: string;
+  expiresAt: number;
+  hubOrigin: string;
+  hubId: string;
+  challenge: unknown;
 }
 
 export interface PairingDeps {
@@ -231,13 +260,9 @@ export class PairingService {
     )}`;
   }
 
-  /** POST /api/pair/code (admin) — mint a fresh single-use code. */
-  createCode(address: string): { ok: true; value: PairCodeIssue } | PairingFailure {
+  /** Mint a single-use code entry (shared by the admin and device-initiated flows). */
+  private mintEntry(actor: "admin" | "device"): CodeEntry {
     const now = this.now();
-    const taken = this.createLimiter.take(ipKey(address));
-    if (!taken.ok) return this.rateLimited(taken, "Too many codes; slow down");
-    if (this.codes.size >= PAIR_RAM_CAPS.codes)
-      return this.fail(429, "rate_limited", "Pairing capacity reached; retry later", 60_000);
     let code = "";
     do {
       // A code is a bearer secret authorising one enrollment: canonical UUID v4 = 122 random bits.
@@ -250,15 +275,25 @@ export class PairingService {
       expiresAt: now + CODE_TTL_MS,
       cancelled: false,
     };
-    // Audit row first: a code that cannot be audited must not exist (and must not eat the code capacity).
     this.deps.audit.append({
-      actor: "admin",
+      actor,
       action: "pair.code_created",
       outcome: "ok",
-      detail: { codeId: entry.codeId, expiresAt: entry.expiresAt },
+      detail: { codeId: entry.codeId, expiresAt: entry.expiresAt, ...(actor === "device" ? { initiated: "device" } : {}) },
     });
     this.codes.set(entry.codeId, entry);
     this.byCode.set(code, entry.codeId);
+    return entry;
+  }
+
+  /** POST /api/pair/code (admin) — mint a fresh single-use code. */
+  createCode(address: string): { ok: true; value: PairCodeIssue } | PairingFailure {
+    const taken = this.createLimiter.take(ipKey(address));
+    if (!taken.ok) return this.rateLimited(taken, "Too many codes; slow down");
+    if (this.codes.size >= PAIR_RAM_CAPS.codes)
+      return this.fail(429, "rate_limited", "Pairing capacity reached; retry later", 60_000);
+    const entry = this.mintEntry("admin");
+    const code = entry.code;
     return this.ok({
       type: "pair.code",
       v: 1,
@@ -269,6 +304,87 @@ export class PairingService {
       pairUrl: `${this.deps.hubOrigin}/pair?code=${code}&v=1`,
       offerUrl: this.offerUrlFor(code, entry.expiresAt),
     });
+  }
+
+  /**
+   * POST /api/pair/request (public, rate-limited) — DEVICE-INITIATED enrollment.
+   *
+   * The machine that wants to pair asks for a code instead of receiving one, so
+   * the request carries its whole identity (name, hostname, platform, public
+   * key) and the operator reads it in the approval list — the shape orca/paseo
+   * offers have. Nothing gets weaker: the hub mints the same 122-bit single-use
+   * code, parses the key itself, owns the challenge nonce, and the credential is
+   * still issued only by a human approval carrying the hub-computed fingerprint.
+   */
+  requestForDevice(body: unknown, address: string): { ok: true; value: PairDeviceAck } | PairingFailure {
+    const ip = ipKey(address);
+    if (this.failureBlocked(ip))
+      return this.fail(429, "rate_limited", "Too many pairing failures; slow down", 60_000);
+    const taken = this.createLimiter.take(ip);
+    if (!taken.ok) return this.rateLimited(taken, "Too many pairing requests; slow down");
+    if (this.codes.size >= PAIR_RAM_CAPS.codes)
+      return this.fail(429, "rate_limited", "Pairing capacity reached; retry later", 60_000);
+    const request = body as { type?: unknown } | null;
+    if (request?.type !== "pair.device-request" || !checkPairingDto(PairDeviceRequestSchema, request))
+      return this.fail(400, "invalid", "pair.device-request body failed schema validation");
+
+    const entry = this.mintEntry("device");
+    const started = this.start({ ...(request as object), type: "pair.request", v: 1, code: entry.code }, address);
+    if (!started.ok) {
+      // The enrollment never existed: drop the code so a failed request leaves nothing behind.
+      this.codes.delete(entry.codeId);
+      this.byCode.delete(entry.code);
+      return started;
+    }
+    return this.ok({
+      type: "pair.device-ack",
+      v: 1,
+      codeId: entry.codeId,
+      code: entry.code,
+      expiresAt: entry.expiresAt,
+      hubOrigin: this.deps.hubOrigin,
+      hubId: this.deps.hubId,
+      challenge: started.value,
+    });
+  }
+
+  /**
+   * GET /api/pair/codes (admin) — every live code with the machine identity the
+   * operator needs to decide. Deliberately carries NO code, token or key
+   * material: identity + hub-computed fingerprint + phase only.
+   */
+  listPending(): PendingPairing[] {
+    const now = this.now();
+    const out: PendingPairing[] = [];
+    for (const entry of this.codes.values()) {
+      if (entry.cancelled || now >= entry.expiresAt) continue;
+      const enrollment = entry.enrollmentId ? this.enrollments.get(entry.enrollmentId) : undefined;
+      const phase = !enrollment
+        ? "awaiting_device"
+        : enrollment.cancelled
+          ? "cancelled"
+          : enrollment.proofVerified
+            ? "approved_ready"
+            : "awaiting_proof";
+      out.push({
+        codeId: entry.codeId,
+        expiresAt: entry.expiresAt,
+        phase,
+        ...(enrollment
+          ? {
+              enrollmentId: enrollment.enrollmentId,
+              deviceUid: enrollment.deviceUid,
+              deviceName: enrollment.deviceName,
+              ...(enrollment.hostname ? { hostname: enrollment.hostname } : {}),
+              ...(enrollment.platform ? { platform: enrollment.platform } : {}),
+              keyFingerprint: enrollment.computedFingerprint,
+              proofVerified: enrollment.proofVerified,
+              startedAt: enrollment.nonceIssuedAt,
+            }
+          : {}),
+      });
+    }
+    return out;
   }
 
   /** Admin handoff lookup. Reuses a code; never creates an enrollment or approves it. */
@@ -340,6 +456,8 @@ export class PairingService {
       code: string;
       deviceUid: string;
       deviceName: string;
+      hostname?: string;
+      platform?: string;
       publicKey: string;
       keyFingerprint: string;
       clientTime: number;
@@ -414,6 +532,8 @@ export class PairingService {
       code: req.code,
       deviceUid: req.deviceUid,
       deviceName: req.deviceName,
+      ...(req.hostname ? { hostname: req.hostname } : {}),
+      ...(req.platform ? { platform: req.platform } : {}),
       publicKeyPem: req.publicKey,
       computedFingerprint: fingerprint,
       declaredFingerprint: req.keyFingerprint,
