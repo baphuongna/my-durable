@@ -24,6 +24,30 @@ const error = computed(() => entry.value.error);
 
 const busy = ref("");
 const out = ref("");
+/** IntelliJ's log window: lazily fetched once per folder, explicit refresh. */
+const commits = ref<{ hash: string; refs: string; author: string; date: string; subject: string }[]>([]);
+const logLoading = ref(false);
+let logAt = 0;
+async function loadLog(force = false) {
+  if (!devId.value || !cwd.value) return;
+  if (!force && commits.value.length && Date.now() - logAt < 120_000) return;
+  logLoading.value = true;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "log-list");
+    commits.value = r.commits ?? [];
+    logAt = Date.now();
+  } catch {
+    /* the log is decorative; the ops row surfaces failures */
+  } finally {
+    logLoading.value = false;
+  }
+}
+if (!import.meta.env.SSR) void loadLog();
+watch([devId, cwd], () => {
+  commits.value = [];
+  logAt = 0;
+  void loadLog();
+});
 const commitMsg = ref("");
 const checked = ref<Set<string>>(new Set());
 const branchMenu = ref(false);
@@ -70,6 +94,7 @@ async function op(name: "fetch" | "pull" | "log" | "branch" | "diff") {
     out.value = r.text || "(empty)";
     if (name === "fetch" || name === "pull") notify(`git ${name} ✓`);
     await refresh();
+    if (name === "fetch" || name === "pull" || name === "branch") void loadLog(true);
   } catch (e) {
     out.value = `${name} failed: ${(e as Error).message.slice(0, 200)}`;
   } finally {
@@ -96,14 +121,16 @@ async function commit() {
   if (!devId.value || !cwd.value || !commitMsg.value.trim()) return;
   busy.value = "commit";
   const chosen = files.value.filter((f) => checked.value.has(f.path)).map((f) => f.path);
+  if (!chosen.length) return notify("check the files to commit — nothing is selected");
   try {
     const r = await deviceClient(devId.value).gitOp(cwd.value, "commit", {
       message: commitMsg.value.trim(),
-      ...(chosen.length ? { files: chosen } : {}),
+      files: chosen,
     });
     notify(r.text);
     commitMsg.value = "";
     await refresh();
+    void loadLog(true);
   } catch (e) {
     notify(`commit failed: ${(e as Error).message.slice(0, 140)}`);
   } finally {
@@ -212,17 +239,17 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
           <div class="row ops">
             <button :disabled="!!busy" @click="op('fetch')">fetch</button>
             <button :disabled="!!busy" @click="op('pull')">pull</button>
-            <button :disabled="!!busy" @click="op('log')">log</button>
             <button :disabled="!!busy" @click="op('branch')">branches</button>
             <button :disabled="!!busy" @click="op('diff')">diff</button>
           </div>
 
-          <!-- commit: IntelliJ — big box + file checkboxes -->
-          <section v-if="files.length" class="commit">
-            <div class="files">
+          <!-- COMMIT: always present — IntelliJ's Ctrl+K opens on a clean tree too -->
+          <section class="commit">
+            <div class="sec-head"><strong>Commit</strong><span class="muted">{{ files.length ? `${checked.size}/${files.length} files` : "no changes" }}</span></div>
+            <div v-if="files.length" class="files">
               <label class="file all">
                 <input type="checkbox" :checked="someChecked" @change="toggleAll" />
-                <span class="muted">{{ checked.size }}/{{ files.length }} changed files</span>
+                <span class="muted">select all / none</span>
               </label>
               <label v-for="f in files" :key="f.path" class="file">
                 <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
@@ -231,9 +258,27 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
               </label>
             </div>
             <textarea v-model="commitMsg" rows="4" placeholder="Commit message…" />
-            <button class="primary" :disabled="!!busy || !commitMsg.trim()" @click="commit">
-              Commit{{ checked.size ? ` ${checked.size} file${checked.size > 1 ? "s" : ""}` : " -am" }}
+            <button class="primary" :disabled="!!busy || !commitMsg.trim() || !someChecked" @click="commit">
+              Commit{{ checked.size ? ` ${checked.size} file${checked.size > 1 ? "s" : ""}` : "" }}
             </button>
+          </section>
+
+          <!-- LOG: the IDE centerpiece — hash, refs, author, date, subject -->
+          <section class="logsec">
+            <div class="sec-head">
+              <strong>Log</strong>
+              <button :disabled="logLoading" title="refresh log" @click="loadLog(true)">↻</button>
+            </div>
+            <p v-if="logLoading && !commits.length" class="muted">loading log…</p>
+            <div v-else-if="commits.length" class="commits">
+              <div v-for="c in commits" :key="c.hash" class="commit-row">
+                <code class="hash">{{ c.hash }}</code>
+                <span v-if="c.refs" class="refs" :title="c.refs">{{ c.refs.split(",")[0] }}</span>
+                <span class="subject">{{ c.subject }}</span>
+                <span class="muted who">{{ c.author }} · {{ c.date }}</span>
+              </div>
+            </div>
+            <p v-else class="muted">no commits</p>
           </section>
 
           <!-- worktrees: local + linked, one click to a session -->
@@ -285,7 +330,15 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
 .menu .pad { padding: 6px 8px; margin: 0; }
 .row { display: flex; gap: 6px; }
 .ops { flex-wrap: wrap; }
+.sec-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 2px; border-bottom: 1px solid var(--border, #2a2a30); }
 .commit { display: grid; gap: 6px; }
+.logsec { display: grid; gap: 6px; }
+.commits { max-height: 320px; overflow: auto; display: grid; gap: 1px; }
+.commit-row { display: flex; gap: 6px; align-items: baseline; white-space: nowrap; }
+.commit-row .hash { color: var(--ok, #2ea043); font-size: 11px; }
+.commit-row .refs { color: var(--warn, #e5a50a); font-size: 10px; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
+.commit-row .subject { overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.commit-row .who { font-size: 10px; }
 .files { max-height: 180px; overflow: auto; border: 1px solid var(--border, #2a2a30); border-radius: 6px; padding: 2px 6px; }
 .file { display: flex; gap: 6px; align-items: center; padding: 2px 0; }
 .file.all { border-bottom: 1px solid var(--border, #2a2a30); }

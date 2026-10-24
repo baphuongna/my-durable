@@ -167,6 +167,7 @@ export async function gitStatus(path: string): Promise<GitStatus> {
 export type GitOp =
   | "diff"
   | "log"
+  | "log-list"
   | "fetch"
   | "pull"
   | "switch"
@@ -184,13 +185,30 @@ export async function gitOp(
   path: string,
   op: GitOp,
   opts: { ref?: string; message?: string; target?: string; branch?: string; files?: string[] } = {},
-): Promise<{ text: string }> {
+): Promise<{ text: string; commits?: { hash: string; refs: string; author: string; date: string; subject: string }[] }> {
   const { ref, message, target, branch, files } = opts;
   switch (op) {
     case "diff":
       return { text: await git(path, ["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
     case "log":
       return { text: (await git(path, ["--no-pager", "log", "--oneline", "-n", "30", ...(ref && safeRef(ref) ? [ref] : [])])).trimEnd() };
+    case "log-list": {
+      // IntelliJ's log window: hash, refs, author, date, subject — structured.
+      const raw = await git(
+        path,
+        ["--no-pager", "log", "-n", "50", "--date=short", "--pretty=format:%h%x1f%D%x1f%an%x1f%ad%x1f%s"],
+      );
+      return {
+        text: "",
+        commits: raw
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => {
+            const [hash, refs, author, date, subject] = l.split("\x1f");
+            return { hash: hash ?? "", refs: refs ?? "", author: author ?? "", date: date ?? "", subject: subject ?? "" };
+          }),
+      };
+    }
     case "fetch":
       return { text: (await git(path, ["fetch", "--all", "--prune"])).trim() || "fetched" };
     case "pull":

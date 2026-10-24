@@ -247,6 +247,18 @@ test("GitPanel: IntelliJ contract — branch picker, file checkboxes, worktree s
   assert.match(s, /sessionOn\(w\.path/, "a worktree row must create a session");
 });
 
+test("GitPanel: IntelliJ shape — COMMIT always visible + structured LOG", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");
+  assert.match(s, /v-if="files.length" class="files"/, "the FILE LIST toggles");
+  assert.doesNotMatch(s, /v-if="files.length" class="commit"/, "the COMMIT section must render on a clean tree too");
+  assert.match(s, /no changes/, "clean tree must say so inside the commit section");
+  assert.match(s, /log-list/, "structured log op wired");
+  assert.match(s, /class="commits"/, "log entries rendered as a list");
+  assert.match(s, /c\.hash/, "log rows show the hash");
+  assert.match(s, /!someChecked/, "commit disabled with nothing checked (changelist semantics)");
+});
+
 test("session tree rows carry the branch", async () => {
   const { readFile } = await import("node:fs/promises");
   const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/TreeRow.vue", import.meta.url), "utf8");

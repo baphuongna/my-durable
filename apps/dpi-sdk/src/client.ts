@@ -59,6 +59,7 @@ export interface GitStatus {
 export type GitOpName =
   | "diff"
   | "log"
+  | "log-list"
   | "fetch"
   | "pull"
   | "switch"
@@ -182,7 +183,11 @@ export class DpiClient {
     op: GitOpName,
     opts: { ref?: string; branch?: string; message?: string; target?: string; files?: string[] } = {},
   ) {
-    return this.request<{ text: string }>("POST", "/v1/git", { path, op, ...opts });
+    return this.request<{ text: string; commits?: { hash: string; refs: string; author: string; date: string; subject: string }[] }>(
+      "POST",
+      "/v1/git",
+      { path, op, ...opts },
+    );
   }
   /** Many paths, one round-trip — session lists want branch-per-cwd. */
   gitStatusBatch(paths: string[], options: { timeoutMs?: number } = {}) {
