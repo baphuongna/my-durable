@@ -242,7 +242,7 @@ export function renderStatusbar(
     ? ["tab complete", "↑ history", "enter send", "esc cancel"]
     : opts.view === "agent"
       ? ["g herd", "N network", "L log", "[ ] tabs", "m message"]
-      : ["j/k move", "↵ open", "1-9 jump", "g/N/L views", "esc agent"];
+      : ["j/k move", "↵ open", "1-9 jump", "⇥ views", "esc agent"];
   const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("—") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(opts.device, 18))}`;
   const left = `${chip} ${keys.map((k) => c.muted(k)).join(c.muted(" • "))}`;
   const gap = Math.max(1, w - visibleWidth(left) - visibleWidth(right));

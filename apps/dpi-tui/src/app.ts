@@ -551,6 +551,12 @@ export class App {
     if (matchesKey(data, "escape")) {
       this.input = null;
       this.toast = "";
+      // esc aborts the filter line: a half-typed needle must not linger.
+      if (input.kind === "filter" && this.filter) {
+        this.filter = "";
+        this.cursor = 0;
+        this.notify("filter cleared");
+      }
       return true;
     }
     // The slash suggestion list is a MENU while it is open: ↑/↓ steer it and
@@ -652,6 +658,13 @@ export class App {
       const chunk = data.replace(/\r\n?/g, "\n");
       if (chunk >= " " || [...chunk].some((ch) => ch >= " ") || chunk.includes("\n")) (input.value += chunk), (this.suggIndex = 0);
     }
+    // The filter narrows the list LIVE, on every keystroke — enter merely
+    // closes the line. Waiting for enter made "f" feel dead for a beat.
+    if (input.kind === "filter") {
+      this.filter = input.value.trim();
+      if (!this.filter && this.cursor) this.cursor = 0;
+      this.requestRender();
+    }
     return true;
   }
 
@@ -717,8 +730,19 @@ export class App {
     this.openCursor();
   }
 
+  /**
+   * Tab/Shift+Tab cycle whatever tab strip is on screen — pi's exact
+   * semantics: the four VIEWS on herd/network/log, the agent's own tabs in
+   * the conversation. Before, "tab" outside the agent view did nothing at
+   * all, which on the outermost session list reads as "navigation is dead"
+   * (reported: "không điều hướng xem tab khác ngoài tab session đầu tiên").
+   */
   private cycleTab(delta: number) {
-    if (this.view !== "agent") return;
+    if (this.view !== "agent") {
+      const index = VIEW_TABS.findIndex((t) => t.id === this.view);
+      this.setView(VIEW_TABS[(index + delta + VIEW_TABS.length) % VIEW_TABS.length]!.id);
+      return;
+    }
     const index = AGENT_TABS.findIndex((t) => t.id === this.tab);
     this.tab = AGENT_TABS[(index + delta + AGENT_TABS.length) % AGENT_TABS.length]!.id;
     this.scrollOffset = 0;

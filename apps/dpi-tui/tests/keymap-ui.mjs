@@ -332,6 +332,80 @@ try {
     await press("escape");
   });
 
+  // ------------------------------------------------- view cycling (reported:
+  // "không điều hướng xem tab khác ngoài tab session đầu nhất" — Tab on the
+  // outermost list used to do nothing; now it cycles the four views, pi-style.)
+  await check("herd: tab walks herd→network→agent, L reaches the log, tab wraps home", async () => {
+    await press("tab");
+    assert.match(await body(), /keybox/, "tab from herd did not reach the network view");
+    await press("tab");
+    assert.match(await body(), /#1\s+idle|#1/, "tab from network did not reach the agent view");
+    // inside the agent view Tab belongs to the AGENT's tab strip (pi semantics):
+    // views keep their direct keys — L for the log.
+    await press("L");
+    assert.match(await body(), /events · this client/, "L from agent did not reach the log");
+    await press("tab");
+    assert.match(await body(), /NAME\s+STATE\s+AGENTS/, "tab from log did not wrap to the herd");
+    await tui("press", "shift", "tab");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.match(await body(), /events · this client/, "shift+tab did not step back to the log");
+  });
+
+  await check("herd: [ and ] step the views one at a time", async () => {
+    await press("]");
+    assert.match(await body(), /keybox/, "] did not go forward to network");
+    await press("[");
+    assert.match(await body(), /NAME\s+STATE\s+AGENTS/, "[ did not come back to herd");
+  });
+
+  await check("network: enter on the local device row returns to its sessions", async () => {
+    await press("N");
+    await press("enter");
+    assert.match(await body(), /NAME\s+STATE\s+AGENTS/, "enter on the device row did not open its herd");
+  });
+
+  await check("herd: a/d speak when nothing waits instead of silence", async () => {
+    await press("a");
+    assert.match(await body(), /nothing is waiting for approval/, "a said nothing");
+  });
+
+  await check("herd: palette runs a command", async () => {
+    await press(":");
+    await tui("type", "net");
+    await new Promise((r) => setTimeout(r, 250));
+    await press("enter");
+    assert.match(await body(), /keybox/, "palette 'network' did not switch the view");
+    await press("g");
+  });
+
+  await check("herd: filter narrows LIVE while typing, esc aborts and clears", async () => {
+    await press("f");
+    await tui("type", "alp");
+    await new Promise((r) => setTimeout(r, 350));
+    const narrowed = await body();
+    assert.match(narrowed, /~\/alpha\//, "alpha group missing while typing");
+    assert.doesNotMatch(narrowed, /~\/beta\//, "beta group survived a live 'alp' filter");
+    await press("escape"); // abort the line — the needle must not linger
+    await new Promise((r) => setTimeout(r, 300));
+    const back = await body();
+    assert.match(back, /~\/beta\//, "esc did not abort the filter back to the full list");
+    assert.match(back, /~\/alpha\//, "full list lost the alpha group");
+  });
+
+  await check("agent: y cycles the thinking level", async () => {
+    await press("enter");
+    await press("y");
+    assert.match(await body(), /thinking: /, "y produced no thinking notice");
+    await press("esc");
+  });
+
+  await check("log: events accumulate while you drive the app", async () => {
+    await press("L");
+    const m = (await body()).match(/(\d+) events · this client/);
+    assert.ok(m, "log header missing");
+    assert.ok(Number(m[1]) > 0, "no events recorded");
+  });
+
   await check("herd: q quits the app", async () => {
     await press("q");
     await new Promise((r) => setTimeout(r, 800));
