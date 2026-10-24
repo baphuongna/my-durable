@@ -418,6 +418,13 @@ try {
     assert.ok(Number(m[1]) > 0, "no events recorded");
   });
 
+  // ------------------------------------------------------ branch per row
+  await check("herd: every session row shows ⎇ branch (batched, no typing)", async () => {
+    await tui("wait", "⎇ main", "--timeout", "10000");
+    const rows = await body();
+    assert.match(rows, /alpha.*⎇ main|⎇ main.*alpha/s, "alpha row lost its branch");
+  });
+
   // ------------------------------------------------------ ambient git display
   await check("git: the OVERVIEW panel shows ⎇ branch ±dirty without any command", async () => {
     await press("2"); // alpha, the git repo

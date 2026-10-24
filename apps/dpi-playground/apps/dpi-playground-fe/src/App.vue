@@ -33,6 +33,7 @@ import {
   toggleTree,
   toggleInspector,
 } from "./client/store";
+import { watchSessionGit } from "./client/session-git";
 import { auth } from "./client/auth";
 
 const onlineCount = () => network.devices.value.filter((d) => d.status === "online").length;
@@ -76,6 +77,7 @@ function resize(e: PointerEvent) {
   window.addEventListener("pointerup", up);
 }
 
+onMounted(() => watchSessionGit());
 onMounted(() => {
   document.addEventListener("keydown", keydown);
   void boot();

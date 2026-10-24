@@ -10,7 +10,7 @@ import type { DevicePairing } from "./pairing.js";
 
 type Async = (req: Request, res: Response) => Promise<unknown>;
 const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
-import { gitOp, gitStatus, type GitOp } from "./git.ts";
+import { gitOp, gitStatus, gitStatusBatch, type GitOp } from "./git.ts";
 const GIT_OPS: GitOp[] = ["diff", "log", "fetch", "pull", "switch", "branch", "commit", "worktree-list", "worktree-add", "worktree-remove"];
 
 interface Locals {
@@ -124,6 +124,10 @@ export function v1(
   // Git, spoken by the device itself: status for the UIs, ops for the humans.
   // The path must live under a start dir (same rule as every other fs route).
   r.get("/git/status", route(async (req, res) => res.json(await gitStatus(String(req.query.path ?? ".")))));
+  r.post("/git/status-batch", route(async (req, res) => {
+    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map(String).slice(0, 50) : [];
+    res.json(await gitStatusBatch(paths));
+  }));
   r.post("/git", route(async (req, res) => {
     const body = req.body ?? {};
     const op = String(body.op ?? "") as GitOp;
@@ -133,6 +137,7 @@ export function v1(
       branch: body.branch,
       message: body.message,
       target: body.target,
+      files: Array.isArray(body.files) ? body.files.map(String).slice(0, 500) : undefined,
     });
     res.json(out);
   }));

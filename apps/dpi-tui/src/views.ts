@@ -65,10 +65,12 @@ export interface HerdRow {
   kind: "group" | "session";
   label: string;
   sessionId?: string;
+  /** ⎇ branch of the session's cwd, when the batch fetch knows it. */
+  branch?: string;
 }
 
 /** Group sessions by working directory (herdr groups by repo) and apply the / filter. */
-export function herdRows(sessions: SessionSummary[], filter = ""): HerdRow[] {
+export function herdRows(sessions: SessionSummary[], filter = "", branchOf?: (cwd: string) => string | undefined): HerdRow[] {
   const needle = filter.trim().toLowerCase();
   const kept = needle
     ? sessions.filter((s) =>
@@ -87,7 +89,8 @@ export function herdRows(sessions: SessionSummary[], filter = ""): HerdRow[] {
   }
   for (const [dir, list] of groups) {
     out.push({ kind: "group", label: dir });
-    for (const s of list) out.push({ kind: "session", label: s.name, sessionId: s.id });
+    for (const s of list)
+      out.push({ kind: "session", label: s.name, sessionId: s.id, branch: branchOf?.(s.cwd) });
   }
   return out;
 }
@@ -136,8 +139,9 @@ export function renderHerd(
     const forks = s.agents.filter((a) => a.kind === "fork").length;
     const subs = s.agents.filter((a) => a.kind === "subagent").length;
     const agents = `${s.agents.length}${forks ? `⑂${forks}` : ""}${subs ? `↳${subs}` : ""}`;
+    const branch = row.branch ? ` ${c.muted(`⎇ ${fit(row.branch, 10)}`)}` : "";
     let line =
-      `${marker}${fit(selected ? c.bold(s.name) : s.name, cols.name)}  ${fit(state, cols.state)}` +
+      `${marker}${fit(selected ? c.bold(s.name) : s.name, cols.name - visibleWidth(branch))}${branch}  ${fit(state, cols.state)}` +
       (showModel ? `  ${fit(c.muted(basename(s.model) || s.model), cols.model)}` : "") +
       `  ${fit(c.muted(agents), cols.agents)}`;
     if (showAge) line += `  ${fit(c.muted(ageOf(s.createdAt)), cols.age)}`;

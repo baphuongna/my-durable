@@ -57,6 +57,19 @@ export interface GitStatus {
   subject?: string;
   worktreeOf?: string;
   worktrees?: { path: string; branch: string | null; head: string }[];
+  /** Changed files (porcelain XY + path), capped — the IntelliJ-style commit
+   *  dialog checks exactly these. */
+  files?: { path: string; x: string; y: string }[];
+  /** Local branches for pickers — nobody should TYPE a name that exists. */
+  branches?: { name: string; current?: boolean; upstream?: string }[];
+}
+
+/** One status for MANY paths — what a session list needs. The per-path cache
+ *  keeps repeat polls cheap on big repos. */
+export async function gitStatusBatch(paths: string[]): Promise<Record<string, GitStatus>> {
+  const unique = [...new Set(paths.filter(Boolean))];
+  const entries = await Promise.all(unique.map(async (p) => [p, await gitStatus(p)] as const));
+  return Object.fromEntries(entries);
 }
 
 /** Structured status for a folder: everything the UIs show, one call. */
@@ -73,12 +86,13 @@ export async function gitStatus(path: string): Promise<GitStatus> {
     out.root = root;
     // Everything after toplevel runs in PARALLEL — status is the long pole
     // (20s+ on big Windows checkouts) and must not wait for four fast calls.
-    const [branchP, headP, statusP, gitDirP, wlP] = await Promise.allSettled([
+    const [branchP, headP, statusP, gitDirP, wlP, branchesP] = await Promise.allSettled([
       git(path, ["branch", "--show-current"]),
       git(path, ["log", "-1", "--pretty=%h%x09%s"]),
       git(path, ["--no-optional-locks", "status", "--porcelain=v1", "-b"], GIT_SLOW_TIMEOUT),
       git(path, ["rev-parse", "--git-dir"]),
       git(path, ["worktree", "list", "--porcelain"], GIT_SLOW_TIMEOUT),
+      git(path, ["for-each-ref", "refs/heads", "--format=%(refname:short)%09%(upstream:short)%09%(if)%(HEAD)%(then)1%(else)0%(end)"]),
     ]);
     const branch = branchP.status === "fulfilled" ? branchP.value : "";
     out.branch = branch.trim() || undefined;
@@ -107,6 +121,21 @@ export async function gitStatus(path: string): Promise<GitStatus> {
     }
     // Per line — a ^-anchored regex on the joined blob only ever sees line 1.
     const body = lines.slice(1).filter(Boolean);
+    out.files = body.slice(0, 500).map((l) => ({
+      path: l.slice(3).replace(/^"|"$/g, ""),
+      x: l[0] ?? " ",
+      y: l[1] ?? " ",
+    }));
+    if (branchesP.status === "fulfilled")
+      out.branches = branchesP.value
+        .split("\n")
+        .filter(Boolean)
+        .slice(0, 300)
+        .map((l) => {
+          const [name, upstream, head] = l.split("\t");
+          return { name: name ?? "", current: head === "1", upstream: upstream || undefined };
+        })
+        .filter((b) => b.name);
     out.staged = count(body.join("\n"), /^[MADRC]/gm);
     out.unstaged = count(body.join("\n"), /^ [MD]/gm);
     out.untracked = count(body.join("\n"), /^\?\?/gm);
@@ -154,9 +183,9 @@ const safeRef = (s: string) => /^[\w./@+-]+$/.test(s) && !s.includes("..");
 export async function gitOp(
   path: string,
   op: GitOp,
-  opts: { ref?: string; message?: string; target?: string; branch?: string } = {},
+  opts: { ref?: string; message?: string; target?: string; branch?: string; files?: string[] } = {},
 ): Promise<{ text: string }> {
-  const { ref, message, target, branch } = opts;
+  const { ref, message, target, branch, files } = opts;
   switch (op) {
     case "diff":
       return { text: await git(path, ["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
@@ -175,6 +204,11 @@ export async function gitOp(
     case "commit": {
       const msg = (message ?? "").trim();
       if (!msg) throw Error("commit needs a message");
+      // IntelliJ-style: chosen files only, when the caller picked some.
+      if (files?.length) {
+        for (const f of files) if (f.includes("\0") || f === "") throw Error("bad file path");
+        return { text: (await git(path, ["commit", "-m", msg, "--", ...files])).split("\n")[0]?.trim() ?? "committed" };
+      }
       return { text: (await git(path, ["commit", "-am", msg])).split("\n")[0]?.trim() ?? "committed" };
     }
     case "worktree-list":

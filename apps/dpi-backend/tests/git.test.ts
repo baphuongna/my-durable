@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitStatus, gitOp } from "../src/git.ts";
+import { gitStatus, gitOp, gitStatusBatch } from "../src/git.ts";
 
 const sh = (cmd: string, args: string[], opts: { cwd?: string } = {}) => execFileSync(cmd, args, { ...opts, encoding: "utf8" });
 
@@ -20,6 +20,38 @@ function repo(seed = true) {
   }
   return root;
 }
+
+test("gitStatus: changed FILES and local BRANCHES for pickers (IntelliJ-style commit)", async () => {
+  const root = repo();
+  writeFileSync(join(root, "a.txt"), "one\nCHANGED\n"); // modified
+  writeFileSync(join(root, "new.txt"), "n\n"); // untracked
+  const s = await gitStatus(root);
+  assert.ok(s.files?.some((f) => f.path === "a.txt" && f.y === "M"), `files: ${JSON.stringify(s.files)}`);
+  assert.ok(s.files?.some((f) => f.path === "new.txt" && f.x === "?" && f.y === "?"), "untracked file missing");
+  assert.ok(s.branches?.some((b) => b.name === "main" && b.current), `branches: ${JSON.stringify(s.branches)}`);
+  // staged-only commit via files list: stage one file, commit ONLY it
+  writeFileSync(join(root, "b.txt"), "b\n");
+  sh("git", ["add", "b.txt"], { cwd: root });
+  const c = await gitOp(root, "commit", { message: "only b", files: ["b.txt"] });
+  assert.match(c.text, /only b|b\.txt/);
+  const after = await gitStatus(root);
+  assert.ok(after.files?.some((f) => f.path === "a.txt"), "a.txt must survive a b-only commit");
+  assert.ok(!after.files?.some((f) => f.path === "b.txt"), "b.txt committed but still listed");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitStatusBatch: many paths, one call, map back", async () => {
+  const a = repo();
+  const b = repo();
+  const nowhere = mkdtempSync(join(tmpdir(), "dpi-nogit2-"));
+  const out = await gitStatusBatch([a, b, nowhere]);
+  assert.equal(out[a]?.repo, true);
+  assert.equal(out[b]?.repo, true);
+  assert.equal(out[nowhere]?.repo, false);
+  rmSync(a, { recursive: true, force: true });
+  rmSync(b, { recursive: true, force: true });
+  rmSync(nowhere, { recursive: true, force: true });
+});
 
 test("gitStatus: not a repo says so plainly", async () => {
   const dir = mkdtempSync(join(tmpdir(), "dpi-nogit-"));

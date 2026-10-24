@@ -16,6 +16,7 @@ import {
 import DeviceIcon from "./DeviceIcon.vue";
 import type { TreeNode } from "@sdk/models";
 import { ago } from "../client/store";
+import { branchOf } from "../client/session-git";
 
 const props = defineProps<{
   node: TreeNode;
@@ -59,6 +60,10 @@ const statusText = computed(() => {
 const dot = computed(() => {
   const s = device.value?.status;
   return s === "online" ? "on" : s === "checking" ? "chk" : s === "offline" ? "off" : "err";
+});
+const branch = computed(() => {
+  const n = props.node;
+  return n.type === "session" ? branchOf(n.deviceId, n.session.cwd) : undefined;
 });
 const label = computed(
   () => device.value?.name ?? device.value?.id ?? session.value?.name ?? agent.value?.name ?? "",
@@ -137,6 +142,7 @@ const title = computed(() => {
       <FolderOpen class="ico" :size="16" />
       <b class="name">{{ label }}</b>
       <span class="path">…/{{ session.cwd.split("/").filter(Boolean).at(-1) }}</span>
+      <span v-if="branch" class="branch" :title="`git branch of ${session.cwd}`">⎇ {{ branch }}</span>
       <i v-if="busy" class="dot work" title="Working" />
       <span v-if="background" class="bg-count" :title="`${background} background task(s)`"
         ><i class="dot bg" />{{ background }} bg</span

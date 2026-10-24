@@ -53,6 +53,8 @@ export interface GitStatus {
   subject?: string;
   worktreeOf?: string;
   worktrees?: { path: string; branch: string | null; head: string }[];
+  files?: { path: string; x: string; y: string }[];
+  branches?: { name: string; current?: boolean; upstream?: string }[];
 }
 export type GitOpName =
   | "diff"
@@ -175,8 +177,16 @@ export class DpiClient {
     return this.request<GitStatus>("GET", `/v1/git/status?path=${enc(path)}`, undefined, options);
   }
   /** One whitelisted git operation; see the device's git.ts for the op list. */
-  gitOp(path: string, op: GitOpName, opts: { ref?: string; branch?: string; message?: string; target?: string } = {}) {
+  gitOp(
+    path: string,
+    op: GitOpName,
+    opts: { ref?: string; branch?: string; message?: string; target?: string; files?: string[] } = {},
+  ) {
     return this.request<{ text: string }>("POST", "/v1/git", { path, op, ...opts });
+  }
+  /** Many paths, one round-trip — session lists want branch-per-cwd. */
+  gitStatusBatch(paths: string[], options: { timeoutMs?: number } = {}) {
+    return this.request<Record<string, GitStatus>>("POST", "/v1/git/status-batch", { paths }, options);
   }
 
   // ------------------------------------------------------------ sessions

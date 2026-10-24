@@ -172,6 +172,27 @@ export class App {
   private gitOf(cwd: string | undefined): GitStatus | undefined {
     return cwd ? this.gitCache.get(cwd)?.s : undefined;
   }
+
+  /** ⎇ per herd ROW: one batched status for all distinct cwds, 60s TTL. */
+  private branchCache = new Map<string, { at: number; branch?: string }>();
+  private refreshBranches() {
+    const cwds = [...new Set(this.sessions.map((s) => s.cwd))];
+    const stale = cwds.filter((c) => {
+      const hit = this.branchCache.get(c);
+      return !hit || Date.now() - hit.at > 60_000;
+    });
+    if (!stale.length) return;
+    for (const c of stale) this.branchCache.set(c, { at: Date.now() });
+    void this.client
+      .gitStatusBatch(stale)
+      .then((map) => {
+        for (const [c, s] of Object.entries(map))
+          this.branchCache.set(c, { at: Date.now(), branch: s.repo ? (s.branch ?? s.head) : undefined });
+        this.requestRender();
+      })
+      .catch(() => {});
+  }
+  private branchOf = (cwd: string): string | undefined => this.branchCache.get(cwd)?.branch;
   private devicesCache: DeviceRow[] = [];
   private deviceOnline = false;
   private events: { at: string; glyph: string; text: string }[] = [];
@@ -345,6 +366,7 @@ export class App {
     this.cursor = 0;
     this.scrollOffset = 0;
     if (view === "herd") void this.refreshSessions();
+    if (view === "herd") this.refreshBranches();
     if (view === "network") this.devicesCache = this.networkDevices();
     this.requestRender();
   }
@@ -391,7 +413,7 @@ export class App {
     deviceId?: string;
     label: string;
   }> {
-    if (this.view === "herd") return herdRows(this.sessions, this.filter);
+    if (this.view === "herd") return herdRows(this.sessions, this.filter, this.branchOf);
     if (this.view === "network") return networkRows(this.devicesCache, this.device.id, this.filter);
     return [];
   }
@@ -981,10 +1003,11 @@ export class App {
   // ------------------------------------------------------------------ herd
 
   private herdBody(w: number, h: number): string[] {
-    const rows = herdRows(this.sessions, this.filter);
+    const rows = herdRows(this.sessions, this.filter, this.branchOf);
     const wide = w >= 104;
     const panelW = wide ? Math.min(44, Math.max(34, Math.round(w * 0.32))) : 0;
     const tableW = wide ? w - panelW - 1 : w;
+    this.refreshBranches();
     const table = renderHerd(tableW, rows, this.sessions, {
       selectedId: this.selectedId ?? this.sessionId,
       cursor: this.cursor,

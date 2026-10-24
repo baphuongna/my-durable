@@ -1,78 +1,72 @@
 <script setup lang="ts">
-// Inspector GIT tab: everything the device knows about the session's folder.
-// Always visible — "not a git repository" is a state, not a reason to hide.
-import { computed, onBeforeUnmount, onMounted, onServerPrefetch, ref, watch } from "vue";
-import { RefreshCw } from "lucide-vue-next";
-import { deviceId, sessionSummary, notify } from "../client/store";
+// Inspector GIT tab, IntelliJ-shaped:
+//   • branch PICKER — the list is right there, nobody types an existing name
+//   • worktrees are first-class rows: create a SESSION on one click
+//   • commit: big multi-line box + changed-file checkboxes (commit chosen files)
+// Lazy: rides the shared git-store (one fetch per folder while fresh), the
+// refresh button and every op are the only forced refetches.
+import { computed, onServerPrefetch, ref, watch } from "vue";
+import { Check, ChevronDown, RefreshCw, X } from "lucide-vue-next";
+import { deviceId, network, sessionSummary, notify, select } from "../client/store";
 import { deviceClient } from "../client/hub";
+import { ensureGit, gitEntry } from "../client/git-store";
 import type { GitStatus } from "@sdk/client";
 
 const props = defineProps<{ deviceId?: string; cwd?: string }>();
-const status = ref<GitStatus | null>(null);
-const error = ref("");
-const loading = ref(false); // first fetch, nothing to show yet — SAY SO
-const refreshing = ref(false); // refetch with data on screen — dim, keep, never blank
-let inFlight: Promise<void> | undefined;
-const busy = ref("");
-const out = ref("");
-const commitMsg = ref("");
-const wtName = ref("");
 
 const cwd = computed(() => props.cwd ?? sessionSummary.value?.cwd ?? "");
 const devId = computed(() => props.deviceId ?? deviceId.value);
-const dirty = computed(() => (status.value?.staged ?? 0) + (status.value?.unstaged ?? 0) + (status.value?.untracked ?? 0));
-const client = () => (devId.value ? deviceClient(devId.value) : null);
+const entry = computed(() => gitEntry(devId.value || "?", cwd.value || "?"));
+const status = computed(() => entry.value.status);
+const loading = computed(() => entry.value.loading);
+const refreshing = computed(() => entry.value.refreshing);
+const error = computed(() => entry.value.error);
 
-let timer: ReturnType<typeof setInterval> | undefined;
-async function refresh() {
-  const c = client();
-  if (!c || !cwd.value) return;
-  if (inFlight) return inFlight; // interval + session-switch must not pile up
-  const first = !status.value;
-  if (first) loading.value = true;
-  else refreshing.value = true;
-  error.value = ""; // a new attempt must not stack on the old verdict
-  inFlight = (async () => {
-    try {
-      // Big checkouts honestly take 20s+ (measured on the operator's repo):
-      // wait for the truth instead of declaring the device unreachable.
-      status.value = await c.gitStatus(cwd.value, { timeoutMs: 60_000 });
-      error.value = "";
-    } catch (e) {
-      const raw = (e as Error).message ?? "";
-      // Keep the LAST GOOD status — a dropped tunnel must not blank the tab
-      // the operator is reading (reported: "treo rất lâu", "Cannot reach …").
-      error.value = /fetch failed|Cannot reach|Failed to fetch|NetworkError|ERR_NAME/i.test(raw)
-        ? `device unreachable — check that it is online, then retry (${raw.slice(0, 80)})`
-        : raw.slice(0, 160);
-    } finally {
-      loading.value = false;
-      refreshing.value = false;
-      inFlight = undefined;
-    }
-  })();
-  return inFlight;
-}
-// NO top-level await: an async setup outside <Suspense> never mounts in the
-// browser ("async setup invoked without a Suspense boundary") — the tab
-// rendered EMPTY (reported: "TAB git trống"). Fire now on the client;
-// onServerPrefetch is what SSR actually waits for.
-if (!import.meta.env.SSR) void refresh();
-onServerPrefetch(() => refresh());
-onMounted(() => {
-  timer = setInterval(refresh, 30000);
+const busy = ref("");
+const out = ref("");
+const commitMsg = ref("");
+const checked = ref<Set<string>>(new Set());
+const branchMenu = ref(false);
+const wtMenu = ref(false);
+const newBranch = ref("");
+
+if (!import.meta.env.SSR) void ensureGit(devId.value || "?", cwd.value || "?");
+onServerPrefetch(() => ensureGit(devId.value || "?", cwd.value || "?"));
+watch([devId, cwd], () => {
+  branchMenu.value = false;
+  wtMenu.value = false;
+  void ensureGit(devId.value || "?", cwd.value || "?");
 });
-onBeforeUnmount(() => timer && clearInterval(timer));
-// The operator switching sessions changes cwd — refetch for the new folder.
-watch(cwd, () => void refresh());
+const refresh = () => {
+  checked.value = new Set();
+  return ensureGit(devId.value || "?", cwd.value || "?", { force: true });
+};
+
+// changed files: staged+modified default-checked, untracked not — IntelliJ's
+// changelist behavior.
+const files = computed(() => status.value?.files ?? []);
+watch(files, (list) => {
+  const next = new Set<string>();
+  for (const f of list) if (f.x !== "?" && f.y !== "?") next.add(f.path);
+  checked.value = next;
+});
+const someChecked = computed(() => files.value.some((f) => checked.value.has(f.path)));
+const toggle = (p: string) => {
+  const next = new Set(checked.value);
+  if (next.has(p)) next.delete(p);
+  else next.add(p);
+  checked.value = next;
+};
+const toggleAll = () => {
+  checked.value = someChecked.value ? new Set() : new Set(files.value.map((f) => f.path));
+};
 
 async function op(name: "fetch" | "pull" | "log" | "branch" | "diff") {
-  const c = client();
-  if (!c || !cwd.value) return;
+  if (!devId.value || !cwd.value) return;
   busy.value = name;
   out.value = "";
   try {
-    const r = await c.gitOp(cwd.value, name);
+    const r = await deviceClient(devId.value).gitOp(cwd.value, name);
     out.value = r.text || "(empty)";
     if (name === "fetch" || name === "pull") notify(`git ${name} ✓`);
     await refresh();
@@ -83,55 +77,100 @@ async function op(name: "fetch" | "pull" | "log" | "branch" | "diff") {
   }
 }
 
-async function commit() {
-  const c = client();
-  if (!c || !cwd.value || !commitMsg.value.trim()) return;
-  busy.value = "commit";
+async function switchBranch(name: string) {
+  branchMenu.value = false;
+  if (!devId.value || !cwd.value || name === status.value?.branch) return;
+  busy.value = "switch";
   try {
-    const r = await c.gitOp(cwd.value, "commit", { message: commitMsg.value.trim() });
-    notify(r.text);
-    commitMsg.value = "";
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "switch", { ref: name });
+    notify(r.text || `switched to ${name}`);
     await refresh();
   } catch (e) {
-    notify(`commit failed: ${(e as Error).message.slice(0, 120)}`);
+    notify(`switch failed: ${(e as Error).message.slice(0, 140)}`);
   } finally {
     busy.value = "";
   }
 }
 
-async function addWorktree() {
-  const c = client();
-  if (!c || !cwd.value || !wtName.value.trim() || !status.value?.root) return;
+async function commit() {
+  if (!devId.value || !cwd.value || !commitMsg.value.trim()) return;
+  busy.value = "commit";
+  const chosen = files.value.filter((f) => checked.value.has(f.path)).map((f) => f.path);
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "commit", {
+      message: commitMsg.value.trim(),
+      ...(chosen.length ? { files: chosen } : {}),
+    });
+    notify(r.text);
+    commitMsg.value = "";
+    await refresh();
+  } catch (e) {
+    notify(`commit failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function addWorktree(branch: string) {
+  wtMenu.value = false;
+  if (!devId.value || !cwd.value || !status.value?.root) return;
   const root = status.value.root;
   const parent = root.slice(0, root.lastIndexOf("/"));
   const base = root.slice(root.lastIndexOf("/") + 1);
+  const target = `${parent}/${base}-${branch.replace(/[/\\]+/g, "-")}`;
   busy.value = "wt";
   try {
-    const r = await c.gitOp(cwd.value, "worktree-add", { branch: wtName.value.trim(), target: `${parent}/${base}-${wtName.value.trim()}` });
-    notify(r.text.split("\n")[0] ?? "worktree added");
-    wtName.value = "";
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "worktree-add", {
+      branch: branch, // existing branch checks out; new name creates it
+      target,
+    });
+    notify(r.text.split("\n")[0] ?? `worktree ${target}`);
+    newBranch.value = "";
     await refresh();
   } catch (e) {
-    notify(`worktree failed: ${(e as Error).message.slice(0, 120)}`);
+    notify(`worktree failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+/** A worktree is a working copy — one click and it is a SESSION (herd flow). */
+async function sessionOn(path: string, branch: string | null) {
+  if (!devId.value) return;
+  busy.value = "session";
+  try {
+    const info = network.devices.value.find((d) => d.id === devId.value)?.info;
+    const model =
+      (info?.models ?? []).find((m) => m.id === info?.defaultModel) ?? (info?.models ?? [])[0];
+    if (!model) return notify(`no model available on ${devId.value} — cannot create a session`);
+    const s = await deviceClient(devId.value).createSession({
+      name: branch ?? path.slice(path.lastIndexOf("/") + 1),
+      cwd: path,
+      model: { provider: model.provider, modelId: model.id },
+    });
+    select({ deviceId: devId.value, sessionId: s.id, agentId: 1 });
+    notify(`session "${s.name}" on ${path}`);
+  } catch (e) {
+    notify(`session failed: ${(e as Error).message.slice(0, 160)}`);
   } finally {
     busy.value = "";
   }
 }
 
 async function removeWorktree(path: string) {
-  const c = client();
-  if (!c || !cwd.value) return;
+  if (!devId.value || !cwd.value) return;
   if (!confirm(`Remove worktree ${path}?`)) return;
   busy.value = "wt";
   try {
-    await c.gitOp(cwd.value, "worktree-remove", { target: path });
+    await deviceClient(devId.value).gitOp(cwd.value, "worktree-remove", { target: path });
     await refresh();
   } catch (e) {
-    notify(`remove failed: ${(e as Error).message.slice(0, 120)}`);
+    notify(`remove failed: ${(e as Error).message.slice(0, 140)}`);
   } finally {
     busy.value = "";
   }
 }
+const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w.path));
 </script>
 
 <template>
@@ -141,82 +180,131 @@ async function removeWorktree(path: string) {
       <header class="git-head">
         <strong>git</strong>
         <code class="cwd" :title="cwd">{{ cwd }}</code>
-        <button :disabled="!!busy" title="refresh" @click="refresh()"><RefreshCw :size="14" /></button>
+        <button :disabled="!!busy || loading || refreshing" title="refresh" @click="refresh()"><RefreshCw :size="14" /></button>
       </header>
 
       <p v-if="loading" class="empty">loading git…</p>
-      <p v-if="refreshing" class="muted note">refreshing…</p>
+      <p v-else-if="refreshing" class="muted note">refreshing…</p>
+      <p v-if="error" class="error">{{ error }} <button :disabled="!!busy" @click="refresh()">retry</button></p>
 
-      <p v-if="error" class="error">
-        {{ error }}
-        <button :disabled="!!busy || !!loading" @click="refresh()">retry</button>
-      </p>
+      <div v-if="status" :class="{ stale: !!error || !!refreshing }">
+        <p v-if="!status.repo" class="empty">Not a git repository — run <code>git init</code> (or open a session inside a repo).</p>
 
-      <div v-if="status" :class="{ stale: !!error || refreshing }">
-      <p v-if="status && !status.repo" class="empty">
-        Not a git repository — run <code>git init</code> (or open a session inside a repo) to see branch, status and worktrees here.
-      </p>
+        <template v-else>
+          <!-- branch bar: PICK, never type -->
+          <div class="branch-bar">
+            <button class="branch-btn" :disabled="!!busy" @click="branchMenu = !branchMenu">
+              <strong>{{ status.branch ?? "detached" }}</strong>
+              <span v-if="status.upstream" class="muted">→ {{ status.upstream }}</span>
+              <span v-if="status.ahead || status.behind" class="muted">↑{{ status.ahead ?? 0 }} ↓{{ status.behind ?? 0 }}</span>
+              <ChevronDown :size="14" />
+            </button>
+            <span class="muted">+{{ status.staged ?? 0 }} ~{{ status.unstaged ?? 0 }} ?{{ status.untracked ?? 0 }} · {{ status.head }}</span>
+            <div v-if="branchMenu" class="menu">
+              <button v-for="b in status.branches ?? []" :key="b.name" :class="{ cur: b.current }" @click="switchBranch(b.name)">
+                <span>{{ b.name }}</span>
+                <span class="muted">{{ b.current ? "● current" : b.upstream ? `→ ${b.upstream}` : "" }}</span>
+              </button>
+              <p v-if="!(status.branches ?? []).length" class="muted pad">no local branches</p>
+            </div>
+          </div>
 
-      <template v-else-if="status">
-        <dl class="facts">
-          <div><dt>branch</dt><dd>{{ status.branch ?? "detached" }}</dd></div>
-          <div v-if="status.upstream"><dt>upstream</dt><dd>{{ status.upstream }}</dd></div>
-          <div><dt>changes</dt><dd>+{{ status.staged ?? 0 }} ~{{ status.unstaged ?? 0 }} ?{{ status.untracked ?? 0 }}</dd></div>
-          <div v-if="status.ahead || status.behind"><dt>sync</dt><dd>↑{{ status.ahead ?? 0 }} ↓{{ status.behind ?? 0 }}</dd></div>
-          <div><dt>head</dt><dd>{{ status.head }} {{ status.subject }}</dd></div>
-          <div v-if="status.worktreeOf" class="wt-of"><dt>worktree of</dt><dd>{{ status.worktreeOf }}</dd></div>
-        </dl>
+          <div class="row ops">
+            <button :disabled="!!busy" @click="op('fetch')">fetch</button>
+            <button :disabled="!!busy" @click="op('pull')">pull</button>
+            <button :disabled="!!busy" @click="op('log')">log</button>
+            <button :disabled="!!busy" @click="op('branch')">branches</button>
+            <button :disabled="!!busy" @click="op('diff')">diff</button>
+          </div>
 
-        <div class="row">
-          <button :disabled="!!busy" @click="op('fetch')">fetch</button>
-          <button :disabled="!!busy" @click="op('pull')">pull</button>
-          <button :disabled="!!busy" @click="op('log')">log</button>
-          <button :disabled="!!busy" @click="op('branch')">branches</button>
-          <button :disabled="!!busy" @click="op('diff')">diff</button>
-        </div>
+          <!-- commit: IntelliJ — big box + file checkboxes -->
+          <section v-if="files.length" class="commit">
+            <div class="files">
+              <label class="file all">
+                <input type="checkbox" :checked="someChecked" @change="toggleAll" />
+                <span class="muted">{{ checked.size }}/{{ files.length }} changed files</span>
+              </label>
+              <label v-for="f in files" :key="f.path" class="file">
+                <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
+                <code class="xy">{{ f.x }}{{ f.y }}</code>
+                <span class="path" :title="f.path">{{ f.path }}</span>
+              </label>
+            </div>
+            <textarea v-model="commitMsg" rows="4" placeholder="Commit message…" />
+            <button class="primary" :disabled="!!busy || !commitMsg.trim()" @click="commit">
+              Commit{{ checked.size ? ` ${checked.size} file${checked.size > 1 ? "s" : ""}` : " -am" }}
+            </button>
+          </section>
 
-        <div class="row">
-          <input v-model="commitMsg" placeholder="commit message…" @keyup.enter="commit" />
-          <button :disabled="!!busy || !commitMsg.trim()" @click="commit">commit -am</button>
-        </div>
+          <!-- worktrees: local + linked, one click to a session -->
+          <section class="wts">
+            <div class="wt-head">
+              <strong>Worktrees</strong>
+              <button :disabled="!!busy" @click="wtMenu = !wtMenu">+ worktree</button>
+              <div v-if="wtMenu" class="menu">
+                <button v-for="b in (status.branches ?? []).filter((x) => !x.current)" :key="b.name" @click="addWorktree(b.name)">
+                  <span>{{ b.name }}</span>
+                  <span class="muted">existing branch</span>
+                </button>
+                <div class="new-branch">
+                  <input v-model="newBranch" placeholder="or a NEW branch name…" @keyup.enter="addWorktree(newBranch.trim() || 'wt')" />
+                  <button :disabled="!newBranch.trim()" @click="addWorktree(newBranch.trim())">create</button>
+                </div>
+              </div>
+            </div>
+            <div v-for="w in worktrees" :key="w.path" class="wt" :class="{ main: w.path === status.root }">
+              <code :title="w.path">{{ w.path }}</code>
+              <span class="muted">{{ w.branch ?? w.head }}</span>
+              <span class="grow" />
+              <button :disabled="!!busy" title="create a session on this worktree" @click="sessionOn(w.path, w.branch)">session</button>
+              <button v-if="w.path !== status.root" :disabled="!!busy" @click="removeWorktree(w.path)"><X :size="12" /></button>
+              <Check v-if="w.path === status.root" :size="12" class="muted" />
+            </div>
+          </section>
 
-        <div class="row">
-          <input v-model="wtName" placeholder="branch name…" @keyup.enter="addWorktree" />
-          <button :disabled="!!busy || !wtName.trim()" @click="addWorktree">+ worktree</button>
-        </div>
-        <ul v-if="(status.worktrees?.length ?? 0) > 1" class="wts">
-          <li v-for="w in status.worktrees" :key="w.path">
-            <code>{{ w.path }}</code>
-            <span class="muted">{{ w.branch ?? w.head }}</span>
-            <button v-if="w.path !== status.root" :disabled="!!busy" @click="removeWorktree(w.path)">remove</button>
-          </li>
-        </ul>
-
-        <pre v-if="out" class="out">{{ out.slice(0, 6000) }}</pre>
-      </template>
+          <pre v-if="out" class="out">{{ out.slice(0, 6000) }}</pre>
+        </template>
       </div>
     </template>
   </div>
 </template>
 
 <style scoped>
-.git-tab { display: grid; gap: 8px; font-size: 12px; padding: 8px 4px; }
+.git-tab { display: grid; gap: 10px; font-size: 12px; padding: 8px 4px; }
 .git-head { display: flex; align-items: center; gap: 8px; }
 .git-head .cwd { font-size: 11px; opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.facts { display: grid; gap: 2px; margin: 0; }
-.facts > div { display: flex; gap: 8px; }
-.facts dt { min-width: 72px; opacity: 0.6; }
-.facts dd { margin: 0; word-break: break-all; }
+.branch-bar { position: relative; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.branch-btn { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; font-size: 12px; }
+.menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; min-width: 260px; max-height: 260px; overflow: auto;
+  background: var(--bg-2, #1c1c22); border: 1px solid var(--border, #333); border-radius: 8px; padding: 4px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+.menu button { display: flex; justify-content: space-between; gap: 12px; width: 100%; padding: 5px 8px; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.menu button:hover, .menu button.cur { background: rgb(127 127 127 / 15%); }
+.menu .pad { padding: 6px 8px; margin: 0; }
 .row { display: flex; gap: 6px; }
-.row input { flex: 1; min-width: 0; }
-.wts { list-style: none; padding: 0; margin: 0; display: grid; gap: 2px; }
-.wts li { display: flex; gap: 8px; align-items: center; }
-.wts code { font-size: 11px; }
+.ops { flex-wrap: wrap; }
+.commit { display: grid; gap: 6px; }
+.files { max-height: 180px; overflow: auto; border: 1px solid var(--border, #2a2a30); border-radius: 6px; padding: 2px 6px; }
+.file { display: flex; gap: 6px; align-items: center; padding: 2px 0; }
+.file.all { border-bottom: 1px solid var(--border, #2a2a30); }
+.file .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xy { opacity: 0.7; font-size: 10px; }
+textarea { width: 100%; resize: vertical; min-height: 64px; font: inherit; }
+button.primary { justify-self: start; }
+.wts { display: grid; gap: 4px; }
+.wt-head { position: relative; display: flex; align-items: center; gap: 8px; }
+.wt { display: flex; gap: 8px; align-items: center; }
+.wt code { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46%; }
+.wt.main code { font-weight: 600; }
+.grow { flex: 1; }
+.new-branch { display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--border, #2a2a30); }
+.new-branch input { flex: 1; min-width: 0; }
 .muted { opacity: 0.65; }
-.wt-of dd { color: var(--info, #58a6ff); }
-.out { max-height: 300px; overflow: auto; background: rgb(0 0 0 / 25%); padding: 8px; border-radius: 6px; font-size: 11px; }
-.empty { opacity: 0.75; }
 .note { font-size: 11px; }
 .stale { opacity: 0.55; transition: opacity 0.2s; }
+.out { max-height: 300px; overflow: auto; background: rgb(0 0 0 / 25%); padding: 8px; border-radius: 6px; font-size: 11px; }
+.empty { opacity: 0.75; }
 .error { color: var(--danger, #f85149); }
 </style>
