@@ -123,11 +123,18 @@ const refresh = () => {
 };
 
 const files = computed(() => status.value?.files ?? []);
-watch(files, (list) => {
-  const next = new Set<string>();
-  for (const f of list) if (f.x !== "?" && f.y !== "?") next.add(f.path);
-  checked.value = next;
-});
+watch(
+  files,
+  (list) => {
+    const next = new Set<string>();
+    for (const f of list) if (f.x !== "?" && f.y !== "?") next.add(f.path);
+    checked.value = next;
+  },
+  // immediate: with SSR prefetch the status is ALREADY populated at setup —
+  // without this the changelist starts empty and only fills after a refresh
+  // (caught live in Chrome on production; unit tests never see hydration).
+  { immediate: true },
+);
 const someChecked = computed(() => files.value.some((f) => checked.value.has(f.path)));
 /** orca's split: staged (index changed) vs unstaged (worktree + untracked). */
 const stagedFiles = computed(() => files.value.filter((f) => f.x !== " " && f.x !== "?"));
