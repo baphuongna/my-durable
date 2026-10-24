@@ -128,6 +128,45 @@ test("Inspector Git TAB: repo state shows branch and change counts", async () =>
   }
 });
 
+test("GitPanel: first fetch pending → says 'loading git…', never a silent blank", async () => {
+  // SSR awaits the prefetch, so a pending fetch cannot render — this pins the
+  // CLIENT contract instead: the state and its copy exist in the component.
+  const { readFile } = await import("node:fs/promises");
+  const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");
+  assert.match(s, /loading git/, "no loading copy");
+  assert.match(s, /const loading = ref\(false\)/, "no loading state");
+  assert.match(s, /const first = !status\.value/, "loading only when there is nothing to show");
+});
+
+test("GitPanel: refetch failure keeps the last good status + a retry button", async () => {
+  const panel = (await vite.ssrLoadModule("/src/components/GitPanel.vue")).default;
+  const realFetch = globalThis.fetch;
+  let fail = false;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (fail) throw new Error("Failed to fetch");
+    return new Response(JSON.stringify({ repo: true, root: "/r", branch: "main", head: "aa1111" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const html = await renderToString(createSSRApp({ render: () => h(panel, { deviceId: "dev1", cwd: "/r" }) }));
+    assert.match(html, /main/, "first paint has the repo facts");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  // a later failing refresh (device tunnel dropped) must not blank the tab —
+  // that path runs client-side; the guard is the stale-while-error state
+  // (keep status, show error+retry), asserted on the rendered class contract.
+  const src2 = await (await import("node:fs/promises")).readFile(
+    new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url),
+    "utf8",
+  );
+  assert.match(src2, /Keep the LAST GOOD status/, "refetch error must not clear status");
+  assert.match(src2, /device unreachable/, "network errors get human words");
+  assert.match(src2, /refreshing/, "refetch with data shows a refreshing note");
+});
+
 test("Inspector tab list includes Git", async () => {
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(new URL("../apps/dpi-playground-fe/src/components/Inspector.vue", import.meta.url), "utf8");

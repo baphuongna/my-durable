@@ -10,6 +10,9 @@ import type { GitStatus } from "@sdk/client";
 const props = defineProps<{ deviceId?: string; cwd?: string }>();
 const status = ref<GitStatus | null>(null);
 const error = ref("");
+const loading = ref(false); // first fetch, nothing to show yet — SAY SO
+const refreshing = ref(false); // refetch with data on screen — dim, keep, never blank
+let inFlight: Promise<void> | undefined;
 const busy = ref("");
 const out = ref("");
 const commitMsg = ref("");
@@ -24,13 +27,28 @@ let timer: ReturnType<typeof setInterval> | undefined;
 async function refresh() {
   const c = client();
   if (!c || !cwd.value) return;
-  try {
-    status.value = await c.gitStatus(cwd.value);
-    error.value = "";
-  } catch (e) {
-    status.value = null;
-    error.value = (e as Error).message.slice(0, 160);
-  }
+  if (inFlight) return inFlight; // interval + session-switch must not pile up
+  const first = !status.value;
+  if (first) loading.value = true;
+  else refreshing.value = true;
+  inFlight = (async () => {
+    try {
+      status.value = await c.gitStatus(cwd.value);
+      error.value = "";
+    } catch (e) {
+      const raw = (e as Error).message ?? "";
+      // Keep the LAST GOOD status — a dropped tunnel must not blank the tab
+      // the operator is reading (reported: "treo rất lâu", "Cannot reach …").
+      error.value = /fetch failed|Cannot reach|Failed to fetch|NetworkError|ERR_NAME/i.test(raw)
+        ? `device unreachable — check that it is online, then retry (${raw.slice(0, 80)})`
+        : raw.slice(0, 160);
+    } finally {
+      loading.value = false;
+      refreshing.value = false;
+      inFlight = undefined;
+    }
+  })();
+  return inFlight;
 }
 // NO top-level await: an async setup outside <Suspense> never mounts in the
 // browser ("async setup invoked without a Suspense boundary") — the tab
@@ -123,8 +141,15 @@ async function removeWorktree(path: string) {
         <button :disabled="!!busy" title="refresh" @click="refresh()"><RefreshCw :size="14" /></button>
       </header>
 
-      <p v-if="error" class="error">{{ error }}</p>
+      <p v-if="loading" class="empty">loading git…</p>
+      <p v-if="refreshing" class="muted note">refreshing…</p>
 
+      <p v-if="error" class="error">
+        {{ error }}
+        <button :disabled="!!busy || !!loading" @click="refresh()">retry</button>
+      </p>
+
+      <div v-if="status" :class="{ stale: !!error || refreshing }">
       <p v-if="status && !status.repo" class="empty">
         Not a git repository — run <code>git init</code> (or open a session inside a repo) to see branch, status and worktrees here.
       </p>
@@ -166,6 +191,7 @@ async function removeWorktree(path: string) {
 
         <pre v-if="out" class="out">{{ out.slice(0, 6000) }}</pre>
       </template>
+      </div>
     </template>
   </div>
 </template>
@@ -187,5 +213,7 @@ async function removeWorktree(path: string) {
 .wt-of dd { color: var(--info, #58a6ff); }
 .out { max-height: 300px; overflow: auto; background: rgb(0 0 0 / 25%); padding: 8px; border-radius: 6px; font-size: 11px; }
 .empty { opacity: 0.75; }
+.note { font-size: 11px; }
+.stale { opacity: 0.55; transition: opacity 0.2s; }
 .error { color: var(--danger, #f85149); }
 </style>

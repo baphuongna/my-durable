@@ -13,6 +13,15 @@ import { dirname, isAbsolute } from "node:path";
 
 const GIT_TIMEOUT = 15_000;
 
+/** The ONE stderr that legitimately means "no repo here" — anything else
+ *  (git missing, permission, timeout) is a failure we must not flatten into
+ *  repo:false. Reported live: a Windows daemon without git on PATH showed
+ *  "Not a git repository" under a real repo. */
+export function isNotARepoError(e: unknown): boolean {
+  const msg = String((e as Error)?.message ?? e);
+  return /not a git repository/i.test(msg) || /does not have any commits yet/i.test(msg);
+}
+
 /** One git call; rejects on non-zero exit with stderr in the message. */
 export function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((ok, fail) => {
@@ -47,6 +56,9 @@ export interface GitStatus {
 export async function gitStatus(path: string): Promise<GitStatus> {
   const out: GitStatus = { repo: false };
   try {
+    // Reach git at all before trusting any "empty" answer: git missing from
+    // the daemon's PATH (seen on a Windows Startup-launched device) must NOT
+    // read as "not a repository" under a real repo.
     const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
     out.repo = true;
     out.root = root;
@@ -94,8 +106,10 @@ export async function gitStatus(path: string): Promise<GitStatus> {
         return { path: g("worktree") ?? "", branch: g("branch")?.replace("refs/heads/", "") ?? null, head: g("HEAD")?.slice(0, 8) ?? "" };
       })
       .filter((w) => w.path);
-  } catch {
-    /* not a repo, or git missing — the empty { repo: false } is the answer */
+  } catch (e) {
+    // Only a GENUINE "not a git repository" is repo:false. Anything else —
+    // git not found, EACCES, timeout — is a real failure the UIs must show.
+    if (!isNotARepoError(e)) throw new Error(`git failed on the device: ${(e as Error).message.slice(0, 160)}`);
   }
   return out;
 }
