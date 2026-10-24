@@ -67,6 +67,12 @@ export function installFaux(models: MutableModels) {
       const ref = prompt.slice(6).trim();
       return call("check_durable_job", /^\d+$/.test(ref) ? { task_id: Number(ref) } : ref ? { job: ref } : {});
     }
+    if (prompt.startsWith("write:")) {
+      // "write:<path>|<content>" — exercises the real write tool so git-panel
+      // features (session changelist, per-turn summary) are testable.
+      const [path, ...rest] = prompt.slice(6).split("|");
+      return call("write", { path: (path ?? "").trim(), content: rest.join("|") });
+    }
     if (prompt.startsWith("search:")) return call("search_history", { query: prompt.slice(7).trim() });
     if (prompt.startsWith("page:")) return call("ping_on_call_engineer", { summary: prompt.slice(5).trim() });
     if (prompt.startsWith("Release check:"))

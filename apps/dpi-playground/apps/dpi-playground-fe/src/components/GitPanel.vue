@@ -21,6 +21,7 @@ import {
   Flag,
   GitBranch,
   GitCompare,
+  GitMerge,
   History,
   Minus,
   PackageOpen,
@@ -79,11 +80,151 @@ const sessionCount = computed(() => {
   const mine = (status.value?.files ?? []).filter((f) => touched.has(abs(f.path)));
   return { changed: mine.length, total: sessionFiles.value.length };
 });
+/** App-styled confirm modal — native confirm() cannot be driven headless
+ *  (checklist Q4) and looks foreign. One slot, Escape backs out. */
+const ask = ref<{ title: string; body: string; confirmLabel?: string; danger?: boolean; input?: { placeholder: string; value: string }; action: (input: string) => void } | null>(null);
+const askInput = ref("");
+const openAsk = (m: NonNullable<typeof ask.value>) => {
+  askInput.value = m.input?.value ?? "";
+  ask.value = m;
+};
+const runAsk = () => {
+  const m = ask.value;
+  ask.value = null;
+  if (m) m.action(askInput.value);
+};
+const onKeyEsc = (e: KeyboardEvent) => {
+  if (e.key === "Escape" && ask.value) ask.value = null;
+};
+if (!import.meta.env.SSR) window.addEventListener("keydown", onKeyEsc);
+
 /** Checkpoints (zcode): named refs of HEAD you can rewind to. */
 const checkpoints = ref<{ name: string; hash: string; date: string; subject: string }[]>([]);
 const cpsOpen = ref(false);
 /** Log row expander: files of one commit. */
 const expanded = ref<Map<string, { status: string; path: string }[]>>(new Map());
+/** PRs via the device's gh CLI (forge territory, checklist defer-item now
+ *  un-deferred): lazy list, create from the current branch, squash-merge,
+ *  checks as text, comment through the same modal. */
+const prs = ref<{ n: number; title: string; state: string; draft: boolean; branch: string; url: string }[]>([]);
+const prsOpen = ref(false);
+const prChecks = ref<Map<number, string>>(new Map());
+const prBusy = ref(false);
+const isGitHub = computed(() => /github\.com|gitlab/i.test(status.value?.remoteUrl ?? ""));
+const loadPRs = async () => {
+  if (!devId.value || !cwd.value) return;
+  prBusy.value = true;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "pr-list");
+    prs.value = r.prs ?? [];
+  } catch (e) {
+    notify(`pr list failed: ${(e as Error).message.slice(0, 120)}`);
+  } finally {
+    prBusy.value = false;
+  }
+};
+watch(prsOpen, (open) => { if (open) void loadPRs(); });
+const prCreate = () =>
+  openAsk({
+    title: "Create pull request",
+    body: `head: ${status.value?.branch ?? "?"}`,
+    confirmLabel: "Create PR",
+    input: { placeholder: "PR title", value: commitMsg.value.trim() || "" },
+    action: (title) => void prCreateNow(title),
+  });
+async function prCreateNow(title: string) {
+  if (!devId.value || !cwd.value || !title.trim()) return;
+  prBusy.value = true;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "pr-create", { message: title.trim(), body: title.trim() });
+    notify(r.text.split("\n")[0] ?? "PR created");
+    await loadPRs();
+  } catch (e) {
+    notify(`pr create failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    prBusy.value = false;
+  }
+}
+async function prChecksOf(n: number) {
+  if (!devId.value || !cwd.value) return;
+  prBusy.value = true;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "pr-checks", { n });
+    prChecks.value = new Map(prChecks.value).set(n, r.text.slice(0, 1500));
+  } catch (e) {
+    notify(`pr checks failed: ${(e as Error).message.slice(0, 120)}`);
+  } finally {
+    prBusy.value = false;
+  }
+}
+const prMergeAsk = (n: number) =>
+  openAsk({
+    title: `Merge PR #${n}?`,
+    body: "squash-merge via gh on the device.",
+    confirmLabel: "Squash & merge",
+    danger: true,
+    action: () => void prMergeNow(n),
+  });
+async function prMergeNow(n: number) {
+  if (!devId.value || !cwd.value) return;
+  prBusy.value = true;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "pr-merge", { n });
+    notify(r.text || `PR #${n} merged`);
+    await loadPRs();
+    await refresh();
+  } catch (e) {
+    notify(`pr merge failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    prBusy.value = false;
+  }
+}
+const prCommentAsk = (n: number) =>
+  openAsk({
+    title: `Comment on PR #${n}`,
+    body: "posted as the device's gh login",
+    confirmLabel: "Comment",
+    input: { placeholder: "comment…", value: "" },
+    action: (text) => void prCommentNow(n, text),
+  });
+async function prCommentNow(n: number, text: string) {
+  if (!devId.value || !cwd.value || !text.trim()) return;
+  prBusy.value = true;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "pr-comment", { n, body: text.trim() });
+    notify(r.text || "comment posted");
+  } catch (e) {
+    notify(`pr comment failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    prBusy.value = false;
+  }
+}
+
+/** Per-turn summaries (zcode taskChangeSummary) under the session chip. */
+const turns = ref<{ when: string; files: { path: string; writes: number }[] }[]>([]);
+const turnsOpen = ref(false);
+const loadTurns = async () => {
+  if (!devId.value || !sessionId.value) return;
+  try {
+    const r = await deviceClient(devId.value).sessionGitTurns(sessionId.value);
+    turns.value = r.turns;
+  } catch {
+    turns.value = [];
+  }
+};
+watch(turnsOpen, (open) => { if (open) void loadTurns(); });
+
+/** Focus refresh (checklist fs-auto-refresh, lightweight variant): the tab
+ *  re-syncs when the user comes back to it — event-driven, never a timer. */
+let lastFocusRefresh = 0;
+if (!import.meta.env.SSR) {
+  window.addEventListener("focus", () => {
+    if (!cwd.value || Date.now() - lastFocusRefresh < 15_000) return;
+    lastFocusRefresh = Date.now();
+    void ensureGit(devId.value || "?", cwd.value || "?", { force: true });
+  });
+}
+
 /** Folder grouping (orca tree-directory-rows): collapse noise. */
 const collapsed = ref<Set<string>>(new Set());
 
@@ -228,10 +369,22 @@ async function op(
   }
 }
 
-async function fileAction(name: "stage" | "discard", path?: string) {
+async function fileAction(name: "stage" | "discard", path?: string, confirmed = false) {
   if (!devId.value || !cwd.value) return;
+  if (confirmed) {
+    busy.value = name!;
+  }
   if (!path && name !== "stage") return;
-  if (name === "discard" && path && !confirm(`Roll back ${path} to HEAD? Uncommitted changes are lost.`)) return;
+  if (name === "discard" && path) {
+    openAsk({
+      title: "Roll back to HEAD?",
+      body: `${path} — uncommitted changes are lost.`,
+      confirmLabel: "Roll back",
+      danger: true,
+      action: () => void fileAction(name, path, true),
+    });
+    return;
+  }
   busy.value = name;
   const targets = path ? [path] : files.value.filter((f) => f.x === " " || f.x === "M").map((f) => f.path);
   try {
@@ -512,7 +665,18 @@ async function loadCheckpoints() {
 
 async function rewind(name: string) {
   if (!devId.value || !cwd.value) return;
-  if (!confirm(`Rewind this worktree to checkpoint "${name}"? reset --hard — ALL uncommitted changes here are LOST.`)) return;
+  const target = name;
+  openAsk({
+    title: `Rewind to ${target}?`,
+    body: "reset --hard — ALL uncommitted changes in this worktree are LOST.",
+    confirmLabel: "Rewind",
+    danger: true,
+    action: () => void rewindAfter(target),
+  });
+  return;
+}
+async function rewindAfter(name: string) {
+  if (!devId.value || !cwd.value) return;
   busy.value = "rewind";
   try {
     const r = await deviceClient(devId.value).gitOp(cwd.value, "rewind", { name });
@@ -601,9 +765,19 @@ async function removeWorktree(path: string) {
     if ((s?.staged ?? 0) + (s?.unstaged ?? 0) + (s?.untracked ?? 0) > 0) warn = `It CONTAINS uncommitted changes — they will be LOST.`;
     else warn = "Its checkout is clean.";
   } catch {}
-  if (!confirm(`Remove worktree ${path}? ${warn}`)) return;
+  const w = warn;
+  openAsk({
+    title: "Remove worktree?",
+    body: `${path} — ${w}`,
+    confirmLabel: "Remove",
+    danger: true,
+    action: () => void removeWorktreeNow(path),
+  });
+}
+async function removeWorktreeNow(path: string) {
+  busy.value = "wt";
   try {
-    await deviceClient(devId.value).gitOp(cwd.value, "worktree-remove", { target: path });
+    await deviceClient(devId.value!).gitOp(cwd.value!, "worktree-remove", { target: path });
     await refresh();
   } catch (e) {
     notify(`remove failed: ${(e as Error).message.slice(0, 140)}`);
@@ -757,8 +931,19 @@ const laneX = (lane: number) => lane * 12 + 7;
               <button v-if="sessionId" class="small" :disabled="!!busy" title="check the files this session's agent touched" @click="selectSessionFiles">
                 <Flag :size="13" /> session files{{ sessionCount ? ` (${sessionCount.changed}/${sessionCount.total})` : "" }}
               </button>
+              <button v-if="sessionId" class="small" :disabled="!!busy" title="what each turn of this session changed" @click="turnsOpen = !turnsOpen">
+                turns
+              </button>
             </div>
             <p v-if="noIdentity" class="hintbox warn">git user.name/user.email is not set on the device — <code>dpi device config</code> or <code>git config --global</code> before committing.</p>
+            <div v-if="turnsOpen" class="cps turns">
+              <p v-if="!turns.length" class="hint">no turns recorded yet for this session.</p>
+              <div v-for="(t, ti) in turns" :key="ti" class="cp-row">
+                <code>t{{ turns.length - ti }}</code>
+                <span class="muted-line">{{ t.when.slice(0, 16).replace("T", " ") }}</span>
+                <span class="cp-subj">{{ t.files.map((f) => `${f.path}×${f.writes}`).join(", ") || "(no file writes)" }}</span>
+              </div>
+            </div>
             <p v-if="atCap" class="muted-line cap">showing the first 500 changed files — commit in smaller batches</p>
             <div v-if="stagedFiles.length" class="files">
               <label class="file all">
@@ -922,8 +1107,49 @@ const laneX = (lane: number) => lane * 12 + 7;
             </div>
           </section>
 
+          <!-- PULL REQUESTS (device gh CLI) -->
+          <section v-if="isGitHub" class="task-section" aria-label="Pull requests">
+            <div class="panel-heading">
+              <h4><GitMerge :size="16" /> Pull requests</h4>
+              <span class="grow" />
+              <button class="small" :disabled="prBusy || !!busy" @click="prCreate">create PR</button>
+              <button class="small" :disabled="prBusy" @click="prsOpen = !prsOpen">{{ prsOpen ? "hide" : "list" }}</button>
+            </div>
+            <p v-if="prsOpen && !prs.length && !prBusy" class="hint">no open PRs (or gh is not logged in on the device — every action will say so).</p>
+            <div v-if="prsOpen" class="commits">
+              <div v-for="pr in prs" :key="pr.n" class="pr-row">
+                <code class="hash">#{{ pr.n }}</code>
+                <span class="tag" :class="{ open: pr.state === 'OPEN' }">{{ pr.state.toLowerCase() }}{{ pr.draft ? " · draft" : "" }}</span>
+                <span class="subject">{{ pr.title }}</span>
+                <span class="muted-line who">{{ pr.branch }}</span>
+                <span class="grow" />
+                <button class="icon-button" title="run checks" :disabled="prBusy" @click="prChecksOf(pr.n)"><RefreshCw :size="13" /></button>
+                <button class="icon-button" title="comment" :disabled="prBusy" @click="prCommentAsk(pr.n)"><Copy :size="13" /></button>
+                <button v-if="pr.state === 'OPEN'" class="small" :disabled="prBusy || !!busy" @click="prMergeAsk(pr.n)">squash &amp; merge</button>
+                <a class="icon-button" :href="pr.url" target="_blank" rel="noopener" title="open on the forge"><ArrowUpFromLine :size="13" style="transform: rotate(45deg)" /></a>
+              </div>
+              <pre v-for="[n, text] in prChecks" :key="n" class="pr-checks">#{{ n }} checks:{{ "\n" }}{{ text }}</pre>
+            </div>
+          </section>
+
           <pre v-if="out" class="op-out">{{ out.slice(0, 6000) }}</pre>
         </template>
+      </div>
+
+      <!-- app-styled confirm modal (checklist Q4): drivable headless -->
+      <div v-if="ask" class="modal-veil" @click.self="ask = null">
+        <div class="modal" :class="{ danger: ask.danger }" role="dialog" aria-modal="true">
+          <h5>{{ ask.title }}</h5>
+          <p>{{ ask.body }}</p>
+          <textarea v-if="ask.input" v-model="askInput" rows="2" :placeholder="ask.input.placeholder" />
+          <div class="row">
+            <span class="grow" />
+            <button class="small" @click="ask = null">cancel <span class="muted-line">(esc)</span></button>
+            <button class="primary small" :class="{ danger: ask.danger }" :disabled="!!(ask.input && !askInput.trim())" @click="runAsk">
+              {{ ask.confirmLabel ?? "confirm" }}
+            </button>
+          </div>
+        </div>
       </div>
     </template>
   </div>
@@ -989,6 +1215,17 @@ textarea { width: 100%; resize: vertical; min-height: 76px; font: inherit; margi
 .wt.main code { font-weight: 650; }
 .grow { flex: 1; }
 .tag-x { margin-left: 4px; opacity: 0.7; display: inline-flex; }
+.pr-row { display: flex; gap: 8px; align-items: center; padding: 2px 0; white-space: nowrap; }
+.pr-row .tag.open { color: var(--ok, #2ea043); }
+.pr-checks { font-size: 12px; background: rgb(0 0 0 / 25%); padding: 8px; border-radius: 6px; margin: 4px 0; white-space: pre-wrap; }
+.turns { max-height: 180px; overflow: auto; }
+.modal-veil { position: fixed; inset: 0; z-index: 90; background: rgb(0 0 0 / 55%); display: flex; align-items: center; justify-content: center; }
+.modal { min-width: 340px; max-width: 520px; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.modal.danger { border-color: var(--warn, #e5a50a); }
+.modal h5 { margin: 0 0 6px; font-size: 17px; }
+.modal p { margin: 0 0 10px; font-size: 15px; }
+.modal textarea { min-height: 56px; }
+.modal .danger { border-color: var(--warn, #e5a50a); }
 .op-out { max-height: 300px; overflow: auto; background: rgb(0 0 0 / 25%); padding: 10px; border-radius: 6px; font-size: 12px; margin-top: 8px; }
 h4 { display: flex; align-items: center; gap: 8px; font-size: 16px; margin: 0; }
 </style>

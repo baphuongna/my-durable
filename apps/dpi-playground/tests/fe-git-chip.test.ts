@@ -260,6 +260,38 @@ test("GitPanel: IntelliJ shape — COMMIT always visible + structured LOG", asyn
   assert.match(s, /!someChecked/, "commit disabled with nothing checked (changelist semantics)");
 });
 
+test("GitPanel: defer-items un-deferred — modal confirm, PRs via gh, turns, focus refresh", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");
+  // Q4: no native confirm() left — the modal replaces all three guards
+  assert.ok(!s.includes("confirm(`"), "native confirm() still present");
+  assert.match(s, /modal-veil/, "confirm modal missing");
+  assert.match(s, /openAsk\(\{[\s\S]*?danger: true/, "danger modals missing");
+  assert.match(s, /Roll back to HEAD/, "discard guard modal missing");
+  assert.match(s, /Remove worktree\?/, "worktree guard modal missing");
+  assert.match(s, /Rewind to /, "rewind guard modal missing");
+  assert.match(s, /Escape/, "esc must back out of the modal");
+  // PR surface
+  assert.match(s, /pr-list/, "PR list missing");
+  assert.match(s, /pr-create/, "PR create missing");
+  assert.match(s, /pr-merge/, "PR merge missing");
+  assert.match(s, /pr-checks/, "PR checks missing");
+  assert.match(s, /pr-comment/, "PR comment missing");
+  // per-turn summaries + focus refresh
+  assert.match(s, /sessionGitTurns/, "per-turn summary missing");
+  assert.match(s, /turnsOpen/, "turns panel missing");
+  assert.match(s, /window.addEventListener\("focus"/, "focus refresh missing");
+  const be = await readFile(new URL("../../dpi-backend/src/git.ts", import.meta.url), "utf8");
+  for (const op of ["submodule-update", "pr-create", "pr-list", "pr-merge", "pr-checks", "pr-comment"]) {
+    assert.ok(be.includes(`case "${op}"`), `device op ${op} missing`);
+  }
+  assert.match(be, /execFile..gh/, "gh must run through execFile, no shell");
+  const store = await readFile(new URL("../../dpi-backend/src/store.ts", import.meta.url), "utf8");
+  assert.match(store, /sessionGitTurns/, "store turns missing");
+  assert.match(store, /probeModel/, "model probe missing");
+  assert.match(store, /defaultModelId\)\?|catalog\[0\]/, "default model must fall back into the catalog");
+});
+
 test("GitPanel: Wave 1b/2/3 — the full checklist lands in one panel", async () => {
   const { readFile } = await import("node:fs/promises");
   const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");

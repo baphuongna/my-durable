@@ -112,6 +112,13 @@ export function v1(
 
   // ---------------------------------------------------------- device
   r.get("/device", (_req, res) => res.json(store.deviceInfo()));
+  // Model health, probed live: one provider, its first catalog model, one
+  // throwaway session. Local control plane only — deliberately NOT tunnelled.
+  r.post("/device/probe-model", route(async (req, res) => {
+    const provider = String(req.body?.provider ?? "");
+    const modelId = String(req.body?.modelId ?? "");
+    res.json(await store.probeModel(provider, modelId));
+  }));
   r.get("/tree", route(async (_req, res) => res.json(await store.tree())));
   r.get("/events", (req, res, next) => {
     try {
@@ -145,6 +152,9 @@ export function v1(
       setUpstream: body.setUpstream === true,
       name: typeof body.name === "string" ? body.name : undefined,
       lines: Array.isArray(body.lines) ? body.lines.map(String).slice(0, 50) : undefined,
+      method: body.method === "merge" ? "merge" : "squash",
+      body: typeof body.body === "string" ? body.body : undefined,
+      n: Number.isInteger(body.n) ? Number(body.n) : undefined,
     });
     res.json(out);
   }));
@@ -169,6 +179,8 @@ export function v1(
   // The zcode flagship, adapted: which files has THIS session's agent touched?
   // Powers "commit session changes" in the git panel.
   r.get("/sessions/:s/git-files", route(async (_req, res) => res.json({ files: await store.sessionTouchedFiles(L(res).row) })));
+  // Per-turn breakdown of the same data (zcode taskChangeSummary shape).
+  r.get("/sessions/:s/git-turns", route(async (_req, res) => res.json({ turns: await store.sessionGitTurns(L(res).row) })));
   r.get(
     "/sessions/:s/tasks",
     route(async (req, res) => {

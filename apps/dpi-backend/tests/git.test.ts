@@ -269,3 +269,12 @@ test("gitOp: push -u opt-in passes the branch; pull --rebase is an explicit flag
   await assert.rejects(() => gitOp(root, "pull", { rebase: true }), /origin|remote|upstream|reference/i);
   rmSync(root, { recursive: true, force: true });
 });
+
+test("gitOp: PR ops validate before any gh call", async () => {
+  const root = repo();
+  await assert.rejects(() => gitOp(root, "pr-create", {}), /needs a title/);
+  await assert.rejects(() => gitOp(root, "pr-merge", { n: 1.5 }), /PR number/);
+  await assert.rejects(() => gitOp(root, "pr-comment", { n: 3 }), /needs a body/);
+  await assert.rejects(() => gitOp(root, "pr-checks", {}), /PR number/);
+  rmSync(root, { recursive: true, force: true });
+});

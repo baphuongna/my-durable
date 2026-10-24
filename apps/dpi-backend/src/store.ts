@@ -301,7 +301,15 @@ export class Store {
   }
 
   private defaultModel() {
-    return this.options.provider === "faux" ? fauxModels[0].id : defaultModelId;
+    if (this.options.provider === "faux") return fauxModels[0].id;
+    // The curated constant can drift out of the LIVE catalog (seen: default
+    // anthropic/claude-sonnet-5.5 while the credential store held 41 other
+    // models) — never point the default outside the catalog we serve.
+    // (this.modelList, NOT deviceInfo() — that would recurse.)
+    const catalog = this.modelList;
+    return catalog.some((m) => `${m.provider}/${m.id}` === defaultModelId)
+      ? defaultModelId
+      : (catalog[0] ? `${catalog[0].provider}/${catalog[0].id}` : defaultModelId);
   }
 
   /** True when the device has no provider key: the catalog shown is the built-in
@@ -759,6 +767,88 @@ export class Store {
       }
     }, ctx);
     return [...paths];
+  }
+
+  /**
+   * Per-turn file summary (zcode taskChangeSummary): every user turn of the
+   * session, with the files its agents wrote or edited during that turn.
+   * Line stats come from the UI against the live status — here we only know
+   * WHAT was touched and how many times.
+   */
+  async sessionGitTurns(row: SessionRow): Promise<{ when: string; files: { path: string; writes: number }[] }[]> {
+    const h = await this.openAgent(row);
+    const scanned: { when: string; files: Map<string, number> }[] = [];
+    let current: { when: string; files: Map<string, number> } | null = null;
+    const fileOf = (b: { type?: string; name?: string; arguments?: Record<string, unknown> }): string[] => {
+      if (b?.type !== "toolCall" || (b.name !== "write" && b.name !== "edit")) return [];
+      const args = b.arguments ?? {};
+      const out: string[] = [];
+      for (const f of [args.file_path, args.path]) if (typeof f === "string" && f.length > 0 && f.length < 4096) out.push(f);
+      const edits = Array.isArray(args.edits) ? (args.edits as { path?: unknown }[]) : [];
+      for (const ed of edits) if (typeof ed.path === "string" && ed.path.length > 0) out.push(ed.path);
+      return out;
+    };
+    await h.commit(async (tx) => {
+      let convs = await tx.scanConversations({}, 1000);
+      const records = [...convs.items];
+      while (convs.next && records.length < 100) {
+        convs = await tx.scanConversations({}, 1000, convs.next);
+        records.push(...convs.items);
+      }
+      for (const c of records) {
+        // ascending: a turn's tool calls FOLLOW its user entry (default is
+        // descending, which attributes every call to the NEXT turn — caught
+        // by the git-session-files test).
+        let page = await tx.scanEntries({ conversationId: c.id, order: "ascending" }, 500);
+        let count = 0;
+        for (;;) {
+          for (const e of page.items as unknown as { kind?: string; model?: readonly { content?: unknown }[] }[]) {
+            if (e.kind === "pi.user") {
+              current = { when: new Date().toISOString(), files: new Map() };
+              scanned.push(current);
+              continue;
+            }
+            if (!current) continue;
+            for (const m of e.model ?? []) {
+              const blocks = Array.isArray(m.content) ? (m.content as unknown[]) : [];
+              for (const b of blocks as { type?: string; name?: string; arguments?: Record<string, unknown> }[]) {
+                for (const f of fileOf(b)) current.files.set(f, (current.files.get(f) ?? 0) + 1);
+              }
+            }
+          }
+          count += page.items.length;
+          if (!page.next || count >= 4000) break;
+          page = await tx.scanEntries({ conversationId: c.id }, 500, page.next);
+        }
+      }
+    }, ctx);
+    return scanned
+      .map((t) => ({ when: t.when, files: [...t.files.entries()].map(([path, writes]) => ({ path, writes })).slice(0, 50) }))
+      .slice(-20);
+  }
+
+  /** One provider, one model, one throwaway session — is it alive? */
+  async probeModel(provider: string, modelId: string): Promise<{ ok: boolean; detail: string }> {
+    if (!provider || !modelId) throw invalid("provider and modelId are required");
+    const created: SessionRow[] = [];
+    try {
+      const summary = await this.create({ name: `probe-${provider}`, cwd: this.startDirs[0] ?? homedir(), model: { provider, modelId } });
+      const row = { ...summary, createdAt: Number(summary.createdAt) } as unknown as SessionRow;
+      created.push(row);
+      const h = await this.openAgent(row);
+      const c = (await h.conversation(1 as ConversationId, ctx))!;
+      const submission = await this.send(c, { content: "Reply with exactly: ok", whenBusy: "followUp", requestId: `probe-${Date.now()}` });
+      const result = await this.settled(h, submission.id as number, 45_000);
+      const text = result.status === "done" ? result.answer.text.trim() : "";
+      return {
+        ok: result.status === "done" && !!text,
+        detail: result.status === "done" ? (text || "empty answer").slice(0, 120) : ((result as { reason?: string }).reason ?? "no answer").slice(0, 120),
+      };
+    } catch (e) {
+      return { ok: false, detail: String((e as Error).message).slice(0, 160) };
+    } finally {
+      for (const r of created) void this.archive(r).catch(() => {});
+    }
   }
 
   // ------------------------------------------------------------ agents

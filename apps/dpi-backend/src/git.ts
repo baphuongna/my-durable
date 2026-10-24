@@ -41,6 +41,18 @@ export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise
   });
 }
 
+/** One GitHub CLI call — PRs, checks and comments are forge territory and gh
+ *  is the least-token-ceremony way to reach them from a device. Same no-shell
+ *  rule: argv only, plain text back. */
+export function gh(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise<string> {
+  return new Promise((ok, fail) => {
+    execFile("gh", ["--repo", cwd, ...args], { timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
+      else ok(String(stdout));
+    });
+  });
+}
+
 const count = (s: string, re: RegExp) => (s.match(re) ?? []).length;
 
 export interface GitStatus {
@@ -230,7 +242,13 @@ export type GitOp =
   | "ignore"
   | "checkpoint"
   | "checkpoints"
-  | "rewind";
+  | "rewind"
+  | "submodule-update"
+  | "pr-create"
+  | "pr-list"
+  | "pr-merge"
+  | "pr-checks"
+  | "pr-comment";
 
 /** Plain string an arg may never contain — we build argv ourselves anyway. */
 const safeRef = (s: string) => /^[\w./@+-]+$/.test(s) && !s.includes("..");
@@ -255,6 +273,10 @@ export async function gitOp(
     name?: string;
     /** ignore: pattern lines to append to .gitignore. */
     lines?: string[];
+    /** pr: merge method + comment body + PR number. */
+    method?: "squash" | "merge";
+    body?: string;
+    n?: number;
   } = {},
 ): Promise<{
   text: string;
@@ -263,8 +285,9 @@ export async function gitOp(
   behind?: number;
   changed?: { status: string; path: string }[];
   checkpoints?: { name: string; hash: string; date: string; subject: string }[];
+  prs?: { n: number; title: string; state: string; draft: boolean; branch: string; url: string }[];
 }> {
-  const { ref, message, target, branch, files, create, staged, rebase, setUpstream, name, lines } = opts;
+  const { ref, message, target, branch, files, create, staged, rebase, setUpstream, name, lines, method, body, n } = opts;
   switch (op) {
     case "diff":
       return { text: await git(path, ["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
@@ -411,6 +434,38 @@ export async function gitOp(
       const refname = `refs/dpi/checkpoints/${name}`;
       const sha = (await git(path, ["rev-parse", "--verify", refname])).trim();
       return { text: (await git(path, ["reset", "--hard", sha])).trim().split("\n")[0] ?? `rewound to ${name}` };
+    }
+    case "submodule-update":
+      return { text: (await git(path, ["submodule", "update", "--init", "--recursive"], GIT_SLOW_TIMEOUT)).trim() || "submodules up to date" };
+    case "pr-create": {
+      // gh pr create — title from message, head = current branch. gh owns auth.
+      const title = (message ?? "").trim();
+      if (!title) throw Error("pr-create needs a title (message)");
+      const args = ["pr", "create", "--title", title.slice(0, 200), "--body", (body ?? title).slice(0, 4000)];
+      if (ref && safeRef(ref)) args.push("--base", ref);
+      return { text: (await gh(path, args, GIT_SLOW_TIMEOUT)).trim() };
+    }
+    case "pr-list": {
+      const raw = await gh(path, ["pr", "list", "--limit", "20", "--json", "number,title,state,isDraft,headRefName,url"]);
+      const list = JSON.parse(raw || "[]") as { number: number; title: string; state: string; isDraft: boolean; headRefName: string; url: string }[];
+      return {
+        text: "",
+        prs: list.map((r) => ({ n: r.number, title: r.title, state: r.state, draft: r.isDraft, branch: r.headRefName, url: r.url })),
+      };
+    }
+    case "pr-merge": {
+      if (!n || !Number.isInteger(n)) throw Error("pr-merge needs a PR number");
+      return { text: (await gh(path, ["pr", "merge", String(n), method === "merge" ? "--merge" : "--squash"], GIT_SLOW_TIMEOUT)).trim() || `PR #${n} merged` };
+    }
+    case "pr-checks": {
+      if (!n || !Number.isInteger(n)) throw Error("pr-checks needs a PR number");
+      return { text: (await gh(path, ["pr", "checks", String(n)], GIT_SLOW_TIMEOUT)).trim() || "no checks reported" };
+    }
+    case "pr-comment": {
+      if (!n || !Number.isInteger(n)) throw Error("pr-comment needs a PR number");
+      const text = (body ?? "").trim();
+      if (!text) throw Error("pr-comment needs a body");
+      return { text: (await gh(path, ["pr", "comment", String(n), "--body", text.slice(0, 4000)])).trim() };
     }
     case "commit": {
       const msg = (message ?? "").trim();

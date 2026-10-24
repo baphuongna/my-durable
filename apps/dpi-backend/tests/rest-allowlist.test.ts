@@ -20,6 +20,8 @@ import { until, rig, type Hub } from "./connector-rig.js";
 
 /** Routes the device serves that must NOT travel as tunneled REST: its local control point and its three SSE streams. */
 const NOT_TUNNELED = new Set([
+  // Model health probe: local control plane, spawns throwaway sessions.
+  "POST /device/probe-model",
   "GET /tunnel",
   "GET /pairing",
   "POST /pairing/start",

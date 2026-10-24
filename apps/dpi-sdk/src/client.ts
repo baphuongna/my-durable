@@ -86,7 +86,13 @@ export type GitOpName =
   | "ignore"
   | "checkpoint"
   | "checkpoints"
-  | "rewind";
+  | "rewind"
+  | "submodule-update"
+  | "pr-create"
+  | "pr-list"
+  | "pr-merge"
+  | "pr-checks"
+  | "pr-comment";
 
 /** Everything a git op may return; most carry only text. */
 export interface GitOpResult {
@@ -96,6 +102,7 @@ export interface GitOpResult {
   behind?: number;
   changed?: { status: string; path: string }[];
   checkpoints?: { name: string; hash: string; date: string; subject: string }[];
+  prs?: { n: number; title: string; state: string; draft: boolean; branch: string; url: string }[];
 }
 
 export class DpiClient {
@@ -222,6 +229,9 @@ export class DpiClient {
       setUpstream?: boolean;
       name?: string;
       lines?: string[];
+      method?: "squash" | "merge";
+      body?: string;
+      n?: number;
     } = {},
   ) {
     return this.request<GitOpResult>("POST", "/v1/git", { path, op, ...opts });
@@ -229,6 +239,13 @@ export class DpiClient {
   /** Paths this session's agents wrote/edited — the session-changelist. */
   sessionGitFiles(sessionId: string) {
     return this.request<{ files: string[] }>("GET", `/v1/sessions/${enc(sessionId)}/git-files`);
+  }
+  /** Per-turn breakdown of the same paths (zcode taskChangeSummary). */
+  sessionGitTurns(sessionId: string) {
+    return this.request<{ turns: { when: string; files: { path: string; writes: number }[] }[] }>(
+      "GET",
+      `/v1/sessions/${enc(sessionId)}/git-turns`,
+    );
   }
   /** Many paths, one round-trip — session lists want branch-per-cwd. */
   gitStatusBatch(paths: string[], options: { timeoutMs?: number } = {}) {
