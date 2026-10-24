@@ -22,6 +22,7 @@ dpi device install      # OS service: systemd --user + linger (Linux) · LaunchA
                         # run `dpi device start` after login
 dpi device uninstall
 dpi tui                 # terminal admin client
+dpi doctor              # one-shot health check (node, healthz, start dirs, model probe, hub); exit 1 on a failed check
 dpi --help              # commands, flags and environment variables
 dpi update --check      # is a newer published version available?
 dpi update              # install it (npm i -g my-durable@latest)

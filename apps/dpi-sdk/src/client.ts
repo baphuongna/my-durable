@@ -8,12 +8,14 @@ import type {
   CreateSessionBody,
   DeviceInfo,
   DeviceTree,
+  DeviceVitals,
   DirListing,
   ErrorCode,
   ForkBody,
   Frame,
   Page,
   SendResult,
+  SessionSearchResult,
   SessionSummary,
   TaskOutcome,
   WhenBusy,
@@ -195,8 +197,16 @@ export class DpiClient {
   device(options?: RequestOptions) {
     return this.request<DeviceInfo>("GET", "/v1/device", undefined, options);
   }
+  /** Host health of this device (uptime, load, memory, disk) — on demand. */
+  vitals() {
+    return this.request<DeviceVitals>("GET", "/v1/device/vitals");
+  }
   tree() {
     return this.request<DeviceTree>("GET", "/v1/tree");
+  }
+  /** Session search over names/cwds/models (transcripts are not scanned). */
+  searchSessions(query: string) {
+    return this.request<SessionSearchResult>("GET", `/v1/sessions/search?q=${enc(query)}`);
   }
   dirs(path = "") {
     return this.request<DirListing>("GET", `/v1/fs/dirs?path=${enc(path)}`);
@@ -239,6 +249,13 @@ export class DpiClient {
     return this.request<GitOpResult>("POST", "/v1/git", { path, op, ...opts });
   }
   /** Paths this session's agents wrote/edited — the session-changelist. */
+  /** One zipped bundle of a session (manifest + record + agent transcripts/configs). */
+  exportSession(sessionId: string) {
+    return this.request<{ filename: string; mime: string; bytes: number; base64: string }>(
+      "GET",
+      `/v1/sessions/${enc(sessionId)}/export`,
+    );
+  }
   sessionGitFiles(sessionId: string) {
     return this.request<{ files: string[] }>("GET", `/v1/sessions/${enc(sessionId)}/git-files`);
   }

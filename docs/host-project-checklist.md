@@ -1,7 +1,7 @@
 # Host / Project / Device / Session Management Feature Checklist — orca / paseo / zcode / herdr / piggery → durable-pi
 
 Run: `team_20261024143910_47d06fe8b77400d4` · Steps: 01_explore (inventory) → 02_analyze (verify/correct) → 03_write (this file)
-Status: **Wave 1a ADOPTED (0.0.37 — live-verified in production Chrome: bell+panel, usage chip+total row, transcript download, prompt library, bulk select bar, recent-cwds chips).** Waves 1b+ remain planning input. Companion to `docs/git-ui-checklist.md` (CLOSED): that file covered the git panel; this one covers everything **around** the agent runtime — projects/workspaces, host/device management, session lifecycle, config/credentials, diagnostics, maintenance. Git-panel features are deliberately absent here. Every load-bearing citation below was re-read in the actual files during this run (see [Verification log](#verification-log)).
+Status: **Waves 1a+1b ADOPTED (0.0.38 — live-verified in production Chrome: bell+panel, usage chip+total row, transcript download, prompt library, bulk select bar, recent-cwds chips; Host vitals with real uptime/load/memory/disk, tunnel-routed session search, and a bundle zip that real `unzip` opens).** Waves 2+ remain planning input. Companion to `docs/git-ui-checklist.md` (CLOSED): that file covered the git panel; this one covers everything **around** the agent runtime — projects/workspaces, host/device management, session lifecycle, config/credentials, diagnostics, maintenance. Git-panel features are deliberately absent here. Every load-bearing citation below was re-read in the actual files during this run (see [Verification log](#verification-log)).
 
 ## Why this doc exists
 
@@ -124,10 +124,10 @@ None of them blocks Wave 1.
 
 | Tier | Feature | Source (path:line) | Ours | Adoption suggestion |
 |---|---|---|---|---|
-| MUST | Device vitals endpoint + card | herdr `shared/types.ts:19` (`Device.uptime`, `since`); piggery `top` (`docs/reference.md:22`) | ❌ | GET `/device/vitals`: `os.uptime`, loadavg, memoryUsage, statfs free — reuse the `audit.ts:183-196` statfs pattern; small FE card |
-| MUST | `dpi doctor` | piggery `check`/`doctor` (`docs/reference.md:33-34`) | ❌ | CLI one-shot: healthz + probe-model + start_dirs writability + registry reachable + node ≥ 22.19; exit 1 on findings |
-| SHOULD | Session search (device-side first) | paseo `packages/server/src/server/agent-history-search.ts` | ❌ | v1: match over session names/cwd (cheap). **Do not naive-LIKE transcripts at volume** — entries need an FTS/index plan first |
-| SHOULD | Session export bundle | paseo `packages/server/src/server/exports.ts` | 🟡 (transcript API ✅) | one endpoint: zip session JSON + transcripts + agent configs; import later |
+| MUST | Device vitals endpoint + card | herdr `shared/types.ts:19` (`Device.uptime`, `since`); piggery `top` (`docs/reference.md:22`) | ✅ (`0.0.38`) | GET `/device/vitals` (`vitals.ts`: uptime, loadavg, memory, statfs free, counts) + Inspector **Host** tab (`HostPanel.vue`). On demand only — verified 0 requests until the tab opens |
+| MUST | `dpi doctor` | piggery `check`/`doctor` (`docs/reference.md:33-34`) | ✅ (`0.0.38`) | `dpi doctor [--json] [--quiet]` (`doctor.ts`): node ≥ 22.19, healthz, start-dir writability, default-model probe, hub reachability; exit 1 only on FAIL, probe/hub are WARN |
+| SHOULD | Session search (device-side first) | paseo `packages/server/src/server/agent-history-search.ts` | ✅ (`0.0.38`) | GET `/sessions/search?q=` matches names/cwd/models (never transcripts — FTS first). FE: instant local filter + debounced device call merged as "more on device" |
+| SHOULD | Session export bundle | paseo `packages/server/src/server/exports.ts` | ✅ (`0.0.38`) | GET `/sessions/:s/export` → base64 zip (`zip.ts`, zero-dep writer): manifest + session record + per-agent transcript.json/.md + config.json. Import still later |
 
 ## Wave 2 — medium
 

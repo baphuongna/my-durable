@@ -119,6 +119,8 @@ export function v1(
     const modelId = String(req.body?.modelId ?? "");
     res.json(await store.probeModel(provider, modelId));
   }));
+  // Host health (uptime/load/memory/disk) — one-shot, the UIs ask when looked at.
+  r.get("/device/vitals", route(async (_req, res) => res.json(await store.vitals())));
   r.get("/tree", route(async (_req, res) => res.json(await store.tree())));
   r.get("/events", (req, res, next) => {
     try {
@@ -171,11 +173,16 @@ export function v1(
   // ---------------------------------------------------------- sessions
   r.get("/sessions", route(async (_req, res) => res.json((await store.tree()).sessions)));
   r.post("/sessions", create, route(async (req, res) => res.status(201).json(await store.create(req.body ?? {}))));
+  // Literal route, so it must precede `/sessions/:s` (Express matches in order).
+  // Names/cwds/models only — transcript search needs an FTS index, not a LIKE scan.
+  r.get("/sessions/search", route(async (req, res) => res.json(store.searchSessions(String(req.query.q ?? "")))));
   r.get("/sessions/:s", route(async (_req, res) => res.json(await store.sessionSummary(L(res).row))));
   r.patch("/sessions/:s", route(async (req, res) => res.json(await store.rename(L(res).row, req.body?.name))));
   r.get("/sessions/:s/compaction", route(async (_req, res) => res.json(store.compactionOf(L(res).row.id))));
   r.patch("/sessions/:s/compaction", route(async (req, res) => res.json(store.setCompaction(L(res).row, req.body ?? {}))));
   r.delete("/sessions/:s", route(async (_req, res) => res.json(await store.archive(L(res).row))));
+  // One downloadable .zip: manifest + session record + every agent's transcript/config.
+  r.get("/sessions/:s/export", route(async (_req, res) => res.json(await store.exportSession(L(res).row))));
   r.get("/sessions/:s/events", route(async (_req, res) => sessionStream(store, L(res).row, res)));
   // The zcode flagship, adapted: which files has THIS session's agent touched?
   // Powers "commit session changes" in the git panel.

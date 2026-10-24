@@ -4,6 +4,7 @@ import {
   Activity,
   Braces,
   Download,
+  PackageOpen,
   GitBranch,
   ChevronDown,
   FolderOpen,
@@ -22,6 +23,7 @@ import TunnelStatusBar from "./TunnelStatusBar.vue";
 import TokenManager from "./TokenManager.vue";
 import TasksPanel from "./TasksPanel.vue";
 import GitPanel from "./GitPanel.vue";
+import HostPanel from "./HostPanel.vue";
 import ExtensionsPanel from "./ExtensionsPanel.vue";
 import ContextBar from "./ContextBar.vue";
 import { deviceClient, message } from "../client/hub";
@@ -61,6 +63,7 @@ const signatures = computed(
 const tabs = [
   { id: "session", label: "Session", icon: FolderOpen },
   { id: "git", label: "Git", icon: GitBranch },
+  { id: "host", label: "Host", icon: Activity },
   { id: "state", label: "State", icon: Braces },
   { id: "tasks", label: "Tasks", icon: Activity },
   { id: "tools", label: "Tools", icon: Wrench },
@@ -73,6 +76,7 @@ const usageRows = computed(() => [
   { label: "Cache write", tokens: usage.value.cacheWrite, cost: usage.value.cacheWriteCost },
 ]);
 const background = computed(() => tasks.value.filter((t) => t.background).length);
+const exporting = ref(false);
 
 function configure(
   patch: Parameters<NonNullable<typeof agentHandle.value>["configure"]>[0],
@@ -102,6 +106,30 @@ async function downloadTranscript() {
     notify("Transcript downloaded.");
   } catch (e) {
     notify(`transcript download failed: ${message(e).slice(0, 120)}`);
+  }
+}
+
+/** Whole-session bundle (Wave 1b): manifest + record + every agent's
+ *  transcript and config, zipped on the device (base64 over the tunnel). */
+async function downloadBundle() {
+  const dev = device.value;
+  const summary = sessionSummary.value;
+  if (!dev || !summary) return;
+  exporting.value = true;
+  try {
+    const r = await deviceClient(dev.id).exportSession(summary.id);
+    const bytes = Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0));
+    const online = URL.createObjectURL(new Blob([bytes], { type: r.mime || "application/zip" }));
+    const a = document.createElement("a");
+    a.href = online;
+    a.download = r.filename;
+    a.click();
+    URL.revokeObjectURL(online);
+    notify(`Bundle downloaded (${Math.max(1, Math.round(r.bytes / 1024))} KiB).`);
+  } catch (e) {
+    notify(`bundle export failed: ${message(e).slice(0, 120)}`);
+  } finally {
+    exporting.value = false;
   }
 }
 
@@ -255,6 +283,14 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
                 @click="downloadTranscript"
               >
                 <Download :size="18" />
+              </button><button
+                class="icon-button"
+                title="Download session bundle (.zip: manifest, transcripts, configs)"
+                aria-label="Download session bundle"
+                :disabled="exporting"
+                @click="downloadBundle"
+              >
+                <PackageOpen :size="18" />
               </button>
             </h1>
             <button
@@ -396,6 +432,7 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
         </template>
         <TasksPanel v-if="ui.tab === 'tasks'" />
         <GitPanel v-if="ui.tab === 'git'" />
+        <HostPanel v-if="ui.tab === 'host'" />
         <ExtensionsPanel v-if="ui.tab === 'extensions'" />
         <template v-if="ui.tab === 'tools'"
           ><div class="panel-heading">

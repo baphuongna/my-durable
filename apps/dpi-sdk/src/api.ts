@@ -189,6 +189,47 @@ export function compactionThresholds(window: number, s: CompactionSettings) {
   return { wait, auto: s.backgroundTokens > 0 ? Math.max(0, wait - s.backgroundTokens) : undefined };
 }
 
+/** One device's live host health — asked for on demand, never polled. */
+export interface DeviceVitals {
+  /** Seconds the host has been up. */
+  uptime: number;
+  /** Seconds the device process has been running (the daemon's own age). */
+  processUptime: number;
+  /** 1/5/15-minute load averages; zeros on Windows, which has no equivalent. */
+  loadavg: [number, number, number];
+  cpuCount: number;
+  memory: {
+    totalBytes: number;
+    freeBytes: number;
+    usedBytes: number;
+    processRssBytes: number;
+    heapUsedBytes: number;
+  };
+  /** Free/total bytes for the volume holding the device's data dir. */
+  disk: { path: string; totalBytes: number; freeBytes: number; known: boolean };
+  pid: number;
+  at: number;
+  /** Sessions this device knows about; `archived` counts the archive directories. */
+  counts?: { sessions: number; archived: number };
+}
+
+/** One session-search hit: the summary fields plus which of them matched. */
+export interface SessionSearchMatch {
+  id: string;
+  name: string;
+  cwd: string;
+  model: string;
+  createdAt: number;
+  dbPath: string;
+  compaction?: CompactionSettings;
+  where: Array<"name" | "cwd" | "model">;
+}
+
+export interface SessionSearchResult {
+  query: string;
+  matches: SessionSearchMatch[];
+}
+
 export interface DeviceTree {
   uid: string;
   name: string;

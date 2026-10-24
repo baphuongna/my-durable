@@ -11,6 +11,7 @@
 
 const ROUTES: readonly (readonly [method: string, pattern: string])[] = [
   ["GET", "/device"],
+  ["GET", "/device/vitals"],
   ["GET", "/tree"],
   ["GET", "/fs/dirs"],
   ["GET", "/git/status"],
@@ -20,7 +21,9 @@ const ROUTES: readonly (readonly [method: string, pattern: string])[] = [
 
   ["GET", "/sessions"],
   ["POST", "/sessions"],
+  ["GET", "/sessions/search"],
   ["GET", "/sessions/:s"],
+  ["GET", "/sessions/:s/export"],
   ["PATCH", "/sessions/:s"],
   ["DELETE", "/sessions/:s"],
   ["GET", "/sessions/:s/compaction"],

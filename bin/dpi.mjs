@@ -3,6 +3,7 @@
 //   dpi hub    [--port N] [--host H] [--public-host H]   web UI + device tunnel server
 //   dpi device [start|stop|status|install|uninstall]     device-side daemon
 //   dpi tui                                               terminal admin client
+//   dpi doctor [--json] [--quiet]                         one-shot device health check
 // Every subcommand runs the TypeScript entry through tsx, so no build step is needed.
 import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -29,6 +30,9 @@ Usage:
   dpi devices [--watch] [--hub <origin>]              paired machines + live status (CLI, no web)
   dpi tui
       Terminal admin client.
+  dpi doctor [--json] [--quiet]
+      One-shot health check: node >= 22.19.0, healthz, start-dir writability,
+      the default-model probe and the hub. Exit 1 when a check fails.
   dpi help | dpi --help | dpi -h
   dpi version | dpi --version | dpi -v
   dpi update [--check]
@@ -134,6 +138,13 @@ if (command === "update" || command === "upgrade") {
   register();
   const { runPairCommand } = await import("../apps/dpi-backend/src/pair-cli.ts");
   process.exit(await runPairCommand(commandRest));
+} else if (command === "doctor") {
+  // One-shot health check. The logic lives in the backend as TS (testable with
+  // injected fakes); this is only the tsx loader + the exit code.
+  const { register } = await loadTsx();
+  register();
+  const { doctorCli } = await import("../apps/dpi-backend/src/doctor.ts");
+  process.exit(await doctorCli(commandRest));
 } else if (!Object.hasOwn(COMMANDS, command)) {
   process.stderr.write(`dpi: unknown command '${command}'\n\n${HELP}`);
   process.exit(2);

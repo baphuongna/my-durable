@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
-import { Link2, ListChecks, Network, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
+import { computed, nextTick, ref, watch } from "vue";
+import { Link2, ListChecks, Network, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-vue-next";
 import DeviceIcon from "./DeviceIcon.vue";
 import type { TreeNode } from "@sdk/models";
 import TreeRow from "./TreeRow.vue";
@@ -38,6 +38,68 @@ const rows = computed(() => {
 });
 const focusKey = ref<string>();
 const list = ref<HTMLElement>();
+
+/** Session search (paseo `agent-history-search`, cheap v1). The local pass
+ *  filters the tree instantly; the device pass asks each online device for its
+ *  own matches (names/cwds/models) so results do not depend on how fresh the
+ *  hub's tree is. Transcripts are not scanned — that needs an FTS index. */
+const query = ref("");
+const deviceHits = ref<{ deviceId: string; name: string; cwd: string; id: string; where: string[] }[]>([]);
+const searching = ref(false);
+const needle = computed(() => query.value.trim().toLowerCase());
+const filtering = computed(() => needle.value.length >= 2);
+
+/** Sessions whose name/cwd matches — the anchor a filter keeps the tree around. */
+const matchedSessions = computed(() => {
+  const ids = new Set<string>();
+  if (!filtering.value) return ids;
+  for (const device of network.devices.value)
+    for (const session of device.tree?.sessions ?? [])
+      if (`${session.name}\n${session.cwd}`.toLowerCase().includes(needle.value)) ids.add(session.id);
+  return ids;
+});
+/** A filter keeps the matched sessions, their agents, and the devices holding
+ *  them — a hit you cannot locate in the tree is a riddle, not a result. */
+const localRows = computed(() => {
+  if (!filtering.value) return rows.value;
+  const keep = (node: TreeNode): boolean => {
+    if (node.type === "session") return matchedSessions.value.has(node.session.id);
+    if (node.type === "agent")
+      return matchedSessions.value.has(node.sessionId) || node.agent.name.toLowerCase().includes(needle.value);
+    return (node.device.tree?.sessions ?? []).some((s) => matchedSessions.value.has(s.id));
+  };
+  const visible = new Set(rows.value.filter((row) => keep(row.node)).map((row) => row.node.key));
+  return rows.value.filter((row) => visible.has(row.node.key));
+});
+/** Device hits the tree already shows are dropped: one row per session. */
+const extraHits = computed(() =>
+  deviceHits.value.filter((hit) => !rows.value.some((r) => r.node.type === "session" && r.node.session.id === hit.id)),
+);
+
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+watch(query, (value) => {
+  clearTimeout(searchTimer);
+  const q = value.trim();
+  if (q.length < 2) {
+    deviceHits.value = [];
+    searching.value = false;
+    return;
+  }
+  searchTimer = setTimeout(async () => {
+    searching.value = true;
+    const found: typeof deviceHits.value = [];
+    for (const device of network.devices.value.filter((d) => d.status === "online")) {
+      const result = await deviceClient(device.id)
+        .searchSessions(q)
+        .catch(() => undefined);
+      for (const match of result?.matches ?? [])
+        found.push({ deviceId: device.id, id: match.id, name: match.name, cwd: match.cwd, where: match.where });
+    }
+    deviceHits.value = found;
+    searching.value = false;
+  }, 250);
+});
+const clearSearch = () => ((query.value = ""), (deviceHits.value = []));
 
 /** Bulk session manage (orca ManageSessionsSection): select many, then
  *  archive/abort each with a per-row result. Client-side loop over the
@@ -219,6 +281,21 @@ function keydown(e: KeyboardEvent) {
           <PanelLeftClose :size="18" />
         </button>
       </header>
+      <div class="tree-search">
+        <Search :size="14" class="search-icon" />
+        <input
+          v-model="query"
+          type="search"
+          class="search-input"
+          placeholder="Search sessions…"
+          aria-label="Search sessions"
+          spellcheck="false"
+        />
+        <button v-if="query" class="icon-button clear" aria-label="Clear search" @click="clearSearch">
+          <X :size="13" />
+        </button>
+        <span v-if="searching" class="searching" aria-label="Searching devices">…</span>
+      </div>
       <div
         ref="list"
         class="tree-list"
@@ -236,7 +313,7 @@ function keydown(e: KeyboardEvent) {
           </button>
         </div>
         <TreeRow
-          v-for="row in rows"
+          v-for="row in localRows"
           :key="row.node.key"
           :node="row.node"
           :depth="row.depth"
@@ -251,7 +328,24 @@ function keydown(e: KeyboardEvent) {
           @action="action(row.node, $event)"
           @check="bulkToggle(row.node)"
         />
-        <p v-if="!rows.length" class="hint tree-empty" data-testid="tree-empty">
+        <template v-if="filtering && extraHits.length">
+          <div class="hit-head hint">{{ extraHits.length }} more on device</div>
+          <button
+            v-for="hit in extraHits"
+            :key="`${hit.deviceId}-${hit.id}`"
+            class="hit"
+            :title="hit.cwd"
+            @click="select({ deviceId: hit.deviceId, sessionId: hit.id, agentId: 1 })"
+          >
+            <span class="hit-name">{{ hit.name }}</span>
+            <code class="hit-cwd">{{ hit.cwd }}</code>
+            <em v-if="hit.where.length" class="hit-where">{{ hit.where.join(" · ") }}</em>
+          </button>
+        </template>
+        <p v-if="filtering && !localRows.length && !extraHits.length" class="hint tree-empty">
+          No session matches “{{ query.trim() }}”.
+        </p>
+        <p v-if="!rows.length && !filtering" class="hint tree-empty" data-testid="tree-empty">
           No devices yet. Declare them in <code>dpi-network.yaml</code> (start from
           <code>dpi-network.example.yaml</code>), then run <code>just net up &lt;id&gt;</code>.
         </p>
@@ -292,6 +386,28 @@ function keydown(e: KeyboardEvent) {
 </template>
 
 <style scoped>
+.tree-search {
+  display: flex; align-items: center; gap: 6px; margin: 4px 6px 2px;
+  padding: 0 8px; border: 1px solid var(--line); border-radius: 8px;
+}
+.tree-search:focus-within { border-color: var(--accent); }
+.tree-search .search-icon { opacity: 0.6; flex: none; }
+.search-input {
+  flex: 1; min-width: 0; border: 0; background: transparent; color: var(--fg);
+  font-size: 14px; padding: 6px 0; outline: none;
+}
+.search-input::-webkit-search-cancel-button { display: none; }
+.tree-search .clear { padding: 2px; }
+.searching { opacity: 0.6; font-size: 13px; }
+.hit-head { margin: 6px 2px 2px; }
+.hit {
+  display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left;
+  background: none; border: 1px solid transparent; border-radius: 8px;
+  padding: 5px 8px; color: var(--fg); font-size: 15px; cursor: pointer;
+}
+.hit:hover { border-color: var(--line); background: var(--hover, rgba(127,127,127,0.08)); }
+.hit-cwd { font-size: 12px; opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hit-where { font-style: normal; font-size: 11px; opacity: 0.5; text-transform: uppercase; letter-spacing: 0.04em; }
 .bulk-bar {
   display: flex; gap: 8px; align-items: center; padding: 6px 10px; margin: 4px 0;
   border: 1px solid var(--line); border-radius: 8px; font-size: 14px;

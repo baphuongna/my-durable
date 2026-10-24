@@ -13,6 +13,8 @@ import type {
   ModelInfo,
   Page,
   SendResult,
+  SessionSearchMatch,
+  SessionSearchResult,
   SessionSummary,
   TaskNode,
   TaskOutcome,
@@ -33,6 +35,8 @@ import { ApiFault, invalid, notFound } from "./errors.js";
 import { git, gitDirtyMarks, onGitDirty } from "./git.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
+import { deviceVitals, type DeviceVitals } from "./vitals.js";
+import { zipSync, type ZipEntry } from "./zip.js";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 import { join, dirname, relative, resolve } from "node:path";
@@ -109,6 +113,30 @@ export interface StoreOptions {
 /** Agent documents a client may read or stream, by kind. */
 /** apps/dpi-backend/src → the checkout root. */
 const CODE_DIR = resolve(import.meta.dirname, "../../..");
+
+/** Session search result cap: one screen of matches, not a transcript dump. */
+const SEARCH_LIMIT = 50;
+
+/** A bundle for a session whose store is closed (archived or restarting) still exports its record. */
+const NOT_OPENED_README = [
+  "This bundle was exported while the session's store was closed.",
+  "",
+  "It contains manifest.json and session.json only. Start the device and re-export",
+  "from the running session to include per-agent transcripts and configs.",
+  "",
+].join("\n");
+
+/** "My session #1" → "my-session-1" for the download name. */
+function slugName(input: string): string {
+  const slug = input
+    .normalize("NFKD")
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .toLowerCase();
+  return slug || "session";
+}
+
 const AGENT_DOCS = { [JOB_RUNS_DOC]: JobRuns, "demo.workspace": Workspace } as const;
 export const AGENT_DOC_KINDS = Object.keys(AGENT_DOCS);
 export const DEVICE_DOC_KINDS = ["app.shared-state"];
@@ -1428,6 +1456,99 @@ export class Store {
     const sessions = await Promise.all(this.list().map((row) => this.sessionSummary(row)));
     const git = gitDirtyMarks();
     return { uid: this.uid, name: this.name, sessions, at: Date.now(), ...(git.length ? { git } : {}) };
+  }
+
+  // ------------------------------------------- ops: vitals, search, export
+
+  /** One-shot host health (herdr/piggery shape) — asked for, never polled. */
+  async vitals(): Promise<DeviceVitals & { counts: { sessions: number; archived: number } }> {
+    const archived = await readdir(this.archiveDir).catch(() => [] as string[]);
+    return {
+      ...deviceVitals(this.options.dataDir, this.startedAt),
+      counts: { sessions: this.list().length, archived: archived.length },
+    };
+  }
+
+  /**
+   * Session search over names, cwds and models — the cheap half of paseo's
+   * history search. Transcript text is deliberately NOT scanned: at volume it
+   * needs an FTS index, and a naive LIKE over every entry would make the device
+   * slow exactly when a human is typing.
+   */
+  searchSessions(rawQuery: string): SessionSearchResult {
+    const query = String(rawQuery ?? "").trim();
+    const needle = query.toLowerCase();
+    if (needle.length < 2) return { query, matches: [] };
+    const matches: SessionSearchMatch[] = [];
+    for (const row of this.list()) {
+      const where: SessionSearchMatch["where"] = [];
+      if (row.name.toLowerCase().includes(needle)) where.push("name");
+      if (row.cwd.toLowerCase().includes(needle)) where.push("cwd");
+      if (row.model.toLowerCase().includes(needle)) where.push("model");
+      if (!where.length) continue;
+      const base = this.sessionSummaryBase(row);
+      matches.push({
+        id: base.id,
+        name: base.name,
+        cwd: base.cwd,
+        model: base.model,
+        createdAt: base.createdAt,
+        dbPath: base.dbPath,
+        ...(base.compaction ? { compaction: base.compaction } : {}),
+        where,
+      });
+    }
+    // Name hits first (what a human means by "search my sessions"), then the newest.
+    matches.sort(
+      (a, b) => Number(b.where.includes("name")) - Number(a.where.includes("name")) || b.createdAt - a.createdAt,
+    );
+    return { query, matches: matches.slice(0, SEARCH_LIMIT) };
+  }
+
+  /**
+   * One downloadable archive of a session: manifest, session record, and every
+   * agent's transcript + config (paseo `exports.ts` shape). Text only, zipped by
+   * our own writer — the device has no archive dependency.
+   */
+  async exportSession(
+    row: SessionRow,
+  ): Promise<{ filename: string; mime: string; bytes: number; base64: string }> {
+    const agents = this.opened.has(row.id) ? await this.agents(row) : [];
+    const files: ZipEntry[] = [];
+    const manifest = {
+      format: "dpi-session-bundle",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      device: {
+        uid: this.uid,
+        name: this.name,
+        hostname: hostname(),
+        platform: `${platform()} node ${process.version}`,
+        durableVersion: DURABLE_VERSION,
+      },
+      session: { id: row.id, name: row.name, cwd: row.cwd, model: row.model, createdAt: row.createdAt },
+      agents: agents.map((a) => ({ id: a.id, name: a.name, kind: a.kind })),
+    };
+    files.push({ path: "manifest.json", text: `${JSON.stringify(manifest, null, 2)}\n` });
+    files.push({ path: "session.json", text: `${JSON.stringify(this.sessionSummaryBase(row), null, 2)}\n` });
+    const opened = this.opened.get(row.id);
+    for (const agent of agents) {
+      const c = opened ? await opened.harness.conversation(agent.id as ConversationId, ctx) : undefined;
+      if (!c) continue;
+      const dir = `agents/${agent.id}`;
+      files.push({ path: `${dir}/transcript.json`, text: `${JSON.stringify(await this.transcript(c, "json"), null, 2)}\n` });
+      const md = await this.transcript(c, "markdown");
+      if (typeof md.text === "string") files.push({ path: `${dir}/transcript.md`, text: md.text });
+      files.push({ path: `${dir}/config.json`, text: `${JSON.stringify((await this.agentDetail(row, c)).config, null, 2)}\n` });
+    }
+    if (!agents.length) files.push({ path: "README.txt", text: NOT_OPENED_README });
+    const zip = zipSync(files);
+    return {
+      filename: `${slugName(row.name || row.id)}.bundle.zip`,
+      mime: "application/zip",
+      bytes: zip.length,
+      base64: zip.toString("base64"),
+    };
   }
 
   // ------------------------------------------------------------ demo extension
