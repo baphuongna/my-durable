@@ -380,6 +380,13 @@ async function commit(thenPush = false) {
   }
 }
 
+/** The device's default model can drift out of its own catalog (seen live);
+ *  any panel action needing a model falls back to the first catalog entry. */
+function pickModel(info: { models?: { id: string; provider: string }[]; defaultModel?: string } | undefined) {
+  const models = info?.models ?? [];
+  return models.find((m) => `${m.provider}/${m.id}` === info?.defaultModel) ?? models[0];
+}
+
 /** orca/zcode AI message: ask the device's own model to title the changelist. */
 async function aiMessage() {
   if (!devId.value || !cwd.value) return;
@@ -390,7 +397,7 @@ async function aiMessage() {
   let sid = "";
   try {
     const info = network.devices.value.find((d) => d.id === devId.value)?.info;
-    const model = (info?.models ?? []).find((m) => m.id === info?.defaultModel) ?? (info?.models ?? [])[0];
+    const model = pickModel(info);
     if (!model) return notify("no model on the device");
     let diff = "";
     for (const f of chosen.slice(0, 5)) {
@@ -522,7 +529,7 @@ async function sessionOn(path: string, branch: string | null) {
   busy.value = "session";
   try {
     const info = network.devices.value.find((d) => d.id === devId.value)?.info;
-    const model = (info?.models ?? []).find((m) => m.id === info?.defaultModel) ?? (info?.models ?? [])[0];
+    const model = pickModel(info);
     if (!model) return notify(`no model available on ${devId.value} — cannot create a session`);
     const s = await deviceClient(devId.value).createSession({
       name: branch ?? path.slice(path.lastIndexOf("/") + 1),
