@@ -46,7 +46,8 @@ export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise
  *  rule: argv only, plain text back. */
 export function gh(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise<string> {
   return new Promise((ok, fail) => {
-    execFile("gh", ["--repo", cwd, ...args], { timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    // gh resolves the repo from cwd (a --repo flag wants a slug, not a path).
+    execFile("gh", args, { cwd, timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
       else ok(String(stdout));
     });
