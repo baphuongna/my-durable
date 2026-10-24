@@ -4,6 +4,7 @@ import { Link2, ListChecks, Network, PanelLeftClose, PanelLeftOpen, Search, X } 
 import DeviceIcon from "./DeviceIcon.vue";
 import type { TreeNode } from "@sdk/models";
 import TreeRow from "./TreeRow.vue";
+import ProjectBar from "./ProjectBar.vue";
 import { deviceClient, hub } from "../client/hub";
 import {
   attempt,
@@ -60,9 +61,29 @@ const matchedSessions = computed(() => {
 });
 /** A filter keeps the matched sessions, their agents, and the devices holding
  *  them — a hit you cannot locate in the tree is a riddle, not a result. */
+/** Project chip filter: a session belongs to the project whose root holds its cwd. */
+const projectFilter = ref<{ deviceId: string; rootPath: string }>();
+const inProject = (deviceId: string, cwd: string) =>
+  !projectFilter.value ||
+  (projectFilter.value.deviceId === deviceId &&
+    (cwd === projectFilter.value.rootPath || cwd.startsWith(`${projectFilter.value.rootPath}/`)));
+
 const localRows = computed(() => {
-  if (!filtering.value) return rows.value;
+  if (!filtering.value && !projectFilter.value) return rows.value;
   const keep = (node: TreeNode): boolean => {
+    if (projectFilter.value) {
+      const deviceId = node.type === "device" ? node.device.id : node.deviceId;
+      if (node.type === "session" && !inProject(deviceId, node.session.cwd)) return false;
+      if (node.type === "agent") {
+        const session = network.devices.value
+          .find((d) => d.id === node.deviceId)
+          ?.tree?.sessions.find((s) => s.id === node.sessionId);
+        if (session && !inProject(node.deviceId, session.cwd)) return false;
+      }
+      if (node.type === "device")
+        return (node.device.tree?.sessions ?? []).some((s) => inProject(node.device.id, s.cwd));
+    }
+    if (!filtering.value) return true;
     if (node.type === "session") return matchedSessions.value.has(node.session.id);
     if (node.type === "agent")
       return matchedSessions.value.has(node.sessionId) || node.agent.name.toLowerCase().includes(needle.value);
@@ -296,6 +317,7 @@ function keydown(e: KeyboardEvent) {
         </button>
         <span v-if="searching" class="searching" aria-label="Searching devices">…</span>
       </div>
+      <ProjectBar v-model:active="projectFilter" />
       <div
         ref="list"
         class="tree-list"

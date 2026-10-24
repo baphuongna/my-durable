@@ -13,6 +13,8 @@ import type {
   ModelInfo,
   Page,
   SendResult,
+  DeviceUsageReport,
+  ProjectPatchBody,
   SessionSearchMatch,
   SessionSearchResult,
   SessionSummary,
@@ -30,12 +32,20 @@ import {
   THINKING_LEVELS,
   type CompactionSettings,
 } from "../../dpi-sdk/src/api.js";
-import { lastAssistantText, messageText, toMarkdown, toTranscript } from "../../dpi-sdk/src/transcript.js";
+import {
+  lastAssistantText,
+  messageText,
+  sumUsage,
+  toMarkdown,
+  toTranscript,
+  type UsageSummary,
+} from "../../dpi-sdk/src/transcript.js";
 import { ApiFault, invalid, notFound } from "./errors.js";
-import { git, gitDirtyMarks, onGitDirty } from "./git.js";
+import { git, gitDirtyMarks, gitStatus, onGitDirty } from "./git.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
 import { deviceVitals, type DeviceVitals } from "./vitals.js";
+import { ProjectRegistry, type ProjectRecord } from "./projects.js";
 import { zipSync, type ZipEntry } from "./zip.js";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
@@ -116,6 +126,20 @@ const CODE_DIR = resolve(import.meta.dirname, "../../..");
 
 /** Session search result cap: one screen of matches, not a transcript dump. */
 const SEARCH_LIMIT = 50;
+
+/** Starting point for a per-model usage accumulator. */
+const ZERO_USAGE: UsageSummary = {
+  tokens: 0,
+  cost: 0,
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  inputCost: 0,
+  outputCost: 0,
+  cacheReadCost: 0,
+  cacheWriteCost: 0,
+};
 
 /** A bundle for a session whose store is closed (archived or restarting) still exports its record. */
 const NOT_OPENED_README = [
@@ -200,6 +224,9 @@ export class Store {
   readonly catalog: DatabaseSync;
   readonly startedAt = Date.now();
   shared!: SharedState;
+  /** Projects (Wave 2): a registry of roots with labels, grouped by the cwd a
+   *  session starts in. Opened with the store so routes never see a half state. */
+  projects!: ProjectRegistry;
   uid!: string;
   modelList: ModelInfo[] = [];
   private unlockCatalog: () => void;
@@ -221,6 +248,9 @@ export class Store {
   }
   get archiveDir() {
     return join(this.options.dataDir, "archive");
+  }
+  get projectsPath() {
+    return join(this.options.dataDir, "projects.json");
   }
   get name() {
     return this.options.name;
@@ -270,6 +300,17 @@ export class Store {
     // Start dirs are where new sessions begin; create any that do not exist yet.
     await Promise.all(options.startDirs.map((dir) => mkdir(dir, { recursive: true }).catch(() => {})));
     try {
+      store.projects = await ProjectRegistry.open(store.projectsPath, {
+        warn: (m) => process.emitWarning(`projects: ${m}`),
+      });
+      // Seed the registry from history: a device that predates projects still
+      // shows every root its sessions already live in (idempotent by rootPath).
+      for (const row of store.list()) {
+        const status = await gitStatus(row.cwd).catch(() => undefined);
+        await store.projects
+          .ensure({ rootPath: status?.repo ? (status.root ?? row.cwd) : row.cwd, kind: status?.repo ? "git" : "plain" })
+          .catch(() => undefined);
+      }
       store.unlockShared = lockFile(`${store.sharedStatePath}.lock`);
       store.shared = await SharedState.open(store.sharedStatePath);
       store.shared.harness.subscribeCommits(() => store.notify());
@@ -583,6 +624,12 @@ export class Store {
     } catch {
       throw invalid(`cwd must be an existing folder on ${this.name}`);
     }
+    // Every session roots a project: the registry is the tree's group-by-cwd,
+    // promoted to an entity you can name, label and archive (paseo model).
+    const status = await gitStatus(cwd).catch(() => undefined);
+    await this.projects
+      .ensure({ rootPath: status?.repo ? (status.root ?? cwd) : cwd, kind: status?.repo ? "git" : "plain" })
+      .catch(() => undefined);
     const model = this.validateModel(body.model);
     if (body.thinkingLevel !== undefined && !THINKING_LEVELS.includes(body.thinkingLevel))
       throw invalid("Invalid thinking level");
@@ -1548,6 +1595,110 @@ export class Store {
       mime: "application/zip",
       bytes: zip.length,
       base64: zip.toString("base64"),
+    };
+  }
+
+  // ------------------------------------------------- projects (Wave 2)
+
+  /** Projects, newest activity first: the tree's group-by-cwd as an entity. */
+  projectList(includeArchived = false): ProjectRecord[] {
+    return this.projects.list({ includeArchived });
+  }
+
+  /**
+   * Rename/label a project. `customName` wins over the derived basename, and
+   * labels are what humans filter by — paseo's rule that reconciliation never
+   * touches either.
+   */
+  async updateProject(id: string, patch: ProjectPatchBody): Promise<ProjectRecord> {
+    // Only the keys the caller actually sent: passing `customName: undefined`
+    // must not read as "clear the name" (that is `customName: ""`).
+    const next: { customName?: string; labels?: string[] } = {};
+    if (patch.customName !== undefined) next.customName = patch.customName;
+    if (patch.labels !== undefined) next.labels = patch.labels;
+    return this.projects.update(id, next);
+  }
+
+  async archiveProject(id: string): Promise<ProjectRecord> {
+    this.notify();
+    return this.projects.archive(id);
+  }
+
+  async unarchiveProject(id: string): Promise<ProjectRecord> {
+    this.notify();
+    return this.projects.unarchive(id);
+  }
+
+  /**
+   * Usage rollup (orca `usage/`, our data): every live session's harness usage,
+   * summed per session, per model and per project. Archived sessions are closed
+   * stores, so they are not counted — this is "what this device is spending on
+   * the work it still holds", not a lifetime invoice.
+   */
+  async usageReport(): Promise<DeviceUsageReport> {
+    const models = new Map<string, UsageSummary>();
+    const projects = new Map<string, DeviceUsageReport["projects"][number]>();
+    const sessions: DeviceUsageReport["sessions"] = [];
+    let tokens = 0;
+    let cost = 0;
+
+    for (const row of this.list()) {
+      const opened = this.opened.get(row.id);
+      if (!opened) continue;
+      const raw = await this.usage(opened.harness);
+      const usage = sumUsage(raw);
+      for (const [key, u] of Object.entries(raw.models ?? {})) {
+        const prev = models.get(key) ?? ZERO_USAGE;
+        models.set(key, {
+          tokens: prev.tokens + (u.totalTokens ?? 0),
+          cost: prev.cost + (u.cost?.total ?? 0),
+          input: prev.input + (u.input ?? 0),
+          output: prev.output + (u.output ?? 0),
+          cacheRead: prev.cacheRead + (u.cacheRead ?? 0),
+          cacheWrite: prev.cacheWrite + (u.cacheWrite ?? 0),
+          inputCost: prev.inputCost + (u.cost?.input ?? 0),
+          outputCost: prev.outputCost + (u.cost?.output ?? 0),
+          cacheReadCost: prev.cacheReadCost + (u.cost?.cacheRead ?? 0),
+          cacheWriteCost: prev.cacheWriteCost + (u.cost?.cacheWrite ?? 0),
+        });
+      }
+      const project = this.projects.findByPath(row.cwd) ?? this.projects.findByPath(dirname(row.cwd));
+      sessions.push({
+        id: row.id,
+        name: row.name,
+        cwd: row.cwd,
+        project: project ? (project.customName ?? project.name) : undefined,
+        tokens: usage.tokens,
+        cost: usage.cost,
+        agents: (await this.agents(row)).length,
+      });
+      tokens += usage.tokens;
+      cost += usage.cost;
+      if (project) {
+        const prev = projects.get(project.id) ?? {
+          rootPath: project.rootPath,
+          name: project.customName ?? project.name,
+          tokens: 0,
+          cost: 0,
+          sessions: 0,
+        };
+        projects.set(project.id, {
+          ...prev,
+          tokens: prev.tokens + usage.tokens,
+          cost: prev.cost + usage.cost,
+          sessions: prev.sessions + 1,
+        });
+      }
+    }
+
+    return {
+      at: Date.now(),
+      totals: { tokens, cost },
+      models: [...models.entries()]
+        .map(([key, value]) => ({ key, ...value }))
+        .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
+      sessions: sessions.sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
+      projects: [...projects.values()].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
     };
   }
 

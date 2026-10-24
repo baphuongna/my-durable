@@ -13,7 +13,10 @@ import type {
   ErrorCode,
   ForkBody,
   Frame,
+  DeviceUsageReport,
   Page,
+  ProjectPatchBody,
+  ProjectRecord,
   SendResult,
   SessionSearchResult,
   SessionSummary,
@@ -203,6 +206,27 @@ export class DpiClient {
   }
   tree() {
     return this.request<DeviceTree>("GET", "/v1/tree");
+  }
+  /** Projects on this device: roots with labels, custom names and archive state. */
+  projects(includeArchived = false) {
+    return this.request<{ projects: ProjectRecord[] }>(
+      "GET",
+      `/v1/projects${includeArchived ? "?includeArchived=1" : ""}`,
+    );
+  }
+  updateProject(id: string, patch: ProjectPatchBody) {
+    return this.request<ProjectRecord>("PATCH", `/v1/projects/${enc(id)}`, patch);
+  }
+  /** POSTs carry `{}`: the hub guard 415s a bodiless POST ("JSON required"). */
+  archiveProject(id: string) {
+    return this.request<ProjectRecord>("POST", `/v1/projects/${enc(id)}/archive`, {});
+  }
+  unarchiveProject(id: string) {
+    return this.request<ProjectRecord>("POST", `/v1/projects/${enc(id)}/unarchive`, {});
+  }
+  /** Usage rollup over the sessions this device still holds. */
+  deviceUsage() {
+    return this.request<DeviceUsageReport>("GET", "/v1/device/usage");
   }
   /** Session search over names/cwds/models (transcripts are not scanned). */
   searchSessions(query: string) {

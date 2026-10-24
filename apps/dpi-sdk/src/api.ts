@@ -189,6 +189,60 @@ export function compactionThresholds(window: number, s: CompactionSettings) {
   return { wait, auto: s.backgroundTokens > 0 ? Math.max(0, wait - s.backgroundTokens) : undefined };
 }
 
+/** A project: a root a session starts in, promoted to an entity (paseo model). */
+export type ProjectKind = "git" | "plain";
+
+export interface ProjectRecord {
+  id: string;
+  /** Absolute path of the root; sessions under it belong to this project. */
+  rootPath: string;
+  /** Derived display name (basename); never empty. */
+  name: string;
+  /** Human override; wins over `name` and survives reconciliation. */
+  customName?: string;
+  /** Free-form filters, lowercase; at most 12 per project. */
+  labels: string[];
+  kind: ProjectKind;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
+export interface ProjectPatchBody {
+  customName?: string;
+  labels?: string[];
+}
+
+/** Device usage rollup over the sessions it still holds (archived are closed). */
+export interface DeviceUsageReport {
+  at: number;
+  totals: { tokens: number; cost: number };
+  models: Array<{
+    key: string;
+    tokens: number;
+    cost: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    inputCost: number;
+    outputCost: number;
+    cacheReadCost: number;
+    cacheWriteCost: number;
+  }>;
+  sessions: Array<{
+    id: string;
+    name: string;
+    cwd: string;
+    /** Project display name when the cwd resolves to a registered root. */
+    project?: string;
+    tokens: number;
+    cost: number;
+    agents: number;
+  }>;
+  projects: Array<{ rootPath: string; name: string; tokens: number; cost: number; sessions: number }>;
+}
+
 /** One device's live host health — asked for on demand, never polled. */
 export interface DeviceVitals {
   /** Seconds the host has been up. */

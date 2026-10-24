@@ -121,6 +121,8 @@ export function v1(
   }));
   // Host health (uptime/load/memory/disk) — one-shot, the UIs ask when looked at.
   r.get("/device/vitals", route(async (_req, res) => res.json(await store.vitals())));
+  // Usage rollup for the sessions this device still holds (orca usage/, our data).
+  r.get("/device/usage", route(async (_req, res) => res.json(await store.usageReport())));
   r.get("/tree", route(async (_req, res) => res.json(await store.tree())));
   r.get("/events", (req, res, next) => {
     try {
@@ -169,6 +171,22 @@ export function v1(
       res.json({ kind, ...(await store.deviceDoc(kind)) });
     }),
   );
+
+  // ---------------------------------------------------------- projects
+  // Roots with labels/custom names: the tree's group-by-cwd as an entity you can
+  // own. Archived projects stay out of the default list, like archived sessions.
+  r.get("/projects", (req, res) => {
+    const includeArchived = req.query.includeArchived === "1" || req.query.includeArchived === "true";
+    res.json({ projects: store.projectList(includeArchived) });
+  });
+  r.patch("/projects/:id", route(async (req, res) => {
+    const body = req.body ?? {};
+    if (body.customName !== undefined && typeof body.customName !== "string") throw invalid("customName must be a string");
+    if (body.labels !== undefined && !Array.isArray(body.labels)) throw invalid("labels must be an array of strings");
+    res.json(await store.updateProject(param(req, "id"), { customName: body.customName, labels: body.labels }));
+  }));
+  r.post("/projects/:id/archive", route(async (req, res) => res.json(await store.archiveProject(param(req, "id")))));
+  r.post("/projects/:id/unarchive", route(async (req, res) => res.json(await store.unarchiveProject(param(req, "id")))));
 
   // ---------------------------------------------------------- sessions
   r.get("/sessions", route(async (_req, res) => res.json((await store.tree()).sessions)));

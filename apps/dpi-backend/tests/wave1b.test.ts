@@ -189,7 +189,16 @@ test("exportSession of a closed session still ships a bundle and counts archived
 
     // The row is gone from the catalog, but its record can still be exported by id
     // (the FE keeps the id in the archive list) — no agents means no transcript.
-    const bundle = await store.exportSession({ ...store.sessionSummaryBase({ id: "x", name: "Gone", cwd: t.work, model: faux.modelId, createdAt: 1, dbPath: join(t.root, "nope") }) });
+    const gone = {
+      id: "x",
+      name: "Gone",
+      cwd: t.work,
+      model: faux.modelId,
+      provider: faux.provider,
+      createdAt: 1,
+      dbPath: join(t.root, "nope"),
+    };
+    const bundle = await store.exportSession(gone);
     const entries = unzip(Buffer.from(bundle.base64, "base64")).map((e) => e.path);
     assert.deepEqual(entries, ["manifest.json", "session.json", "README.txt"]);
   } finally {

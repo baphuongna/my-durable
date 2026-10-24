@@ -5,6 +5,7 @@ import {
   Braces,
   Download,
   PackageOpen,
+  PiggyBank,
   GitBranch,
   ChevronDown,
   FolderOpen,
@@ -24,6 +25,7 @@ import TokenManager from "./TokenManager.vue";
 import TasksPanel from "./TasksPanel.vue";
 import GitPanel from "./GitPanel.vue";
 import HostPanel from "./HostPanel.vue";
+import UsagePanel from "./UsagePanel.vue";
 import ExtensionsPanel from "./ExtensionsPanel.vue";
 import ContextBar from "./ContextBar.vue";
 import { deviceClient, message } from "../client/hub";
@@ -64,6 +66,7 @@ const tabs = [
   { id: "session", label: "Session", icon: FolderOpen },
   { id: "git", label: "Git", icon: GitBranch },
   { id: "host", label: "Host", icon: Activity },
+  { id: "usage", label: "Usage", icon: PiggyBank },
   { id: "state", label: "State", icon: Braces },
   { id: "tasks", label: "Tasks", icon: Activity },
   { id: "tools", label: "Tools", icon: Wrench },
@@ -433,6 +436,7 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
         <TasksPanel v-if="ui.tab === 'tasks'" />
         <GitPanel v-if="ui.tab === 'git'" />
         <HostPanel v-if="ui.tab === 'host'" />
+        <UsagePanel v-if="ui.tab === 'usage'" />
         <ExtensionsPanel v-if="ui.tab === 'extensions'" />
         <template v-if="ui.tab === 'tools'"
           ><div class="panel-heading">
