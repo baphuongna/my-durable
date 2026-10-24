@@ -28,6 +28,7 @@ const ROUTES: readonly (readonly [method: string, pattern: string])[] = [
   ["GET", "/sessions/:s/tasks"],
   ["POST", "/sessions/:s/tasks/:taskId/abort"],
   ["GET", "/sessions/:s/inspect"],
+  ["GET", "/sessions/:s/git-files"],
   ["GET", "/sessions/:s/submissions/:id"],
 
   ["GET", "/sessions/:s/agents"],

@@ -53,8 +53,13 @@ export interface GitStatus {
   subject?: string;
   worktreeOf?: string;
   worktrees?: { path: string; branch: string | null; head: string }[];
-  files?: { path: string; x: string; y: string }[];
+  /** ±n line counts from numstat; -1 marks a binary file. */
+  files?: { path: string; x: string; y: string; a?: number; d?: number }[];
   branches?: { name: string; current?: boolean; upstream?: string }[];
+  merge?: boolean;
+  conflicts?: number;
+  identity?: { name?: string; email?: string };
+  remoteUrl?: string;
 }
 export type GitOpName =
   | "diff"
@@ -73,7 +78,25 @@ export type GitOpName =
   | "discard"
   | "diff-file"
   | "stash-push"
-  | "stash-pop";
+  | "stash-pop"
+  | "unstage"
+  | "compare"
+  | "merge-abort"
+  | "show-files"
+  | "ignore"
+  | "checkpoint"
+  | "checkpoints"
+  | "rewind";
+
+/** Everything a git op may return; most carry only text. */
+export interface GitOpResult {
+  text: string;
+  commits?: { hash: string; refs: string; author: string; date: string; subject: string; parents: string[] }[];
+  ahead?: number;
+  behind?: number;
+  changed?: { status: string; path: string }[];
+  checkpoints?: { name: string; hash: string; date: string; subject: string }[];
+}
 
 export class DpiClient {
   readonly baseUrl: string;
@@ -187,13 +210,25 @@ export class DpiClient {
   gitOp(
     path: string,
     op: GitOpName,
-    opts: { ref?: string; branch?: string; message?: string; target?: string; files?: string[]; create?: boolean; staged?: boolean } = {},
+    opts: {
+      ref?: string;
+      branch?: string;
+      message?: string;
+      target?: string;
+      files?: string[];
+      create?: boolean;
+      staged?: boolean;
+      rebase?: boolean;
+      setUpstream?: boolean;
+      name?: string;
+      lines?: string[];
+    } = {},
   ) {
-    return this.request<{ text: string; commits?: { hash: string; refs: string; author: string; date: string; subject: string }[] }>(
-      "POST",
-      "/v1/git",
-      { path, op, ...opts },
-    );
+    return this.request<GitOpResult>("POST", "/v1/git", { path, op, ...opts });
+  }
+  /** Paths this session's agents wrote/edited — the session-changelist. */
+  sessionGitFiles(sessionId: string) {
+    return this.request<{ files: string[] }>("GET", `/v1/sessions/${enc(sessionId)}/git-files`);
   }
   /** Many paths, one round-trip — session lists want branch-per-cwd. */
   gitStatusBatch(paths: string[], options: { timeoutMs?: number } = {}) {

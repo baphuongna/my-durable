@@ -1,22 +1,34 @@
 <script setup lang="ts">
 // Inspector GIT tab — the IDE git window, in the app's own design language
 // (panel-heading + tags + task-sections). IntelliJ features: branch popup,
-// changelist commit with per-file diff/stage/discard, structured log,
-// push with ahead count, stash, worktree sessions.
+// changelist commit with per-file diff/stage/unstage/discard, structured log
+// with swimlane graph, push with ahead count + recovery hints, stash with
+// auto-stash on switch, conflict banner + abort, checkpoints/rewind,
+// session-scoped commits, worktree sessions.
+// Checklist: docs/git-ui-checklist.md (orca main, paseo/zcode niceties).
 import { computed, onServerPrefetch, ref, watch } from "vue";
 import {
   ArrowDownToLine,
+  ArrowRight,
   ArrowUpFromLine,
+  Ban,
   Check,
   ChevronDown,
+  ChevronRight,
+  Copy,
   CornerUpLeft,
   Eye,
+  Flag,
   GitBranch,
+  GitCompare,
   History,
+  Minus,
   PackageOpen,
   Plus,
   RefreshCw,
+  Sparkles,
   SquareStack,
+  Undo2,
   X,
 } from "lucide-vue-next";
 import { deviceId, network, sessionSummary, notify, select } from "../client/store";
@@ -33,6 +45,10 @@ const status = computed(() => entry.value.status);
 const loading = computed(() => entry.value.loading);
 const refreshing = computed(() => entry.value.refreshing);
 const error = computed(() => entry.value.error);
+const sessionId = computed(() => {
+  const s = sessionSummary.value;
+  return s && s.cwd === cwd.value && !props.deviceId ? s.id : undefined;
+});
 
 const busy = ref("");
 const out = ref("");
@@ -43,14 +59,62 @@ const wtMenu = ref(false);
 const newBranch = ref("");
 /** IntelliJ: click a changed file → its diff, right there. */
 const fileDiff = ref<{ path: string; text: string } | null>(null);
+/** Working vs staged — paseo's diff modes. */
+const diffMode = ref<"working" | "staged">("working");
+/** orca commit drafts: the message survives navigation and reloads. */
+const draftKey = computed(() => `dpi-git-draft:${devId.value}:${cwd.value}`);
+/** Compare vs an arbitrary base (orca git-bridge). */
+const base = ref<{ ref: string; ahead: number; behind: number } | null>(null);
+/** paseo: stash → switch → pop, so a dirty tree never blocks a branch hop. */
+const autoStash = ref(true);
+/** Push/pull failures get a RECOVERY action, not just red text. */
+const pushHint = ref("");
+const pullHint = ref(false);
+/** Session-scoped commit (zcode flagship): files this session's agent touched. */
+const sessionFiles = ref<string[]>([]);
+const sessionCount = computed(() => {
+  if (!sessionFiles.value.length || !cwd.value) return null;
+  const abs = (p: string) => (p.startsWith("/") || p.includes(":\\") ? p : `${cwd.value}/${p}`);
+  const touched = new Set(sessionFiles.value);
+  const mine = (status.value?.files ?? []).filter((f) => touched.has(abs(f.path)));
+  return { changed: mine.length, total: sessionFiles.value.length };
+});
+/** Checkpoints (zcode): named refs of HEAD you can rewind to. */
+const checkpoints = ref<{ name: string; hash: string; date: string; subject: string }[]>([]);
+const cpsOpen = ref(false);
+/** Log row expander: files of one commit. */
+const expanded = ref<Map<string, { status: string; path: string }[]>>(new Map());
+/** Folder grouping (orca tree-directory-rows): collapse noise. */
+const collapsed = ref<Set<string>>(new Set());
 
-if (!import.meta.env.SSR) void ensureGit(devId.value || "?", cwd.value || "?");
+const draftLoad = () => {
+  if (typeof localStorage === "undefined") return;
+  commitMsg.value = localStorage.getItem(draftKey.value) ?? "";
+};
+if (!import.meta.env.SSR) {
+  void ensureGit(devId.value || "?", cwd.value || "?");
+  draftLoad();
+}
 onServerPrefetch(() => ensureGit(devId.value || "?", cwd.value || "?"));
+watch(commitMsg, (m) => {
+  if (typeof localStorage === "undefined") return;
+  if (m) localStorage.setItem(draftKey.value, m);
+  else localStorage.removeItem(draftKey.value);
+});
 watch([devId, cwd], () => {
   branchMenu.value = false;
   wtMenu.value = false;
   fileDiff.value = null;
-  void ensureGit(devId.value || "?", cwd.value || "?");
+  base.value = null;
+  pushHint.value = "";
+  pullHint.value = false;
+  sessionFiles.value = [];
+  expanded.value = new Map();
+  collapsed.value = new Set();
+  if (!import.meta.env.SSR) {
+    void ensureGit(devId.value || "?", cwd.value || "?");
+    draftLoad();
+  }
 });
 const refresh = () => {
   checked.value = new Set();
@@ -68,7 +132,15 @@ const someChecked = computed(() => files.value.some((f) => checked.value.has(f.p
 /** orca's split: staged (index changed) vs unstaged (worktree + untracked). */
 const stagedFiles = computed(() => files.value.filter((f) => f.x !== " " && f.x !== "?"));
 const unstagedFiles = computed(() => files.value.filter((f) => f.x === " " || f.x === "?"));
+const conflictFiles = computed(() => files.value.filter((f) => /U|A|D/.test(f.x) && /U|A|D/.test(f.y)));
 const atCap = computed(() => files.value.length >= 500);
+const dirty = computed(() => (status.value?.staged ?? 0) + (status.value?.unstaged ?? 0) + (status.value?.untracked ?? 0) > 0);
+const noIdentity = computed(() => !status.value?.identity?.name || !status.value?.identity?.email);
+const remoteWeb = computed(() => {
+  const u = status.value?.remoteUrl ?? "";
+  const m = u.match(/git@([^:]+):(.+?)(?:\.git)?$/) ?? u.match(/^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/);
+  return m ? `https://${m[1]}/${m[2]}` : "";
+});
 const toggle = (p: string) => {
   const next = new Set(checked.value);
   if (next.has(p)) next.delete(p);
@@ -87,19 +159,63 @@ const toggleGroup = (group: { path: string }[]) => {
   }
   checked.value = next;
 };
+const dirOf = (p: string) => {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? "." : p.slice(0, i);
+};
+const grouped = (list: { path: string; x: string; y: string; a?: number; d?: number }[]) => {
+  const byDir = new Map<string, typeof list>();
+  for (const f of list) {
+    const d = dirOf(f.path);
+    if (!byDir.has(d)) byDir.set(d, []);
+    byDir.get(d)!.push(f);
+  }
+  return [...byDir.entries()].map(([dir, fs]) => ({
+    dir,
+    files: fs,
+    open: !collapsed.value.has(dir),
+  }));
+};
+const collapse = (dir: string) => {
+  const next = new Set(collapsed.value);
+  if (next.has(dir)) next.delete(dir);
+  else next.add(dir);
+  collapsed.value = next;
+};
+const numChip = (f: { a?: number; d?: number }) =>
+  f.a === undefined && f.d === undefined ? "" : f.a === -1 || f.d === -1 ? "bin" : `+${f.a ?? 0} −${f.d ?? 0}`;
+const copyPath = (p: string) => {
+  void navigator.clipboard?.writeText(p).then(() => notify(`copied ${p}`));
+};
 
-async function op(name: "fetch" | "pull" | "push" | "branch" | "diff" | "stash-push" | "stash-pop", extra: { message?: string } = {}) {
+async function op(
+  name: "fetch" | "pull" | "push" | "branch" | "diff" | "stash-push" | "stash-pop",
+  extra: { message?: string; rebase?: boolean; setUpstream?: boolean; ref?: string } = {},
+) {
   if (!devId.value || !cwd.value) return;
   busy.value = name;
   out.value = "";
   try {
     const r = await deviceClient(devId.value).gitOp(cwd.value, name, extra);
     out.value = r.text || "(empty)";
+    if (name === "push") {
+      pushHint.value = "";
+    }
+    if (name === "pull") pullHint.value = false;
     if (["fetch", "pull", "push", "stash-push", "stash-pop"].includes(name)) notify(`git ${name} ✓`);
     await refresh();
     void loadLog(true);
   } catch (e) {
-    notify(`git ${name}: ${(e as Error).message.slice(0, 160)}`);
+    const msg = (e as Error).message;
+    if (name === "push") {
+      // orca push-recovery: name the fix, offer the button.
+      if (/no upstream|has no upstream|upstream is gone/i.test(msg)) pushHint.value = "no upstream — set it while pushing?";
+      else if (/fetch first|non-fast-forward|rejected.*fetch|behind/i.test(msg)) pushHint.value = "the remote has work you lack — pull first";
+      else if (/authentication|permission|could not read|403|denied/i.test(msg)) pushHint.value = "credentials rejected on the device — check its git login";
+      else pushHint.value = "";
+    }
+    if (name === "pull" && /not possible to fast-forward|divergent|unrelated histories/i.test(msg)) pullHint.value = true;
+    notify(`git ${name}: ${msg.slice(0, 160)}`);
   } finally {
     busy.value = "";
   }
@@ -122,15 +238,77 @@ async function fileAction(name: "stage" | "discard", path?: string) {
   }
 }
 
+async function unstageFiles(paths: string[]) {
+  if (!devId.value || !cwd.value || !paths.length) return;
+  busy.value = "unstage";
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "unstage", { files: paths });
+    notify(r.text);
+    await refresh();
+  } catch (e) {
+    notify(`unstage failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function ignorePaths(paths: string[]) {
+  if (!devId.value || !cwd.value || !paths.length) return;
+  busy.value = "ignore";
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "ignore", { lines: paths });
+    notify(r.text);
+    await refresh();
+  } catch (e) {
+    notify(`ignore failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
 async function showDiff(path: string) {
   if (!devId.value || !cwd.value) return;
   if (fileDiff.value?.path === path) return (fileDiff.value = null);
   busy.value = "diff";
   try {
-    const r = await deviceClient(devId.value).gitOp(cwd.value, "diff-file", { target: path });
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "diff-file", { target: path, staged: diffMode.value === "staged" });
     fileDiff.value = { path, text: r.text };
   } catch (e) {
     notify(`diff failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+const reDiff = async () => {
+  const p = fileDiff.value?.path;
+  fileDiff.value = null;
+  if (p) await showDiff(p);
+};
+const diffIsBinary = computed(() => /Binary files .* differ/i.test(fileDiff.value?.text ?? ""));
+
+async function gitAbort() {
+  if (!devId.value || !cwd.value) return;
+  busy.value = "abort";
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "merge-abort");
+    notify(r.text);
+    await refresh();
+  } catch (e) {
+    notify(`abort failed: ${(e as Error).message.slice(0, 120)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function compareWith(ref: string) {
+  branchMenu.value = false;
+  if (!devId.value || !cwd.value) return;
+  busy.value = "compare";
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "compare", { ref });
+    base.value = { ref, ahead: r.ahead ?? 0, behind: r.behind ?? 0 };
+  } catch (e) {
+    notify(`compare failed: ${(e as Error).message.slice(0, 140)}`);
   } finally {
     busy.value = "";
   }
@@ -140,30 +318,59 @@ async function switchBranch(name: string, create = false) {
   branchMenu.value = false;
   if (!devId.value || !cwd.value || (name === status.value?.branch && !create)) return;
   busy.value = "switch";
+  const client = deviceClient(devId.value);
+  let stashed = false;
   try {
-    const r = await deviceClient(devId.value).gitOp(cwd.value, "switch", { ref: name, create });
+    // paseo auto-stash: a dirty tree never blocks a branch hop.
+    if (autoStash.value && !create && dirty.value) {
+      await client.gitOp(cwd.value, "stash-push", { message: `dpi auto-stash before ${name}` });
+      stashed = true;
+    }
+    const r = await client.gitOp(cwd.value, "switch", { ref: name, create });
     notify(r.text || `switched to ${name}`);
+    if (stashed) {
+      try {
+        const pop = await client.gitOp(cwd.value, "stash-pop");
+        if (/conflict/i.test(pop.text)) notify(`stash popped WITH CONFLICTS — resolve in the file list`);
+      } catch {
+        notify(`switched, but the stash did not pop — resolve manually (git stash list)`);
+      }
+    }
     await refresh();
     void loadLog(true);
   } catch (e) {
     notify(`switch failed: ${(e as Error).message.slice(0, 140)}`);
+    if (stashed) {
+      try {
+        await client.gitOp(cwd.value, "stash-pop");
+      } catch {}
+    }
   } finally {
     busy.value = "";
   }
 }
 
-async function commit() {
+async function commit(thenPush = false) {
   if (!devId.value || !cwd.value || !commitMsg.value.trim()) return;
   busy.value = "commit";
   const chosen = files.value.filter((f) => checked.value.has(f.path)).map((f) => f.path);
   if (!chosen.length) return notify("check the files to commit — nothing is selected");
+  const client = deviceClient(devId.value);
   try {
-    const r = await deviceClient(devId.value).gitOp(cwd.value, "commit", {
+    const r = await client.gitOp(cwd.value, "commit", {
       message: commitMsg.value.trim(),
       files: chosen,
     });
     notify(r.text);
     commitMsg.value = "";
+    if (thenPush) {
+      try {
+        const p = await client.gitOp(cwd.value, "push");
+        notify(`pushed: ${p.text.slice(0, 80)}`);
+      } catch (e) {
+        notify(`committed, but push failed: ${(e as Error).message.slice(0, 120)}`);
+      }
+    }
     await refresh();
     void loadLog(true);
   } catch (e) {
@@ -172,6 +379,123 @@ async function commit() {
     busy.value = "";
   }
 }
+
+/** orca/zcode AI message: ask the device's own model to title the changelist. */
+async function aiMessage() {
+  if (!devId.value || !cwd.value) return;
+  const chosen = files.value.filter((f) => checked.value.has(f.path)).map((f) => f.path);
+  if (!chosen.length) return notify("check files first — the model summarises THOSE");
+  busy.value = "ai";
+  const client = deviceClient(devId.value);
+  let sid = "";
+  try {
+    const info = network.devices.value.find((d) => d.id === devId.value)?.info;
+    const model = (info?.models ?? []).find((m) => m.id === info?.defaultModel) ?? (info?.models ?? [])[0];
+    if (!model) return notify("no model on the device");
+    let diff = "";
+    for (const f of chosen.slice(0, 5)) {
+      const d = await client.gitOp(cwd.value, "diff-file", { target: f });
+      diff += `${d.text}\n`;
+      if (diff.length > 4000) break;
+    }
+    diff = diff.slice(0, 4000);
+    const s = await client.createSession({ name: "git-msg", cwd: cwd.value, model: { provider: model.provider, modelId: model.id } });
+    sid = s.id;
+    const r = await client.agent(sid, 1).send(
+      `Write ONE concise git commit message (under 72 chars, imperative, no quotes, no backticks) for these changes:\n\n${diff}`,
+      "followUp",
+      undefined,
+      120_000,
+    );
+    const text = r.status === "done" ? r.answer.text.trim().split("\n")[0]?.slice(0, 100) : "";
+    if (text) commitMsg.value = text;
+    else notify("the model returned nothing usable");
+  } catch (e) {
+    notify(`ai message failed: ${(e as Error).message.slice(0, 120)}`);
+  } finally {
+    busy.value = "";
+    if (sid) void client.session(sid).archive().catch(() => {});
+  }
+}
+
+/** zcode flagship: check exactly the files this session's agents touched. */
+async function selectSessionFiles() {
+  if (!devId.value || !sessionId.value) return;
+  busy.value = "session-files";
+  try {
+    const r = await deviceClient(devId.value).sessionGitFiles(sessionId.value);
+    sessionFiles.value = r.files;
+    const abs = (p: string) => (p.startsWith("/") || p.includes(":\\") ? p : `${cwd.value}/${p}`);
+    const touched = new Set(r.files.map(abs));
+    const mine = files.value.filter((f) => touched.has(abs(f.path)));
+    checked.value = new Set(mine.map((f) => f.path));
+    notify(mine.length ? `${mine.length} session file(s) still changed — checked` : "the session touched nothing that is still changed");
+  } catch (e) {
+    notify(`session files failed: ${(e as Error).message.slice(0, 120)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function loadCommitFiles(hash: string) {
+  if (expanded.value.has(hash)) {
+    expanded.value.delete(hash);
+    expanded.value = new Map(expanded.value);
+    return;
+  }
+  if (!devId.value || !cwd.value) return;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "show-files", { target: hash });
+    expanded.value = new Map(expanded.value).set(hash, r.changed ?? []);
+  } catch (e) {
+    notify(`commit files failed: ${(e as Error).message.slice(0, 120)}`);
+  }
+}
+
+async function saveCheckpoint() {
+  if (!devId.value || !cwd.value) return;
+  const name = `cp-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`;
+  busy.value = "checkpoint";
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "checkpoint", { name });
+    notify(r.text);
+    cpsOpen.value = true;
+    await loadCheckpoints();
+  } catch (e) {
+    notify(`checkpoint failed: ${(e as Error).message.slice(0, 120)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function loadCheckpoints() {
+  if (!devId.value || !cwd.value) return;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "checkpoints");
+    checkpoints.value = r.checkpoints ?? [];
+  } catch {
+    checkpoints.value = [];
+  }
+}
+
+async function rewind(name: string) {
+  if (!devId.value || !cwd.value) return;
+  if (!confirm(`Rewind this worktree to checkpoint "${name}"? reset --hard — ALL uncommitted changes here are LOST.`)) return;
+  busy.value = "rewind";
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "rewind", { name });
+    notify(r.text);
+    await refresh();
+    void loadLog(true);
+  } catch (e) {
+    notify(`rewind failed: ${(e as Error).message.slice(0, 120)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+watch(cpsOpen, (open) => {
+  if (open) void loadCheckpoints();
+});
 
 async function addWorktree(branch: string) {
   wtMenu.value = false;
@@ -214,10 +538,38 @@ async function sessionOn(path: string, branch: string | null) {
   }
 }
 
+/** orca worktree palette: jump to whatever session already lives there. */
+async function goToWorktree(path: string) {
+  if (!devId.value) return;
+  busy.value = "go";
+  try {
+    const sessions = await deviceClient(devId.value).sessions();
+    const found = sessions.find((s) => s.cwd === path);
+    if (found) {
+      select({ deviceId: devId.value, sessionId: found.id, agentId: 1 });
+      notify(`switched to session "${found.name}"`);
+    } else {
+      await sessionOn(path, null);
+    }
+  } catch (e) {
+    notify(`switch failed: ${(e as Error).message.slice(0, 120)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
 async function removeWorktree(path: string) {
   if (!devId.value || !cwd.value) return;
-  if (!confirm(`Remove worktree ${path}?`)) return;
   busy.value = "wt";
+  let warn = "Uncommitted changes in it will be LOST.";
+  try {
+    // orca wording, earned honestly: only say "lost" when there ARE changes.
+    const batch = await deviceClient(devId.value).gitStatusBatch([path], { timeoutMs: 60_000 });
+    const s = batch[path];
+    if ((s?.staged ?? 0) + (s?.unstaged ?? 0) + (s?.untracked ?? 0) > 0) warn = `It CONTAINS uncommitted changes — they will be LOST.`;
+    else warn = "Its checkout is clean.";
+  } catch {}
+  if (!confirm(`Remove worktree ${path}? ${warn}`)) return;
   try {
     await deviceClient(devId.value).gitOp(cwd.value, "worktree-remove", { target: path });
     await refresh();
@@ -228,7 +580,8 @@ async function removeWorktree(path: string) {
   }
 }
 
-const commits = ref<{ hash: string; refs: string; author: string; date: string; subject: string }[]>([]);
+type Commit = { hash: string; refs: string; author: string; date: string; subject: string; parents: string[] };
+const commits = ref<Commit[]>([]);
 const logLoading = ref(false);
 const logError = ref("");
 let logAt = 0;
@@ -255,6 +608,44 @@ watch([devId, cwd], () => {
   void loadLog();
 });
 const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w.path));
+
+/** zcode's portable lane layout: newest first, first parent keeps the lane. */
+const LANE_COLORS = ["#4f8cc9", "#b8860b", "#7aa25c", "#a061ba", "#c96f6f", "#5fa8a0"];
+const lanes = computed(() => {
+  const laneOf = new Map<string, number>();
+  const rows: { lane: number; parents: number[]; width: number }[] = [];
+  const alive: (string | null)[] = [];
+  for (const c of commits.value) {
+    let lane = laneOf.get(c.hash);
+    if (lane === undefined) {
+      lane = alive.indexOf(null);
+      if (lane === -1) {
+        alive.push(null);
+        lane = alive.length - 1;
+      }
+      laneOf.set(c.hash, lane);
+    }
+    alive[lane] = null;
+    const parentLanes: number[] = [];
+    c.parents.forEach((p, i) => {
+      let pl = laneOf.get(p);
+      if (pl === undefined || alive[pl] === p) {
+        pl = alive.indexOf(null);
+        if (pl === -1) {
+          alive.push(null);
+          pl = alive.length - 1;
+        }
+        laneOf.set(p, pl);
+      }
+      alive[pl] = p;
+      if (i === 0) alive[lane!] = p;
+      parentLanes.push(pl);
+    });
+    rows.push({ lane, parents: parentLanes, width: Math.max(1, alive.length) });
+  }
+  return rows;
+});
+const laneX = (lane: number) => lane * 12 + 7;
 </script>
 
 <template>
@@ -269,6 +660,12 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
         <p v-if="!status.repo" class="hint">Not a git repository — run <code>git init</code> (or open a session inside a repo).</p>
 
         <template v-else>
+          <!-- conflict banner: the one state that blocks everything else -->
+          <p v-if="status.merge" class="message-error merge-banner">
+            merge in progress — {{ status.conflicts ?? conflictFiles.length }} unmerged path(s). Resolve them in the lists above, or
+            <button class="small" :disabled="!!busy" @click="gitAbort()">abort merge</button>
+          </p>
+
           <!-- branch popup + sync, the IDE way -->
           <div class="panel-heading git-top">
             <div class="branch-wrap">
@@ -280,17 +677,25 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
                 <button v-for="b in status.branches ?? []" :key="b.name" :class="{ cur: b.current }" @click="switchBranch(b.name)">
                   <GitBranch :size="13" /><span>{{ b.name }}</span>
                   <span class="muted-line">{{ b.current ? "current" : b.upstream ? `→ ${b.upstream}` : "" }}</span>
+                  <span class="grow" />
+                  <GitCompare v-if="!b.current" :size="13" title="compare with this base" @click.stop="compareWith(b.name)" />
                 </button>
                 <div class="new-branch">
                   <input v-model="newBranch" placeholder="new branch…" @keyup.enter="newBranch.trim() && switchBranch(newBranch.trim(), true)" />
                   <button :disabled="!newBranch.trim()" @click="switchBranch(newBranch.trim(), true)"><Plus :size="13" /></button>
                 </div>
+                <label class="auto-stash"><input type="checkbox" v-model="autoStash" /> auto-stash on switch</label>
               </div>
             </div>
             <span class="tag">{{ status.upstream ?? "no upstream" }}</span>
             <span v-if="status.ahead" class="tag">↑{{ status.ahead }}</span>
             <span v-if="status.behind" class="tag">↓{{ status.behind }}</span>
+            <span v-if="base" class="tag" title="vs the picked base">
+              vs {{ base.ref }}: ↑{{ base.ahead }} ↓{{ base.behind }}
+              <button class="tag-x" @click="base = null"><X :size="11" /></button>
+            </span>
             <span class="tag">+{{ status.staged ?? 0 }} ~{{ status.unstaged ?? 0 }} ?{{ status.untracked ?? 0 }}</span>
+            <a v-if="remoteWeb" class="icon-button" :href="`${remoteWeb}/tree/${status.branch ?? ''}`" target="_blank" rel="noopener" title="open on the remote"><ArrowUpFromLine :size="15" style="transform: rotate(45deg)" /></a>
             <button class="icon-button" :disabled="!!busy || loading || refreshing" title="refresh" @click="refresh()"><RefreshCw :size="16" /></button>
           </div>
 
@@ -301,13 +706,27 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
             <button class="small" :disabled="!!busy" title="stash changes" @click="op('stash-push', { message: commitMsg.trim() || undefined })"><SquareStack :size="14" />stash</button>
             <button class="small" :disabled="!!busy" title="pop the newest stash" @click="op('stash-pop')"><PackageOpen :size="14" />unstash</button>
           </div>
+          <p v-if="pushHint" class="message-error hintbox">
+            {{ pushHint }}
+            <button v-if="pushHint.includes('upstream')" class="small primary" :disabled="!!busy" @click="op('push', { setUpstream: true, ref: status.branch })">push -u origin {{ status.branch }}</button>
+            <button v-else-if="pushHint.includes('remote has work')" class="small primary" :disabled="!!busy" @click="op('pull')">pull now</button>
+          </p>
+          <p v-if="pullHint" class="message-error hintbox">
+            fast-forward is not possible — branches diverged.
+            <button class="small primary" :disabled="!!busy" @click="op('pull', { rebase: true })">pull --rebase</button>
+          </p>
 
           <!-- COMMIT — always present, changelist semantics -->
           <section class="task-section" aria-label="Commit">
             <div class="panel-heading">
               <h4>Commit</h4>
               <span class="tag">{{ files.length ? `${checked.size}/${files.length} files` : "no changes" }}</span>
+              <span class="grow" />
+              <button v-if="sessionId" class="small" :disabled="!!busy" title="check the files this session's agent touched" @click="selectSessionFiles">
+                <Flag :size="13" /> session files{{ sessionCount ? ` (${sessionCount.changed}/${sessionCount.total})` : "" }}
+              </button>
             </div>
+            <p v-if="noIdentity" class="hintbox warn">git user.name/user.email is not set on the device — <code>dpi device config</code> or <code>git config --global</code> before committing.</p>
             <p v-if="atCap" class="muted-line cap">showing the first 500 changed files — commit in smaller batches</p>
             <div v-if="stagedFiles.length" class="files">
               <label class="file all">
@@ -315,69 +734,129 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
                 <span class="muted-line">Staged · {{ stagedFiles.length }}</span>
                 <span class="grow" />
                 <button class="icon-button" title="stage every changed file" @click="fileAction('stage')"><Plus :size="13" /> all</button>
+                <button class="icon-button" title="unstage all (git reset HEAD)" @click="unstageFiles(stagedFiles.map((f) => f.path))"><Minus :size="13" /> none</button>
               </label>
-              <div v-for="f in stagedFiles" :key="f.path" class="file">
-                <label class="file-label">
-                  <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
-                  <code class="xy" :title="`index ${f.x} · worktree ${f.y}`">{{ f.x }}{{ f.y }}</code>
-                  <span class="path" :title="f.path">{{ f.path }}</span>
-                </label>
-                <span class="file-acts">
-                  <button class="icon-button" title="view diff" @click="showDiff(f.path)"><Eye :size="13" /></button>
-                  <button class="icon-button" title="roll back to HEAD" @click="fileAction('discard', f.path)"><CornerUpLeft :size="13" /></button>
-                </span>
-              </div>
+              <template v-for="g in grouped(stagedFiles)" :key="g.dir">
+                <button v-if="g.dir !== '.'" class="dir-row" @click="collapse(g.dir)">
+                  <ChevronRight :size="12" :class="{ open: g.open }" />{{ g.dir }}<span class="muted-line">· {{ g.files.length }}</span>
+                </button>
+                <div v-for="f in g.files" v-show="g.open" :key="f.path" class="file">
+                  <label class="file-label">
+                    <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
+                    <code class="xy" :title="`index ${f.x} · worktree ${f.y}`">{{ f.x }}{{ f.y }}</code>
+                    <span class="path" :title="f.path">{{ f.path }}</span>
+                    <span v-if="numChip(f)" class="nums" :class="{ bin: numChip(f) === 'bin' }">{{ numChip(f) }}</span>
+                  </label>
+                  <span class="file-acts">
+                    <button class="icon-button" title="view diff" @click="showDiff(f.path)"><Eye :size="13" /></button>
+                    <button class="icon-button" title="unstage (git reset HEAD)" @click="unstageFiles([f.path])"><Minus :size="13" /></button>
+                    <button class="icon-button" title="roll back to HEAD" @click="fileAction('discard', f.path)"><CornerUpLeft :size="13" /></button>
+                  </span>
+                </div>
+              </template>
             </div>
             <div v-if="unstagedFiles.length" class="files">
               <label class="file all">
                 <input type="checkbox" :checked="unstagedFiles.every((f) => checked.has(f.path))" @change="toggleGroup(unstagedFiles)" />
                 <span class="muted-line">Unstaged · {{ unstagedFiles.length }}</span>
               </label>
-              <div v-for="f in unstagedFiles" :key="f.path" class="file">
-                <label class="file-label">
-                  <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
-                  <code class="xy" :title="`index ${f.x} · worktree ${f.y}`">{{ f.x }}{{ f.y }}</code>
-                  <span class="path" :title="f.path">{{ f.path }}</span>
-                </label>
-                <span class="file-acts">
-                  <button class="icon-button" title="view diff" @click="showDiff(f.path)"><Eye :size="13" /></button>
-                  <button class="icon-button" title="stage (git add)" @click="fileAction('stage', f.path)"><Plus :size="13" /></button>
-                  <button class="icon-button" title="roll back to HEAD" @click="fileAction('discard', f.path)"><CornerUpLeft :size="13" /></button>
-                </span>
-              </div>
+              <template v-for="g in grouped(unstagedFiles)" :key="g.dir">
+                <button v-if="g.dir !== '.'" class="dir-row" @click="collapse(g.dir)">
+                  <ChevronRight :size="12" :class="{ open: g.open }" />{{ g.dir }}<span class="muted-line">· {{ g.files.length }}</span>
+                </button>
+                <div v-for="f in g.files" v-show="g.open" :key="f.path" class="file">
+                  <label class="file-label">
+                    <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
+                    <code class="xy" :title="`index ${f.x} · worktree ${f.y}`">{{ f.x }}{{ f.y }}</code>
+                    <span class="path" :title="f.path">{{ f.path }}</span>
+                    <span v-if="numChip(f)" class="nums" :class="{ bin: numChip(f) === 'bin' }">{{ numChip(f) }}</span>
+                  </label>
+                  <span class="file-acts">
+                    <button class="icon-button" title="view diff" @click="showDiff(f.path)"><Eye :size="13" /></button>
+                    <button v-if="f.x === '?'" class="icon-button" title="add to .gitignore" @click="ignorePaths([f.path])"><Ban :size="13" /></button>
+                    <button v-else class="icon-button" title="stage (git add)" @click="fileAction('stage', f.path)"><Plus :size="13" /></button>
+                    <button v-if="f.x !== '?'" class="icon-button" title="roll back to HEAD" @click="fileAction('discard', f.path)"><CornerUpLeft :size="13" /></button>
+                    <button class="icon-button" title="copy path" @click="copyPath(f.path)"><Copy :size="13" /></button>
+                  </span>
+                </div>
+              </template>
             </div>
             <p v-if="fileDiff" class="file-diff">
               <strong>{{ fileDiff.path }}</strong>
+              <span class="mode-chips">
+                <button :class="{ on: diffMode === 'working' }" @click="diffMode = 'working'; reDiff()">working</button>
+                <button :class="{ on: diffMode === 'staged' }" @click="diffMode = 'staged'; reDiff()">staged</button>
+              </span>
+              <span v-if="diffIsBinary" class="nums bin">binary file</span>
+              <span v-else-if="fileDiff.text.length > 8000" class="nums">truncated at 8000 chars</span>
               <button class="icon-button" title="close diff" @click="fileDiff = null"><X :size="13" /></button>
-              <pre>{{ fileDiff.text.slice(0, 8000) }}</pre>
+              <pre v-if="!diffIsBinary">{{ fileDiff.text.slice(0, 8000) }}</pre>
             </p>
             <textarea
               v-model="commitMsg"
               rows="4"
               placeholder="Commit message…  (Ctrl+Enter to commit)"
-              @keydown.enter.exact.prevent="commit"
-              @keydown.meta.enter.prevent="commit"
-              @keydown.ctrl.enter.prevent="commit"
+              @keydown.enter.exact.prevent="commit()"
+              @keydown.meta.enter.prevent="commit()"
+              @keydown.ctrl.enter.prevent="commit()"
             />
-            <button class="primary small" :disabled="!!busy || !commitMsg.trim() || !someChecked" @click="commit">
-              <Check :size="14" /> Commit{{ checked.size ? ` ${checked.size} file${checked.size > 1 ? "s" : ""}` : "" }}
-            </button>
+            <div class="row">
+              <button class="small" :disabled="!!busy || !checked.size" title="ask the device's model for a message" @click="aiMessage"><Sparkles :size="14" /> ai message</button>
+              <span class="grow" />
+              <button class="primary small" :disabled="!!busy || !commitMsg.trim() || !someChecked" @click="commit(false)">
+                <Check :size="14" /> Commit{{ checked.size ? ` ${checked.size} file${checked.size > 1 ? "s" : ""}` : "" }}
+              </button>
+              <button v-if="status.upstream" class="primary small" :disabled="!!busy || !commitMsg.trim() || !someChecked" title="commit, then push" @click="commit(true)">
+                <Check :size="14" /> Commit &amp; push
+              </button>
+            </div>
           </section>
 
-          <!-- LOG -->
+          <!-- LOG: swimlane graph + expandable commits + checkpoints -->
           <section class="task-section" aria-label="Log">
             <div class="panel-heading">
               <h4><History :size="16" /> Log</h4>
+              <span class="grow" />
+              <button class="small" :disabled="!!busy" title="save a checkpoint ref of HEAD" @click="saveCheckpoint"><Flag :size="13" /> checkpoint</button>
+              <button class="small" :disabled="!!busy" @click="cpsOpen = !cpsOpen">checkpoints {{ checkpoints.length ? `(${checkpoints.length})` : "" }}</button>
               <button class="icon-button" :disabled="logLoading" title="refresh log" @click="loadLog(true)"><RefreshCw :size="14" /></button>
+            </div>
+            <div v-if="cpsOpen" class="cps">
+              <p v-if="!checkpoints.length" class="hint">no checkpoints yet — one click saves a named ref of HEAD.</p>
+              <div v-for="cp in checkpoints" :key="cp.name" class="cp-row">
+                <code>{{ cp.name }}</code>
+                <span class="muted-line">{{ cp.hash }} · {{ cp.date }}</span>
+                <span class="cp-subj">{{ cp.subject }}</span>
+                <span class="grow" />
+                <button class="small" :disabled="!!busy" title="reset --hard to this checkpoint (this worktree)" @click="rewind(cp.name)"><Undo2 :size="13" /> rewind</button>
+              </div>
             </div>
             <p v-if="logLoading && !commits.length" class="hint">loading log…</p>
             <div v-else-if="commits.length" class="commits">
-              <div v-for="c in commits" :key="c.hash" class="commit-row" :title="c.refs">
-                <code class="hash">{{ c.hash }}</code>
-                <span v-if="c.refs" class="refs">{{ c.refs.split(",")[0] }}</span>
-                <span class="subject">{{ c.subject }}</span>
-                <span class="muted-line who">{{ c.author }} · {{ c.date }}</span>
-              </div>
+              <template v-for="(c, i) in commits" :key="c.hash">
+                <div class="commit-row" :title="c.refs">
+                  <svg v-if="lanes[i]" class="lane" :width="lanes[i].width * 12 + 4" height="24" aria-hidden="true">
+                    <line v-for="l in lanes[i].width" :key="l" :x1="laneX(l - 1)" :x2="laneX(l - 1)" y1="0" y2="24" :stroke="'#3a3134'" stroke-width="2" />
+                    <line v-for="(pl, j) in lanes[i].parents" :key="'p' + j" :x1="laneX(lanes[i].lane)" :x2="laneX(pl)" y1="12" y2="24" :stroke="LANE_COLORS[pl % LANE_COLORS.length]" stroke-width="2" />
+                    <circle :cx="laneX(lanes[i].lane)" cy="12" r="4" :fill="LANE_COLORS[lanes[i].lane % LANE_COLORS.length]" />
+                  </svg>
+                  <button class="icon-button hash-btn" title="files in this commit" @click="loadCommitFiles(c.hash)"><ChevronRight :size="12" :class="{ open: expanded.has(c.hash) }" /></button>
+                  <code class="hash">
+                    <a v-if="remoteWeb" :href="`${remoteWeb}/commit/${c.hash}`" target="_blank" rel="noopener" title="on the remote">{{ c.hash }}</a>
+                    <template v-else>{{ c.hash }}</template>
+                  </code>
+                  <span v-if="c.refs" class="refs">{{ c.refs.split(",")[0] }}</span>
+                  <span class="subject">{{ c.subject }}</span>
+                  <span class="muted-line who">{{ c.author }} · {{ c.date }}</span>
+                </div>
+                <div v-if="expanded.has(c.hash)" class="commit-files">
+                  <div v-for="f in expanded.get(c.hash)" :key="f.path" class="cf">
+                    <code class="cf-status" :data-s="f.status">{{ f.status }}</code>
+                    <span class="path">{{ f.path }}</span>
+                  </div>
+                  <p v-if="!expanded.get(c.hash)?.length" class="hint">no files (merge/empty commit)</p>
+                </div>
+              </template>
             </div>
             <p v-else-if="logError" class="message-error">log failed: {{ logError }}</p>
             <p v-else class="hint">no commits</p>
@@ -404,6 +883,7 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
               <code :title="w.path">{{ w.path }}</code>
               <span class="muted-line">{{ w.branch ?? w.head }}</span>
               <span class="grow" />
+              <button class="icon-button" :disabled="!!busy" title="jump to this worktree (session or new)" @click="goToWorktree(w.path)"><ArrowRight :size="13" /></button>
               <button class="small" :disabled="!!busy" title="create a session on this worktree" @click="sessionOn(w.path, w.branch)">session</button>
               <button v-if="w.path !== status.root" class="icon-button" :disabled="!!busy" @click="removeWorktree(w.path)"><X :size="13" /></button>
               <Check v-if="w.path === status.root" :size="13" class="muted-line" />
@@ -432,29 +912,51 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
 .menu button:hover, .menu button.cur { background: #403536; }
 .menu .new-branch { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
 .menu .new-branch input { flex: 1; min-width: 0; }
+.auto-stash { display: flex; gap: 8px; align-items: center; padding: 8px 10px; font-size: 14px; opacity: 0.85; }
 .muted-line { opacity: 0.65; font-size: 13px; }
 .cap { padding: 4px 0; }
-.row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
-.files { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; align-items: center; }
+.hintbox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 6px 10px; border-radius: 6px; margin: 4px 0; }
+.hintbox.warn { border: 1px solid var(--warn, #e5a50a); color: var(--warn, #e5a50a); }
+.merge-banner { padding: 8px 10px; border-radius: 6px; }
+.files { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; }
 .file { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 0; }
 .file.all { border-bottom: 1px solid var(--line); }
 .file-label { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; cursor: pointer; }
 .file .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .file .xy { opacity: 0.7; font-size: 12px; }
+.nums { font-size: 11px; opacity: 0.8; color: var(--ok, #2ea043); white-space: nowrap; }
+.nums.bin { color: var(--warn, #e5a50a); }
+.dir-row { display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 0; font-size: 13px; opacity: 0.8; }
+.dir-row .open { transform: rotate(90deg); }
 .file-acts { display: flex; gap: 2px; }
-.file-diff { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
-.file-diff pre { max-height: 260px; overflow: auto; font-size: 12px; margin: 6px 0 0; }
+.file-diff { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.file-diff pre { max-height: 260px; overflow: auto; font-size: 12px; margin: 6px 0 0; width: 100%; }
+.mode-chips { display: inline-flex; gap: 2px; }
+.mode-chips button { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); }
+.mode-chips button.on { background: #403536; }
 textarea { width: 100%; resize: vertical; min-height: 76px; font: inherit; margin-top: 8px; }
-.commits { max-height: 320px; overflow: auto; display: grid; gap: 3px; }
-.commit-row { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
+.commits { max-height: 340px; overflow: auto; display: grid; gap: 3px; }
+.commit-row { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.commit-row .lane { flex-shrink: 0; }
 .commit-row .hash { color: var(--ok, #2ea043); font-size: 13px; }
+.hash-btn svg { transition: transform 0.1s; }
+.hash-btn svg.open { transform: rotate(90deg); }
 .commit-row .refs { color: var(--warn, #e5a50a); font-size: 12px; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
-.commit-row .subject { overflow: hidden; text-overflow: ellipsis; max-width: 42%; font-size: 14px; }
+.commit-row .subject { overflow: hidden; text-overflow: ellipsis; max-width: 40%; font-size: 14px; }
 .commit-row .who { font-size: 12px; }
+.commit-files { padding: 2px 0 6px 34px; border-left: 2px solid var(--line); margin-left: 16px; }
+.cf { display: flex; gap: 10px; font-size: 13px; padding: 1px 0; }
+.cf-status { font-size: 11px; opacity: 0.8; width: 2ch; }
+.cps { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; margin-bottom: 6px; }
+.cp-row { display: flex; gap: 10px; align-items: center; padding: 2px 0; font-size: 14px; }
+.cp-row code { color: var(--warn, #e5a50a); }
+.cp-subj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
 .wt { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
-.wt code { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 44%; }
+.wt code { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
 .wt.main code { font-weight: 650; }
 .grow { flex: 1; }
+.tag-x { margin-left: 4px; opacity: 0.7; display: inline-flex; }
 .op-out { max-height: 300px; overflow: auto; background: rgb(0 0 0 / 25%); padding: 10px; border-radius: 6px; font-size: 12px; margin-top: 8px; }
 h4 { display: flex; align-items: center; gap: 8px; font-size: 16px; margin: 0; }
 </style>

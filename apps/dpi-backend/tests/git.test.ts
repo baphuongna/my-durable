@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitStatus, gitOp, gitStatusBatch } from "../src/git.ts";
+import { gitStatus, gitOp, gitStatusBatch, clearGitStatusCache } from "../src/git.ts";
 
 const sh = (cmd: string, args: string[], opts: { cwd?: string } = {}) => execFileSync(cmd, args, { ...opts, encoding: "utf8" });
 
@@ -134,5 +134,138 @@ test("gitOp: worktree add/list/remove round trip", async () => {
   assert.match(list.text, /dpi-wt-op/);
   const removed = await gitOp(root, "worktree-remove", { target: wt });
   assert.match(removed.text, /removed/i);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitStatus: ±n line counts from numstat (staged uses cached, worktree uses HEAD diff)", async () => {
+  const root = repo();
+  writeFileSync(join(root, "a.txt"), "one\ntwo\nthree\n"); // +2 lines unstaged
+  writeFileSync(join(root, "new.txt"), "n1\nn2\n");
+  sh("git", ["add", "new.txt"], { cwd: root }); // staged +2
+  const s = await gitStatus(root);
+  const mod = s.files?.find((f) => f.path === "a.txt");
+  assert.equal(mod?.a, 2, `a.txt additions: ${JSON.stringify(mod)}`);
+  const staged = s.files?.find((f) => f.path === "new.txt");
+  assert.equal(staged?.a, 2, `new.txt staged additions: ${JSON.stringify(staged)}`);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitStatus: identity + merge/conflict state (banner + abort)", async () => {
+  const root = repo();
+  const s = await gitStatus(root);
+  assert.equal(s.identity?.name, "t");
+  assert.equal(s.identity?.email, "t@t");
+  assert.equal(s.merge, false);
+  // manufacture a conflict: divergent branches then merge
+  sh("git", ["checkout", "-b", "side"], { cwd: root });
+  writeFileSync(join(root, "a.txt"), "side\n");
+  sh("git", ["commit", "-am", "side change"], { cwd: root });
+  sh("git", ["checkout", "main"], { cwd: root });
+  writeFileSync(join(root, "a.txt"), "main\n");
+  sh("git", ["commit", "-am", "main change"], { cwd: root });
+  let conflicted = false;
+  try {
+    sh("git", ["merge", "side"], { cwd: root });
+  } catch {
+    conflicted = true;
+  }
+  assert.ok(conflicted, "merge must conflict for this test");
+  clearGitStatusCache();
+  const mid = await gitStatus(root);
+  assert.equal(mid.merge, true);
+  assert.ok((mid.conflicts ?? 0) >= 1, `conflicts: ${mid.conflicts}`);
+  const abort = await gitOp(root, "merge-abort");
+  clearGitStatusCache();
+  assert.match(abort.text, /abort/i);
+  const after = await gitStatus(root);
+  assert.equal(after.merge, false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitOp: unstage returns files to the worktree untouched", async () => {
+  const root = repo();
+  writeFileSync(join(root, "c.txt"), "cc\n");
+  sh("git", ["add", "c.txt"], { cwd: root });
+  clearGitStatusCache();
+  let s = await gitStatus(root);
+  assert.ok(s.files?.some((f) => f.path === "c.txt" && f.x === "A"));
+  const r = await gitOp(root, "unstage", { files: ["c.txt"] });
+  assert.match(r.text, /unstaged/i);
+  clearGitStatusCache();
+  s = await gitStatus(root);
+  assert.ok(s.files?.some((f) => f.path === "c.txt" && f.x === "?" ), `c.txt should be untracked again: ${JSON.stringify(s.files)}`);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitOp: compare = ahead/behind vs ANY ref, not just upstream", async () => {
+  const root = repo();
+  sh("git", ["branch", "base"], { cwd: root });
+  writeFileSync(join(root, "x.txt"), "x\n");
+  sh("git", ["add", "."], { cwd: root });
+  sh("git", ["commit", "-m", "ahead one"], { cwd: root });
+  const r = await gitOp(root, "compare", { ref: "base" });
+  assert.equal(r.ahead, 1);
+  assert.equal(r.behind, 0);
+  await assert.rejects(() => gitOp(root, "compare", { ref: "main; rm -rf /" }), /needs a branch name/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitOp: show-files lists one commit's changed files (log row expander)", async () => {
+  const root = repo();
+  writeFileSync(join(root, "y.txt"), "y\n");
+  sh("git", ["add", "."], { cwd: root });
+  sh("git", ["commit", "-m", "add y"], { cwd: root });
+  const hash = sh("git", ["rev-parse", "--short", "HEAD"], { cwd: root }).trim();
+  const r = await gitOp(root, "show-files", { target: hash });
+  assert.ok(r.changed?.some((c) => c.path === "y.txt" && c.status === "A"), JSON.stringify(r.changed));
+  await assert.rejects(() => gitOp(root, "show-files", { target: "HEAD; rm -rf /" }), /commit hash/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitOp: log-list carries parents (swimlane graph input)", async () => {
+  const root = repo();
+  sh("git", ["commit", "--allow-empty", "-m", "second"], { cwd: root });
+  const r = await gitOp(root, "log-list");
+  const first = r.commits?.[0];
+  assert.ok(first?.parents?.length === 1, `parents: ${JSON.stringify(first)}`);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitOp: ignore appends to the repo's .gitignore and nothing else", async () => {
+  const root = repo();
+  const r = await gitOp(root, "ignore", { lines: ["*.log", "build/"] });
+  assert.match(r.text, /\.gitignore/);
+  const gi = (await import("node:fs")).readFileSync(join(root, ".gitignore"), "utf8");
+  assert.match(gi, /\*\.log/);
+  assert.match(gi, /build\//);
+  writeFileSync(join(root, "x.log"), "noise");
+  const s = await gitStatus(root);
+  assert.ok(!s.files?.some((f) => f.path === "x.log"), "ignored file still listed");
+  await assert.rejects(() => gitOp(root, "ignore", { lines: ["a\nb"] }), /bad ignore pattern/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitOp: checkpoint → checkpoints → rewind round trip (refs only, then hard reset)", async () => {
+  const root = repo();
+  const saved = await gitOp(root, "checkpoint", { name: "before-mess" });
+  assert.match(saved.text, /before-mess/);
+  writeFileSync(join(root, "a.txt"), "wrecked\n");
+  sh("git", ["commit", "-am", "wreck it"], { cwd: root });
+  const list = await gitOp(root, "checkpoints");
+  assert.ok(list.checkpoints?.some((c) => c.name === "before-mess"), JSON.stringify(list.checkpoints));
+  const rewound = await gitOp(root, "rewind", { name: "before-mess" });
+  assert.match(rewound.text, /main|HEAD/i);
+  clearGitStatusCache();
+  const s = await gitStatus(root);
+  assert.match(s.subject ?? "", /first/);
+  await assert.rejects(() => gitOp(root, "rewind", { name: "../../evil" }), /checkpoint name/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("gitOp: push -u opt-in passes the branch; pull --rebase is an explicit flag", async () => {
+  // no remote: both must fail with git's own error, not ours — argv shape check via error text
+  const root = repo();
+  await assert.rejects(() => gitOp(root, "push", { setUpstream: true, ref: "main" }), /origin|remote/i);
+  await assert.rejects(() => gitOp(root, "pull", { rebase: true }), /origin|remote|upstream|reference/i);
   rmSync(root, { recursive: true, force: true });
 });

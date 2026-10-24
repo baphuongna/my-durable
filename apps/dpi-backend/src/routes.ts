@@ -11,7 +11,7 @@ import type { DevicePairing } from "./pairing.js";
 type Async = (req: Request, res: Response) => Promise<unknown>;
 const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
 import { gitOp, gitStatus, gitStatusBatch, type GitOp } from "./git.ts";
-const GIT_OPS: GitOp[] = ["diff", "log", "log-list", "fetch", "pull", "push", "switch", "branch", "commit", "stage", "discard", "diff-file", "stash-push", "stash-pop", "worktree-list", "worktree-add", "worktree-remove"];
+const GIT_OPS: GitOp[] = ["diff", "log", "log-list", "fetch", "pull", "push", "switch", "branch", "commit", "stage", "unstage", "discard", "diff-file", "stash-push", "stash-pop", "compare", "merge-abort", "show-files", "ignore", "checkpoint", "checkpoints", "rewind", "worktree-list", "worktree-add", "worktree-remove"];
 
 interface Locals {
   row: SessionRow;
@@ -138,6 +138,13 @@ export function v1(
       message: body.message,
       target: body.target,
       files: Array.isArray(body.files) ? body.files.map(String).slice(0, 500) : undefined,
+      // booleans stay booleans: gitOp validates names/refs itself.
+      create: body.create === true,
+      staged: body.staged === true,
+      rebase: body.rebase === true,
+      setUpstream: body.setUpstream === true,
+      name: typeof body.name === "string" ? body.name : undefined,
+      lines: Array.isArray(body.lines) ? body.lines.map(String).slice(0, 50) : undefined,
     });
     res.json(out);
   }));
@@ -159,6 +166,9 @@ export function v1(
   r.patch("/sessions/:s/compaction", route(async (req, res) => res.json(store.setCompaction(L(res).row, req.body ?? {}))));
   r.delete("/sessions/:s", route(async (_req, res) => res.json(await store.archive(L(res).row))));
   r.get("/sessions/:s/events", route(async (_req, res) => sessionStream(store, L(res).row, res)));
+  // The zcode flagship, adapted: which files has THIS session's agent touched?
+  // Powers "commit session changes" in the git panel.
+  r.get("/sessions/:s/git-files", route(async (_req, res) => res.json({ files: await store.sessionTouchedFiles(L(res).row) })));
   r.get(
     "/sessions/:s/tasks",
     route(async (req, res) => {

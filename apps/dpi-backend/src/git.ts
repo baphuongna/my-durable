@@ -9,7 +9,8 @@
  *         worktree-add, worktree-remove
  */
 import { execFile } from "node:child_process";
-import { dirname, isAbsolute } from "node:path";
+import { appendFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 
 const GIT_TIMEOUT = 15_000;
 /** `git status` on a big Windows checkout (AV scanning, node_modules) can
@@ -58,8 +59,16 @@ export interface GitStatus {
   worktreeOf?: string;
   worktrees?: { path: string; branch: string | null; head: string }[];
   /** Changed files (porcelain XY + path), capped — the IntelliJ-style commit
-   *  dialog checks exactly these. */
-  files?: { path: string; x: string; y: string }[];
+   *  dialog checks exactly these. ±n line counts come from numstat (-1 = binary). */
+  files?: { path: string; x: string; y: string; a?: number; d?: number }[];
+  /** A merge (with conflicts) is in progress — the banner + abort action. */
+  merge?: boolean;
+  /** Unmerged paths (UU/AA/DD/AU/UA/DU/UD). */
+  conflicts?: number;
+  /** Commit identity from config — warn before committing without one. */
+  identity?: { name?: string; email?: string };
+  /** `origin` URL, parsed by the UI into an open-in-remote link. */
+  remoteUrl?: string;
   /** Local branches for pickers — nobody should TYPE a name that exists. */
   branches?: { name: string; current?: boolean; upstream?: string }[];
 }
@@ -70,6 +79,11 @@ export async function gitStatusBatch(paths: string[]): Promise<Record<string, Gi
   const unique = [...new Set(paths.filter(Boolean))];
   const entries = await Promise.all(unique.map(async (p) => [p, await gitStatus(p)] as const));
   return Object.fromEntries(entries);
+}
+
+/** Test hook: the TTL cache would serve a pre-mutation answer. */
+export function clearGitStatusCache() {
+  statusCache.clear();
 }
 
 /** Structured status for a folder: everything the UIs show, one call. */
@@ -86,13 +100,20 @@ export async function gitStatus(path: string): Promise<GitStatus> {
     out.root = root;
     // Everything after toplevel runs in PARALLEL — status is the long pole
     // (20s+ on big Windows checkouts) and must not wait for four fast calls.
-    const [branchP, headP, statusP, gitDirP, wlP, branchesP] = await Promise.allSettled([
+    const [branchP, headP, statusP, gitDirP, wlP, branchesP, numWorkP, numIdxP, mergeP, nameP, emailP, remoteP] = await Promise.allSettled([
       git(path, ["branch", "--show-current"]),
       git(path, ["log", "-1", "--pretty=%h%x09%s"]),
       git(path, ["--no-optional-locks", "status", "--porcelain=v1", "-b"], GIT_SLOW_TIMEOUT),
       git(path, ["rev-parse", "--git-dir"]),
       git(path, ["worktree", "list", "--porcelain"], GIT_SLOW_TIMEOUT),
       git(path, ["for-each-ref", "refs/heads", "--format=%(refname:short)%09%(upstream:short)%09%(if)%(HEAD)%(then)1%(else)0%(end)"]),
+      git(path, ["--no-optional-locks", "diff", "--numstat", "--no-renames"], GIT_SLOW_TIMEOUT),
+      git(path, ["--no-optional-locks", "diff", "--numstat", "--cached", "--no-renames"]),
+      // MERGE_HEAD exists ⇔ a merge is waiting to be resolved.
+      git(path, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]),
+      git(path, ["config", "user.name"]),
+      git(path, ["config", "user.email"]),
+      git(path, ["remote", "get-url", "origin"]),
     ]);
     const branch = branchP.status === "fulfilled" ? branchP.value : "";
     out.branch = branch.trim() || undefined;
@@ -121,11 +142,31 @@ export async function gitStatus(path: string): Promise<GitStatus> {
     }
     // Per line — a ^-anchored regex on the joined blob only ever sees line 1.
     const body = lines.slice(1).filter(Boolean);
-    out.files = body.slice(0, 500).map((l) => ({
-      path: l.slice(3).replace(/^"|"$/g, ""),
-      x: l[0] ?? " ",
-      y: l[1] ?? " ",
-    }));
+    out.merge = mergeP.status === "fulfilled";
+    out.conflicts = count(body.join("\n"), /^(UU|AA|DD|AU|UA|DU|UD)/gm);
+    out.identity = {
+      name: nameP.status === "fulfilled" ? nameP.value.trim() || undefined : undefined,
+      email: emailP.status === "fulfilled" ? emailP.value.trim() || undefined : undefined,
+    };
+    if (remoteP.status === "fulfilled") out.remoteUrl = remoteP.value.trim() || undefined;
+    // ±n per file: worktree-vs-index numstat for unstaged paths, cached for staged.
+    const numstat = (raw: string) => {
+      const m = new Map<string, { a: number; d: number }>();
+      for (const l of raw.split("\n")) {
+        const mt = l.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
+        if (!mt) continue;
+        m.set(mt[3]!, { a: mt[1] === "-" ? -1 : Number(mt[1]), d: mt[2] === "-" ? -1 : Number(mt[2]) });
+      }
+      return m;
+    };
+    const workNum = numstat(numWorkP.status === "fulfilled" ? numWorkP.value : "");
+    const idxNum = numstat(numIdxP.status === "fulfilled" ? numIdxP.value : "");
+    out.files = body.slice(0, 500).map((l) => {
+      const p = l.slice(3).replace(/^"|"$/g, "");
+      const staged = l[0] !== " " && l[0] !== "?";
+      const n = staged ? idxNum.get(p) : workNum.get(p);
+      return { path: p, x: l[0] ?? " ", y: l[1] ?? " ", ...(n ? { a: n.a, d: n.d } : {}) };
+    });
     if (branchesP.status === "fulfilled")
       out.branches = branchesP.value
         .split("\n")
@@ -181,7 +222,15 @@ export type GitOp =
   | "discard"
   | "diff-file"
   | "stash-push"
-  | "stash-pop";
+  | "stash-pop"
+  | "unstage"
+  | "compare"
+  | "merge-abort"
+  | "show-files"
+  | "ignore"
+  | "checkpoint"
+  | "checkpoints"
+  | "rewind";
 
 /** Plain string an arg may never contain — we build argv ourselves anyway. */
 const safeRef = (s: string) => /^[\w./@+-]+$/.test(s) && !s.includes("..");
@@ -198,9 +247,24 @@ export async function gitOp(
     files?: string[];
     create?: boolean;
     staged?: boolean;
+    /** pull: opt in to --rebase when --ff-only would fail. */
+    rebase?: boolean;
+    /** push: set upstream (-u origin <ref>). */
+    setUpstream?: boolean;
+    /** checkpoint name. */
+    name?: string;
+    /** ignore: pattern lines to append to .gitignore. */
+    lines?: string[];
   } = {},
-): Promise<{ text: string; commits?: { hash: string; refs: string; author: string; date: string; subject: string }[] }> {
-  const { ref, message, target, branch, files, create, staged } = opts;
+): Promise<{
+  text: string;
+  commits?: { hash: string; refs: string; author: string; date: string; subject: string; parents: string[] }[];
+  ahead?: number;
+  behind?: number;
+  changed?: { status: string; path: string }[];
+  checkpoints?: { name: string; hash: string; date: string; subject: string }[];
+}> {
+  const { ref, message, target, branch, files, create, staged, rebase, setUpstream, name, lines } = opts;
   switch (op) {
     case "diff":
       return { text: await git(path, ["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
@@ -208,9 +272,10 @@ export async function gitOp(
       return { text: (await git(path, ["--no-pager", "log", "--oneline", "-n", "30", ...(ref && safeRef(ref) ? [ref] : [])])).trimEnd() };
     case "log-list": {
       // IntelliJ's log window: hash, refs, author, date, subject — structured.
+      // %p = parents — the swimlane graph is computed from these on the UI.
       const raw = await git(
         path,
-        ["--no-pager", "log", "-n", "50", "--date=short", "--pretty=format:%h%x1f%D%x1f%an%x1f%ad%x1f%s"],
+        ["--no-pager", "log", "-n", "50", "--date=short", "--pretty=format:%h%x1f%D%x1f%an%x1f%ad%x1f%s%x1f%p"],
       );
       return {
         text: "",
@@ -218,15 +283,24 @@ export async function gitOp(
           .split("\n")
           .filter(Boolean)
           .map((l) => {
-            const [hash, refs, author, date, subject] = l.split("\x1f");
-            return { hash: hash ?? "", refs: refs ?? "", author: author ?? "", date: date ?? "", subject: subject ?? "" };
+            const [hash, refs, author, date, subject, parents] = l.split("\x1f");
+            return {
+              hash: hash ?? "",
+              refs: refs ?? "",
+              author: author ?? "",
+              date: date ?? "",
+              subject: subject ?? "",
+              parents: (parents ?? "").split(" ").filter(Boolean),
+            };
           }),
       };
     }
     case "fetch":
       return { text: (await git(path, ["fetch", "--all", "--prune"])).trim() || "fetched" };
     case "pull":
-      return { text: (await git(path, ["pull", "--ff-only"])).trim() || "up to date" };
+      // --ff-only stays the default; --rebase is an explicit opt-in the UI
+      // offers only after a ff-only failure.
+      return { text: (await git(path, ["pull", ...(rebase ? ["--rebase"] : ["--ff-only"])])).trim() || "up to date" };
     case "branch":
       return { text: (await git(path, ["--no-pager", "branch", "-vv"])).trimEnd() };
     case "switch": {
@@ -234,8 +308,13 @@ export async function gitOp(
       // create:true = git switch -c — IntelliJ's "new branch" action.
       return { text: (await git(path, ["switch", ...(create ? ["-c"] : []), ref])).trim() };
     }
-    case "push":
+    case "push": {
+      if (setUpstream) {
+        if (!ref || !safeRef(ref)) throw Error("push -u needs a branch name");
+        return { text: (await git(path, ["push", "-u", "origin", ref], GIT_SLOW_TIMEOUT)).trim() || `pushed, upstream set to origin/${ref}` };
+      }
       return { text: (await git(path, ["push"], GIT_SLOW_TIMEOUT)).trim() || "pushed (or nothing to push)" };
+    }
     case "stage": {
       if (!files?.length) throw Error("stage needs files");
       return { text: (await git(path, ["add", "--", ...files])).trim() || `staged ${files.length} file(s)` };
@@ -253,6 +332,86 @@ export async function gitOp(
       return { text: (await git(path, ["stash", "push", ...(message ? ["-m", message] : [])])).trim() || "stashed" };
     case "stash-pop":
       return { text: (await git(path, ["stash", "pop"])).trim() || "stash popped" };
+    case "unstage": {
+      // IntelliJ's Unstage: index only, worktree keeps its changes.
+      if (!files?.length) throw Error("unstage needs files");
+      try {
+        return { text: (await git(path, ["reset", "-q", "HEAD", "--", ...files])).trim() || `unstaged ${files.length} file(s)` };
+      } catch {
+        // unborn branch: HEAD does not resolve yet — reset against the empty tree.
+        return { text: (await git(path, ["reset", "-q", "--", ...files])).trim() || `unstaged ${files.length} file(s)` };
+      }
+    }
+    case "compare": {
+      // ahead/behind vs ANY ref, not just the upstream (orca git-bridge).
+      if (!ref || !safeRef(ref)) throw Error("compare needs a branch name");
+      const raw = await git(path, ["rev-list", "--left-right", "--count", `${ref}...HEAD`]);
+      const [behind = "0", ahead = "0"] = raw.trim().split(/\s+/);
+      return { text: `${Number(ahead)} ahead, ${Number(behind)} behind of ${ref}`, ahead: Number(ahead), behind: Number(behind) };
+    }
+    case "merge-abort":
+      try {
+        return { text: (await git(path, ["merge", "--abort"])).trim() || "merge aborted" };
+      } catch {
+        return { text: (await git(path, ["rebase", "--abort"])).trim() || "rebase aborted" };
+      }
+    case "show-files": {
+      // What one commit touched — the log row expander.
+      if (!target || !/^[0-9a-f]{4,40}$/.test(target)) throw Error("show-files needs a commit hash");
+      const raw = await git(path, ["--no-pager", "show", "--name-status", "--pretty=format:", "--no-renames", "-m", "--first-parent", target]);
+      return {
+        text: "",
+        changed: raw
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .slice(0, 200)
+          .map((l) => {
+            const [status, p] = l.split(/\t/);
+            return { status: status ?? "", path: p ?? l };
+          }),
+      };
+    }
+    case "ignore": {
+      // Appends to the repo's OWN .gitignore — root comes from git, not the caller.
+      if (!lines?.length) throw Error("ignore needs pattern lines");
+      if (lines.length > 50) throw Error("ignore takes at most 50 lines");
+      for (const l of lines) if (!l.trim() || l.length > 200 || /[\n\r\0]/.test(l)) throw Error("bad ignore pattern");
+      const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
+      await appendFile(join(root, ".gitignore"), `\n${lines.join("\n")}\n`, "utf8");
+      return { text: `added to .gitignore: ${lines.join(", ")}` };
+    }
+    case "checkpoint": {
+      // A named ref of HEAD — the rewind target. Never touches the worktree.
+      if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw Error("checkpoint needs a name (letters, digits, ._-)");
+      const refname = `refs/dpi/checkpoints/${name}`;
+      await git(path, ["update-ref", refname, "HEAD"]);
+      return { text: `checkpoint ${name} saved` };
+    }
+    case "checkpoints": {
+      const raw = await git(path, [
+        "--no-pager", "for-each-ref", "refs/dpi/checkpoints",
+        "--format=%(refname:strip=3)%09%(objectname:short)%09%(committerdate:short)%09%(contents:subject)",
+      ]);
+      return {
+        text: "",
+        checkpoints: raw
+          .split("\n")
+          .filter(Boolean)
+          .slice(0, 50)
+          .map((l) => {
+            const [full, hash, date, subject] = l.split("\t");
+            return { name: full ?? "", hash: hash ?? "", date: date ?? "", subject: (subject ?? "").slice(0, 80) };
+          }),
+      };
+    }
+    case "rewind": {
+      // reset --hard to one of OUR checkpoint refs only — never an arbitrary ref.
+      if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw Error("rewind needs a checkpoint name");
+      const refname = `refs/dpi/checkpoints/${name}`;
+      const sha = (await git(path, ["rev-parse", "--verify", refname])).trim();
+      return { text: (await git(path, ["reset", "--hard", sha])).trim().split("\n")[0] ?? `rewound to ${name}` };
+    }
     case "commit": {
       const msg = (message ?? "").trim();
       if (!msg) throw Error("commit needs a message");

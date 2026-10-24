@@ -260,6 +260,52 @@ test("GitPanel: IntelliJ shape — COMMIT always visible + structured LOG", asyn
   assert.match(s, /!someChecked/, "commit disabled with nothing checked (changelist semantics)");
 });
 
+test("GitPanel: Wave 1b/2/3 — the full checklist lands in one panel", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");
+  // Wave 1b
+  assert.match(s, /unstageFiles/, "unstage op missing");
+  assert.match(s, /git reset HEAD/, "unstage title missing");
+  assert.match(s, /numChip/, "±n line counts missing");
+  assert.match(s, /compareWith/, "base-compare missing");
+  assert.match(s, /sessionGitFiles/, "session-scoped commit missing");
+  assert.match(s, /Commit &amp; push|commit\(true\)/, "commit&push missing");
+  assert.match(s, /merge-abort/, "conflict abort missing");
+  assert.match(s, /noIdentity/, "identity check missing");
+  assert.match(s, /CONTAINS uncommitted changes/, "worktree loss warning missing");
+  // Wave 2
+  assert.match(s, /aiMessage/, "ai commit message missing");
+  assert.match(s, /loadCommitFiles/, "expand files per commit missing");
+  assert.match(s, /show-files/, "show-files op missing");
+  assert.match(s, /lanes = computed/, "swimlane graph missing");
+  assert.match(s, /LANE_COLORS/, "lane colors missing");
+  assert.match(s, /diffIsBinary/, "binary label missing");
+  assert.match(s, /pushHint/, "push recovery hints missing");
+  assert.match(s, /pull --rebase|rebase: true/, "pull rebase fallback missing");
+  assert.match(s, /auto-stash on switch/, "auto-stash toggle missing");
+  assert.match(s, /ignorePaths/, ".gitignore helper missing");
+  assert.match(s, /remoteWeb/, "open in remote missing");
+  assert.match(s, /goToWorktree/, "worktree palette quick-switch missing");
+  assert.match(s, /dpi-git-draft/, "commit draft persistence missing");
+  assert.match(s, /copyPath/, "copy-path action missing");
+  assert.match(s, /grouped\(/, "folder grouping missing");
+  // Wave 3
+  assert.match(s, /saveCheckpoint/, "checkpoints missing");
+  assert.match(s, /rewind\(/, "rewind missing");
+  assert.match(s, /mode-chips/, "diff modes (working/staged) missing");
+  const be = await readFile(new URL("../../dpi-backend/src/git.ts", import.meta.url), "utf8");
+  for (const op of ["unstage", "compare", "merge-abort", "show-files", "ignore", "checkpoint", "checkpoints", "rewind"]) {
+    assert.ok(be.includes(`"${op}"`) || be.includes(`"${op}":`), `device op ${op} missing`);
+  }
+  assert.match(be, /numstat/, "numstat missing on device");
+  assert.match(be, /MERGE_HEAD/, "merge detection missing");
+  assert.match(be, /refs\/dpi\/checkpoints\//, "checkpoint ref namespace missing");
+  const sdk = await readFile(new URL("../../dpi-sdk/src/client.ts", import.meta.url), "utf8");
+  assert.match(sdk, /sessionGitFiles/, "sdk sessionGitFiles missing");
+  const allow = await readFile(new URL("../../dpi-sdk/src/protocol/rest-routes.ts", import.meta.url), "utf8");
+  assert.match(allow, /git-files/, "tunnel allowlist missing git-files");
+});
+
 test("GitPanel: Wave 1a — staged/unstaged split, ctrl+enter, log errors, cap banner", async () => {
   const { readFile } = await import("node:fs/promises");
   const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");

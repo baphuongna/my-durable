@@ -717,6 +717,45 @@ export class Store {
     }, ctx);
   }
 
+  /**
+   * zcode's flagship, adapted: the paths this session's agents have written or
+   * edited — the "commit session changes" changelist. Read-only scan of every
+   * conversation's stored entries for write/edit tool calls; caps keep big
+   * sessions cheap. No worktree is touched.
+   */
+  async sessionTouchedFiles(row: SessionRow): Promise<string[]> {
+    const h = await this.openAgent(row);
+    const paths = new Set<string>();
+    await h.commit(async (tx) => {
+      let convs = await tx.scanConversations({}, 1000);
+      const records = [...convs.items];
+      while (convs.next && records.length < 100) {
+        convs = await tx.scanConversations({}, 1000, convs.next);
+        records.push(...convs.items);
+      }
+      for (const c of records) {
+        let page = await tx.scanEntries({ conversationId: c.id }, 500);
+        let seen = 0;
+        for (;;) {
+          for (const e of page.items as unknown as { model?: readonly { content?: unknown }[] }[]) {
+            for (const m of e.model ?? []) {
+              const blocks = Array.isArray(m.content) ? (m.content as unknown[]) : [];
+              for (const b of blocks as { type?: string; name?: string; arguments?: Record<string, unknown> }[]) {
+                if (b?.type !== "toolCall" || (b.name !== "write" && b.name !== "edit")) continue;
+                const f = b.arguments?.file_path;
+                if (typeof f === "string" && f.length > 0 && f.length < 4096) paths.add(f);
+              }
+            }
+          }
+          seen += page.items.length;
+          if (!page.next || seen >= 4000 || paths.size >= 800) break;
+          page = await tx.scanEntries({ conversationId: c.id }, 500, page.next);
+        }
+      }
+    }, ctx);
+    return [...paths];
+  }
+
   // ------------------------------------------------------------ agents
 
   private names(sessionId: string) {
