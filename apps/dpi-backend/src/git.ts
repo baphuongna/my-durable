@@ -12,6 +12,13 @@ import { execFile } from "node:child_process";
 import { dirname, isAbsolute } from "node:path";
 
 const GIT_TIMEOUT = 15_000;
+/** `git status` on a big Windows checkout (AV scanning, node_modules) can
+ *  honestly take 20s+ — measured live on the operator's repo. */
+const GIT_SLOW_TIMEOUT = 45_000;
+/** Same-path status within this window returns the cached answer — the UIs
+ *  poll, and a 20s status must not restart on every poll tick. */
+const STATUS_TTL = 5_000;
+const statusCache = new Map<string, { at: number; s: GitStatus }>();
 
 /** The ONE stderr that legitimately means "no repo here" — anything else
  *  (git missing, permission, timeout) is a failure we must not flatten into
@@ -23,9 +30,9 @@ export function isNotARepoError(e: unknown): boolean {
 }
 
 /** One git call; rejects on non-zero exit with stderr in the message. */
-export function git(cwd: string, args: string[]): Promise<string> {
+export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise<string> {
   return new Promise((ok, fail) => {
-    execFile("git", ["-C", cwd, ...args], { timeout: GIT_TIMEOUT, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile("git", ["-C", cwd, ...args], { timeout, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
       // git chats on stderr for worktree add/switch/fetch — keep both.
       else ok(`${String(stdout)}${String(stdout) && String(stderr) ? "\n" : ""}${String(stderr)}`);
@@ -54,6 +61,8 @@ export interface GitStatus {
 
 /** Structured status for a folder: everything the UIs show, one call. */
 export async function gitStatus(path: string): Promise<GitStatus> {
+  const cached = statusCache.get(path);
+  if (cached && Date.now() - cached.at < STATUS_TTL) return cached.s;
   const out: GitStatus = { repo: false };
   try {
     // Reach git at all before trusting any "empty" answer: git missing from
@@ -62,16 +71,26 @@ export async function gitStatus(path: string): Promise<GitStatus> {
     const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
     out.repo = true;
     out.root = root;
-    const branch = await git(path, ["branch", "--show-current"]);
+    // Everything after toplevel runs in PARALLEL — status is the long pole
+    // (20s+ on big Windows checkouts) and must not wait for four fast calls.
+    const [branchP, headP, statusP, gitDirP, wlP] = await Promise.allSettled([
+      git(path, ["branch", "--show-current"]),
+      git(path, ["log", "-1", "--pretty=%h%x09%s"]),
+      git(path, ["--no-optional-locks", "status", "--porcelain=v1", "-b"], GIT_SLOW_TIMEOUT),
+      git(path, ["rev-parse", "--git-dir"]),
+      git(path, ["worktree", "list", "--porcelain"], GIT_SLOW_TIMEOUT),
+    ]);
+    const branch = branchP.status === "fulfilled" ? branchP.value : "";
     out.branch = branch.trim() || undefined;
     out.detached = !out.branch;
-    const headLine = (await git(path, ["log", "-1", "--pretty=%h%x09%s"])).trim();
+    const headLine = headP.status === "fulfilled" ? headP.value.trim() : "";
     if (headLine) {
       const [h, ...rest] = headLine.split("\t");
       out.head = h;
       out.subject = rest.join("\t").slice(0, 120) || undefined;
     }
-    const status = await git(path, ["status", "--porcelain=v1", "-b"]);
+    if (statusP.status === "rejected") throw statusP.reason;
+    const status = statusP.value;
     const lines = status.split("\n");
     const head2 = lines[0] ?? "";
     // "## main...origin/main [ahead 2, behind 1]" — split by hand: a lazy \S+?
@@ -91,12 +110,14 @@ export async function gitStatus(path: string): Promise<GitStatus> {
     out.staged = count(body.join("\n"), /^[MADRC]/gm);
     out.unstaged = count(body.join("\n"), /^ [MD]/gm);
     out.untracked = count(body.join("\n"), /^\?\?/gm);
-    // Is this folder itself a linked worktree (not the main checkout)?
     // In a linked worktree --git-dir is "<main>/.git/worktrees/<name>";
     // the main checkout is the .git's parent.
-    const gitDir = (await git(path, ["rev-parse", "--git-dir"])).trim();
-    if (gitDir.includes("/worktrees/")) out.worktreeOf = dirname(gitDir.split("/worktrees/")[0]!);
-    const wl = await git(path, ["worktree", "list", "--porcelain"]);
+    const gitDir = (gitDirP.status === "fulfilled" ? gitDirP.value : "").trim();
+    if (gitDir.includes("/worktrees/") || gitDir.includes("\\worktrees\\"))
+      out.worktreeOf = dirname(gitDir.split(/[/\\]worktrees[/\\]/)[0]!);
+    if (wlP.status === "rejected") throw wlP.reason;
+    const wl = wlP.value;
+    statusCache.set(path, { at: Date.now(), s: out });
     out.worktrees = wl
       .split("\n\n")
       .map((b) => b.trim())

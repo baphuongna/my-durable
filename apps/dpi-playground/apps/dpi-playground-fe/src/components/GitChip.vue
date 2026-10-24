@@ -35,7 +35,7 @@ if (!import.meta.env.SSR) void refresh();
 onServerPrefetch(() => refresh());
 watch(cwd, () => void refresh());
 onMounted(() => {
-  timer = setInterval(refresh, 15000);
+  timer = setInterval(refresh, 60000);
 });
 onBeforeUnmount(() => timer && clearInterval(timer));
 

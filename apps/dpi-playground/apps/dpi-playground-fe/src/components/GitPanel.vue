@@ -31,9 +31,12 @@ async function refresh() {
   const first = !status.value;
   if (first) loading.value = true;
   else refreshing.value = true;
+  error.value = ""; // a new attempt must not stack on the old verdict
   inFlight = (async () => {
     try {
-      status.value = await c.gitStatus(cwd.value);
+      // Big checkouts honestly take 20s+ (measured on the operator's repo):
+      // wait for the truth instead of declaring the device unreachable.
+      status.value = await c.gitStatus(cwd.value, { timeoutMs: 60_000 });
       error.value = "";
     } catch (e) {
       const raw = (e as Error).message ?? "";
@@ -57,7 +60,7 @@ async function refresh() {
 if (!import.meta.env.SSR) void refresh();
 onServerPrefetch(() => refresh());
 onMounted(() => {
-  timer = setInterval(refresh, 10000);
+  timer = setInterval(refresh, 30000);
 });
 onBeforeUnmount(() => timer && clearInterval(timer));
 // The operator switching sessions changes cwd — refetch for the new folder.

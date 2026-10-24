@@ -169,9 +169,10 @@ export class DpiClient {
   }
 
   // ------------------------------------------------------------ git
-  /** Structured git status for a folder on the device (repo:false when none). */
-  gitStatus(path: string) {
-    return this.request<GitStatus>("GET", `/v1/git/status?path=${enc(path)}`);
+  /** Structured git status for a folder on the device (repo:false when none).
+   *  Big Windows repos can honestly take 20s+ — pass a longer timeoutMs. */
+  gitStatus(path: string, options: { timeoutMs?: number } = {}) {
+    return this.request<GitStatus>("GET", `/v1/git/status?path=${enc(path)}`, undefined, options);
   }
   /** One whitelisted git operation; see the device's git.ts for the op list. */
   gitOp(path: string, op: GitOpName, opts: { ref?: string; branch?: string; message?: string; target?: string } = {}) {
