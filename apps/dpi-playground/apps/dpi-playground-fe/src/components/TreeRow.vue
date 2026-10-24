@@ -25,8 +25,12 @@ const props = defineProps<{
   selected: boolean;
   focused: boolean;
   online: boolean;
+  /** Bulk-manage mode (orca ManageSessions): when set, session rows show a
+   *  checkbox instead of the action menu. */
+  checkbox?: boolean;
+  checked?: boolean;
 }>();
-const emit = defineEmits<{ toggle: []; activate: []; action: [name: string] }>();
+const emit = defineEmits<{ toggle: []; activate: []; action: [name: string]; check: [] }>();
 
 const hasChildren = computed(() => props.node.children.length > 0);
 const device = computed(() => (props.node.type === "device" ? props.node.device : undefined));
@@ -139,6 +143,16 @@ const title = computed(() => {
       </span>
     </template>
     <template v-else-if="session">
+      <input
+        v-if="checkbox"
+        type="checkbox"
+        class="bulk-check"
+        :checked="checked"
+        :aria-label="`Select ${label}`"
+        tabindex="-1"
+        @click.stop
+        @change="emit('check')"
+      />
       <FolderOpen class="ico" :size="16" />
       <b class="name">{{ label }}</b>
       <span class="path">…/{{ session.cwd.split("/").filter(Boolean).at(-1) }}</span>
@@ -201,3 +215,5 @@ const title = computed(() => {
     </template>
   </div>
 </template>
+
+<style scoped>.bulk-check { margin-left: 2px; flex-shrink: 0; }</style>

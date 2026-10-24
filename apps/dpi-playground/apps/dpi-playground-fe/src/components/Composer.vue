@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ArrowUp, ChevronDown, Clock3, Octagon, X } from "lucide-vue-next";
+import { ArrowUp, ChevronDown, Clock3, LibraryBig, Octagon, Trash2, X } from "lucide-vue-next";
 import type { WhenBusy } from "@sdk/api";
 import { newId } from "../client/ids";
 import { commands, parseCommand, type SlashCommand } from "../client/commands";
@@ -19,6 +19,34 @@ import {
 } from "../client/store";
 
 const mode = ref<WhenBusy>("followUp");
+/** orca QuickCommandsPane, FE-only v1: named snippets in localStorage, one
+ *  click into the composer. Saved prompts never leave the browser. */
+const PROMPTS_KEY = "dpi-prompt-library";
+const libOpen = ref(false);
+const libName = ref("");
+type Snippet = { name: string; text: string };
+const snippets = ref<Snippet[]>([]);
+const loadSnippets = () => {
+  try {
+    snippets.value = JSON.parse(localStorage.getItem(PROMPTS_KEY) ?? "[]") as Snippet[];
+  } catch {
+    snippets.value = [];
+  }
+};
+const saveSnippets = () => localStorage.setItem(PROMPTS_KEY, JSON.stringify(snippets.value));
+loadSnippets();
+const saveCurrent = () => {
+  const text = ui.composer.trim();
+  const name = libName.value.trim() || text.slice(0, 24) || "snippet";
+  if (!text) return;
+  snippets.value = [{ name, text }, ...snippets.value.filter((p) => p.name !== name)].slice(0, 30);
+  saveSnippets();
+  libName.value = "";
+};
+const dropSnippet = (name: string) => {
+  snippets.value = snippets.value.filter((p) => p.name !== name);
+  saveSnippets();
+};
 const pending = ref(false);
 const canSend = computed(
   () =>
@@ -160,6 +188,35 @@ function withdraw(id: number) {
       />
       <div class="composer-toolbar">
         <div class="composer-left">
+          <div class="lib-wrap">
+            <button
+              type="button"
+              class="icon-button"
+              :aria-label="`Prompt library (${snippets.length})`"
+              title="Prompt library — saved snippets"
+              @click="libOpen = !libOpen"
+            >
+              <LibraryBig :size="18" />
+            </button>
+            <div v-if="libOpen" class="lib" @click.stop>
+              <header><b>Prompts</b><button class="icon-button" aria-label="Close library" @click="libOpen = false"><X :size="14" /></button></header>
+              <p v-if="!snippets.length" class="hint">Type something below, give it a name, save it.</p>
+              <div class="save-row">
+                <input v-model="libName" placeholder="name…" @keyup.enter="saveCurrent" />
+                <button type="button" class="small" :disabled="!ui.composer.trim()" @click="saveCurrent">save composer as</button>
+              </div>
+              <ul>
+                <li v-for="p in snippets" :key="p.name">
+                  <button type="button" class="use" :title="p.text" @click="((ui.composer = p.text), (libOpen = false))">
+                    <b>{{ p.name }}</b>
+                  </button>
+                  <button type="button" class="icon-button" :aria-label="`Delete ${p.name}`" @click="dropSnippet(p.name)">
+                    <Trash2 :size="13" />
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </div>
           <div class="queue-mode">
             <select
               v-model="mode"
@@ -196,3 +253,19 @@ function withdraw(id: number) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.lib-wrap { position: relative; }
+.lib {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 70; width: 300px; max-height: 260px;
+  overflow: auto; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; box-shadow: 0 10px 30px rgb(0 0 0 / 50%); display: grid; gap: 8px;
+}
+.lib header { display: flex; justify-content: space-between; align-items: center; }
+.lib .save-row { display: flex; gap: 6px; }
+.lib .save-row input { flex: 1; min-width: 0; font: inherit; }
+.lib ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.lib li { display: flex; align-items: center; gap: 4px; }
+.lib li .use { flex: 1; text-align: left; background: none; border: none; cursor: pointer; font: inherit; padding: 4px 6px; border-radius: 6px; color: inherit; }
+.lib li .use:hover { background: #403536; }
+</style>

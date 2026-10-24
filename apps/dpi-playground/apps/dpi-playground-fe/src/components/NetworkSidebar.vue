@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
-import { Link2, Network, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
+import { Link2, ListChecks, Network, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
 import DeviceIcon from "./DeviceIcon.vue";
 import type { TreeNode } from "@sdk/models";
 import TreeRow from "./TreeRow.vue";
@@ -39,6 +39,42 @@ const rows = computed(() => {
 const focusKey = ref<string>();
 const list = ref<HTMLElement>();
 
+/** Bulk session manage (orca ManageSessionsSection): select many, then
+ *  archive/abort each with a per-row result. Client-side loop over the
+ *  existing APIs — no new backend surface. */
+const bulkMode = ref(false);
+const bulkSel = ref(new Set<string>());
+const bulkBusy = ref("");
+const bulkToggle = (node: TreeNode) => {
+  if (node.type !== "session") return;
+  const next = new Set(bulkSel.value);
+  if (next.has(node.session.id)) next.delete(node.session.id);
+  else next.add(node.session.id);
+  bulkSel.value = next;
+};
+const bulkRun = async (op: "archive" | "abort") => {
+  bulkBusy.value = op;
+  let ok = 0;
+  const failed: string[] = [];
+  for (const node of rows.value.map((r) => r.node)) {
+    if (node.type !== "session" || !bulkSel.value.has(node.session.id)) continue;
+    const device = deviceOf(node);
+    if (!device) continue;
+    const client = deviceClient(device.id);
+    try {
+      if (op === "archive") await client.session(node.session.id).archive();
+      else await client.agent(node.session.id, 1).abort(true);
+      ok++;
+      if (op === "archive" && selected.value?.sessionId === node.session.id) select(undefined);
+    } catch {
+      failed.push(node.session.name);
+    }
+  }
+  notify(`${op}: ${ok} done${failed.length ? `, ${failed.length} failed (${failed.slice(0, 3).join(", ")})` : ""}`);
+  bulkSel.value = new Set();
+  bulkBusy.value = "";
+};
+
 const deviceOf = (node: TreeNode) =>
   network.devices.value.find(
     (d) => d.id === (node.type === "device" ? node.device.id : node.deviceId),
@@ -52,6 +88,7 @@ const isSelected = (node: TreeNode) =>
 
 function activate(node: TreeNode) {
   focusKey.value = node.key;
+  if (bulkMode.value && node.type === "session") return bulkToggle(node);
   if (node.type === "device") return toggle(node.key);
   if (node.type === "agent")
     return select({ deviceId: node.deviceId, sessionId: node.sessionId, agentId: node.agent.id });
@@ -158,6 +195,15 @@ function keydown(e: KeyboardEvent) {
         <span><Network :size="16" />NETWORK</span>
         <button
           class="icon-button"
+          :aria-label="bulkMode ? 'Exit bulk select' : 'Bulk manage sessions'"
+          :title="bulkMode ? 'Exit bulk select' : 'Bulk manage sessions (select → archive / abort)'"
+          :class="{ on: bulkMode }"
+          @click="((bulkMode = !bulkMode), (bulkSel = new Set()))"
+        >
+          <ListChecks :size="15" />
+        </button>
+        <button
+          class="icon-button"
           aria-label="Pair a device"
           title="Pair a device"
           @click="ui.dialog = { kind: 'pair' }"
@@ -182,6 +228,13 @@ function keydown(e: KeyboardEvent) {
         @keydown="keydown"
         @focus="focusFirst"
       >
+        <div v-if="bulkMode && bulkSel.size" class="bulk-bar">
+          <span>{{ bulkSel.size }} selected</span>
+          <button class="small" :disabled="!!bulkBusy" @click="bulkRun('abort')">abort work</button>
+          <button class="small danger" :disabled="!!bulkBusy" @click="bulkRun('archive')">
+            {{ bulkBusy === "archive" ? "archiving…" : "archive" }}
+          </button>
+        </div>
         <TreeRow
           v-for="row in rows"
           :key="row.node.key"
@@ -191,9 +244,12 @@ function keydown(e: KeyboardEvent) {
           :selected="isSelected(row.node)"
           :focused="focusKey === row.node.key"
           :online="isOnline(row.node)"
+          :checkbox="bulkMode && row.node.type === 'session'"
+          :checked="row.node.type === 'session' && bulkSel.has(row.node.session.id)"
           @toggle="toggle(row.node.key)"
           @activate="activate(row.node)"
           @action="action(row.node, $event)"
+          @check="bulkToggle(row.node)"
         />
         <p v-if="!rows.length" class="hint tree-empty" data-testid="tree-empty">
           No devices yet. Declare them in <code>dpi-network.yaml</code> (start from
@@ -234,3 +290,11 @@ function keydown(e: KeyboardEvent) {
     </div>
   </aside>
 </template>
+
+<style scoped>
+.bulk-bar {
+  display: flex; gap: 8px; align-items: center; padding: 6px 10px; margin: 4px 0;
+  border: 1px solid var(--line); border-radius: 8px; font-size: 14px;
+}
+.bulk-bar .danger { border-color: var(--warn, #e5a50a); }
+</style>

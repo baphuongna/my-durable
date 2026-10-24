@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import {
   Activity,
   Braces,
+  Download,
   GitBranch,
   ChevronDown,
   FolderOpen,
@@ -23,7 +24,7 @@ import TasksPanel from "./TasksPanel.vue";
 import GitPanel from "./GitPanel.vue";
 import ExtensionsPanel from "./ExtensionsPanel.vue";
 import ContextBar from "./ContextBar.vue";
-import { message } from "../client/hub";
+import { deviceClient, message } from "../client/hub";
 import { toolSignature } from "../client/signature";
 import {
   agentHandle,
@@ -41,6 +42,7 @@ import {
   notify,
   number,
   refreshDetail,
+  selected,
   session,
   sessionHandle,
   sessionSummary,
@@ -81,6 +83,26 @@ function configure(
     await refreshDetail();
     if (done) notify(done);
   });
+}
+
+/** Transcript download (API existed since v1; the FE button is the checklist's
+ *  Wave 1a). Markdown straight from the device into a file. */
+async function downloadTranscript() {
+  const dev = device.value;
+  const summary = sessionSummary.value;
+  if (!dev || !summary) return;
+  try {
+    const r = await deviceClient(dev.id).agent(summary.id, selected.value?.agentId ?? 1).transcript("markdown");
+    const blob = new Blob([typeof r === "string" ? r : JSON.stringify(r)], { type: "text/markdown" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${summary.name.replace(/[^\w.-]+/g, "_") || "session"}-${summary.id.slice(0, 8)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    notify("Transcript downloaded.");
+  } catch (e) {
+    notify(`transcript download failed: ${message(e).slice(0, 120)}`);
+  }
 }
 
 function renameSession() {
@@ -226,6 +248,13 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
                 @click="renameSession"
               >
                 <Pencil :size="18" />
+              </button><button
+                class="icon-button"
+                title="Download transcript (markdown)"
+                aria-label="Download transcript"
+                @click="downloadTranscript"
+              >
+                <Download :size="18" />
               </button>
             </h1>
             <button
@@ -309,6 +338,11 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
                     <th scope="row">{{ row.label }}</th>
                     <td>{{ row.tokens.toLocaleString("en-US") }}</td>
                     <td>${{ row.cost.toFixed(4) }}</td>
+                  </tr>
+                  <tr class="usage-total">
+                    <th scope="row">Total</th>
+                    <td>{{ usage.tokens.toLocaleString("en-US") }}</td>
+                    <td>${{ usage.cost.toFixed(4) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -427,3 +461,5 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
     </template>
   </aside>
 </template>
+
+<style scoped>.usage-total th, .usage-total td { border-top: 1px solid var(--line); font-weight: 650; }</style>

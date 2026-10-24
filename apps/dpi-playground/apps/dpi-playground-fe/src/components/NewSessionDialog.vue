@@ -42,6 +42,24 @@ const catalogEmpty = computed(
 const keyless = computed(() => !!(device.value?.info as { providerKeyMissing?: boolean } | undefined)?.providerKeyMissing);
 const key = (m: { provider: string; id: string }) => `${m.provider}/${m.id}`;
 const draft = ref({ name: "", cwd: "", model: "" });
+/** orca new-workspace composer: the last N working dirs per device, one click
+ *  away. localStorage only — the device never learns about recents. */
+const RECENT_KEY = "dpi-recent-cwds";
+type Recents = Record<string, string[]>;
+const recentCwds = computed(() => {
+  try {
+    return (JSON.parse(localStorage.getItem(RECENT_KEY) ?? "{}") as Recents)[deviceId.value] ?? [];
+  } catch {
+    return [];
+  }
+});
+const rememberCwd = (devId: string, cwd: string) => {
+  try {
+    const all = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "{}") as Recents;
+    const kept = [cwd, ...(all[devId] ?? []).filter((c) => c !== cwd)].slice(0, 6);
+    localStorage.setItem(RECENT_KEY, JSON.stringify({ ...all, [devId]: kept }));
+  } catch {}
+};
 const pending = ref(false);
 const error = ref("");
 
@@ -69,6 +87,7 @@ async function create() {
       cwd: draft.value.cwd.trim(),
       model: { provider: model.provider, modelId: model.id },
     });
+    rememberCwd(device.value.id, created.cwd);
     const root = created.agents.find((a) => a.kind === "root") ?? created.agents[0];
     select({ deviceId: device.value.id, sessionId: created.id, agentId: root?.id ?? 1 });
     notify(`Session created on ${device.value.id}.`);
@@ -119,6 +138,19 @@ async function create() {
         /></label>
         <div class="field">
           <span>Working directory on {{ devices.find((d) => d.id === deviceId)?.name ?? deviceId }}</span>
+          <div v-if="recentCwds.length" class="recent-cwds">
+            <button
+              v-for="c in recentCwds"
+              :key="c"
+              type="button"
+              class="chip"
+              :class="{ on: c === draft.cwd }"
+              :title="c"
+              @click="draft.cwd = c"
+            >
+              {{ c.split("/").filter(Boolean).at(-1) || c }}
+            </button>
+          </div>
           <DirBrowser v-model="draft.cwd" :device-id="deviceId" />
         </div>
         <label
@@ -144,3 +176,12 @@ async function create() {
     </form>
   </div>
 </template>
+
+<style scoped>
+.recent-cwds { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.recent-cwds .chip {
+  font-size: 13px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 12px;
+  background: none; cursor: pointer; color: inherit;
+}
+.recent-cwds .chip.on { border-color: var(--accent); font-weight: 550; }
+</style>

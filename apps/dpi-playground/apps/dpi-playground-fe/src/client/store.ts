@@ -270,8 +270,20 @@ export type Dialog =
     };
 
 let toastTimer: ReturnType<typeof setTimeout>;
+/** In-app notification center (orca delivery-service, FE-only v1): every
+ *  notify() is kept as history — the bell lists what happened while you
+ *  were elsewhere. Capped, newest first, marked read when the panel opens. */
+export const notifications = reactive<{ id: number; text: string; at: number; read: boolean }[]>([]);
+let notifSeq = 1;
+export function markNotificationsRead() {
+  for (const n of notifications) n.read = true;
+}
 export function notify(text: string) {
   ui.toast = text;
+  if (text) {
+    notifications.unshift({ id: notifSeq++, text, at: Date.now(), read: false });
+    if (notifications.length > 50) notifications.length = 50;
+  }
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (ui.toast = ""), 4500);
 }
