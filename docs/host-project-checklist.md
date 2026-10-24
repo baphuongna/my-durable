@@ -1,7 +1,7 @@
 # Host / Project / Device / Session Management Feature Checklist — orca / paseo / zcode / herdr / piggery → durable-pi
 
 Run: `team_20261024143910_47d06fe8b77400d4` · Steps: 01_explore (inventory) → 02_analyze (verify/correct) → 03_write (this file)
-Status: **OPEN — planning input.** Companion to `docs/git-ui-checklist.md` (CLOSED): that file covered the git panel; this one covers everything **around** the agent runtime — projects/workspaces, host/device management, session lifecycle, config/credentials, diagnostics, maintenance. Git-panel features are deliberately absent here. Every load-bearing citation below was re-read in the actual files during this run (see [Verification log](#verification-log)).
+Status: **Wave 1a ADOPTED (0.0.37 — live-verified in production Chrome: bell+panel, usage chip+total row, transcript download, prompt library, bulk select bar, recent-cwds chips).** Waves 1b+ remain planning input. Companion to `docs/git-ui-checklist.md` (CLOSED): that file covered the git panel; this one covers everything **around** the agent runtime — projects/workspaces, host/device management, session lifecycle, config/credentials, diagnostics, maintenance. Git-panel features are deliberately absent here. Every load-bearing citation below was re-read in the actual files during this run (see [Verification log](#verification-log)).
 
 ## Why this doc exists
 
