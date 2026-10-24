@@ -535,9 +535,11 @@ async function commit(thenPush = false) {
   if (!chosen.length) return notify("check the files to commit — nothing is selected");
   const client = deviceClient(devId.value);
   try {
+    // During a merge git refuses path-limited commits ("cannot do a partial
+    // commit during a merge") — the changelist is everything staged anyway.
     const r = await client.gitOp(cwd.value, "commit", {
       message: commitMsg.value.trim(),
-      files: chosen,
+      ...(status.value?.merge ? {} : { files: chosen }),
     });
     notify(r.text);
     commitMsg.value = "";
