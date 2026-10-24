@@ -12,7 +12,7 @@ import {
   type OverlayHandle,
   type TuiInputListenerResult,
 } from "@earendil-works/pi-tui";
-import { DpiClient, follow, type AgentHandle, type ConnectionState } from "../../dpi-sdk/src/client.ts";
+import { DpiClient, follow, type AgentHandle, type ConnectionState, type GitStatus } from "../../dpi-sdk/src/client.ts";
 import { isDpiError } from "../../dpi-sdk/src/errors.ts";
 import { AgentModel, SessionModel } from "../../dpi-sdk/src/models.ts";
 import { sumUsage } from "../../dpi-sdk/src/transcript.ts";
@@ -152,6 +152,26 @@ export class App {
   private overlays: Array<{ handle: OverlayHandle; onClose?: () => void }> = [];
   private ticker?: ReturnType<typeof setInterval>;
   private sessions: SessionSummary[] = [];
+  /** Ambient git for the panel: cwd → {at, status}, 30s TTL, fetched as the
+   *  cursor moves — the herd and agent header always show ⎇ branch ±dirty. */
+  private gitCache = new Map<string, { at: number; s: GitStatus }>();
+
+  private refreshGit(cwd: string | undefined) {
+    if (!cwd) return;
+    const hit = this.gitCache.get(cwd);
+    if (hit && Date.now() - hit.at < 30_000) return;
+    void this.client
+      .gitStatus(cwd)
+      .then((s) => {
+        this.gitCache.set(cwd, { at: Date.now(), s });
+        this.requestRender();
+      })
+      .catch(() => {});
+  }
+
+  private gitOf(cwd: string | undefined): GitStatus | undefined {
+    return cwd ? this.gitCache.get(cwd)?.s : undefined;
+  }
   private devicesCache: DeviceRow[] = [];
   private deviceOnline = false;
   private events: { at: string; glyph: string; text: string }[] = [];
@@ -972,7 +992,8 @@ export class App {
     }).slice(0, h);
     if (!wide) return table;
     const selected = this.sessions.find((s) => s.id === (this.selectedId ?? this.sessionId));
-    const panel = renderHerdPanel(panelW, h, selected, this.contextLeft(), this.device.name);
+    if (selected?.cwd) this.refreshGit(selected.cwd);
+    const panel = renderHerdPanel(panelW, h, selected, this.contextLeft(), this.device.name, this.gitOf(selected?.cwd));
     return joinPanel(table, panel, tableW, w, h);
   }
 
@@ -1000,8 +1021,11 @@ export class App {
     const ctx = this.contextLeft();
     const barW = Math.min(40, Math.max(12, Math.round(w * 0.3)));
     const filled = ctx === undefined ? 0 : Math.round((ctx / 100) * barW);
+    const g = this.gitOf(session?.cwd);
+    if (session?.cwd) this.refreshGit(session.cwd);
+    const gitChip = g?.repo ? `  ${c.muted("⎇")} ${c.text(g.branch ?? g.head ?? "")}${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0) ? c.warn(` ±${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0)}`) : ""}` : "";
     lines.push(
-      `${c.muted(this.device.id)} ${c.muted("›")} ${c.text(session?.name ?? "—")} ${c.muted("›")} ${c.bold(`#${this.agentId ?? 1}`)}  ` +
+      `${c.muted(this.device.id)} ${c.muted("›")} ${c.text(session?.name ?? "—")} ${c.muted("›")} ${c.bold(`#${this.agentId ?? 1}`)}${gitChip}  ` +
         `${STATE_COLOR[state](STATE_GLYPH[state] + " " + (this.busy() ? "working" : "idle"))}  ` +
         `${c.muted("ctx")} ${ctx === undefined ? c.muted("—") : c.accent(rep("█", filled)) + c.muted(rep("░", barW - filled)) + " " + c.muted(`${ctx}%`)}`,
     );

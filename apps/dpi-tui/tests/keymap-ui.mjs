@@ -418,6 +418,25 @@ try {
     assert.ok(Number(m[1]) > 0, "no events recorded");
   });
 
+  // ------------------------------------------------------ ambient git display
+  await check("git: the OVERVIEW panel shows ⎇ branch ±dirty without any command", async () => {
+    await press("2"); // alpha, the git repo
+    await tui("wait", "⎇ main", "--timeout", "8000");
+    const panel = await body();
+    assert.match(panel, /⎇ main/, "no branch line in the OVERVIEW panel");
+    await press("esc");
+  });
+
+  await check("git: the agent header carries the branch too", async () => {
+    await press("2");
+    await tui("wait", /#1/, "--timeout", "6000").catch(async () => {
+      await press("enter");
+    });
+    await tui("wait", "⎇ main", "--timeout", "8000");
+    assert.match(await body(), /⎇ main/, "agent header lost the branch");
+    await press("esc");
+  });
+
   // ------------------------------------------------------ /git (device API)
   await check("git: /git status shows branch and dirty for the session's repo", async () => {
     await press("2"); // digits jump: alpha is the 2nd session and the git repo

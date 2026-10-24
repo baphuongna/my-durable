@@ -285,6 +285,7 @@ export function renderHerdPanel(
   s: SessionSummary | undefined,
   ctxLeft?: number,
   device?: string,
+  git?: { repo: boolean; branch?: string; head?: string; staged?: number; unstaged?: number; untracked?: number; ahead?: number; behind?: number; worktreeOf?: string },
 ): string[] {
   // No session selected: a blank panel next to the divider is what made the
   // wide layout look broken — herdr's panel always carries a device header.
@@ -308,6 +309,9 @@ export function renderHerdPanel(
     c.muted(" OVERVIEW"),
     ` ${c.bold(s.name)}`,
     ` ${c.muted(basename(s.cwd))} ${c.muted("·")} ${c.text(basename(s.model) || s.model)}`,
+    git?.repo
+      ? ` ${c.muted("⎇")} ${c.text(git.branch ?? git.head ?? "?")}${c.muted("±")}${c.text(String((git.staged ?? 0) + (git.unstaged ?? 0) + (git.untracked ?? 0)))}${git.ahead ? c.text(` ↑${git.ahead}`) : ""}${git.behind ? c.text(` ↓${git.behind}`) : ""}${git.worktreeOf ? c.muted(" · worktree") : ""}`
+      : "",
     "",
     ` ${c.muted("state")}   ${STATE_COLOR[sessionState(s)](sessionState(s))}`,
     ` ${c.muted("agents")}  ${agents.length ? agents[0] : "—"}`,
