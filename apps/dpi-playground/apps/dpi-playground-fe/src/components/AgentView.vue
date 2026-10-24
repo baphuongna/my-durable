@@ -17,6 +17,7 @@ import type { AgentSummary } from "@sdk/api";
 import { lineage } from "@sdk/models";
 import TranscriptItem from "./TranscriptItem.vue";
 import DeviceIcon from "./DeviceIcon.vue";
+import GitChip from "./GitChip.vue";
 import Composer from "./Composer.vue";
 import {
   activeLineage,
@@ -175,6 +176,7 @@ watch(
                 }}</span></span
               >
             </button>
+            <GitChip v-if="sessionSummary?.cwd" />
             <template v-for="c in activeLineage" :key="c.id">
               <ChevronRight class="crumb-sep" :size="18" aria-hidden="true" />
               <button

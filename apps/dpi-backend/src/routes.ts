@@ -10,6 +10,8 @@ import type { DevicePairing } from "./pairing.js";
 
 type Async = (req: Request, res: Response) => Promise<unknown>;
 const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
+import { gitOp, gitStatus, type GitOp } from "./git.ts";
+const GIT_OPS: GitOp[] = ["diff", "log", "fetch", "pull", "switch", "branch", "commit", "worktree-list", "worktree-add", "worktree-remove"];
 
 interface Locals {
   row: SessionRow;
@@ -119,6 +121,21 @@ export function v1(
     }
   });
   r.get("/fs/dirs", route(async (req, res) => res.json(await store.browse(String(req.query.path ?? "")))));
+  // Git, spoken by the device itself: status for the UIs, ops for the humans.
+  // The path must live under a start dir (same rule as every other fs route).
+  r.get("/git/status", route(async (req, res) => res.json(await gitStatus(String(req.query.path ?? ".")))));
+  r.post("/git", route(async (req, res) => {
+    const body = req.body ?? {};
+    const op = String(body.op ?? "") as GitOp;
+    if (!GIT_OPS.includes(op)) throw invalid(`Unknown git op ${String(body.op ?? "")}`);
+    const out = await gitOp(String(body.path ?? "."), op, {
+      ref: body.ref,
+      branch: body.branch,
+      message: body.message,
+      target: body.target,
+    });
+    res.json(out);
+  }));
   r.get(
     "/docs/:kind",
     route(async (req, res) => {

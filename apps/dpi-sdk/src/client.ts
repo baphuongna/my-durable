@@ -38,6 +38,34 @@ const newId = (): string =>
  * Typed client for one dpi-backend. Works in browsers and Node (fetch + streams).
  * `token` is optional: the playground hub injects it, so browsers never hold one.
  */
+export interface GitStatus {
+  repo: boolean;
+  root?: string;
+  branch?: string;
+  detached?: boolean;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
+  staged?: number;
+  unstaged?: number;
+  untracked?: number;
+  head?: string;
+  subject?: string;
+  worktreeOf?: string;
+  worktrees?: { path: string; branch: string | null; head: string }[];
+}
+export type GitOpName =
+  | "diff"
+  | "log"
+  | "fetch"
+  | "pull"
+  | "switch"
+  | "branch"
+  | "commit"
+  | "worktree-list"
+  | "worktree-add"
+  | "worktree-remove";
+
 export class DpiClient {
   readonly baseUrl: string;
   constructor(
@@ -138,6 +166,16 @@ export class DpiClient {
   }
   deviceEvents(signal: AbortSignal, docs: string[] = []) {
     return this.stream(`/v1/events${docs.length ? `?docs=${docs.map(enc).join(",")}` : ""}`, signal);
+  }
+
+  // ------------------------------------------------------------ git
+  /** Structured git status for a folder on the device (repo:false when none). */
+  gitStatus(path: string) {
+    return this.request<GitStatus>("GET", `/v1/git/status?path=${enc(path)}`);
+  }
+  /** One whitelisted git operation; see the device's git.ts for the op list. */
+  gitOp(path: string, op: GitOpName, opts: { ref?: string; branch?: string; message?: string; target?: string } = {}) {
+    return this.request<{ text: string }>("POST", "/v1/git", { path, op, ...opts });
   }
 
   // ------------------------------------------------------------ sessions

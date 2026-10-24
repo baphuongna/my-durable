@@ -300,6 +300,11 @@ export class App {
     }
   }
 
+  /** The open session's working folder — what /git operates on. */
+  cwd(): string | undefined {
+    return this.sessionSummary()?.cwd ?? undefined;
+  }
+
   sessionSummary(): SessionSummary | undefined {
     const s = this.sessions.find((x) => x.id === this.sessionId);
     return s && this.session.state.ready ? { ...s, agents: this.session.state.agents } : s;
@@ -621,9 +626,13 @@ export class App {
       // trailing space, the list closes, and the NEXT enter submits). An exact
       // command ("/model") runs immediately instead — completing it would force
       // a pointless second enter.
+      // Complete ONLY while the command name itself is being typed — once a
+      // space follows, the arguments are on the line and enter must submit,
+      // not wipe them back to "/git ". (Caught driving /git worktree new ….)
       if (
         sugg &&
         input.kind === "message" &&
+        !input.value.includes(" ") &&
         !COMMANDS.some((c) => `/${c.name}` === input.value)
       ) {
         const pick = sugg.names[this.suggIndex % sugg.names.length]!;
@@ -819,7 +828,8 @@ export class App {
     this.requestRender();
   }
 
-  private logEvent(glyph: string, text: string) {
+  /** Git events land in the log view (L) — /git writes through here. */
+  logEvent(glyph: string, text: string) {
     const at = new Date().toLocaleTimeString("en-GB", { hour12: false });
     this.events.push({ at, glyph, text });
     if (this.events.length > 500) this.events.splice(0, this.events.length - 500);

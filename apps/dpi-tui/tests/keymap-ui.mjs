@@ -16,6 +16,18 @@ import { once } from "node:events";
 
 const root = mkdtempSync(join(tmpdir(), "dpi-keymap-"));
 for (const dir of ["alpha", "beta"]) await mkdir(join(root, "work", dir), { recursive: true });
+// alpha is a git repo (with a commit) so /git exercises the real device API.
+const sh = (cmd, args, opts = {}) =>
+  new Promise((res, rej) => execFile(cmd, args, opts, (e, out) => (e ? rej(e) : res(String(out)))));
+await sh("git", ["init", "-q", "-b", "main"], { cwd: join(root, "work", "alpha") });
+await sh("git", ["config", "user.email", "t@t"], { cwd: join(root, "work", "alpha") });
+await sh("git", ["config", "user.name", "t"], { cwd: join(root, "work", "alpha") });
+await (async () => {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(root, "work", "alpha", "a.txt"), "one\n");
+})();
+await sh("git", ["add", "."], { cwd: join(root, "work", "alpha") });
+await sh("git", ["commit", "-qm", "first"], { cwd: join(root, "work", "alpha") });
 const backendDir = resolve(import.meta.dirname, "../../dpi-backend");
 
 const freePort = async () => {
@@ -404,6 +416,34 @@ try {
     const m = (await body()).match(/(\d+) events · this client/);
     assert.ok(m, "log header missing");
     assert.ok(Number(m[1]) > 0, "no events recorded");
+  });
+
+  // ------------------------------------------------------ /git (device API)
+  await check("git: /git status shows branch and dirty for the session's repo", async () => {
+    await press("2"); // digits jump: alpha is the 2nd session and the git repo
+    await press("m");
+    await type("/git");
+    await press("enter");
+    assert.match(await body(), /⎇ main/, "no branch in the status toast");
+    await press("escape");
+    await press("esc");
+  });
+
+  await check("git: /git worktree new creates a sibling worktree", async () => {
+    await press("2");
+    await press("m");
+    await type("/git worktree new wtx");
+    await press("enter");
+    await tui("wait", "worktree add", "--timeout", "8000").catch(() => {});
+    const list = await (async () => {
+      await press("m");
+      await type("/git worktree");
+      await press("enter");
+      await press("L");
+      return body();
+    })();
+    assert.match(list, /wtx/, "worktree not listed in the log view");
+    await press("g");
   });
 
   await check("herd: q quits the app", async () => {
