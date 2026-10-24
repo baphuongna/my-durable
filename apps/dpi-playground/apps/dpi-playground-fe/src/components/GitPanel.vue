@@ -375,7 +375,7 @@ async function fileAction(name: "stage" | "discard", path?: string, confirmed = 
     busy.value = name!;
   }
   if (!path && name !== "stage") return;
-  if (name === "discard" && path) {
+  if (name === "discard" && path && !confirmed) {
     openAsk({
       title: "Roll back to HEAD?",
       body: `${path} — uncommitted changes are lost.`,
