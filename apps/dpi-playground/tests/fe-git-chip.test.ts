@@ -260,6 +260,19 @@ test("GitPanel: IntelliJ shape — COMMIT always visible + structured LOG", asyn
   assert.match(s, /!someChecked/, "commit disabled with nothing checked (changelist semantics)");
 });
 
+test("GitPanel: conflicts section — ours/theirs resolution replaces the banner-only flow", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");
+  assert.match(s, /conflictFiles/, "conflict predicate missing");
+  assert.match(s, /Conflicts · /, "conflicts section header missing");
+  assert.match(s, /resolveFile\('ours'/, "ours button missing");
+  assert.match(s, /resolveFile\('theirs'/, "theirs button missing");
+  assert.match(s, /!isConflict/, "conflicts must not pollute staged/unstaged lists");
+  const be = await readFile(new URL("../../dpi-backend/src/git.ts", import.meta.url), "utf8");
+  assert.match(be, /case "resolve"/, "resolve op missing");
+  assert.match(be, /--\$\{side\}/, "side must flow into checkout --ours/--theirs");
+});
+
 test("GitPanel: defer-items un-deferred — modal confirm, PRs via gh, turns, focus refresh", async () => {
   const { readFile } = await import("node:fs/promises");
   const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");

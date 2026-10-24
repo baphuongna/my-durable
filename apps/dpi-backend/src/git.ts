@@ -244,6 +244,7 @@ export type GitOp =
   | "checkpoint"
   | "checkpoints"
   | "rewind"
+  | "resolve"
   | "submodule-update"
   | "pr-create"
   | "pr-list"
@@ -274,6 +275,8 @@ export async function gitOp(
     name?: string;
     /** ignore: pattern lines to append to .gitignore. */
     lines?: string[];
+    /** resolve: which side of a conflict wins, per file. */
+    side?: "ours" | "theirs";
     /** pr: merge method + comment body + PR number. */
     method?: "squash" | "merge";
     body?: string;
@@ -288,7 +291,7 @@ export async function gitOp(
   checkpoints?: { name: string; hash: string; date: string; subject: string }[];
   prs?: { n: number; title: string; state: string; draft: boolean; branch: string; url: string }[];
 }> {
-  const { ref, message, target, branch, files, create, staged, rebase, setUpstream, name, lines, method, body, n } = opts;
+  const { ref, message, target, branch, files, create, staged, rebase, setUpstream, name, lines, method, body, n, side } = opts;
   switch (op) {
     case "diff":
       return { text: await git(path, ["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
@@ -435,6 +438,13 @@ export async function gitOp(
       const refname = `refs/dpi/checkpoints/${name}`;
       const sha = (await git(path, ["rev-parse", "--verify", refname])).trim();
       return { text: (await git(path, ["reset", "--hard", sha])).trim().split("\n")[0] ?? `rewound to ${name}` };
+    }
+    case "resolve": {
+      // orca's conflicts section, one click: pick a side, stage the result.
+      if (side !== "ours" && side !== "theirs") throw Error("resolve needs side=ours|theirs");
+      if (!files?.length) throw Error("resolve needs files");
+      await git(path, ["checkout", `--${side}`, "--", ...files]);
+      return { text: (await git(path, ["add", "--", ...files])).trim() || `resolved ${files.length} file(s) with --${side}` };
     }
     case "submodule-update":
       return { text: (await git(path, ["submodule", "update", "--init", "--recursive"], GIT_SLOW_TIMEOUT)).trim() || "submodules up to date" };

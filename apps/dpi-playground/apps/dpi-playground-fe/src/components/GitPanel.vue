@@ -278,9 +278,12 @@ watch(
 );
 const someChecked = computed(() => files.value.some((f) => checked.value.has(f.path)));
 /** orca's split: staged (index changed) vs unstaged (worktree + untracked). */
-const stagedFiles = computed(() => files.value.filter((f) => f.x !== " " && f.x !== "?"));
-const unstagedFiles = computed(() => files.value.filter((f) => f.x === " " || f.x === "?"));
-const conflictFiles = computed(() => files.value.filter((f) => /U|A|D/.test(f.x) && /U|A|D/.test(f.y)));
+const stagedFiles = computed(() => files.value.filter((f) => !isConflict(f) && f.x !== " " && f.x !== "?"));
+const unstagedFiles = computed(() => files.value.filter((f) => !isConflict(f) && (f.x === " " || f.x === "?")));
+/** Porcelain unmerged pairs (UU/AA/DD/AU/UA/DU/UD) get their own section —
+ *  orca's conflicts section — instead of polluting the staged list. */
+const isConflict = (f: { x: string; y: string }) => "UAD".includes(f.x) && "UAD".includes(f.y);
+const conflictFiles = computed(() => files.value.filter(isConflict));
 const atCap = computed(() => files.value.length >= 500);
 const dirty = computed(() => (status.value?.staged ?? 0) + (status.value?.unstaged ?? 0) + (status.value?.untracked ?? 0) > 0);
 const noIdentity = computed(() => !status.value?.identity?.name || !status.value?.identity?.email);
@@ -407,6 +410,21 @@ async function unstageFiles(paths: string[]) {
     await refresh();
   } catch (e) {
     notify(`unstage failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+/** orca conflicts section: one click picks a side and stages the file. */
+async function resolveFile(side: "ours" | "theirs", path: string) {
+  if (!devId.value || !cwd.value) return;
+  busy.value = "resolve";
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "resolve", { side, files: [path] });
+    notify(r.text);
+    await refresh();
+  } catch (e) {
+    notify(`resolve failed: ${(e as Error).message.slice(0, 140)}`);
   } finally {
     busy.value = "";
   }
@@ -945,6 +963,22 @@ const laneX = (lane: number) => lane * 12 + 7;
               </div>
             </div>
             <p v-if="atCap" class="muted-line cap">showing the first 500 changed files — commit in smaller batches</p>
+            <div v-if="conflictFiles.length" class="files conflicts">
+              <label class="file all">
+                <span class="muted-line conflict-head">Conflicts · {{ conflictFiles.length }} — pick a side per file</span>
+              </label>
+              <div v-for="f in conflictFiles" :key="f.path" class="file">
+                <label class="file-label">
+                  <code class="xy">{{ f.x }}{{ f.y }}</code>
+                  <span class="path" :title="f.path">{{ f.path }}</span>
+                </label>
+                <span class="file-acts">
+                  <button class="icon-button" title="view the conflict" @click="showDiff(f.path)"><Eye :size="13" /></button>
+                  <button class="small" :disabled="!!busy" title="keep this branch's version and stage it" @click="resolveFile('ours', f.path)">ours</button>
+                  <button class="small" :disabled="!!busy" title="take the incoming version and stage it" @click="resolveFile('theirs', f.path)">theirs</button>
+                </span>
+              </div>
+            </div>
             <div v-if="stagedFiles.length" class="files">
               <label class="file all">
                 <input type="checkbox" :checked="stagedFiles.every((f) => checked.has(f.path))" @change="toggleGroup(stagedFiles)" />
@@ -1177,6 +1211,8 @@ const laneX = (lane: number) => lane * 12 + 7;
 .hintbox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 6px 10px; border-radius: 6px; margin: 4px 0; }
 .hintbox.warn { border: 1px solid var(--warn, #e5a50a); color: var(--warn, #e5a50a); }
 .merge-banner { padding: 8px 10px; border-radius: 6px; }
+.files.conflicts { border-color: var(--warn, #e5a50a); }
+.conflict-head { color: var(--warn, #e5a50a); }
 .files { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; }
 .file { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 0; }
 .file.all { border-bottom: 1px solid var(--line); }

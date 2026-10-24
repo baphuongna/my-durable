@@ -87,6 +87,7 @@ export type GitOpName =
   | "checkpoint"
   | "checkpoints"
   | "rewind"
+  | "resolve"
   | "submodule-update"
   | "pr-create"
   | "pr-list"
@@ -229,6 +230,7 @@ export class DpiClient {
       setUpstream?: boolean;
       name?: string;
       lines?: string[];
+      side?: "ours" | "theirs";
       method?: "squash" | "merge";
       body?: string;
       n?: number;

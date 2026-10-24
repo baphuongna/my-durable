@@ -1,7 +1,7 @@
 # Git UI Feature Checklist — orca / paseo / zcode → durable-pi
 
 Run: `team_20261024073535_a2a56c3410bfe1d9` · Steps: 01_explore (research) → 02_analyze (verify/correct) → 03_write (this file)
-Status: **verified against source** · **ADOPTED: all waves shipped — 0.0.25 (1a + redesign) and 0.0.26/0.0.27 (1b + 2 + 3, incl. the flagship session-scoped commit, live-proven through the production tunnel)** — every coverage claim below was re-read in the actual files before persisting (see [Verification log](#verification-log)).
+Status: **CLOSED — fully adopted.** 0.0.25 redesign+1a · 0.0.26–0.0.27 waves 1b+2+3 (flagship session-scoped commit live-proven) · 0.0.28–0.0.30 push/AI-message hardening (default-model drift, per-provider retry, hydration default-check) · 0.0.31–0.0.33 the defer row un-deferred (PRs/CI/comments via gh, submodule-update, per-turn summaries, app-styled confirm modal, model-health probe) · 0.0.34 conflict resolution (ours/theirs) completes orca's conflicts section. Remaining, deliberately: fs-push watcher (focus-refresh adopted instead), per-turn LINE stats (needs before/after snapshots), SKIP rows stay skipped. — every coverage claim below was re-read in the actual files before persisting (see [Verification log](#verification-log)).
 
 ## Why this doc exists
 

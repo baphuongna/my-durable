@@ -278,3 +278,27 @@ test("gitOp: PR ops validate before any gh call", async () => {
   await assert.rejects(() => gitOp(root, "pr-checks", {}), /PR number/);
   rmSync(root, { recursive: true, force: true });
 });
+
+test("gitOp: resolve picks a side and stages it (orca conflicts section)", async () => {
+  const root = repo();
+  sh("git", ["checkout", "-b", "side"], { cwd: root });
+  writeFileSync(join(root, "a.txt"), "side version\n");
+  sh("git", ["commit", "-am", "side edits a"], { cwd: root });
+  sh("git", ["checkout", "main"], { cwd: root });
+  writeFileSync(join(root, "a.txt"), "main version\n");
+  sh("git", ["commit", "-am", "main edits a"], { cwd: root });
+  try { sh("git", ["merge", "side"], { cwd: root }); } catch {}
+  const mid = await gitStatus(root);
+  assert.ok(mid.merge && (mid.conflicts ?? 0) >= 1);
+  // THEIRS: the incoming side version wins and lands staged
+  const r = await gitOp(root, "resolve", { side: "theirs", files: ["a.txt"] });
+  assert.match(r.text, /theirs|resolved/i);
+  clearGitStatusCache();
+  const after = await gitStatus(root);
+  const a = after.files?.find((f) => f.path === "a.txt");
+  assert.equal(a?.x, "M", `a.txt should be staged-modified: ${JSON.stringify(a)}`);
+  assert.equal((await import("node:fs")).readFileSync(join(root, "a.txt"), "utf8"), "side version\n", "theirs content must win");
+  await assert.rejects(() => gitOp(root, "resolve", { side: "bogus", files: ["a.txt"] }), /side=ours\|theirs/);
+  sh("git", ["merge", "--abort"], { cwd: root });
+  rmSync(root, { recursive: true, force: true });
+});
