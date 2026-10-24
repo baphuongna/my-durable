@@ -17,7 +17,7 @@ const commitMsg = ref("");
 const wtName = ref("");
 
 const cwd = computed(() => props.cwd ?? sessionSummary.value?.cwd ?? "");
-const devId = computed(() => props.deviceId ?? devId.value);
+const devId = computed(() => props.deviceId ?? deviceId.value);
 const dirty = computed(() => (status.value?.staged ?? 0) + (status.value?.unstaged ?? 0) + (status.value?.untracked ?? 0));
 
 let timer: ReturnType<typeof setInterval> | undefined;

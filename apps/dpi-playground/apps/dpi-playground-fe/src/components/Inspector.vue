@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import {
   Activity,
   Braces,
+  GitBranch,
   ChevronDown,
   FolderOpen,
   Pencil,
@@ -19,6 +20,7 @@ import StateEditor from "./StateEditor.vue";
 import TunnelStatusBar from "./TunnelStatusBar.vue";
 import TokenManager from "./TokenManager.vue";
 import TasksPanel from "./TasksPanel.vue";
+import GitPanel from "./GitPanel.vue";
 import ExtensionsPanel from "./ExtensionsPanel.vue";
 import ContextBar from "./ContextBar.vue";
 import { message } from "../client/hub";
@@ -56,6 +58,7 @@ const signatures = computed(
 
 const tabs = [
   { id: "session", label: "Session", icon: FolderOpen },
+  { id: "git", label: "Git", icon: GitBranch },
   { id: "state", label: "State", icon: Braces },
   { id: "tasks", label: "Tasks", icon: Activity },
   { id: "tools", label: "Tools", icon: Wrench },
@@ -358,6 +361,7 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
           />
         </template>
         <TasksPanel v-if="ui.tab === 'tasks'" />
+        <GitPanel v-if="ui.tab === 'git'" />
         <ExtensionsPanel v-if="ui.tab === 'extensions'" />
         <template v-if="ui.tab === 'tools'"
           ><div class="panel-heading">
