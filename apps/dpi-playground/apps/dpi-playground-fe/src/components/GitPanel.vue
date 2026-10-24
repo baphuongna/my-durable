@@ -1,12 +1,24 @@
 <script setup lang="ts">
-// Inspector GIT tab, IntelliJ-shaped:
-//   • branch PICKER — the list is right there, nobody types an existing name
-//   • worktrees are first-class rows: create a SESSION on one click
-//   • commit: big multi-line box + changed-file checkboxes (commit chosen files)
-// Lazy: rides the shared git-store (one fetch per folder while fresh), the
-// refresh button and every op are the only forced refetches.
+// Inspector GIT tab — the IDE git window, in the app's own design language
+// (panel-heading + tags + task-sections). IntelliJ features: branch popup,
+// changelist commit with per-file diff/stage/discard, structured log,
+// push with ahead count, stash, worktree sessions.
 import { computed, onServerPrefetch, ref, watch } from "vue";
-import { Check, ChevronDown, RefreshCw, X } from "lucide-vue-next";
+import {
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Check,
+  ChevronDown,
+  CornerUpLeft,
+  Eye,
+  GitBranch,
+  History,
+  PackageOpen,
+  Plus,
+  RefreshCw,
+  SquareStack,
+  X,
+} from "lucide-vue-next";
 import { deviceId, network, sessionSummary, notify, select } from "../client/store";
 import { deviceClient } from "../client/hub";
 import { ensureGit, gitEntry } from "../client/git-store";
@@ -24,50 +36,28 @@ const error = computed(() => entry.value.error);
 
 const busy = ref("");
 const out = ref("");
-/** IntelliJ's log window: lazily fetched once per folder, explicit refresh. */
-const commits = ref<{ hash: string; refs: string; author: string; date: string; subject: string }[]>([]);
-const logLoading = ref(false);
-let logAt = 0;
-async function loadLog(force = false) {
-  if (!devId.value || !cwd.value) return;
-  if (!force && commits.value.length && Date.now() - logAt < 120_000) return;
-  logLoading.value = true;
-  try {
-    const r = await deviceClient(devId.value).gitOp(cwd.value, "log-list");
-    commits.value = r.commits ?? [];
-    logAt = Date.now();
-  } catch {
-    /* the log is decorative; the ops row surfaces failures */
-  } finally {
-    logLoading.value = false;
-  }
-}
-if (!import.meta.env.SSR) void loadLog();
-watch([devId, cwd], () => {
-  commits.value = [];
-  logAt = 0;
-  void loadLog();
-});
 const commitMsg = ref("");
 const checked = ref<Set<string>>(new Set());
 const branchMenu = ref(false);
 const wtMenu = ref(false);
 const newBranch = ref("");
+/** IntelliJ: click a changed file → its diff, right there. */
+const fileDiff = ref<{ path: string; text: string } | null>(null);
 
 if (!import.meta.env.SSR) void ensureGit(devId.value || "?", cwd.value || "?");
 onServerPrefetch(() => ensureGit(devId.value || "?", cwd.value || "?"));
 watch([devId, cwd], () => {
   branchMenu.value = false;
   wtMenu.value = false;
+  fileDiff.value = null;
   void ensureGit(devId.value || "?", cwd.value || "?");
 });
 const refresh = () => {
   checked.value = new Set();
+  fileDiff.value = null;
   return ensureGit(devId.value || "?", cwd.value || "?", { force: true });
 };
 
-// changed files: staged+modified default-checked, untracked not — IntelliJ's
-// changelist behavior.
 const files = computed(() => status.value?.files ?? []);
 watch(files, (list) => {
   const next = new Set<string>();
@@ -75,6 +65,10 @@ watch(files, (list) => {
   checked.value = next;
 });
 const someChecked = computed(() => files.value.some((f) => checked.value.has(f.path)));
+/** orca's split: staged (index changed) vs unstaged (worktree + untracked). */
+const stagedFiles = computed(() => files.value.filter((f) => f.x !== " " && f.x !== "?"));
+const unstagedFiles = computed(() => files.value.filter((f) => f.x === " " || f.x === "?"));
+const atCap = computed(() => files.value.length >= 500);
 const toggle = (p: string) => {
   const next = new Set(checked.value);
   if (next.has(p)) next.delete(p);
@@ -84,32 +78,73 @@ const toggle = (p: string) => {
 const toggleAll = () => {
   checked.value = someChecked.value ? new Set() : new Set(files.value.map((f) => f.path));
 };
+const toggleGroup = (group: { path: string }[]) => {
+  const all = group.every((f) => checked.value.has(f.path));
+  const next = new Set(checked.value);
+  for (const f of group) {
+    if (all) next.delete(f.path);
+    else next.add(f.path);
+  }
+  checked.value = next;
+};
 
-async function op(name: "fetch" | "pull" | "log" | "branch" | "diff") {
+async function op(name: "fetch" | "pull" | "push" | "branch" | "diff" | "stash-push" | "stash-pop", extra: { message?: string } = {}) {
   if (!devId.value || !cwd.value) return;
   busy.value = name;
   out.value = "";
   try {
-    const r = await deviceClient(devId.value).gitOp(cwd.value, name);
+    const r = await deviceClient(devId.value).gitOp(cwd.value, name, extra);
     out.value = r.text || "(empty)";
-    if (name === "fetch" || name === "pull") notify(`git ${name} ✓`);
+    if (["fetch", "pull", "push", "stash-push", "stash-pop"].includes(name)) notify(`git ${name} ✓`);
     await refresh();
-    if (name === "fetch" || name === "pull" || name === "branch") void loadLog(true);
+    void loadLog(true);
   } catch (e) {
-    out.value = `${name} failed: ${(e as Error).message.slice(0, 200)}`;
+    notify(`git ${name}: ${(e as Error).message.slice(0, 160)}`);
   } finally {
     busy.value = "";
   }
 }
 
-async function switchBranch(name: string) {
+async function fileAction(name: "stage" | "discard", path?: string) {
+  if (!devId.value || !cwd.value) return;
+  if (!path && name !== "stage") return;
+  if (name === "discard" && path && !confirm(`Roll back ${path} to HEAD? Uncommitted changes are lost.`)) return;
+  busy.value = name;
+  const targets = path ? [path] : files.value.filter((f) => f.x === " " || f.x === "M").map((f) => f.path);
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, name, { files: targets });
+    notify(r.text);
+    await refresh();
+  } catch (e) {
+    notify(`${name} failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function showDiff(path: string) {
+  if (!devId.value || !cwd.value) return;
+  if (fileDiff.value?.path === path) return (fileDiff.value = null);
+  busy.value = "diff";
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "diff-file", { target: path });
+    fileDiff.value = { path, text: r.text };
+  } catch (e) {
+    notify(`diff failed: ${(e as Error).message.slice(0, 140)}`);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function switchBranch(name: string, create = false) {
   branchMenu.value = false;
-  if (!devId.value || !cwd.value || name === status.value?.branch) return;
+  if (!devId.value || !cwd.value || (name === status.value?.branch && !create)) return;
   busy.value = "switch";
   try {
-    const r = await deviceClient(devId.value).gitOp(cwd.value, "switch", { ref: name });
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "switch", { ref: name, create });
     notify(r.text || `switched to ${name}`);
     await refresh();
+    void loadLog(true);
   } catch (e) {
     notify(`switch failed: ${(e as Error).message.slice(0, 140)}`);
   } finally {
@@ -147,10 +182,7 @@ async function addWorktree(branch: string) {
   const target = `${parent}/${base}-${branch.replace(/[/\\]+/g, "-")}`;
   busy.value = "wt";
   try {
-    const r = await deviceClient(devId.value).gitOp(cwd.value, "worktree-add", {
-      branch: branch, // existing branch checks out; new name creates it
-      target,
-    });
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "worktree-add", { branch, target });
     notify(r.text.split("\n")[0] ?? `worktree ${target}`);
     newBranch.value = "";
     await refresh();
@@ -161,14 +193,12 @@ async function addWorktree(branch: string) {
   }
 }
 
-/** A worktree is a working copy — one click and it is a SESSION (herd flow). */
 async function sessionOn(path: string, branch: string | null) {
   if (!devId.value) return;
   busy.value = "session";
   try {
     const info = network.devices.value.find((d) => d.id === devId.value)?.info;
-    const model =
-      (info?.models ?? []).find((m) => m.id === info?.defaultModel) ?? (info?.models ?? [])[0];
+    const model = (info?.models ?? []).find((m) => m.id === info?.defaultModel) ?? (info?.models ?? [])[0];
     if (!model) return notify(`no model available on ${devId.value} — cannot create a session`);
     const s = await deviceClient(devId.value).createSession({
       name: branch ?? path.slice(path.lastIndexOf("/") + 1),
@@ -197,117 +227,190 @@ async function removeWorktree(path: string) {
     busy.value = "";
   }
 }
+
+const commits = ref<{ hash: string; refs: string; author: string; date: string; subject: string }[]>([]);
+const logLoading = ref(false);
+const logError = ref("");
+let logAt = 0;
+async function loadLog(force = false) {
+  if (!devId.value || !cwd.value) return;
+  if (!force && commits.value.length && Date.now() - logAt < 120_000) return;
+  logLoading.value = true;
+  try {
+    const r = await deviceClient(devId.value).gitOp(cwd.value, "log-list");
+    commits.value = r.commits ?? [];
+    logError.value = "";
+    logAt = Date.now();
+  } catch (e) {
+    // "no commits" lied when the fetch failed (checklist Wave 1a) — say it.
+    logError.value = (e as Error).message.slice(0, 120);
+  } finally {
+    logLoading.value = false;
+  }
+}
+if (!import.meta.env.SSR) void loadLog();
+watch([devId, cwd], () => {
+  commits.value = [];
+  logAt = 0;
+  void loadLog();
+});
 const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w.path));
 </script>
 
 <template>
-  <div class="git-tab">
-    <p v-if="!cwd" class="empty">No session selected — open a session to see its git.</p>
+  <div class="git-pane">
+    <p v-if="!cwd" class="hint">No session selected — open a session to see its git.</p>
     <template v-else>
-      <header class="git-head">
-        <strong>git</strong>
-        <code class="cwd" :title="cwd">{{ cwd }}</code>
-        <button :disabled="!!busy || loading || refreshing" title="refresh" @click="refresh()"><RefreshCw :size="14" /></button>
-      </header>
-
-      <p v-if="loading" class="empty">loading git…</p>
-      <p v-else-if="refreshing" class="muted note">refreshing…</p>
-      <p v-if="error" class="error">{{ error }} <button :disabled="!!busy" @click="refresh()">retry</button></p>
+      <p v-if="loading" class="hint">loading git…</p>
+      <p v-else-if="refreshing" class="muted-line">refreshing…</p>
+      <p v-if="error" class="message-error">{{ error }} <button @click="refresh()">retry</button></p>
 
       <div v-if="status" :class="{ stale: !!error || !!refreshing }">
-        <p v-if="!status.repo" class="empty">Not a git repository — run <code>git init</code> (or open a session inside a repo).</p>
+        <p v-if="!status.repo" class="hint">Not a git repository — run <code>git init</code> (or open a session inside a repo).</p>
 
         <template v-else>
-          <!-- branch bar: PICK, never type -->
-          <div class="branch-bar">
-            <button class="branch-btn" :disabled="!!busy" @click="branchMenu = !branchMenu">
-              <strong>{{ status.branch ?? "detached" }}</strong>
-              <span v-if="status.upstream" class="muted">→ {{ status.upstream }}</span>
-              <span v-if="status.ahead || status.behind" class="muted">↑{{ status.ahead ?? 0 }} ↓{{ status.behind ?? 0 }}</span>
-              <ChevronDown :size="14" />
-            </button>
-            <span class="muted">+{{ status.staged ?? 0 }} ~{{ status.unstaged ?? 0 }} ?{{ status.untracked ?? 0 }} · {{ status.head }}</span>
-            <div v-if="branchMenu" class="menu">
-              <button v-for="b in status.branches ?? []" :key="b.name" :class="{ cur: b.current }" @click="switchBranch(b.name)">
-                <span>{{ b.name }}</span>
-                <span class="muted">{{ b.current ? "● current" : b.upstream ? `→ ${b.upstream}` : "" }}</span>
+          <!-- branch popup + sync, the IDE way -->
+          <div class="panel-heading git-top">
+            <div class="branch-wrap">
+              <button class="branch-btn" :disabled="!!busy" @click="branchMenu = !branchMenu">
+                <GitBranch :size="16" /><strong>{{ status.branch ?? "detached" }}</strong>
+                <ChevronDown :size="14" />
               </button>
-              <p v-if="!(status.branches ?? []).length" class="muted pad">no local branches</p>
+              <div v-if="branchMenu" class="menu">
+                <button v-for="b in status.branches ?? []" :key="b.name" :class="{ cur: b.current }" @click="switchBranch(b.name)">
+                  <GitBranch :size="13" /><span>{{ b.name }}</span>
+                  <span class="muted-line">{{ b.current ? "current" : b.upstream ? `→ ${b.upstream}` : "" }}</span>
+                </button>
+                <div class="new-branch">
+                  <input v-model="newBranch" placeholder="new branch…" @keyup.enter="newBranch.trim() && switchBranch(newBranch.trim(), true)" />
+                  <button :disabled="!newBranch.trim()" @click="switchBranch(newBranch.trim(), true)"><Plus :size="13" /></button>
+                </div>
+              </div>
             </div>
+            <span class="tag">{{ status.upstream ?? "no upstream" }}</span>
+            <span v-if="status.ahead" class="tag">↑{{ status.ahead }}</span>
+            <span v-if="status.behind" class="tag">↓{{ status.behind }}</span>
+            <span class="tag">+{{ status.staged ?? 0 }} ~{{ status.unstaged ?? 0 }} ?{{ status.untracked ?? 0 }}</span>
+            <button class="icon-button" :disabled="!!busy || loading || refreshing" title="refresh" @click="refresh()"><RefreshCw :size="16" /></button>
           </div>
 
           <div class="row ops">
-            <button :disabled="!!busy" @click="op('fetch')">fetch</button>
-            <button :disabled="!!busy" @click="op('pull')">pull</button>
-            <button :disabled="!!busy" @click="op('branch')">branches</button>
-            <button :disabled="!!busy" @click="op('diff')">diff</button>
+            <button class="small" :disabled="!!busy" @click="op('fetch')"><ArrowDownToLine :size="14" />fetch</button>
+            <button class="small" :disabled="!!busy" @click="op('pull')"><ArrowDownToLine :size="14" />pull</button>
+            <button class="small primary" :disabled="!!busy" title="push" @click="op('push')"><ArrowUpFromLine :size="14" />push</button>
+            <button class="small" :disabled="!!busy" title="stash changes" @click="op('stash-push', { message: commitMsg.trim() || undefined })"><SquareStack :size="14" />stash</button>
+            <button class="small" :disabled="!!busy" title="pop the newest stash" @click="op('stash-pop')"><PackageOpen :size="14" />unstash</button>
           </div>
 
-          <!-- COMMIT: always present — IntelliJ's Ctrl+K opens on a clean tree too -->
-          <section class="commit">
-            <div class="sec-head"><strong>Commit</strong><span class="muted">{{ files.length ? `${checked.size}/${files.length} files` : "no changes" }}</span></div>
-            <div v-if="files.length" class="files">
-              <label class="file all">
-                <input type="checkbox" :checked="someChecked" @change="toggleAll" />
-                <span class="muted">select all / none</span>
-              </label>
-              <label v-for="f in files" :key="f.path" class="file">
-                <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
-                <code class="xy">{{ f.x }}{{ f.y }}</code>
-                <span class="path" :title="f.path">{{ f.path }}</span>
-              </label>
+          <!-- COMMIT — always present, changelist semantics -->
+          <section class="task-section" aria-label="Commit">
+            <div class="panel-heading">
+              <h4>Commit</h4>
+              <span class="tag">{{ files.length ? `${checked.size}/${files.length} files` : "no changes" }}</span>
             </div>
-            <textarea v-model="commitMsg" rows="4" placeholder="Commit message…" />
-            <button class="primary" :disabled="!!busy || !commitMsg.trim() || !someChecked" @click="commit">
-              Commit{{ checked.size ? ` ${checked.size} file${checked.size > 1 ? "s" : ""}` : "" }}
+            <p v-if="atCap" class="muted-line cap">showing the first 500 changed files — commit in smaller batches</p>
+            <div v-if="stagedFiles.length" class="files">
+              <label class="file all">
+                <input type="checkbox" :checked="stagedFiles.every((f) => checked.has(f.path))" @change="toggleGroup(stagedFiles)" />
+                <span class="muted-line">Staged · {{ stagedFiles.length }}</span>
+                <span class="grow" />
+                <button class="icon-button" title="stage every changed file" @click="fileAction('stage')"><Plus :size="13" /> all</button>
+              </label>
+              <div v-for="f in stagedFiles" :key="f.path" class="file">
+                <label class="file-label">
+                  <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
+                  <code class="xy" :title="`index ${f.x} · worktree ${f.y}`">{{ f.x }}{{ f.y }}</code>
+                  <span class="path" :title="f.path">{{ f.path }}</span>
+                </label>
+                <span class="file-acts">
+                  <button class="icon-button" title="view diff" @click="showDiff(f.path)"><Eye :size="13" /></button>
+                  <button class="icon-button" title="roll back to HEAD" @click="fileAction('discard', f.path)"><CornerUpLeft :size="13" /></button>
+                </span>
+              </div>
+            </div>
+            <div v-if="unstagedFiles.length" class="files">
+              <label class="file all">
+                <input type="checkbox" :checked="unstagedFiles.every((f) => checked.has(f.path))" @change="toggleGroup(unstagedFiles)" />
+                <span class="muted-line">Unstaged · {{ unstagedFiles.length }}</span>
+              </label>
+              <div v-for="f in unstagedFiles" :key="f.path" class="file">
+                <label class="file-label">
+                  <input type="checkbox" :checked="checked.has(f.path)" @change="toggle(f.path)" />
+                  <code class="xy" :title="`index ${f.x} · worktree ${f.y}`">{{ f.x }}{{ f.y }}</code>
+                  <span class="path" :title="f.path">{{ f.path }}</span>
+                </label>
+                <span class="file-acts">
+                  <button class="icon-button" title="view diff" @click="showDiff(f.path)"><Eye :size="13" /></button>
+                  <button class="icon-button" title="stage (git add)" @click="fileAction('stage', f.path)"><Plus :size="13" /></button>
+                  <button class="icon-button" title="roll back to HEAD" @click="fileAction('discard', f.path)"><CornerUpLeft :size="13" /></button>
+                </span>
+              </div>
+            </div>
+            <p v-if="fileDiff" class="file-diff">
+              <strong>{{ fileDiff.path }}</strong>
+              <button class="icon-button" title="close diff" @click="fileDiff = null"><X :size="13" /></button>
+              <pre>{{ fileDiff.text.slice(0, 8000) }}</pre>
+            </p>
+            <textarea
+              v-model="commitMsg"
+              rows="4"
+              placeholder="Commit message…  (Ctrl+Enter to commit)"
+              @keydown.enter.exact.prevent="commit"
+              @keydown.meta.enter.prevent="commit"
+              @keydown.ctrl.enter.prevent="commit"
+            />
+            <button class="primary small" :disabled="!!busy || !commitMsg.trim() || !someChecked" @click="commit">
+              <Check :size="14" /> Commit{{ checked.size ? ` ${checked.size} file${checked.size > 1 ? "s" : ""}` : "" }}
             </button>
           </section>
 
-          <!-- LOG: the IDE centerpiece — hash, refs, author, date, subject -->
-          <section class="logsec">
-            <div class="sec-head">
-              <strong>Log</strong>
-              <button :disabled="logLoading" title="refresh log" @click="loadLog(true)">↻</button>
+          <!-- LOG -->
+          <section class="task-section" aria-label="Log">
+            <div class="panel-heading">
+              <h4><History :size="16" /> Log</h4>
+              <button class="icon-button" :disabled="logLoading" title="refresh log" @click="loadLog(true)"><RefreshCw :size="14" /></button>
             </div>
-            <p v-if="logLoading && !commits.length" class="muted">loading log…</p>
+            <p v-if="logLoading && !commits.length" class="hint">loading log…</p>
             <div v-else-if="commits.length" class="commits">
-              <div v-for="c in commits" :key="c.hash" class="commit-row">
+              <div v-for="c in commits" :key="c.hash" class="commit-row" :title="c.refs">
                 <code class="hash">{{ c.hash }}</code>
-                <span v-if="c.refs" class="refs" :title="c.refs">{{ c.refs.split(",")[0] }}</span>
+                <span v-if="c.refs" class="refs">{{ c.refs.split(",")[0] }}</span>
                 <span class="subject">{{ c.subject }}</span>
-                <span class="muted who">{{ c.author }} · {{ c.date }}</span>
+                <span class="muted-line who">{{ c.author }} · {{ c.date }}</span>
               </div>
             </div>
-            <p v-else class="muted">no commits</p>
+            <p v-else-if="logError" class="message-error">log failed: {{ logError }}</p>
+            <p v-else class="hint">no commits</p>
           </section>
 
-          <!-- worktrees: local + linked, one click to a session -->
-          <section class="wts">
-            <div class="wt-head">
-              <strong>Worktrees</strong>
-              <button :disabled="!!busy" @click="wtMenu = !wtMenu">+ worktree</button>
-              <div v-if="wtMenu" class="menu">
-                <button v-for="b in (status.branches ?? []).filter((x) => !x.current)" :key="b.name" @click="addWorktree(b.name)">
-                  <span>{{ b.name }}</span>
-                  <span class="muted">existing branch</span>
-                </button>
-                <div class="new-branch">
-                  <input v-model="newBranch" placeholder="or a NEW branch name…" @keyup.enter="addWorktree(newBranch.trim() || 'wt')" />
-                  <button :disabled="!newBranch.trim()" @click="addWorktree(newBranch.trim())">create</button>
+          <!-- WORKTREES -->
+          <section class="task-section" aria-label="Worktrees">
+            <div class="panel-heading">
+              <h4><PackageOpen :size="16" /> Worktrees</h4>
+              <div class="branch-wrap">
+                <button class="small" :disabled="!!busy" @click="wtMenu = !wtMenu"><Plus :size="13" /> worktree</button>
+                <div v-if="wtMenu" class="menu">
+                  <button v-for="b in (status.branches ?? []).filter((x) => !x.current)" :key="b.name" @click="addWorktree(b.name)">
+                    <GitBranch :size="13" /><span>{{ b.name }}</span><span class="muted-line">existing</span>
+                  </button>
+                  <div class="new-branch">
+                    <input v-model="newBranch" placeholder="or a NEW branch…" @keyup.enter="newBranch.trim() && addWorktree(newBranch.trim())" />
+                    <button :disabled="!newBranch.trim()" @click="addWorktree(newBranch.trim())">create</button>
+                  </div>
                 </div>
               </div>
             </div>
             <div v-for="w in worktrees" :key="w.path" class="wt" :class="{ main: w.path === status.root }">
               <code :title="w.path">{{ w.path }}</code>
-              <span class="muted">{{ w.branch ?? w.head }}</span>
+              <span class="muted-line">{{ w.branch ?? w.head }}</span>
               <span class="grow" />
-              <button :disabled="!!busy" title="create a session on this worktree" @click="sessionOn(w.path, w.branch)">session</button>
-              <button v-if="w.path !== status.root" :disabled="!!busy" @click="removeWorktree(w.path)"><X :size="12" /></button>
-              <Check v-if="w.path === status.root" :size="12" class="muted" />
+              <button class="small" :disabled="!!busy" title="create a session on this worktree" @click="sessionOn(w.path, w.branch)">session</button>
+              <button v-if="w.path !== status.root" class="icon-button" :disabled="!!busy" @click="removeWorktree(w.path)"><X :size="13" /></button>
+              <Check v-if="w.path === status.root" :size="13" class="muted-line" />
             </div>
           </section>
 
-          <pre v-if="out" class="out">{{ out.slice(0, 6000) }}</pre>
+          <pre v-if="out" class="op-out">{{ out.slice(0, 6000) }}</pre>
         </template>
       </div>
     </template>
@@ -315,49 +418,43 @@ const worktrees = computed(() => (status.value?.worktrees ?? []).filter((w) => w
 </template>
 
 <style scoped>
-.git-tab { display: grid; gap: 10px; font-size: 12px; padding: 8px 4px; }
-.git-head { display: flex; align-items: center; gap: 8px; }
-.git-head .cwd { font-size: 11px; opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.branch-bar { position: relative; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.branch-btn { display: inline-flex; gap: 6px; align-items: center; padding: 4px 10px; font-size: 12px; }
+.git-pane { display: grid; gap: 4px; }
+.git-top { gap: 8px; flex-wrap: wrap; }
+.branch-wrap { position: relative; }
+.branch-btn { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.branch-btn strong { font-size: 16px; }
 .menu {
-  position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; min-width: 260px; max-height: 260px; overflow: auto;
-  background: var(--bg-2, #1c1c22); border: 1px solid var(--border, #333); border-radius: 8px; padding: 4px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 300px; max-height: 280px; overflow: auto;
+  background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 8px; padding: 4px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
 }
-.menu button { display: flex; justify-content: space-between; gap: 12px; width: 100%; padding: 5px 8px; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
-.menu button:hover, .menu button.cur { background: rgb(127 127 127 / 15%); }
-.menu .pad { padding: 6px 8px; margin: 0; }
-.row { display: flex; gap: 6px; }
-.ops { flex-wrap: wrap; }
-.sec-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 2px; border-bottom: 1px solid var(--border, #2a2a30); }
-.commit { display: grid; gap: 6px; }
-.logsec { display: grid; gap: 6px; }
-.commits { max-height: 320px; overflow: auto; display: grid; gap: 1px; }
-.commit-row { display: flex; gap: 6px; align-items: baseline; white-space: nowrap; }
-.commit-row .hash { color: var(--ok, #2ea043); font-size: 11px; }
-.commit-row .refs { color: var(--warn, #e5a50a); font-size: 10px; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
-.commit-row .subject { overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
-.commit-row .who { font-size: 10px; }
-.files { max-height: 180px; overflow: auto; border: 1px solid var(--border, #2a2a30); border-radius: 6px; padding: 2px 6px; }
-.file { display: flex; gap: 6px; align-items: center; padding: 2px 0; }
-.file.all { border-bottom: 1px solid var(--border, #2a2a30); }
-.file .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.xy { opacity: 0.7; font-size: 10px; }
-textarea { width: 100%; resize: vertical; min-height: 64px; font: inherit; }
-button.primary { justify-self: start; }
-.wts { display: grid; gap: 4px; }
-.wt-head { position: relative; display: flex; align-items: center; gap: 8px; }
-.wt { display: flex; gap: 8px; align-items: center; }
-.wt code { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46%; }
-.wt.main code { font-weight: 600; }
+.menu button { display: flex; gap: 10px; align-items: center; width: 100%; padding: 7px 10px; border-radius: 6px; text-align: left; font-size: 15px; }
+.menu button:hover, .menu button.cur { background: #403536; }
+.menu .new-branch { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+.menu .new-branch input { flex: 1; min-width: 0; }
+.muted-line { opacity: 0.65; font-size: 13px; }
+.cap { padding: 4px 0; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.files { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; }
+.file { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 0; }
+.file.all { border-bottom: 1px solid var(--line); }
+.file-label { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; cursor: pointer; }
+.file .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.file .xy { opacity: 0.7; font-size: 12px; }
+.file-acts { display: flex; gap: 2px; }
+.file-diff { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.file-diff pre { max-height: 260px; overflow: auto; font-size: 12px; margin: 6px 0 0; }
+textarea { width: 100%; resize: vertical; min-height: 76px; font: inherit; margin-top: 8px; }
+.commits { max-height: 320px; overflow: auto; display: grid; gap: 3px; }
+.commit-row { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
+.commit-row .hash { color: var(--ok, #2ea043); font-size: 13px; }
+.commit-row .refs { color: var(--warn, #e5a50a); font-size: 12px; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
+.commit-row .subject { overflow: hidden; text-overflow: ellipsis; max-width: 42%; font-size: 14px; }
+.commit-row .who { font-size: 12px; }
+.wt { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.wt code { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 44%; }
+.wt.main code { font-weight: 650; }
 .grow { flex: 1; }
-.new-branch { display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--border, #2a2a30); }
-.new-branch input { flex: 1; min-width: 0; }
-.muted { opacity: 0.65; }
-.note { font-size: 11px; }
-.stale { opacity: 0.55; transition: opacity 0.2s; }
-.out { max-height: 300px; overflow: auto; background: rgb(0 0 0 / 25%); padding: 8px; border-radius: 6px; font-size: 11px; }
-.empty { opacity: 0.75; }
-.error { color: var(--danger, #f85149); }
+.op-out { max-height: 300px; overflow: auto; background: rgb(0 0 0 / 25%); padding: 10px; border-radius: 6px; font-size: 12px; margin-top: 8px; }
+h4 { display: flex; align-items: center; gap: 8px; font-size: 16px; margin: 0; }
 </style>

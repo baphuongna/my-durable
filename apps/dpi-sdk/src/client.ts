@@ -67,7 +67,13 @@ export type GitOpName =
   | "commit"
   | "worktree-list"
   | "worktree-add"
-  | "worktree-remove";
+  | "worktree-remove"
+  | "push"
+  | "stage"
+  | "discard"
+  | "diff-file"
+  | "stash-push"
+  | "stash-pop";
 
 export class DpiClient {
   readonly baseUrl: string;
@@ -181,7 +187,7 @@ export class DpiClient {
   gitOp(
     path: string,
     op: GitOpName,
-    opts: { ref?: string; branch?: string; message?: string; target?: string; files?: string[] } = {},
+    opts: { ref?: string; branch?: string; message?: string; target?: string; files?: string[]; create?: boolean; staged?: boolean } = {},
   ) {
     return this.request<{ text: string; commits?: { hash: string; refs: string; author: string; date: string; subject: string }[] }>(
       "POST",

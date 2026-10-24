@@ -157,7 +157,7 @@ test("Inspector Git TAB: repo state shows branch and change counts", async () =>
     assert.match(html, /\+1 ~2 \?3/);
     assert.match(html, /↑2/);
     assert.match(html, /Commit message/i);
-    assert.match(html, /\+ worktree/);
+    assert.match(html, /worktree/);
     assert.match(html, /src\/a\.ts/, "changed files must be listed");
     assert.match(html, /\/r-wt2/, "linked worktrees must be listed");
     assert.match(html, /session/, "worktree rows must offer a session");
@@ -250,13 +250,26 @@ test("GitPanel: IntelliJ contract — branch picker, file checkboxes, worktree s
 test("GitPanel: IntelliJ shape — COMMIT always visible + structured LOG", async () => {
   const { readFile } = await import("node:fs/promises");
   const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");
-  assert.match(s, /v-if="files.length" class="files"/, "the FILE LIST toggles");
+  assert.match(s, /v-if="stagedFiles.length" class="files"/, "the staged list toggles");
+  assert.match(s, /v-if="unstagedFiles.length" class="files"/, "the unstaged list toggles");
   assert.doesNotMatch(s, /v-if="files.length" class="commit"/, "the COMMIT section must render on a clean tree too");
   assert.match(s, /no changes/, "clean tree must say so inside the commit section");
   assert.match(s, /log-list/, "structured log op wired");
   assert.match(s, /class="commits"/, "log entries rendered as a list");
   assert.match(s, /c\.hash/, "log rows show the hash");
   assert.match(s, /!someChecked/, "commit disabled with nothing checked (changelist semantics)");
+});
+
+test("GitPanel: Wave 1a — staged/unstaged split, ctrl+enter, log errors, cap banner", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const s = await readFile(new URL("../apps/dpi-playground-fe/src/components/GitPanel.vue", import.meta.url), "utf8");
+  assert.match(s, /stagedFiles/, "no staged/unstaged split");
+  assert.match(s, /Staged · /, "staged section header missing");
+  assert.match(s, /Unstaged · /, "unstaged section header missing");
+  assert.match(s, /ctrl\.enter/, "ctrl+enter commit missing");
+  assert.match(s, /logError/, "log failures still swallowed");
+  assert.match(s, /first 500 changed files/, "cap banner missing");
+  assert.match(s, /toggleGroup/, "group toggle missing");
 });
 
 test("session tree rows carry the branch", async () => {

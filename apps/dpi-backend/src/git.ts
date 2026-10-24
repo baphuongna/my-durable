@@ -175,7 +175,13 @@ export type GitOp =
   | "commit"
   | "worktree-list"
   | "worktree-add"
-  | "worktree-remove";
+  | "worktree-remove"
+  | "push"
+  | "stage"
+  | "discard"
+  | "diff-file"
+  | "stash-push"
+  | "stash-pop";
 
 /** Plain string an arg may never contain — we build argv ourselves anyway. */
 const safeRef = (s: string) => /^[\w./@+-]+$/.test(s) && !s.includes("..");
@@ -184,9 +190,17 @@ const safeRef = (s: string) => /^[\w./@+-]+$/.test(s) && !s.includes("..");
 export async function gitOp(
   path: string,
   op: GitOp,
-  opts: { ref?: string; message?: string; target?: string; branch?: string; files?: string[] } = {},
+  opts: {
+    ref?: string;
+    message?: string;
+    target?: string;
+    branch?: string;
+    files?: string[];
+    create?: boolean;
+    staged?: boolean;
+  } = {},
 ): Promise<{ text: string; commits?: { hash: string; refs: string; author: string; date: string; subject: string }[] }> {
-  const { ref, message, target, branch, files } = opts;
+  const { ref, message, target, branch, files, create, staged } = opts;
   switch (op) {
     case "diff":
       return { text: await git(path, ["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
@@ -217,8 +231,28 @@ export async function gitOp(
       return { text: (await git(path, ["--no-pager", "branch", "-vv"])).trimEnd() };
     case "switch": {
       if (!ref || !safeRef(ref)) throw Error("switch needs a branch name (letters, digits, ./-_)");
-      return { text: (await git(path, ["switch", ref])).trim() };
+      // create:true = git switch -c — IntelliJ's "new branch" action.
+      return { text: (await git(path, ["switch", ...(create ? ["-c"] : []), ref])).trim() };
     }
+    case "push":
+      return { text: (await git(path, ["push"], GIT_SLOW_TIMEOUT)).trim() || "pushed (or nothing to push)" };
+    case "stage": {
+      if (!files?.length) throw Error("stage needs files");
+      return { text: (await git(path, ["add", "--", ...files])).trim() || `staged ${files.length} file(s)` };
+    }
+    case "discard": {
+      // IntelliJ's Rollback: index AND worktree back to HEAD for these paths.
+      if (!files?.length) throw Error("discard needs files");
+      return { text: (await git(path, ["checkout", "HEAD", "--", ...files])).trim() || `discarded ${files.length} file(s)` };
+    }
+    case "diff-file": {
+      if (!target) throw Error("diff-file needs a file path");
+      return { text: (await git(path, ["--no-pager", "diff", ...(staged ? ["--cached"] : []), "HEAD", "--", target])).trim() || "no diff" };
+    }
+    case "stash-push":
+      return { text: (await git(path, ["stash", "push", ...(message ? ["-m", message] : [])])).trim() || "stashed" };
+    case "stash-pop":
+      return { text: (await git(path, ["stash", "pop"])).trim() || "stash popped" };
     case "commit": {
       const msg = (message ?? "").trim();
       if (!msg) throw Error("commit needs a message");
