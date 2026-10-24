@@ -11,7 +11,7 @@ import type { DevicePairing } from "./pairing.js";
 type Async = (req: Request, res: Response) => Promise<unknown>;
 const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
 import { gitOp, gitStatus, gitStatusBatch, type GitOp } from "./git.ts";
-const GIT_OPS: GitOp[] = ["diff", "log", "log-list", "fetch", "pull", "push", "switch", "branch", "commit", "stage", "unstage", "discard", "diff-file", "stash-push", "stash-pop", "compare", "merge-abort", "show-files", "ignore", "checkpoint", "checkpoints", "rewind", "worktree-list", "worktree-add", "worktree-remove"];
+const GIT_OPS: GitOp[] = ["diff", "log", "log-list", "fetch", "pull", "push", "switch", "branch", "commit", "stage", "unstage", "discard", "diff-file", "stash-push", "stash-pop", "compare", "merge-abort", "show-files", "ignore", "checkpoint", "checkpoints", "rewind", "submodule-update", "pr-create", "pr-list", "pr-merge", "pr-checks", "pr-comment", "worktree-list", "worktree-add", "worktree-remove"];
 
 interface Locals {
   row: SessionRow;
