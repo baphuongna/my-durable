@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitStatus, gitOp, gitStatusBatch, clearGitStatusCache } from "../src/git.ts";
+import { gitStatus, gitOp, gitStatusBatch, clearGitStatusCache, gitDirtyMarks } from "../src/git.ts";
 
 const sh = (cmd: string, args: string[], opts: { cwd?: string } = {}) => execFileSync(cmd, args, { ...opts, encoding: "utf8" });
 
@@ -300,5 +300,19 @@ test("gitOp: resolve picks a side and stages it (orca conflicts section)", async
   assert.equal((await import("node:fs")).readFileSync(join(root, "a.txt"), "utf8"), "side version\n", "theirs content must win");
   await assert.rejects(() => gitOp(root, "resolve", { side: "bogus", files: ["a.txt"] }), /side=ours\|theirs/);
   sh("git", ["merge", "--abort"], { cwd: root });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("git fs-watcher: a repo the UI looked at reports dirty when files change", async () => {
+  const root = repo();
+  const s1 = await gitStatus(root); // registers the watcher
+  assert.equal(s1.repo, true);
+  assert.equal((await gitStatus(root)).staged, 0); // cached answer, no re-run
+  writeFileSync(join(root, "watched.txt"), "now you see me\n");
+  // debounce is 1.2s — give the watcher a beat, then the TTL cache must be GONE
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.ok(gitDirtyMarks().some((m) => m.root === root), `dirty marks: ${JSON.stringify(gitDirtyMarks())}`);
+  const s2 = await gitStatus(root); // fresh, not the cached pre-change answer
+  assert.ok(s2.files?.some((f) => f.path === "watched.txt"), "watcher must invalidate the status cache");
   rmSync(root, { recursive: true, force: true });
 });

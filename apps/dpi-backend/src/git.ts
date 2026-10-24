@@ -10,6 +10,7 @@
  */
 import { execFile } from "node:child_process";
 import { appendFile } from "node:fs/promises";
+import { watch, type FSWatcher } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 const GIT_TIMEOUT = 15_000;
@@ -92,6 +93,77 @@ export async function gitStatusBatch(paths: string[]): Promise<Record<string, Gi
   const unique = [...new Set(paths.filter(Boolean))];
   const entries = await Promise.all(unique.map(async (p) => [p, await gitStatus(p)] as const));
   return Object.fromEntries(entries);
+}
+
+// ------------------------------------------------------------ fs watcher
+// The checklist's fs-auto-refresh, device side: watch the repos the UIs
+// actually look at, drop their cached status the moment files change, and
+// record a dirty mark the tree carries to every connected client.
+const dirty: { root: string; at: number }[] = [];
+const watchers = new Map<string, { w: FSWatcher; timer: NodeJS.Timeout | null; used: number }>();
+const MAX_WATCHERS = 16;
+let dirtyListener: (() => void) | undefined;
+
+/** Who to poke when a watched repo changes (the store re-announces its tree). */
+export function onGitDirty(cb: () => void) {
+  dirtyListener = cb;
+}
+
+/** Recent dirty marks for DeviceTree — pruned to the last 10 minutes. */
+export function gitDirtyMarks(): { root: string; at: number }[] {
+  const cutoff = Date.now() - 10 * 60_000;
+  while (dirty.length && dirty[0]!.at < cutoff) dirty.shift();
+  return dirty.slice(-10);
+}
+
+function markDirty(root: string) {
+  const now = Date.now();
+  for (const [p, c] of statusCache) if (p === root || p.startsWith(root + "/") || p.startsWith(root + "\\")) statusCache.delete(p);
+  dirty.push({ root, at: now });
+  dirtyListener?.();
+}
+
+/** Watch one repo root (LRU, capped) — recursive where the platform allows. */
+function ensureWatcher(root: string) {
+  const hit = watchers.get(root);
+  if (hit) {
+    hit.used = Date.now();
+    return;
+  }
+  if (watchers.size >= MAX_WATCHERS) {
+    let oldest = "";
+    let oldestAt = Infinity;
+    for (const [p, w] of watchers) if (w.used < oldestAt) ((oldest = p), (oldestAt = w.used));
+    if (oldest) {
+      watchers.get(oldest)?.w.close();
+      watchers.delete(oldest);
+    }
+  }
+  let w: FSWatcher;
+  try {
+    w = watch(root, { recursive: true }, () => {});
+  } catch {
+    try {
+      w = watch(root, () => {});
+    } catch {
+      return; // unwatchable (network fs, perms): the UIs keep explicit refresh
+    }
+  }
+  const entry = { w, timer: null as NodeJS.Timeout | null, used: Date.now() };
+  entry.w.on("change", () => {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      markDirty(root);
+    }, 1200);
+  });
+  entry.w.on("error", () => {
+    watchers.delete(root);
+    try {
+      w.close();
+    } catch {}
+  });
+  watchers.set(root, entry);
 }
 
 /** Test hook: the TTL cache would serve a pre-mutation answer. */
@@ -199,6 +271,9 @@ export async function gitStatus(path: string): Promise<GitStatus> {
     if (gitDir.includes("/worktrees/") || gitDir.includes("\\worktrees\\"))
       out.worktreeOf = dirname(gitDir.split(/[/\\]worktrees[/\\]/)[0]!);
     if (wlP.status === "rejected") throw wlP.reason;
+    // The UI looked at this repo: keep an eye on it so status never goes stale
+    // silently (checklist fs-auto-refresh, device side).
+    ensureWatcher(root);
     const wl = wlP.value;
     statusCache.set(path, { at: Date.now(), s: out });
     out.worktrees = wl

@@ -2,9 +2,10 @@
 // something actually looks at it, kept across tab switches, never re-fetched
 // while fresh. In-flight calls are shared so chip + panel + re-entry of either
 // cost ONE device round-trip.
-import { reactive } from "vue";
+import { reactive, watch } from "vue";
 import type { GitStatus } from "@sdk/client";
 import { deviceClient } from "./hub";
+import { network } from "./store";
 
 export interface GitEntry {
   at: number; // last settled fetch (0 = never)
@@ -36,6 +37,32 @@ export async function ensureGitBatch(deviceId: string, paths: string[]) {
   }
 }
 const staleMsForBatch = 60_000;
+
+/** fs-auto-refresh, FE side: the device's tree carries dirty marks for repos
+ *  its watcher saw change — refresh exactly those entries, still lazy (never
+ *  an interval), throttled per entry. */
+let wired = false;
+export function wireGitAutoRefresh() {
+  if (wired || import.meta.env.SSR) return;
+  wired = true;
+  watch(() => network.devices.value, (devices) => {
+    const now = Date.now();
+    for (const d of devices) {
+      const marks = ((d as { tree?: { git?: { root: string; at: number }[] } }).tree?.git ?? []).filter(
+        (m) => now - m.at < 60_000,
+      );
+      if (!marks.length) continue;
+      for (const key of [...entries.keys()]) {
+        const [devId, cwd] = key.split("::");
+        if (devId !== d.id || !cwd) continue;
+        const e = entries.get(key)!;
+        if (!marks.some((m) => cwd === m.root || cwd.startsWith(m.root + "/") || cwd.startsWith(m.root + "\\"))) continue;
+        if (e.loading || now - e.at < 4000) continue; // throttle: bursts coalesce
+        void ensureGit(devId, cwd, { force: true });
+      }
+    }
+  });
+}
 
 /** Test hook: the store is module-global on purpose (tab switches must not
  *  refetch) — tests reset it so entries never leak between cases. */

@@ -34,7 +34,7 @@ import {
 } from "lucide-vue-next";
 import { deviceId, network, sessionSummary, notify, select } from "../client/store";
 import { deviceClient } from "../client/hub";
-import { ensureGit, gitEntry } from "../client/git-store";
+import { ensureGit, gitEntry, wireGitAutoRefresh } from "../client/git-store";
 import type { GitStatus } from "@sdk/client";
 
 const props = defineProps<{ deviceId?: string; cwd?: string }>();
@@ -201,7 +201,7 @@ async function prCommentNow(n: number, text: string) {
 }
 
 /** Per-turn summaries (zcode taskChangeSummary) under the session chip. */
-const turns = ref<{ when: string; files: { path: string; writes: number }[] }[]>([]);
+const turns = ref<{ when: string; files: { path: string; writes: number; a?: number; d?: number }[] }[]>([]);
 const turnsOpen = ref(false);
 const loadTurns = async () => {
   if (!devId.value || !sessionId.value) return;
@@ -233,6 +233,7 @@ const draftLoad = () => {
   commitMsg.value = localStorage.getItem(draftKey.value) ?? "";
 };
 if (!import.meta.env.SSR) {
+  wireGitAutoRefresh();
   void ensureGit(devId.value || "?", cwd.value || "?");
   draftLoad();
 }
@@ -961,7 +962,7 @@ const laneX = (lane: number) => lane * 12 + 7;
               <div v-for="(t, ti) in turns" :key="ti" class="cp-row">
                 <code>t{{ turns.length - ti }}</code>
                 <span class="muted-line">{{ t.when.slice(0, 16).replace("T", " ") }}</span>
-                <span class="cp-subj">{{ t.files.map((f) => `${f.path}×${f.writes}`).join(", ") || "(no file writes)" }}</span>
+                <span class="cp-subj">{{ t.files.map((f) => `${f.path}×${f.writes}${f.a !== undefined || f.d !== undefined ? ` (+${f.a ?? 0} −${f.d ?? 0})` : ""}`).join(", ") || "(no file writes)" }}</span>
               </div>
             </div>
             <p v-if="atCap" class="muted-line cap">showing the first 500 changed files — commit in smaller batches</p>

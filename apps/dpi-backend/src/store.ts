@@ -30,11 +30,12 @@ import {
 } from "../../dpi-sdk/src/api.js";
 import { lastAssistantText, messageText, toMarkdown, toTranscript } from "../../dpi-sdk/src/transcript.js";
 import { ApiFault, invalid, notFound } from "./errors.js";
+import { git, gitDirtyMarks, onGitDirty } from "./git.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, relative, resolve } from "node:path";
 import { homedir, hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -255,7 +256,8 @@ export class Store {
         await store.shared.initialize({ goal: "Explore durable agents", counter: 0, notes: [] });
       store.modelList = await store.loadModels();
       for (const { harness } of store.opened.values()) harness.resume();
-      return store;
+      store.wireGitWatcher();
+    return store;
     } catch (e) {
       await store.close().catch(() => {});
       throw e;
@@ -271,6 +273,14 @@ export class Store {
   notify = () => {
     for (const fn of this.listeners) fn();
   };
+
+  /** The git fs-watcher pokes the tree so every connected UI hears "dirty". */
+  private gitWired = false;
+  wireGitWatcher() {
+    if (this.gitWired) return;
+    this.gitWired = true;
+    onGitDirty(() => this.notify());
+  }
 
   // ------------------------------------------------------------ device
 
@@ -775,18 +785,27 @@ export class Store {
    * Line stats come from the UI against the live status — here we only know
    * WHAT was touched and how many times.
    */
-  async sessionGitTurns(row: SessionRow): Promise<{ when: string; files: { path: string; writes: number }[] }[]> {
+  async sessionGitTurns(
+    row: SessionRow,
+  ): Promise<{ when: string; files: { path: string; writes: number; a?: number; d?: number }[] }[]> {
     const h = await this.openAgent(row);
-    const scanned: { when: string; files: Map<string, number> }[] = [];
-    let current: { when: string; files: Map<string, number> } | null = null;
-    const fileOf = (b: { type?: string; name?: string; arguments?: Record<string, unknown> }): string[] => {
+    type Call = { op: "write" | "edit"; path: string; content?: string; oldText?: string; newText?: string };
+    const scanned: { when: string; files: Map<string, number>; calls: Call[] }[] = [];
+    let current: { when: string; files: Map<string, number>; calls: Call[] } | null = null;
+    const callsOf = (b: { type?: string; name?: string; arguments?: Record<string, unknown> }): Call[] => {
       if (b?.type !== "toolCall" || (b.name !== "write" && b.name !== "edit")) return [];
       const args = b.arguments ?? {};
-      const out: string[] = [];
-      for (const f of [args.file_path, args.path]) if (typeof f === "string" && f.length > 0 && f.length < 4096) out.push(f);
-      const edits = Array.isArray(args.edits) ? (args.edits as { path?: unknown }[]) : [];
-      for (const ed of edits) if (typeof ed.path === "string" && ed.path.length > 0) out.push(ed.path);
-      return out;
+      const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : undefined;
+      if (!path) return [];
+      if (b.name === "write") return typeof args.content === "string" ? [{ op: "write", path, content: args.content }] : [];
+      const edits = Array.isArray(args.edits)
+        ? (args.edits as { oldText?: unknown; newText?: unknown }[])
+        : typeof args.oldText === "string" && typeof args.newText === "string"
+          ? [{ oldText: args.oldText, newText: args.newText }]
+          : [];
+      return edits
+        .filter((e) => typeof e.oldText === "string" && typeof e.newText === "string")
+        .map((e) => ({ op: "edit" as const, path, oldText: e.oldText as string, newText: e.newText as string }));
     };
     await h.commit(async (tx) => {
       let convs = await tx.scanConversations({}, 1000);
@@ -804,7 +823,7 @@ export class Store {
         for (;;) {
           for (const e of page.items as unknown as { kind?: string; model?: readonly { content?: unknown }[] }[]) {
             if (e.kind === "pi.user") {
-              current = { when: new Date().toISOString(), files: new Map() };
+              current = { when: new Date().toISOString(), files: new Map(), calls: [] };
               scanned.push(current);
               continue;
             }
@@ -812,7 +831,10 @@ export class Store {
             for (const m of e.model ?? []) {
               const blocks = Array.isArray(m.content) ? (m.content as unknown[]) : [];
               for (const b of blocks as { type?: string; name?: string; arguments?: Record<string, unknown> }[]) {
-                for (const f of fileOf(b)) current.files.set(f, (current.files.get(f) ?? 0) + 1);
+                for (const call of callsOf(b)) {
+                  current.files.set(call.path, (current.files.get(call.path) ?? 0) + 1);
+                  current.calls.push(call);
+                }
               }
             }
           }
@@ -822,9 +844,46 @@ export class Store {
         }
       }
     }, ctx);
-    return scanned
-      .map((t) => ({ when: t.when, files: [...t.files.entries()].map(([path, writes]) => ({ path, writes })).slice(0, 50) }))
-      .slice(-20);
+    // zcode's line stats, replayed honestly: start from each file's HEAD
+    // version (git truth, not snapshots) and re-apply the recorded tool calls
+    // in order; a turn's ±n is the net line delta at its boundary.
+    const lines = (t: string | null | undefined) => (t == null ? 0 : t.split("\n").length - (t.endsWith("\n") ? 1 : 0));
+    let root = "";
+    try {
+      root = (await git(row.cwd, ["rev-parse", "--show-toplevel"])).trim();
+    } catch {
+      root = row.cwd;
+    }
+    const headOf = async (p: string) => {
+      const abs = resolve(row.cwd, p);
+      const rel = relative(root, abs);
+      if (!rel || rel.startsWith("..")) return null;
+      try {
+        return await git(row.cwd, ["show", `HEAD:${rel}`]);
+      } catch {
+        return null;
+      }
+    };
+    const content = new Map<string, string | null>();
+    for (const p of [...new Set(scanned.flatMap((t) => [...t.files.keys()]))].slice(0, 200))
+      content.set(p, await headOf(p));
+    return scanned.slice(-20).map((t) => {
+      const before = new Map([...content].map(([p, c]) => [p, lines(c)] as const));
+      for (const call of t.calls) {
+        const cur = content.get(call.path) ?? null;
+        if (call.op === "write") content.set(call.path, call.content ?? "");
+        else {
+          const base = cur ?? "";
+          const next = base.split(call.oldText!).join(call.newText!);
+          content.set(call.path, next);
+        }
+      }
+      const files = [...t.files.entries()].slice(0, 50).map(([path, writes]) => {
+        const delta = lines(content.get(path) ?? null) - (before.get(path) ?? 0);
+        return { path, writes, ...(delta !== 0 ? { a: Math.max(0, delta), d: Math.max(0, -delta) } : {}) };
+      });
+      return { when: t.when, files };
+    });
   }
 
   /** One provider, one model, one throwaway session — is it alive? */
@@ -1367,7 +1426,8 @@ export class Store {
 
   async tree(): Promise<DeviceTree> {
     const sessions = await Promise.all(this.list().map((row) => this.sessionSummary(row)));
-    return { uid: this.uid, name: this.name, sessions, at: Date.now() };
+    const git = gitDirtyMarks();
+    return { uid: this.uid, name: this.name, sessions, at: Date.now(), ...(git.length ? { git } : {}) };
   }
 
   // ------------------------------------------------------------ demo extension

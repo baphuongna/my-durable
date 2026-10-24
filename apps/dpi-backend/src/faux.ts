@@ -73,6 +73,12 @@ export function installFaux(models: MutableModels) {
       const [path, ...rest] = prompt.slice(6).split("|");
       return call("write", { path: (path ?? "").trim(), content: rest.join("|") });
     }
+    if (prompt.startsWith("edit:")) {
+      // "edit:<path>|<oldText>|<newText>" — exercises the real edit tool so
+      // per-turn ±n replay is testable without a live model.
+      const [path, oldText, ...rest] = prompt.slice(5).split("|");
+      return call("edit", { path: (path ?? "").trim(), edits: [{ oldText: oldText ?? "", newText: rest.join("|") }] });
+    }
     if (prompt.startsWith("search:")) return call("search_history", { query: prompt.slice(7).trim() });
     if (prompt.startsWith("page:")) return call("ping_on_call_engineer", { summary: prompt.slice(5).trim() });
     if (prompt.startsWith("Release check:"))

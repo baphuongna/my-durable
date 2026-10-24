@@ -194,6 +194,9 @@ export interface DeviceTree {
   name: string;
   sessions: SessionSummary[];
   at: number;
+  /** Repos that changed on-device recently (fs watcher) — the cue for
+   *  connected UIs to refresh their cached git status. */
+  git?: { root: string; at: number }[];
 }
 
 export interface AgentConfig {
