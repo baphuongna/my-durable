@@ -742,8 +742,13 @@ export class Store {
               const blocks = Array.isArray(m.content) ? (m.content as unknown[]) : [];
               for (const b of blocks as { type?: string; name?: string; arguments?: Record<string, unknown> }[]) {
                 if (b?.type !== "toolCall" || (b.name !== "write" && b.name !== "edit")) continue;
-                const f = b.arguments?.file_path;
-                if (typeof f === "string" && f.length > 0 && f.length < 4096) paths.add(f);
+                const args = b.arguments ?? {};
+                // pi's write/edit speak `path` (edit also nests edits[].path); some
+                // harnesses say file_path — accept both, never invent one.
+                const candidates: unknown[] = [args.file_path, args.path];
+                const edits = Array.isArray(args.edits) ? (args.edits as { path?: unknown }[]) : [];
+                for (const ed of edits) candidates.push(ed.path);
+                for (const f of candidates) if (typeof f === "string" && f.length > 0 && f.length < 4096) paths.add(f);
               }
             }
           }

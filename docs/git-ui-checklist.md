@@ -1,7 +1,7 @@
 # Git UI Feature Checklist — orca / paseo / zcode → durable-pi
 
 Run: `team_20261024073535_a2a56c3410bfe1d9` · Steps: 01_explore (research) → 02_analyze (verify/correct) → 03_write (this file)
-Status: **verified against source** — every coverage claim below was re-read in the actual files before persisting (see [Verification log](#verification-log)).
+Status: **verified against source** · **ADOPTED: all waves shipped — 0.0.25 (1a + redesign) and 0.0.26/0.0.27 (1b + 2 + 3, incl. the flagship session-scoped commit, live-proven through the production tunnel)** — every coverage claim below was re-read in the actual files before persisting (see [Verification log](#verification-log)).
 
 ## Why this doc exists
 
