@@ -2,7 +2,7 @@
 // Git chip for the session breadcrumb: branch + dirty at a glance, click for
 // the real panel — status, worktrees, fetch/pull/log/commit, new worktree.
 // Everything goes through the device's whitelisted /v1/git API.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, onServerPrefetch, ref, watch } from "vue";
 import { ChevronDown, GitBranch, RefreshCw } from "lucide-vue-next";
 import { deviceId, sessionSummary, notify } from "../client/store";
 import { deviceClient } from "../client/hub";
@@ -29,9 +29,10 @@ async function refresh() {
     status.value = null;
   }
 }
-// First fetch inside setup: SSR (and the first paint) wait for it, so the chip
-// never flashes empty; later refreshes ride the interval + cwd changes.
-await refresh();
+// Client: fire now, the chip fills reactively. SSR waits on the prefetch
+// hook — a top-level await would need <Suspense> and silently never mount.
+if (!import.meta.env.SSR) void refresh();
+onServerPrefetch(() => refresh());
 watch(cwd, () => void refresh());
 onMounted(() => {
   timer = setInterval(refresh, 15000);

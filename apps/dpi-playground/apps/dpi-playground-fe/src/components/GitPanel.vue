@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Inspector GIT tab: everything the device knows about the session's folder.
 // Always visible — "not a git repository" is a state, not a reason to hide.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, onServerPrefetch, ref, watch } from "vue";
 import { RefreshCw } from "lucide-vue-next";
 import { deviceId, sessionSummary, notify } from "../client/store";
 import { deviceClient } from "../client/hub";
@@ -32,9 +32,12 @@ async function refresh() {
     error.value = (e as Error).message.slice(0, 160);
   }
 }
-// First fetch awaits in setup so SSR and first paint carry the state —
-// "not a repository" must be VISIBLE, not a blank tab.
-await refresh();
+// NO top-level await: an async setup outside <Suspense> never mounts in the
+// browser ("async setup invoked without a Suspense boundary") — the tab
+// rendered EMPTY (reported: "TAB git trống"). Fire now on the client;
+// onServerPrefetch is what SSR actually waits for.
+if (!import.meta.env.SSR) void refresh();
+onServerPrefetch(() => refresh());
 onMounted(() => {
   timer = setInterval(refresh, 10000);
 });
