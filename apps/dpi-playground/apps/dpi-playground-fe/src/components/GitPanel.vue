@@ -387,11 +387,15 @@ async function commit(thenPush = false) {
   }
 }
 
-/** The device's default model can drift out of its own catalog (seen live);
- *  any panel action needing a model falls back to the first catalog entry. */
-function pickModel(info: { models?: { id: string; provider: string }[]; defaultModel?: string } | undefined) {
+/** One model per provider, default's provider first — dead providers (seen
+ *  live: a stale key answers model_error) are skipped after one strike. */
+function modelCandidates(info: { models?: { id: string; provider: string }[]; defaultModel?: string } | undefined) {
   const models = info?.models ?? [];
-  return models.find((m) => `${m.provider}/${m.id}` === info?.defaultModel) ?? models[0];
+  const def = models.find((m) => `${m.provider}/${m.id}` === info?.defaultModel);
+  const byProvider = new Map<string, { id: string; provider: string }>();
+  for (const m of models) if (!byProvider.has(m.provider)) byProvider.set(m.provider, m);
+  const rest = [...byProvider.values()].filter((m) => m !== def).slice(0, 3);
+  return (def ? [def, ...rest] : rest).slice(0, 4);
 }
 
 /** orca/zcode AI message: ask the device's own model to title the changelist. */
@@ -401,34 +405,48 @@ async function aiMessage() {
   if (!chosen.length) return notify("check files first — the model summarises THOSE");
   busy.value = "ai";
   const client = deviceClient(devId.value);
-  let sid = "";
+  let diff = "";
+  for (const f of chosen.slice(0, 5)) {
+    const d = await client.gitOp(cwd.value, "diff-file", { target: f });
+    diff += `${d.text}\n`;
+    if (diff.length > 4000) break;
+  }
+  diff = diff.slice(0, 4000);
+  const prompt = `Write ONE concise git commit message (under 72 chars, imperative, no quotes, no backticks) for these changes:\n\n${diff}`;
+  const info = network.devices.value.find((d) => d.id === devId.value)?.info;
+  const candidates = modelCandidates(info);
+  if (!candidates.length) {
+    busy.value = "";
+    return notify("no model on the device");
+  }
+  const failed: string[] = [];
   try {
-    const info = network.devices.value.find((d) => d.id === devId.value)?.info;
-    const model = pickModel(info);
-    if (!model) return notify("no model on the device");
-    let diff = "";
-    for (const f of chosen.slice(0, 5)) {
-      const d = await client.gitOp(cwd.value, "diff-file", { target: f });
-      diff += `${d.text}\n`;
-      if (diff.length > 4000) break;
+    for (const model of candidates) {
+      const sid = await client
+        .createSession({ name: "git-msg", cwd: cwd.value, model: { provider: model.provider, modelId: model.id } })
+        .then((s) => s.id)
+        .catch(() => "");
+      if (!sid) {
+        failed.push(`${model.provider}: no session`);
+        continue;
+      }
+      try {
+        const r = await client.agent(sid, 1).send(prompt, "followUp", undefined, 120_000);
+        const text = r.status === "done" ? r.answer.text.trim().split("\n")[0]?.slice(0, 100) : "";
+        if (text) {
+          commitMsg.value = text;
+          return;
+        }
+        failed.push(`${model.provider}/${model.id}: ${r.status === "unanswered" ? r.reason : "empty answer"}`);
+      } finally {
+        void client.session(sid).archive().catch(() => {});
+      }
     }
-    diff = diff.slice(0, 4000);
-    const s = await client.createSession({ name: "git-msg", cwd: cwd.value, model: { provider: model.provider, modelId: model.id } });
-    sid = s.id;
-    const r = await client.agent(sid, 1).send(
-      `Write ONE concise git commit message (under 72 chars, imperative, no quotes, no backticks) for these changes:\n\n${diff}`,
-      "followUp",
-      undefined,
-      120_000,
-    );
-    const text = r.status === "done" ? r.answer.text.trim().split("\n")[0]?.slice(0, 100) : "";
-    if (text) commitMsg.value = text;
-    else notify("the model returned nothing usable");
+    notify(`ai message failed on every model — ${failed.join("; ").slice(0, 140)}`);
   } catch (e) {
     notify(`ai message failed: ${(e as Error).message.slice(0, 120)}`);
   } finally {
     busy.value = "";
-    if (sid) void client.session(sid).archive().catch(() => {});
   }
 }
 
@@ -536,7 +554,7 @@ async function sessionOn(path: string, branch: string | null) {
   busy.value = "session";
   try {
     const info = network.devices.value.find((d) => d.id === devId.value)?.info;
-    const model = pickModel(info);
+    const model = modelCandidates(info)[0];
     if (!model) return notify(`no model available on ${devId.value} — cannot create a session`);
     const s = await deviceClient(devId.value).createSession({
       name: branch ?? path.slice(path.lastIndexOf("/") + 1),
