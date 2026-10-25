@@ -130,6 +130,10 @@ export class App {
   private suggIndex = 0;
   /** Hub feed (multi-host display parity with the web sidebar). */
   private hub?: { url: string; token: string };
+  /** Public read for the welcome screen: is hub mode on? */
+  get hubUrl(): string | undefined {
+    return this.hub?.url;
+  }
   /** The hub's /api/stream mux — tunnel-device attach (same transport as the web). */
   private mux?: HubMux;
   /** True while the current device is reached through the hub proxy. */

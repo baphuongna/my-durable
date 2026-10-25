@@ -122,13 +122,31 @@ function isLoopbackUrl(url: string): boolean {
   }
 }
 
+// Hub credentials, resolved once: every startup path (welcome included) can
+// offer the hub network.
+const hubEnv = (() => {
+  const u = values["hub-url"] ?? process.env.DPI_HUB_URL;
+  const t = values["hub-token"] ?? process.env.DPI_HUB_TOKEN;
+  return u && t ? { url: u, token: t } : undefined;
+})();
+
 // The app opens first; connection is a state, not a precondition. With no explicit
 // device/url/pair: one saved device opens it directly, several open on the first
 // with the device picker on top, none open the welcome screen.
 const startup = resolveStartupAction({ devices: registry.list(), env: process.env, args: { deviceRef, url, pair: values.pair } });
 
 if (startup.kind === "welcome") {
-  showWelcome(new App(WELCOME_DEVICE, new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token), emptyDeviceInfo(), registry));
+  // Hub credentials ride along so the welcome offers the hub network — the
+  // feed is one key away instead of invisible behind the overlay.
+  showWelcome(
+    new App(
+      WELCOME_DEVICE,
+      new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token),
+      emptyDeviceInfo(),
+      registry,
+      hubEnv,
+    ),
+  );
 } else if (startup.kind === "auto-open" || startup.kind === "picker") {
   const row = startup.kind === "auto-open" ? startup.device : startup.devices[0]!;
   const device: DeviceRef = { id: row.id, name: row.name, url: row.url!, token: row.token! };
@@ -152,12 +170,21 @@ if (startup.kind === "welcome") {
     } else {
     // An auto-connected device that is unreachable falls back to a screen that says
     // so and offers the picker + welcome actions — never back to usage text.
-    showWelcome(new App(WELCOME_DEVICE, new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token), emptyDeviceInfo(), registry), {
+    showWelcome(
+      new App(
+        WELCOME_DEVICE,
+        new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token),
+        emptyDeviceInfo(),
+        registry,
+        hubEnv,
+      ),
+      {
       notice:
         isDpiError(e) && e.code === "unauthorized"
           ? `${device.id}: token rejected by ${device.url}`
           : `${device.id} is offline at ${device.url} (${(e as Error).message})`,
-    });
+      },
+    );
     }
   }
 } else if (url) {

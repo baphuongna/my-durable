@@ -228,7 +228,7 @@ export function validateDeviceInput(urlAnswer: string, tokenAnswer: string): { u
 
 // ------------------------------------------------------------------ the welcome screen
 
-export function welcomeItems(deviceCount: number, port: number): SelectItem[] {
+export function welcomeItems(deviceCount: number, port: number, hub = false): SelectItem[] {
   // The bracket letter is a real shortcut (see WelcomePicker) — typing it runs
   // the action instead of relying on filter order.
   const items: SelectItem[] = [
@@ -236,6 +236,15 @@ export function welcomeItems(deviceCount: number, port: number): SelectItem[] {
     { value: "add-url", label: "[a] Add a device by URL", description: "http://host:port + its DPI_TOKEN" },
     { value: "detect-local", label: "[d] Detect the local backend", description: `probe 127.0.0.1:${port} (DPI_TOKEN or ~/.dpi/backend.env)` },
   ];
+  // Hub mode (live-caught): the network is one key away — before this the
+  // welcome offered only local pairing and quit, with the hub feed invisible
+  // behind the overlay and no way to browse it.
+  if (hub)
+    items.unshift({
+      value: "hub-network",
+      label: "[h] Browse the hub network",
+      description: "devices and sessions the hub can see",
+    });
   if (deviceCount > 0)
     items.push({
       value: "switch-device",
@@ -273,7 +282,7 @@ export function showWelcome(app: App, opts: { notice?: string } = {}) {
   let picked = false; // an action was chosen: closing the overlay is a step, not a quit
   app.overlay(
     new WelcomePicker(
-      welcomeItems(devices.length, applyBackendEnv().port),
+      welcomeItems(devices.length, applyBackendEnv().port, Boolean(app.hubUrl)),
       (item) => {
         picked = true;
         app.closeOverlay();
@@ -325,6 +334,12 @@ async function runWelcomeAction(app: App, action: string) {
   if (action === "add-url") return welcomeAddUrl(app);
   if (action === "detect-local") return welcomeLocal(app);
   if (action === "switch-device") return welcomeSwitch(app);
+  if (action === "hub-network") {
+    // Close into the network view; the hub feed keeps it current.
+    app.closeOverlay();
+    app.setView("network");
+    return;
+  }
 }
 
 /** [p] Pair this machine — the same LocalPairing path as `--pair` and /pair. */
@@ -365,7 +380,9 @@ async function welcomeAddUrl(app: App) {
   app.flash(`Connecting to ${input.url}…`);
   let info;
   try {
-    info = await new DpiClient(input.url, input.token).device({ timeoutMs: 8000 });
+    // 20s, not 8: a HUB-proxied device URL pays the tunnel's first-hit cost
+    // (15s observed live) — 8s reported "cannot reach" on a healthy device.
+    info = await new DpiClient(input.url, input.token).device({ timeoutMs: 20000 });
   } catch (e) {
     app.flash(
       isDpiError(e) && e.code === "unauthorized"
