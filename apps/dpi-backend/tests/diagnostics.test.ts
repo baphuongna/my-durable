@@ -206,6 +206,7 @@ test("a healthy device produces every section, redacted, in one 0600 zip", async
     "start_dir:ok",
     "model_probe:ok",
     "hub:skip",
+    "crash-reports:ok",
   ]);
   assert.equal(doctor.ok, true);
 

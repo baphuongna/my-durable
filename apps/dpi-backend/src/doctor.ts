@@ -21,9 +21,10 @@
  */
 import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 // Reuse the updater's engine comparison instead of a second semver implementation.
 import { satisfiesEngine } from "../../../bin/update.mjs";
+import { listCrashReports } from "./crash.js";
 
 export type DoctorStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -367,6 +368,19 @@ async function healthzCheck(
 // ------------------------------------------------------------------- driver
 
 /** Run every check. Warnings never make `ok` false; only a FAIL does. */
+/**
+ * Local crash reports (policy gate #1): a warn, never a fail — a past crash is
+ * information for the operator, not a broken device. Latest first, filename
+ * timestamps only, no file bodies parsed.
+ */
+function crashReportCheck(home: string): DoctorCheck {
+  const reports = listCrashReports(home);
+  const detail = !reports.length
+    ? "none — the daemon has not crashed"
+    : `${reports.length} report${reports.length === 1 ? "" : "s"} — newest ${reports[0]!.ageLabel} (${basename(reports[0]!.file)})`;
+  return { id: "crash-reports", status: reports.length ? "warn" : "ok", label: "crash reports", detail };
+}
+
 export async function runDoctor(opts: Partial<DoctorIo> = {}): Promise<DoctorReport> {
   const io: DoctorIo = { ...defaultDoctorIo(), ...opts };
   const cfg = deviceEndpoint(io);
@@ -377,6 +391,7 @@ export async function runDoctor(opts: Partial<DoctorIo> = {}): Promise<DoctorRep
   checks.push(...startDirChecks(io, cfg));
   checks.push(await probeCheck(io, cfg, health.reachable));
   checks.push(await hubCheck(io, cfg));
+  checks.push(crashReportCheck(cfg.home));
 
   return { checks, ok: checks.every((c) => c.status !== "fail") };
 }

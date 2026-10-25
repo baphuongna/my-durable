@@ -5,6 +5,8 @@ import type {
   AgentSummary,
   CompactionSettings,
   EnvFileView,
+  PiAuthView,
+  PiAuthWriteResult,
   GraphRecord,
   GraphRunRecord,
   GraphTask,
@@ -260,6 +262,19 @@ export class DpiClient {
   }
   removeEnvVar(key: string) {
     return this.request<{ removed: boolean }>("DELETE", `/v1/device/env/${enc(key)}`);
+  }
+  /** pi provider keys — WRITE-ONLY: the view carries masked tails, never values. */
+  piAuth() {
+    return this.request<PiAuthView>("GET", "/v1/device/pi-auth");
+  }
+  setPiApiKey(providerId: string, key: string) {
+    return this.request<PiAuthWriteResult>("PUT", `/v1/device/pi-auth/${enc(providerId)}`, { key });
+  }
+  removePiApiKey(providerId: string) {
+    return this.request<{ removed: boolean; restartRequired: true }>(
+      "DELETE",
+      `/v1/device/pi-auth/${enc(providerId)}`,
+    );
   }
   /** Task-graphs: a DAG of prompt-tasks the device runs sequentially. */
   graphs() {

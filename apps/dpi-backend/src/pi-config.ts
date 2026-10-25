@@ -11,7 +11,7 @@
  * pi's files: its credential store is a read-only view, so a headless daemon
  * cannot corrupt an interactive login.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
@@ -203,4 +203,105 @@ export function loadPiConfig(env: NodeJS.ProcessEnv = process.env): PiConfig {
     credentialed: credentialedProviders(auth, modelsJson),
     skipped,
   };
+}
+
+
+/**
+ * Writable provider keys (policy gate #2, decided 0.0.46): the device may SET
+ * or REMOVE an api_key entry in pi's OWN auth.json — write-only. The rules that
+ * keep pi and the device from fighting over the file:
+ *
+ *   - values are never returned: the view carries a masked tail (`••••••••t123`)
+ *     so an operator can confirm a rotation, nothing more;
+ *   - pi's INTERACTIVE logins (oauth entries) are untouchable — a headless
+ *     daemon must not clobber what `pi /login` established;
+ *   - a corrupt auth.json is refused, not rewritten: the fix belongs to pi;
+ *   - writes are atomic (tmp + rename, 0600) with a `.bak` of the previous
+ *     file, and every OTHER entry survives byte-for-byte.
+ */
+export interface PiAuthEntry {
+  providerId: string;
+  type: string;
+  source: "auth.json" | "models.json" | "both";
+  /** `••••••••` + last 4 — the only form a value ever leaves the file in. */
+  masked: string;
+}
+
+export function maskPiKey(key: string): string {
+  return `••••••••${key.slice(-4)}`;
+}
+
+/** The write-only view: names, types, sources, masked tails — never values. */
+export function piAuthView(auth: Record<string, Credential>, modelsJson: PiModelsJson): PiAuthEntry[] {
+  const ids = [...new Set([...Object.keys(auth), ...Object.keys(modelsJson.providers ?? {})])].sort();
+  return ids.map((providerId) => {
+    const fromAuth = auth[providerId];
+    const fromModels = modelsJson.providers?.[providerId]?.apiKey;
+    const key: string | undefined =
+      fromAuth?.type === "api_key" ? fromAuth.key : (fromModels ?? undefined);
+    return {
+      providerId,
+      type: fromAuth?.type ?? "api_key",
+      source: fromAuth && fromModels ? "both" : fromAuth ? "auth.json" : "models.json",
+      masked: key ? maskPiKey(key) : "(none)",
+    };
+  });
+}
+
+const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** Read auth.json strictly: absent → {}, corrupt → REFUSE (pi owns the fix). */
+function readAuthStrict(dir: string): Record<string, Credential> {
+  const path = join(dir, "auth.json");
+  if (!existsSync(path)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw Error("auth.json is not valid JSON — fix it with pi, the device will not rewrite it");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw Error("auth.json has an unexpected shape — fix it with pi, the device will not rewrite it");
+  return parsed as Record<string, Credential>;
+}
+
+/** Atomic 0600 write with a `.bak` of the previous file (house registry style). */
+function writeAuthAtomic(dir: string, next: Record<string, Credential>): void {
+  const path = join(dir, "auth.json");
+  if (existsSync(path)) copyFileSync(path, `${path}.bak`);
+  const tmp = join(dir, `auth.json.tmp-${process.pid}`);
+  const fd = openSync(tmp, "w", 0o600);
+  try {
+    writeSync(fd, `${JSON.stringify(next, null, 2)}\n`);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
+}
+
+/** Set one api_key. Refuses invalid ids, oversized keys, and oauth entries. */
+export function writePiApiKey(dir: string, providerId: string, key: string): PiAuthEntry {
+  if (!PROVIDER_ID.test(providerId)) throw Error(`invalid provider id: ${JSON.stringify(providerId)}`);
+  if (!key.trim() || key.length > 4096) throw Error("key must be 1–4096 non-whitespace characters");
+  const auth = readAuthStrict(dir);
+  const existing = auth[providerId];
+  if (existing && existing.type !== "api_key")
+    throw Error(`${providerId} uses an interactive pi login (${existing.type}) — edit it with pi, not here`);
+  const credential: ApiKeyCredential = { type: "api_key", key };
+  writeAuthAtomic(dir, { ...auth, [providerId]: credential });
+  return { providerId, type: "api_key", source: existing ? "auth.json" : "auth.json", masked: maskPiKey(key) };
+}
+
+/** Remove one api_key entry. Same refusals; returns whether it existed. */
+export function removePiApiKey(dir: string, providerId: string): boolean {
+  if (!PROVIDER_ID.test(providerId)) throw Error(`invalid provider id: ${JSON.stringify(providerId)}`);
+  const auth = readAuthStrict(dir);
+  const existing = auth[providerId];
+  if (existing && existing.type !== "api_key")
+    throw Error(`${providerId} uses an interactive pi login (${existing.type}) — edit it with pi, not here`);
+  if (!existing) return false;
+  const next = { ...auth };
+  delete next[providerId];
+  writeAuthAtomic(dir, next);
+  return true;
 }

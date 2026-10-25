@@ -7,8 +7,8 @@
 // change needs a daemon restart to apply — the panel says so, it does not
 // pretend otherwise.
 import { computed, ref, watch } from "vue";
-import { RefreshCw, Plus, Pencil, Trash2, FileCog } from "lucide-vue-next";
-import type { EnvFileView, EnvVarView } from "@sdk/api";
+import { RefreshCw, Plus, Pencil, Trash2, FileCog, KeyRound } from "lucide-vue-next";
+import type { EnvFileView, EnvVarView, PiAuthView } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
 import { notify, selected, ui } from "../client/store";
 
@@ -37,8 +37,64 @@ async function load() {
   } finally {
     loading.value = false;
   }
+  void loadKeys();
 }
 watch(deviceId, load, { immediate: true });
+
+// ---------------------------------------------------------------- pi keys
+// Gate #2: WRITE-ONLY provider keys in pi's own auth.json. Values are never
+// shown — the list carries masked tails only — and the input is a password
+// field that is cleared the moment a save lands.
+const keys = ref<PiAuthView | null>(null);
+const keysError = ref("");
+const addingKey = ref(false);
+const keyDraft = ref({ providerId: "", key: "" });
+
+async function loadKeys() {
+  if (!deviceId.value) return void (keys.value = null);
+  try {
+    keys.value = await client().piAuth();
+    keysError.value = "";
+  } catch (e) {
+    const text = message(e);
+    keysError.value =
+      (e as { code?: string }).code === "not_found" || /allowlist/i.test(text)
+        ? "This device runs an older build: update it (`dpi update`) to manage pi keys."
+        : text.slice(0, 160);
+  }
+}
+
+async function addKey() {
+  const providerId = keyDraft.value.providerId.trim();
+  if (!providerId || !keyDraft.value.key) return;
+  busy.value = "pi-key";
+  try {
+    const r = await client().setPiApiKey(providerId, keyDraft.value.key);
+    keyDraft.value = { providerId: "", key: "" };
+    addingKey.value = false;
+    await loadKeys();
+    notify(`${providerId} saved (now ${r.masked}) — restart the device to apply it.`);
+  } catch (e) {
+    notify(message(e).slice(0, 160));
+  } finally {
+    busy.value = "";
+  }
+}
+
+function removeKey(providerId: string) {
+  ui.dialog = {
+    kind: "prompt",
+    title: `Remove the ${providerId} key?`,
+    hint: "The entry is deleted from pi's auth.json. pi's own logins are never touched. Restart the device to apply.",
+    submit: "Remove",
+    danger: true,
+    run: async () => {
+      await client().removePiApiKey(providerId);
+      await loadKeys();
+      notify(`${providerId} removed — restart the device to apply it.`);
+    },
+  };
+}
 
 const editable = (v: EnvVarView) => v.source === "file" && !v.managed;
 
@@ -173,6 +229,81 @@ function remove(v: EnvVarView) {
     </ul>
 
     <p v-if="view" class="hint path">{{ view.envFile }}</p>
+
+    <header class="panel-heading keys-heading">
+      <span><KeyRound :size="16" />PI KEYS</span>
+      <button
+        class="icon-button"
+        :disabled="loading || !deviceId"
+        aria-label="Refresh pi keys"
+        title="Refresh"
+        @click="loadKeys"
+      >
+        <RefreshCw :size="15" />
+      </button>
+      <button
+        class="icon-button"
+        :disabled="!deviceId || !!keysError"
+        aria-label="Add a pi provider key"
+        title="Add a provider key to pi's auth.json"
+        @click="addingKey = !addingKey"
+      >
+        <Plus :size="15" />
+      </button>
+    </header>
+
+    <p class="hint">
+      Provider keys in pi's own <code>auth.json</code> — write-only: values are never shown, pi's interactive
+      logins (oauth) are never touched.
+    </p>
+    <p v-if="keysError" class="message-error">{{ keysError }}</p>
+
+    <form v-if="addingKey" class="add-form" @submit.prevent="addKey">
+      <label
+        >Provider id<input v-model="keyDraft.providerId" placeholder="zai" required />
+      </label>
+      <label
+        >Key<input
+          v-model="keyDraft.key"
+          type="password"
+          autocomplete="off"
+          placeholder="paste the api key"
+          required
+        />
+      </label>
+      <div class="row">
+        <button class="primary small" type="submit" :disabled="busy === 'pi-key'">
+          {{ busy === 'pi-key' ? "saving…" : "Save to auth.json" }}
+        </button>
+        <button class="small" type="button" @click="addingKey = false">Cancel</button>
+      </div>
+      <p class="hint">Applies after the next device restart. Existing keys for other providers stay as they are.</p>
+    </form>
+
+    <p v-if="!addingKey && keys && !keys.entries.length && !keysError" class="hint">
+      No provider keys found.
+    </p>
+
+    <ul v-if="keys?.entries.length" class="var-list">
+      <li v-for="k in keys.entries" :key="k.providerId" class="var">
+        <div class="head">
+          <code class="key">{{ k.providerId }}</code>
+          <span class="tag">{{ k.source }}</span>
+          <span v-if="k.type !== 'api_key'" class="tag" title="Set by pi /login — read-only here">{{ k.type }}</span>
+          <span class="spacer" />
+          <button
+            v-if="k.type === 'api_key'"
+            class="icon-button"
+            :aria-label="`Remove ${k.providerId} key`"
+            title="Remove from auth.json"
+            @click="removeKey(k.providerId)"
+          >
+            <Trash2 :size="13" />
+          </button>
+        </div>
+        <code class="value" title="write-only — masked tail">{{ k.masked }}</code>
+      </li>
+    </ul>
   </section>
 </template>
 
@@ -256,6 +387,9 @@ function remove(v: EnvVarView) {
   font-size: 12px;
   opacity: 0.55;
   word-break: break-all;
+}
+.keys-heading {
+  margin-top: 14px;
 }
 .spin {
   animation: spin 1s linear infinite;

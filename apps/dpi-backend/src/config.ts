@@ -23,6 +23,12 @@ export interface BackendConfig {
 
 const expand = (p: string) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 
+/** The device home, the same way loadConfig derives it — the crash handlers
+ * need it BEFORE loadConfig runs (a config failure must still leave a report). */
+export function deviceHome(env: NodeJS.ProcessEnv = process.env): string {
+  return expand(env.DPI_HOME ?? join(homedir(), ".dpi"));
+}
+
 export async function loadConfig(argv = process.argv.slice(2), env = process.env): Promise<BackendConfig> {
   const flag = (key: string, fallback: string) => {
     const i = argv.indexOf(key);
@@ -31,7 +37,7 @@ export async function loadConfig(argv = process.argv.slice(2), env = process.env
     if (!value || value.startsWith("--")) throw Error(`${key} needs a value`);
     return value;
   };
-  const home = expand(env.DPI_HOME ?? join(homedir(), ".dpi"));
+  const home = deviceHome(env);
   const envFile = expand(flag("--env-file", env.DPI_ENV_FILE ?? join(home, "backend.env")));
   if (existsSync(envFile)) process.loadEnvFile(envFile);
   // First-run bootstrap: an npm-installed `dpi device` has no token and no `npm run token`.

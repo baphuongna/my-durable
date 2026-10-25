@@ -233,6 +233,24 @@ export interface EnvVarView {
   managed: boolean;
 }
 
+/** One provider credential in pi's auth.json — masked tail only, never the value. */
+export interface PiAuthEntry {
+  providerId: string;
+  type: string;
+  source: "auth.json" | "models.json" | "both";
+  masked: string;
+}
+
+export interface PiAuthView {
+  entries: PiAuthEntry[];
+}
+
+export interface PiAuthWriteResult {
+  providerId: string;
+  masked: string;
+  restartRequired: true;
+}
+
 export interface EnvFileView {
   envFile: string;
   exists: boolean;

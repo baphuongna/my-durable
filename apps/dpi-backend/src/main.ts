@@ -5,8 +5,9 @@ import { assertLimitsConfig } from "../../dpi-sdk/src/protocol/limits.js";
 import { createServer } from "node:http";
 import { writeFileSync, rmSync } from "node:fs";
 import { networkInterfaces } from "node:os";
-import { loadConfig } from "./config.js";
-import { Store } from "./store.js";
+import { loadConfig, deviceHome } from "./config.js";
+import { Store, PACKAGE_VERSION } from "./store.js";
+import { installCrashHandlers } from "./crash.js";
 import { bearerAuth } from "./auth.js";
 import { errorMiddleware } from "./errors.js";
 import { v1 } from "./routes.js";
@@ -24,6 +25,35 @@ import { parseDeviceSub, runDeviceCommand, daemonPaths } from "./daemon.js";
 
 assertLimitsConfig();
 
+// Crash reports (policy gate #1) are installed FIRST, before anything below can
+// throw: a config or store failure still leaves a redacted local report (nothing
+// is ever uploaded). The state getter reads the store lazily — before it opens,
+// every count is simply "unknown".
+let crashStore: Store | null = null;
+installCrashHandlers({
+  home: deviceHome(),
+  version: PACKAGE_VERSION,
+  startedAt: Date.now(),
+  state: () => {
+    if (!crashStore) return {};
+    const n = <T,>(f: () => T): T | undefined => {
+      try {
+        return f();
+      } catch {
+        return undefined;
+      }
+    };
+    return {
+      openSessions: n(() => crashStore!.list().length),
+      totalSessions: n(() => crashStore!.list().length),
+      schedules: n(() => crashStore!.schedules.list().length),
+      graphs: n(() => crashStore!.graphList(true).length),
+      runsInFlight: [...crashStore.graphRunsInFlight],
+      notifySinks: n(() => crashStore!.notifySinkList().length),
+    };
+  },
+});
+
 const config = await loadConfig();
 const store = await Store.open({
   dataDir: config.dataDir,
@@ -33,6 +63,7 @@ const store = await Store.open({
   envFile: config.envFile,
   telegramToken: process.env.DPI_TELEGRAM_TOKEN,
 });
+crashStore = store;
 
 const app = express();
 app.disable("x-powered-by");

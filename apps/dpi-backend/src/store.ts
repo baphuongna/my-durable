@@ -74,7 +74,16 @@ import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from "@earendil-works/chor
 import { createModels } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { loadPiConfig } from "./pi-config.js";
+import {
+  loadPiConfig,
+  piAuthView as piAuthViewExport,
+  readPiAuth,
+  readPiModelsJson,
+  writePiApiKey,
+  removePiApiKey as removePiApiKeyFn,
+  piAgentDir,
+  type PiAuthEntry,
+} from "./pi-config.js";
 import { curatedModels, defaultModelId } from "./model-catalog.js";
 import { fauxModels, installFaux } from "./faux.js";
 import {
@@ -301,7 +310,8 @@ export class Store {
   telegram?: TelegramBridge;
   /** Task-graphs (Wave 3): a DAG of prompt-tasks, each run as a fresh session. */
   graphs!: GraphRegistry;
-  private graphRunsInFlight = new Set<string>();
+  /** Public read-only use: the crash snapshot lists ids mid-run. */
+  graphRunsInFlight = new Set<string>();
   uid!: string;
   modelList: ModelInfo[] = [];
   private unlockCatalog: () => void;
@@ -818,6 +828,25 @@ export class Store {
       body: `If you can read this, ${this.name} can reach your sink.`,
       data: { device: this.name },
     });
+  }
+
+  /**
+   * pi provider keys (gate #2): WRITE-ONLY surface. The view re-reads pi's
+   * files (not the boot snapshot) so a rotation is visible immediately;
+   * values never leave — masked tails only.
+   */
+  piAuthView(): PiAuthEntry[] {
+    const dir = piAgentDir();
+    return piAuthViewExport(readPiAuth(dir), readPiModelsJson(dir));
+  }
+
+  setPiApiKey(providerId: string, key: string): { providerId: string; masked: string; restartRequired: true } {
+    const entry = writePiApiKey(piAgentDir(), providerId, key);
+    return { providerId: entry.providerId, masked: entry.masked, restartRequired: true };
+  }
+
+  removePiApiKey(providerId: string): { removed: boolean; restartRequired: true } {
+    return { removed: removePiApiKeyFn(piAgentDir(), providerId), restartRequired: true };
   }
 
   /** The env-file view (secrets masked, process-only vars read-only). */

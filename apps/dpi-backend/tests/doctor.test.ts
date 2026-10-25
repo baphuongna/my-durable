@@ -119,7 +119,7 @@ test("doctor: a healthy device is all ok, exit 0", async () => {
 
   assert.deepEqual(
     report.checks.map((c) => `${c.id}:${c.status}`),
-    ["node:ok", "healthz:ok", "start_dir:ok", "model_probe:ok", "hub:ok"],
+    ["node:ok", "healthz:ok", "start_dir:ok", "model_probe:ok", "hub:ok", "crash-reports:ok"],
   );
   assert.equal(report.ok, true);
   assert.equal(exitCode(report), 0);
@@ -329,7 +329,7 @@ test("doctorCli: human output lists every check and the verdict", async () => {
   assert.equal(code, 0);
   assert.match(text, /^ok {4}node 22\.23\.1 — satisfies engines node >=22\.19\.0/m);
   assert.match(text, /^ok {4}healthz http:\/\/127\.0\.0\.1:4780\/healthz — device answered/m);
-  assert.match(text, /doctor: OK — 5 checks, all good/);
+  assert.match(text, /doctor: OK — 6 checks, all good/);
 });
 
 test("doctorCli: --quiet shows only problems (and always the verdict)", async () => {
@@ -341,7 +341,7 @@ test("doctorCli: --quiet shows only problems (and always the verdict)", async ()
   assert.equal(code, 0);
   assert.equal(out.filter((l) => l.startsWith("ok")).length, 0, "quiet prints no ok rows");
   assert.match(text, /^warn {2}model probe faux\/echo — model_error/m);
-  assert.match(text, /doctor: OK — 5 checks, 1 warning/);
+  assert.match(text, /doctor: OK — 6 checks, 1 warning/);
 });
 
 test("doctorCli: a bad flag is refused with help, exit 1", async () => {

@@ -208,6 +208,17 @@ export function v1(
   }));
   r.delete("/device/env/:key", route(async (req, res) => res.json(await store.removeEnvVar(param(req, "key")))));
 
+  // -------------------------------------------------- pi provider keys
+  // WRITE-ONLY over pi's own auth.json (gate #2): values are never returned —
+  // masked tails only — and pi's interactive oauth logins are untouchable.
+  r.get("/device/pi-auth", (_req, res) => res.json({ entries: store.piAuthView() }));
+  r.put("/device/pi-auth/:provider", route(async (req, res) => {
+    const body = req.body ?? {};
+    if (typeof body.key !== "string" || !body.key.trim()) throw invalid("key is required");
+    res.json(store.setPiApiKey(param(req, "provider"), body.key));
+  }));
+  r.delete("/device/pi-auth/:provider", route(async (req, res) => res.json(store.removePiApiKey(param(req, "provider")))));
+
   // ---------------------------------------------------- notifications
   // Outbound fan-out (webhook/ntfy). Configured here, delivered by the device.
   r.get("/notify/sinks", (_req, res) => res.json({ sinks: store.notifySinkList() }));
