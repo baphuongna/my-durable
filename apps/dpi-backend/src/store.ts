@@ -53,6 +53,14 @@ import { ProjectRegistry, type ProjectRecord } from "./projects.js";
 import { EnvFileEditor, type EnvFileView } from "./env-vars.js";
 import { KeepAwake } from "./awake.js";
 import { TelegramBridge, defaultTelegramIo, type TelegramBroker } from "./telegram.js";
+import {
+  GraphRegistry,
+  readyTasks,
+  topoOrder,
+  type GraphRecord,
+  type GraphRunRecord,
+  type GraphTask,
+} from "./graphs.js";
 import { ScheduleRegistry, type ScheduleCreateInput, type ScheduleRecord } from "./schedules.js";
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, type ZipEntry } from "./zip.js";
@@ -291,6 +299,9 @@ export class Store {
   private awakeTimer?: ReturnType<typeof setTimeout>;
   /** Telegram chat bridge (Wave 3): bound chats talk to sessions. */
   telegram?: TelegramBridge;
+  /** Task-graphs (Wave 3): a DAG of prompt-tasks, each run as a fresh session. */
+  graphs!: GraphRegistry;
+  private graphRunsInFlight = new Set<string>();
   uid!: string;
   modelList: ModelInfo[] = [];
   private unlockCatalog: () => void;
@@ -324,6 +335,9 @@ export class Store {
   }
   get telegramPath() {
     return join(this.options.dataDir, "telegram.json");
+  }
+  get graphsPath() {
+    return join(this.options.dataDir, "graphs.json");
   }
   get name() {
     return this.options.name;
@@ -401,6 +415,13 @@ export class Store {
         warn: (m) => process.emitWarning(`telegram: ${m}`),
       });
       if (options.telegramToken) store.telegram.start(options.telegramToken);
+      store.graphs = await GraphRegistry.open(store.graphsPath, {
+        warn: (m) => process.emitWarning(`graphs: ${m}`),
+      });
+      // A restart mid-run never loses the graph: the run flips to interrupted
+      // with its running tasks back to pending, and `run` continues from there.
+      for (const run of await store.graphs.recoverInterrupted())
+        process.emitWarning(`graphs: run ${run.id} of ${run.graphId} was interrupted by a restart; run it again to continue`);
       store.unlockShared = lockFile(`${store.sharedStatePath}.lock`);
       store.shared = await SharedState.open(store.sharedStatePath);
       store.shared.harness.subscribeCommits(() => store.notify());
@@ -840,6 +861,126 @@ export class Store {
         return lastAssistantText(await this.activeEntries(c)) ?? undefined;
       },
     };
+  }
+
+  // ------------------------------------------------ task-graphs (Wave 3)
+
+  graphList(includeArchived = false): Array<GraphRecord & { lastRun?: GraphRunRecord }> {
+    return this.graphs.list({ includeArchived }).map((g) => ({ ...g, lastRun: this.graphs.lastRun(g.id) }));
+  }
+
+  graphGet(id: string): { graph: GraphRecord; runs: GraphRunRecord[] } | undefined {
+    const graph = this.graphs.get(id);
+    if (!graph) return undefined;
+    return { graph, runs: this.graphs.runs(id) };
+  }
+
+  async createGraph(body: Record<string, unknown>): Promise<GraphRecord> {
+    const created = await this.graphs.create(body as never);
+    this.notify();
+    return created;
+  }
+
+  async updateGraph(id: string, body: Record<string, unknown>): Promise<GraphRecord> {
+    const updated = await this.graphs.update(id, body as never);
+    this.notify();
+    return updated;
+  }
+
+  async removeGraph(id: string): Promise<{ removed: boolean }> {
+    if (this.graphRunsInFlight.has(id)) throw invalid("this graph is running");
+    const removed = await this.graphs.remove(id);
+    this.notify();
+    return { removed };
+  }
+
+  /**
+   * Start a run. Execution is sequential in topological order — deterministic
+   * and debuggable on a single device — and happens in the background: the
+   * route answers with the run record immediately, statuses flow through the
+   * tree and GET /graphs/:id.
+   */
+  async runGraphNow(id: string): Promise<{ run: GraphRunRecord }> {
+    const record = this.graphs.get(id);
+    if (!record) throw notFound(`no graph ${id}`);
+    if (this.graphRunsInFlight.has(record.id)) throw invalid("this graph is already running");
+    const run = await this.graphs.beginRun(record.id);
+    this.graphRunsInFlight.add(record.id);
+    this.notify();
+    void this.executeGraphRun(record, run.id).catch(() => undefined);
+    return { run };
+  }
+
+  /** One task = one fresh session (the schedules rule: never overwrite prior work). */
+  private async executeGraphTask(record: GraphRecord, runId: string, taskId: string) {
+    const task = record.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    await this.graphs.markTask(record.id, runId, taskId, { status: "running" });
+    this.notify();
+    try {
+      const session = await this.create({
+        name: `${record.name} · ${task.name}`,
+        cwd: record.cwd,
+        ...(task.model ? { model: task.model } : {}),
+      });
+      await this.graphs.markTask(record.id, runId, taskId, { sessionId: session.id });
+      const row = this.resolveSession(session.id);
+      const h = this.harness(row);
+      const { c } = await this.resolveAgent(session.id, "main");
+      const submission = await this.send(c, {
+        content: task.prompt,
+        whenBusy: "followUp",
+        requestId: `graph-${runId}-${taskId}`,
+      });
+      const outcome = await this.waitForGraphAnswer(h, submission.id as number);
+      await this.graphs.markTask(record.id, runId, taskId, outcome.ok ? { status: "ok" } : { status: "failed", error: outcome.error });
+    } catch (e) {
+      const error = String(e instanceof Error ? e.message : e).slice(0, 300);
+      await this.graphs.markTask(record.id, runId, taskId, { status: "failed", error }).catch(() => undefined);
+    }
+    this.notify();
+  }
+
+  /** A task turn gets 30 minutes; `settled` waits ≤5 min a call, so this polls. */
+  private async waitForGraphAnswer(h: Harness, submissionId: number): Promise<{ ok: true } | { ok: false; error: string }> {
+    const deadline = Date.now() + 30 * 60_000;
+    for (;;) {
+      try {
+        const r = await this.settled(h, submissionId, 60_000);
+        if ("answer" in r) return { ok: true };
+        if (r.status === "unanswered") return { ok: false, error: `unanswered: ${r.reason}` };
+      } catch (e) {
+        return { ok: false, error: String(e instanceof Error ? e.message : e).slice(0, 300) };
+      }
+      if (Date.now() >= deadline) return { ok: false, error: "timed out after 30 minutes" };
+    }
+  }
+
+  private async executeGraphRun(record: GraphRecord, runId: string) {
+    try {
+      const order = topoOrder(record.tasks);
+      for (;;) {
+        const run = this.graphs.runs(record.id).find((r) => r.id === runId);
+        if (!run || run.status !== "running") break;
+        const ready = readyTasks(record.tasks, run.tasks).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+        if (!ready.length) break; // complete (or fully skipped) — the registry closed it
+        await this.executeGraphTask(record, runId, ready[0]!);
+      }
+      const final = this.graphs.runs(record.id).find((r) => r.id === runId);
+      if (final?.status === "ok" || final?.status === "failed")
+        void this.notifyEvent({
+          kind: final.status === "ok" ? "graph.ok" : "graph.failed",
+          title: `Graph ${final.status === "ok" ? "finished" : "failed"}: ${record.name}`,
+          body:
+            final.status === "ok"
+              ? `Every task of "${record.name}" finished ok on ${this.name}.`
+              : `A task of "${record.name}" failed on ${this.name}; its dependants were skipped.`,
+          data: { graphId: record.id, runId: final.id },
+        });
+    } finally {
+      this.graphRunsInFlight.delete(record.id);
+      this.notify();
+    }
   }
 
   /** `spawnKey` records which tool call created the session, in the same transaction as the session row. */
@@ -2177,6 +2318,8 @@ export class Store {
     if (this.awakeTimer) clearTimeout(this.awakeTimer);
     this.awake.stop();
     this.telegram?.stop();
+    // A graceful stop marks an in-flight graph run interrupted (not lost).
+    await this.graphs?.recoverInterrupted().catch(() => undefined);
     for (const { harness, unlock, unsubscribe } of this.opened.values()) {
       unsubscribe();
       try {

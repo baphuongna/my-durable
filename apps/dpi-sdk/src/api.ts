@@ -251,6 +251,44 @@ export interface ModelProbe {
   retryAfterMs?: number;
 }
 
+/** One node of a task-graph: runs as a fresh session once every dep finished ok. */
+export interface GraphTask {
+  id: string;
+  name: string;
+  prompt: string;
+  dependsOn: string[];
+  model?: { provider: string; modelId: string };
+}
+
+export interface GraphRecord {
+  id: string;
+  name: string;
+  cwd: string;
+  tasks: GraphTask[];
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
+export type TaskRunStatus = "pending" | "running" | "ok" | "failed" | "skipped";
+
+export interface TaskRunState {
+  status: TaskRunStatus;
+  sessionId?: string;
+  error?: string;
+  startedAt?: string;
+  endedAt?: string;
+}
+
+export interface GraphRunRecord {
+  id: string;
+  graphId: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: "running" | "ok" | "failed" | "interrupted";
+  tasks: Record<string, TaskRunState>;
+}
+
 /** One outbound notification target on the device (webhook or ntfy). */
 export type NotifySinkKind = "webhook" | "ntfy";
 

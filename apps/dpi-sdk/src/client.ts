@@ -5,6 +5,9 @@ import type {
   AgentSummary,
   CompactionSettings,
   EnvFileView,
+  GraphRecord,
+  GraphRunRecord,
+  GraphTask,
   EnvVarView,
   CreateAgentBody,
   CreateSessionBody,
@@ -257,6 +260,22 @@ export class DpiClient {
   }
   removeEnvVar(key: string) {
     return this.request<{ removed: boolean }>("DELETE", `/v1/device/env/${enc(key)}`);
+  }
+  /** Task-graphs: a DAG of prompt-tasks the device runs sequentially. */
+  graphs() {
+    return this.request<{ graphs: Array<GraphRecord & { lastRun?: GraphRunRecord }> }>("GET", "/v1/graphs");
+  }
+  graph(id: string) {
+    return this.request<{ graph: GraphRecord; runs: GraphRunRecord[] }>("GET", `/v1/graphs/${enc(id)}`);
+  }
+  createGraph(input: { name: string; cwd: string; tasks: GraphTask[] }) {
+    return this.request<GraphRecord>("POST", "/v1/graphs", input);
+  }
+  runGraph(id: string) {
+    return this.request<{ run: GraphRunRecord }>("POST", `/v1/graphs/${enc(id)}/run`, {});
+  }
+  removeGraph(id: string) {
+    return this.request<{ removed: boolean }>("DELETE", `/v1/graphs/${enc(id)}`);
   }
   /** Scheduled sessions on this device (device-owned clock). */
   schedules() {

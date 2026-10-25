@@ -9,6 +9,7 @@
 //   dpi backup  [create|list|restore]                       whole-home snapshots
 //   dpi diagnostics [--out F]                                redacted bug-report bundle
 //   telegram status|bind|unbind|sessions                     Telegram chat bridge
+//   graph list|show|add|run|remove|archive|unarchive         task-graph DAG
 //   dpi doctor [--json] [--quiet]                         one-shot device health check
 // Every subcommand runs the TypeScript entry through tsx, so no build step is needed.
 import { access } from "node:fs/promises";
@@ -177,6 +178,12 @@ if (command === "update" || command === "upgrade") {
   register();
   const { diagnosticsCli } = await import("../apps/dpi-backend/src/diagnostics-cli.ts");
   process.exit(await diagnosticsCli({ argv: commandRest }));
+} else if (command === "graph") {
+  // Task-graphs: a DAG of prompt-tasks, each run as a fresh session.
+  const { register } = await loadTsx();
+  register();
+  const { graphCli } = await import("../apps/dpi-backend/src/graph-cli.ts");
+  process.exit(await graphCli({ argv: commandRest }));
 } else if (command === "backup") {
   // Whole-home snapshots: create/list, restore is plan-first and refuses while
   // the daemon runs. Nothing is ever deleted — the old home becomes a .bak.

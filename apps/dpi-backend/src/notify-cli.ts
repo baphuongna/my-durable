@@ -40,7 +40,14 @@ export const NOTIFY_HELP = `dpi notify — outbound notifications (webhook / ntf
   LAN sinks (http://192.168.x.x, http://localhost) are refused by default:
   start the device with DPI_NOTIFY_ALLOW_PRIVATE=1 to allow them.`;
 
-export const EMITTED_EVENTS = ["session.failed", "schedule.ok", "schedule.failed", "test"] as const;
+export const EMITTED_EVENTS = [
+  "session.failed",
+  "schedule.ok",
+  "schedule.failed",
+  "graph.ok",
+  "graph.failed",
+  "test",
+] as const;
 
 export const defaultNotifyIo = (): ScheduleIo => ({
   ...defaultDoctorIo(),

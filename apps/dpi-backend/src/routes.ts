@@ -5,7 +5,7 @@ import type { Conversation, Harness } from "@earendil-works/pi-durable";
 import { DEVICE_DOC_KINDS, type SessionRow, type Store } from "./store.js";
 import { agentStream, deviceStream, sessionStream } from "./streams.js";
 import { idempotent } from "./idempotency.js";
-import { invalid } from "./errors.js";
+import { invalid, notFound } from "./errors.js";
 import type { DevicePairing } from "./pairing.js";
 
 type Async = (req: Request, res: Response) => Promise<unknown>;
@@ -215,6 +215,23 @@ export function v1(
   r.patch("/notify/sinks/:id", route(async (req, res) => res.json(await store.updateNotifySink(param(req, "id"), req.body ?? {}))));
   r.delete("/notify/sinks/:id", route(async (req, res) => res.json(await store.removeNotifySink(param(req, "id")))));
   r.post("/notify/test", route(async (_req, res) => res.json({ results: await store.testNotifySinks() })));
+
+  // ----------------------------------------------------- task-graphs
+  // The device owns execution (sequential, topological); these routes only
+  // read, edit and START a run — the answer streams back through the tree.
+  r.get("/graphs", (req, res) => {
+    const includeArchived = req.query.includeArchived === "1" || req.query.includeArchived === "true";
+    res.json({ graphs: store.graphList(includeArchived) });
+  });
+  r.get("/graphs/:id", route(async (req, res) => {
+    const found = store.graphGet(param(req, "id"));
+    if (!found) throw notFound(`no graph ${param(req, "id")}`);
+    res.json(found);
+  }));
+  r.post("/graphs", route(async (req, res) => res.status(201).json(await store.createGraph(req.body ?? {}))));
+  r.patch("/graphs/:id", route(async (req, res) => res.json(await store.updateGraph(param(req, "id"), req.body ?? {}))));
+  r.delete("/graphs/:id", route(async (req, res) => res.json(await store.removeGraph(param(req, "id")))));
+  r.post("/graphs/:id/run", route(async (req, res) => res.status(202).json(await store.runGraphNow(param(req, "id")))));
 
   // -------------------------------------------------------- schedules
   // The device owns execution (systemd/cron are deliberately rejected by config);

@@ -104,7 +104,7 @@ test("ambiguous and unknown prefixes are refused; events lists what the device e
 
   const listed = io();
   assert.equal(await notifyCli(["events"], listed.io), 0);
-  assert.match(listed.lines.join("\n"), /session\.failed, schedule\.ok, schedule\.failed, test/);
+  assert.match(listed.lines.join("\n"), /session\.failed, schedule\.ok, schedule\.failed, graph\.ok, graph\.failed, test/);
 });
 
 test("formatters stay honest about empty state", () => {
