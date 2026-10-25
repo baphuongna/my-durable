@@ -183,10 +183,30 @@ export function v1(
     const body = req.body ?? {};
     if (body.customName !== undefined && typeof body.customName !== "string") throw invalid("customName must be a string");
     if (body.labels !== undefined && !Array.isArray(body.labels)) throw invalid("labels must be an array of strings");
-    res.json(await store.updateProject(param(req, "id"), { customName: body.customName, labels: body.labels }));
+    if (
+      body.model !== undefined &&
+      body.model !== "" &&
+      (typeof body.model?.provider !== "string" || typeof body.model?.modelId !== "string")
+    )
+      throw invalid('model must be { provider, modelId } or ""');
+    res.json(
+      await store.updateProject(param(req, "id"), { customName: body.customName, labels: body.labels, model: body.model }),
+    );
   }));
   r.post("/projects/:id/archive", route(async (req, res) => res.json(await store.archiveProject(param(req, "id")))));
   r.post("/projects/:id/unarchive", route(async (req, res) => res.json(await store.unarchiveProject(param(req, "id")))));
+
+  // ---------------------------------------------------------- env vars
+  // The daemon's own env file, behind the guarded editor: managed keys are
+  // refused, secrets come back masked, and every change needs a restart.
+  r.get("/device/env", route(async (_req, res) => res.json(await store.envView())));
+  r.post("/device/env", route(async (req, res) => {
+    const body = req.body ?? {};
+    if (typeof body.key !== "string" || !body.key.trim()) throw invalid("key is required");
+    if (typeof body.value !== "string" || !body.value) throw invalid("value is required");
+    res.status(201).json(await store.setEnvVar(body.key.trim(), body.value));
+  }));
+  r.delete("/device/env/:key", route(async (req, res) => res.json(await store.removeEnvVar(param(req, "key")))));
 
   // ---------------------------------------------------- notifications
   // Outbound fan-out (webhook/ntfy). Configured here, delivered by the device.

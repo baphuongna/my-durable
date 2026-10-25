@@ -57,6 +57,8 @@ export interface ProjectRecord {
   customName?: string;
   /** Free-form filter keys, lowercase and de-duplicated. */
   labels: string[];
+  /** Default model for sessions started under this project (Wave 2: per-project settings). */
+  model?: { provider: string; modelId: string };
   kind: ProjectKind;
   createdAt: string;
   updatedAt: string;
@@ -69,6 +71,8 @@ export interface ProjectPatch {
   customName?: string;
   /** Replaces the whole list; validated and normalised before it lands. */
   labels?: string[];
+  /** Default model for new sessions in this project; `""` clears it back to the device default. */
+  model?: { provider: string; modelId: string } | "";
 }
 
 /** The on-disk document. `version` exists so a future shape can be migrated instead of discarded. */
@@ -103,7 +107,11 @@ const describeError = (error: unknown) => (error instanceof Error ? error.messag
 const defaultWarn = (message: string, error?: unknown) =>
   console.warn(`[projects] ${message}`, error === undefined ? "" : describeError(error));
 
-const clone = (record: ProjectRecord): ProjectRecord => ({ ...record, labels: [...record.labels] });
+const clone = (record: ProjectRecord): ProjectRecord => ({
+  ...record,
+  labels: [...record.labels],
+  ...(record.model ? { model: { ...record.model } } : {}),
+});
 
 /** `prj_` + 12 hex: short enough to type in a URL, wide enough that collisions are not a real risk. */
 export function newProjectId(): string {
@@ -427,6 +435,15 @@ export class ProjectRegistry {
         else next.customName = customName;
       }
       if ("labels" in patch) next.labels = normaliseLabels(patch.labels ?? []);
+      if ("model" in patch) {
+        if (patch.model === "" || patch.model === undefined) delete next.model;
+        else {
+          const { provider, modelId } = patch.model;
+          if (typeof provider !== "string" || !provider.trim() || typeof modelId !== "string" || !modelId.trim())
+            throw invalid("model needs a provider and a modelId");
+          next.model = { provider: provider.trim(), modelId: modelId.trim() };
+        }
+      }
       next.updatedAt = this.now();
       staged.set(next.id, next);
       await this.commit(staged);

@@ -30,6 +30,7 @@ const store = await Store.open({
   startDirs: config.startDirs,
   name: config.name,
   provider: config.provider,
+  envFile: config.envFile,
 });
 
 const app = express();

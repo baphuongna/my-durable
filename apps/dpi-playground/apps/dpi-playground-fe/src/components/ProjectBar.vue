@@ -5,7 +5,7 @@
 // The bar is a filter: click a project to narrow the tree to its sessions.
 // Chips load once per online device (asked for, never polled).
 import { computed, ref, watch } from "vue";
-import { FolderGit2, Folder, Tag, Pencil, Archive, ArchiveRestore, X } from "lucide-vue-next";
+import { FolderGit2, Folder, Tag, Pencil, Archive, ArchiveRestore, X, Cpu } from "lucide-vue-next";
 import type { ProjectRecord } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
 import { network, notify, ui } from "../client/store";
@@ -110,6 +110,43 @@ function labels(item: Listed) {
   };
 }
 
+/**
+ * Per-project default model (Wave 2: per-project settings). The prompt is a
+ * plain "provider/modelId" text — validation happens against the device's real
+ * catalog in `run`, so a typo keeps the dialog open with the device's answer.
+ */
+function defaultModel(item: Listed) {
+  const project = item.project;
+  const catalog = network.devices.value.find((d) => d.id === item.deviceId)?.info?.models ?? [];
+  ui.dialog = {
+    kind: "prompt",
+    title: `Default model for ${display(project)}`,
+    label: "Model (provider/modelId)",
+    hint: catalog.length
+      ? `New sessions in this project start on this model instead of the device default. Leave empty to use the device default. E.g. ${catalog[0].provider}/${catalog[0].id}`
+      : "New sessions in this project start on this model. Leave empty to use the device default.",
+    value: project.model ? `${project.model.provider}/${project.model.modelId}` : "",
+    placeholder: "device default",
+    submit: "Save default model",
+    run: async (value) => {
+      if (!value.trim()) {
+        await deviceClient(item.deviceId).updateProject(project.id, { model: "" });
+        notify(`Default model cleared on ${display(project)}.`);
+        await load();
+        return;
+      }
+      const [provider, ...rest] = value.trim().split("/");
+      const modelId = rest.join("/");
+      const known = catalog.some((m) => m.provider === provider && m.id === modelId);
+      if (!provider || !modelId) throw Error("Format: provider/modelId");
+      if (!known) throw Error(`${value.trim()} is not in this device's catalog`);
+      await deviceClient(item.deviceId).updateProject(project.id, { model: { provider, modelId } });
+      notify(`New sessions in ${display(project)} start on ${modelId}.`);
+      await load();
+    },
+  };
+}
+
 function archive(item: Listed) {
   const project = item.project;
   const archived = project.archivedAt !== null;
@@ -177,6 +214,9 @@ defineExpose({ reload: load });
       <template v-for="item in items.filter(isActive)" :key="item.project.id">
         <button class="small" @click="rename(item)"><Pencil :size="12" />name</button>
         <button class="small" @click="labels(item)"><Tag :size="12" />labels</button>
+        <button class="small" @click="defaultModel(item)" title="Default model for new sessions in this project">
+          <Cpu :size="12" />{{ item.project.model ? "model ✓" : "model" }}
+        </button>
         <button class="small" @click="archive(item)">
           <ArchiveRestore v-if="item.project.archivedAt" :size="12" />
           <Archive v-else :size="12" />

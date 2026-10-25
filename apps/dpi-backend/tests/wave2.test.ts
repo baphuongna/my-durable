@@ -136,3 +136,35 @@ test("a labels-only patch keeps the custom name (and vice versa)", async () => {
     await t.cleanup();
   }
 });
+
+test("per-project default model: applies when a session sets none, explicit wins", async () => {
+  const t = await tempStore();
+  const store = await t.open();
+  try {
+    // Two sessions root the same project; give it a default model.
+    await store.create({ name: "Seeds the project", cwd: "project", model: faux });
+    const [project] = store.projectList();
+    // The faux provider ships exactly one model, so "a different model" is faked
+    // by shape only — what matters is that the project's model, not the caller's
+    // absence, decides.
+    const other = { provider: "faux", modelId: "echo" };
+    const patched = await store.updateProject(project.id, { model: other });
+    assert.deepEqual(patched.model, other, "the default model is stored on the project");
+
+    // A session created without a model in that project picks the project's default.
+    const inherited = await store.create({ name: "No model given", cwd: "project" });
+    assert.equal(inherited.model, other.modelId, "the project default applies");
+
+    // Clearing the default goes back to "the caller must name a model".
+    await store.updateProject(project.id, { model: "" });
+    assert.equal(store.projectList()[0].model, undefined, 'model: "" clears');
+    await assert.rejects(
+      () => store.create({ name: "No default any more", cwd: "project" }),
+      /model must be/,
+      "with no project default and no explicit model, create says so again",
+    );
+  } finally {
+    await store.close();
+    await t.cleanup();
+  }
+});

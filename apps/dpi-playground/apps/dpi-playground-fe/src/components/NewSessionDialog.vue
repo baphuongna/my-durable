@@ -63,6 +63,43 @@ const rememberCwd = (devId: string, cwd: string) => {
 const pending = ref(false);
 const error = ref("");
 
+/**
+ * Per-project default model (Wave 2): once the cwd names a registered project,
+ * the picker follows that project's choice. Longest registered root wins, the
+ * same rule the device applies on create — the prefill just makes it visible
+ * before the session exists.
+ */
+const projectModels = ref<Record<string, { provider: string; modelId: string }>>({});
+watch(
+  deviceId,
+  async (id) => {
+    projectModels.value = {};
+    if (!id) return;
+    try {
+      const { projects } = await deviceClient(id).projects(true);
+      projectModels.value = Object.fromEntries(
+        projects.filter((p) => p.model).map((p) => [p.rootPath, p.model!]),
+      );
+    } catch {
+      /* older device: no project defaults, the device default stays */
+    }
+  },
+  { immediate: true },
+);
+watch(
+  [() => draft.value.cwd, projectModels],
+  () => {
+    const cwd = draft.value.cwd;
+    if (!cwd) return;
+    const roots = Object.keys(projectModels.value)
+      .filter((root) => cwd === root || cwd.startsWith(`${root}/`))
+      .sort((a, b) => b.length - a.length);
+    const model = roots.length ? projectModels.value[roots[0]] : undefined;
+    if (model) draft.value.model = `${model.provider}/${model.modelId}`;
+  },
+  { immediate: true },
+);
+
 watch(
   device,
   (d) => {

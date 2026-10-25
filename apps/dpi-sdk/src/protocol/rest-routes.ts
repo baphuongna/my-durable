@@ -12,6 +12,9 @@
 const ROUTES: readonly (readonly [method: string, pattern: string])[] = [
   ["GET", "/device"],
   ["GET", "/device/vitals"],
+  ["GET", "/device/env"],
+  ["POST", "/device/env"],
+  ["DELETE", "/device/env/:key"],
   ["GET", "/device/usage"],
   ["GET", "/tree"],
   ["GET", "/fs/dirs"],

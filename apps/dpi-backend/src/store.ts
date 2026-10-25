@@ -50,6 +50,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
 import { deviceVitals, type DeviceVitals } from "./vitals.js";
 import { ProjectRegistry, type ProjectRecord } from "./projects.js";
+import { EnvFileEditor, type EnvFileView } from "./env-vars.js";
 import { ScheduleRegistry, type ScheduleCreateInput, type ScheduleRecord } from "./schedules.js";
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, type ZipEntry } from "./zip.js";
@@ -143,6 +144,8 @@ export interface StoreOptions {
   startDirs: string[];
   name: string;
   provider: "openrouter" | "faux";
+  /** The env file the daemon booted from (config.ts's `envFile`); backs the env UI. */
+  envFile?: string;
 }
 
 /** Agent documents a client may read or stream, by kind. */
@@ -277,6 +280,8 @@ export class Store {
   schedules!: ScheduleRegistry;
   /** Outbound notifications (webhook/ntfy). Delivery never throws into a turn. */
   sinks!: NotifySinks;
+  /** The daemon's env file, behind the guarded editor (secrets masked, managed keys refused). */
+  readonly env: EnvFileEditor;
   uid!: string;
   modelList: ModelInfo[] = [];
   private unlockCatalog: () => void;
@@ -316,6 +321,9 @@ export class Store {
   }
 
   private constructor(readonly options: StoreOptions) {
+    // dataDir defaults to <home>/backend, so its parent is the config.ts home
+    // when the caller did not name an env file explicitly.
+    this.env = new EnvFileEditor(options.envFile ?? join(dirname(options.dataDir), "backend.env"));
     if (options.provider === "faux") installFaux(this.models);
     else {
       // The device is pi: register EVERY built-in provider (the same registry
@@ -734,6 +742,25 @@ export class Store {
     });
   }
 
+  /** The env-file view (secrets masked, process-only vars read-only). */
+  envView(): Promise<EnvFileView> {
+    return this.env.view();
+  }
+
+  /** Set one env key in the device's env file. Applies after the next restart. */
+  async setEnvVar(key: string, value: string) {
+    const view = await this.env.set(key, value);
+    this.notify();
+    return view;
+  }
+
+  /** Remove one env key. Only file-sourced keys can be removed. */
+  async removeEnvVar(key: string) {
+    const result = await this.env.unset(key);
+    this.notify();
+    return result;
+  }
+
   /** `spawnKey` records which tool call created the session, in the same transaction as the session row. */
   async create(body: CreateSessionBody, spawnKey?: string): Promise<SessionSummary> {
     if (typeof body?.name !== "string") throw invalid("name is required");
@@ -753,7 +780,12 @@ export class Store {
     await this.projects
       .ensure({ rootPath: status?.repo ? (status.root ?? cwd) : cwd, kind: status?.repo ? "git" : "plain" })
       .catch(() => undefined);
-    const model = this.validateModel(body.model);
+    // Per-project default model (Wave 2: per-project settings): a session that
+    // starts without an explicit model in a project that chose one uses the
+    // project's choice. The project of a path is its longest registered root.
+    const explicit = body.model as ModelRef | undefined;
+    const projectDefault = explicit ? undefined : this.projectForPath(cwd)?.model;
+    const model = this.validateModel(explicit ?? projectDefault);
     if (body.thinkingLevel !== undefined && !THINKING_LEVELS.includes(body.thinkingLevel))
       throw invalid("Invalid thinking level");
     const id = randomUUID();
@@ -1867,6 +1899,17 @@ export class Store {
 
   // ------------------------------------------------- projects (Wave 2)
 
+  /** The project a path belongs to: its longest registered root. */
+  private projectForPath(cwd: string): ProjectRecord | undefined {
+    let best: ProjectRecord | undefined;
+    for (const project of this.projects.list({ includeArchived: false })) {
+      const root = project.rootPath.endsWith("/") ? project.rootPath : `${project.rootPath}/`;
+      const isUnder = cwd === project.rootPath || cwd.startsWith(root);
+      if (isUnder && (!best || project.rootPath.length > best.rootPath.length)) best = project;
+    }
+    return best;
+  }
+
   /** Projects, newest activity first: the tree's group-by-cwd as an entity. */
   projectList(includeArchived = false): ProjectRecord[] {
     return this.projects.list({ includeArchived });
@@ -1880,9 +1923,10 @@ export class Store {
   async updateProject(id: string, patch: ProjectPatchBody): Promise<ProjectRecord> {
     // Only the keys the caller actually sent: passing `customName: undefined`
     // must not read as "clear the name" (that is `customName: ""`).
-    const next: { customName?: string; labels?: string[] } = {};
+    const next: { customName?: string; labels?: string[]; model?: { provider: string; modelId: string } | "" } = {};
     if (patch.customName !== undefined) next.customName = patch.customName;
     if (patch.labels !== undefined) next.labels = patch.labels;
+    if (patch.model !== undefined) next.model = patch.model;
     return this.projects.update(id, next);
   }
 

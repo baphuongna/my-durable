@@ -204,6 +204,8 @@ export interface ProjectRecord {
   customName?: string;
   /** Free-form filters, lowercase; at most 12 per project. */
   labels: string[];
+  /** Default model for sessions started under this project. */
+  model?: { provider: string; modelId: string };
   kind: ProjectKind;
   createdAt: string;
   updatedAt: string;
@@ -213,6 +215,27 @@ export interface ProjectRecord {
 export interface ProjectPatchBody {
   customName?: string;
   labels?: string[];
+  /** Default model for new sessions in this project; "" clears it. */
+  model?: { provider: string; modelId: string } | "";
+}
+
+/** One row of the device's env-file view. Secrets arrive masked, never verbatim. */
+export interface EnvVarView {
+  key: string;
+  masked: string;
+  secret: boolean;
+  /** "file" = editable; "process" = inherited from systemd/shell, read-only. */
+  source: "file" | "process";
+  /** Managed keys (DPI_TOKEN, DPI_PORT, …) have a dedicated setting; read-only. */
+  managed: boolean;
+}
+
+export interface EnvFileView {
+  envFile: string;
+  exists: boolean;
+  /** True once something changed since boot — restart to apply. */
+  restartRequired: boolean;
+  vars: EnvVarView[];
 }
 
 /** What a live model probe found. `status` is what a picker can show as a hint. */
@@ -440,7 +463,8 @@ export interface AgentDetail extends AgentSummary {
 export interface CreateSessionBody {
   name: string;
   cwd: string;
-  model: { provider: string; modelId: string };
+  /** Optional since per-project defaults: absent = the project's model, else the device says so. */
+  model?: { provider: string; modelId: string };
   thinkingLevel?: ThinkingLevel;
 }
 

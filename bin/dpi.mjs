@@ -6,6 +6,7 @@
 //   dpi schedule [list|add|enable|disable|run|remove]     scheduled sessions
 //   dpi notify   [list|add|enable|disable|remove|test]    outbound notifications
 //   dpi gc --closed-before 30d [--dry-run|--yes]           retention (dry-run default)
+//   dpi backup  [create|list|restore]                       whole-home snapshots
 //   dpi doctor [--json] [--quiet]                         one-shot device health check
 // Every subcommand runs the TypeScript entry through tsx, so no build step is needed.
 import { access } from "node:fs/promises";
@@ -160,6 +161,13 @@ if (command === "update" || command === "upgrade") {
   register();
   const { gcCli } = await import("../apps/dpi-backend/src/gc-cli.ts");
   process.exit(await gcCli({ argv: commandRest }));
+} else if (command === "backup") {
+  // Whole-home snapshots: create/list, restore is plan-first and refuses while
+  // the daemon runs. Nothing is ever deleted — the old home becomes a .bak.
+  const { register } = await loadTsx();
+  register();
+  const { backupCli } = await import("../apps/dpi-backend/src/backup-cli.ts");
+  process.exit(await backupCli({ argv: commandRest }));
 } else if (command === "doctor") {
   // One-shot health check. The logic lives in the backend as TS (testable with
   // injected fakes); this is only the tsx loader + the exit code.

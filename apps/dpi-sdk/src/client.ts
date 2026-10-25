@@ -4,6 +4,8 @@ import type {
   AgentExtensions,
   AgentSummary,
   CompactionSettings,
+  EnvFileView,
+  EnvVarView,
   CreateAgentBody,
   CreateSessionBody,
   DeviceInfo,
@@ -245,6 +247,16 @@ export class DpiClient {
   /** Fire a test event through every enabled sink. */
   testNotifySinks() {
     return this.request<{ results: NotifyDelivery[] }>("POST", "/v1/notify/test", {});
+  }
+  /** The device's env file (managed keys read-only, secrets masked). */
+  envView() {
+    return this.request<EnvFileView>("GET", "/v1/device/env");
+  }
+  setEnvVar(key: string, value: string) {
+    return this.request<EnvVarView>("POST", "/v1/device/env", { key, value });
+  }
+  removeEnvVar(key: string) {
+    return this.request<{ removed: boolean }>("DELETE", `/v1/device/env/${enc(key)}`);
   }
   /** Scheduled sessions on this device (device-owned clock). */
   schedules() {
