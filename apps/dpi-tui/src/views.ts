@@ -10,8 +10,11 @@ import { c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 export type View = "herd" | "network" | "agent" | "log";
 
 export const VIEW_TABS: { id: View; label: string }[] = [
-  { id: "herd", label: "herd" },
+  // Order = the user's journey (and the digit keys): land in the network
+  // (hub-first boot), pick a session into the herd dashboard, converse in the
+  // agent view, watch the log. Tab cycles the same order.
   { id: "network", label: "network" },
+  { id: "herd", label: "herd" },
   { id: "agent", label: "agent" },
   { id: "log", label: "log" },
 ];
@@ -226,10 +229,15 @@ export function renderNetwork(
   return lines.map((l) => fit(l, w));
 }
 
-/** The one-line viewbar under the header: active tab inverse + a right-aligned hint. */
+/**
+ * The one-line viewbar under the header: active tab inverse + a right-aligned
+ * hint. Every view carries its digit (1 network · 2 herd · 3 agent · 4 log) —
+ * the digit keys work EVERYWHERE, so view switching is one glance away instead
+ * of three mnemonics (g/N/L) to memorize.
+ */
 export function renderViewbar(w: number, view: View, right: string): string {
-  const tabs = VIEW_TABS.map((t) =>
-    t.id === view ? c.inverse(c.bold(` ${t.label} `)) : c.muted(` ${t.label} `),
+  const tabs = VIEW_TABS.map((t, i) =>
+    t.id === view ? c.inverse(c.bold(` ${i + 1} ${t.label} `)) : c.muted(` ${i + 1} ${t.label} `),
   ).join(c.muted("│"));
   const gap = Math.max(1, w - visibleWidth(tabs) - visibleWidth(right) - 1);
   return fit(`${tabs}${rep(" ", gap)}${c.muted(right)}`, w);
@@ -246,7 +254,7 @@ export function renderStatusbar(
     ? ["tab complete", "↑ history", "enter send", "esc cancel"]
     : opts.view === "agent"
       ? ["g herd", "N network", "L log", "[ ] tabs", "m message"]
-      : ["j/k move", "↵ open", "1-9 jump", "⇥ views", "esc agent"];
+      : ["j/k move", "↵ open", "1-4 views", "⇥ tabs", "esc agent"];
   const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("—") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(opts.device, 18))}`;
   const left = `${chip} ${keys.map((k) => c.muted(k)).join(c.muted(" • "))}`;
   const gap = Math.max(1, w - visibleWidth(left) - visibleWidth(right));

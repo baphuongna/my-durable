@@ -135,7 +135,7 @@ test("renderViewbar: the active tab is inverse; hint rides the right edge width-
     const line = renderViewbar(80, view, "j/k move · ↵ open");
     assert.equal(visibleWidth(line), 80);
     const plain = stripAnsi(line);
-    assert.match(plain, /herd.*network.*agent/);
+    assert.match(plain, /network.*herd.*agent/);
     assert.match(plain, /j\/k move · ↵ open/);
   }
   // narrow terminals still fit: the hint is truncated, never wrapped
@@ -155,8 +155,15 @@ test("renderStatusbar: NORMAL chip, per-view keymap, ctx + device on the right",
   }
   assert.match(
     stripAnsi(renderStatusbar(100, { view: "herd", device: "d" })),
-    /j\/k move.*1-9 jump/,
+    /j\/k move.*1-4 views/,
     "herd keymap on the dashboard",
+  );
+  // Usability pass: the viewbar TEACHES the digit keys — active or not, every
+  // view carries its number.
+  assert.match(
+    stripAnsi(renderViewbar(100, "herd", "")),
+    /1 network.*2 herd.*3 agent.*4 log/,
+    "viewbar numbers the views",
   );
 });
 

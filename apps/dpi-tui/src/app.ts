@@ -27,7 +27,18 @@ import {
 import type { DeviceRow, NetworkRegistry } from "../../dpi-sdk/src/node/registry.ts";
 import { COMMANDS, runCommand } from "./commands.ts";
 import { Prompt, SecretPrompt, pickModel, newSession } from "./pickers.ts";
-import { renderHeader, renderHerd, renderHerdPanel, renderNetwork, renderStatusbar, renderViewbar, herdRows, joinPanel, networkRows } from "./views.ts";
+import {
+  renderHeader,
+  renderHerd,
+  renderHerdPanel,
+  renderNetwork,
+  renderStatusbar,
+  renderViewbar,
+  herdRows,
+  joinPanel,
+  networkRows,
+  VIEW_TABS,
+} from "./views.ts";
 import { appendFileSync } from "node:fs";
 import { fetchHubNetwork } from "./hub-feed.ts";
 import { HubMux } from "./hub-mux.ts";
@@ -52,12 +63,10 @@ const AGENT_TABS: { id: AgentTab; label: string }[] = [
   { id: "config", label: "config" },
 ];
 
-const VIEW_TABS: { id: View; label: string }[] = [
-  { id: "herd", label: "herd" },
-  { id: "network", label: "network" },
-  { id: "agent", label: "agent" },
-  { id: "log", label: "log" },
-];
+// VIEW_TABS lives in views.ts — ONE source of truth shared by the viewbar
+// labels and the digit keys (live-caught: a local copy here kept the old
+// order while the viewbar taught the new one, so 1 printed "network" but
+// opened herd).
 
 /**
  * Slash-command autocomplete: the commands whose name extends the typed
@@ -466,16 +475,18 @@ export class App {
     });
   }
 
-  /** 1-9 jump: the nth session row of the current view. */
+  /** 1-4 switch views (see jump). */
+  /**
+   * 1-4 switch views — everywhere, matching the digits printed in the
+   * viewbar. Usability pass: digits used to jump the nth session, which only
+   * made sense in the herd list and left view switching to three mixed-case
+   * mnemonics (g/N/L). Sessions open with j/k + enter, which every list
+   * already teaches in its status line.
+   */
   private jump(n: number) {
-    // Digits address sessions, so they work from the agent view as well — that
-    // is the fastest way out of a session you no longer want.
-    const rows = (this.view === "herd" ? this.rows() : herdRows(this.sessions, this.filter)).filter(
-      (r): r is { kind: "session"; sessionId: string; deviceId?: string; label: string } => !!r.sessionId,
-    );
-    const nth = rows[n - 1];
-    if (nth?.sessionId) this.openSession(nth.sessionId, nth.deviceId);
-    else this.notify(`no session #${n} in this view`);
+    const tab = VIEW_TABS[n - 1];
+    if (tab) this.setView(tab.id);
+    else this.notify("views are 1-4 (network · herd · agent · log)");
   }
 
   private async submit(text: string, mode?: "followUp") {

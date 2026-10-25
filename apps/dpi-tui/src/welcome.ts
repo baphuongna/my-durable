@@ -290,7 +290,15 @@ export function showWelcome(app: App, opts: { notice?: string } = {}) {
       },
       () => {
         picked = true;
-        app.exit();
+        // Usability pass: Esc must never surprise-quit. With a hub configured
+        // it lands in the network view (the feed is one key away); without one
+        // the old quit behavior stands — there is nothing else to show.
+        if (app.hubUrl) {
+          app.closeOverlay();
+          app.setView("network");
+        } else {
+          app.exit();
+        }
       },
       subtitle,
     ),

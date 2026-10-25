@@ -136,17 +136,24 @@ const hubEnv = (() => {
 const startup = resolveStartupAction({ devices: registry.list(), env: process.env, args: { deviceRef, url, pair: values.pair } });
 
 if (startup.kind === "welcome") {
-  // Hub credentials ride along so the welcome offers the hub network — the
-  // feed is one key away instead of invisible behind the overlay.
-  showWelcome(
-    new App(
+  if (hubEnv) {
+    // Hub-first boot: with hub credentials there is always something to show,
+    // so the app opens straight into the network view (devices + sessions) —
+    // no welcome wall to dismiss first. The welcome actions stay available
+    // behind the palette (pair, add-url) for the rare local-only path.
+    const app = new App(
       WELCOME_DEVICE,
       new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token),
       emptyDeviceInfo(),
       registry,
       hubEnv,
-    ),
-  );
+    );
+    app.setView("network");
+  } else {
+    showWelcome(
+      new App(WELCOME_DEVICE, new DpiClient(WELCOME_DEVICE.url, WELCOME_DEVICE.token), emptyDeviceInfo(), registry),
+    );
+  }
 } else if (startup.kind === "auto-open" || startup.kind === "picker") {
   const row = startup.kind === "auto-open" ? startup.device : startup.devices[0]!;
   const device: DeviceRef = { id: row.id, name: row.name, url: row.url!, token: row.token! };
