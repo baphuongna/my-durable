@@ -230,6 +230,21 @@ function coerceRecord(raw: unknown, now: string): ProjectRecord {
     archivedAt: nonEmptyString(source.archivedAt) ?? null,
   };
   if (customName) record.customName = customName;
+  // Per-project default model: parse strictly so a corrupted pair cannot enter
+  // the registry, but never drop a good one (caught live: the field allowlist
+  // here silently erased every project's model on each device boot).
+  const rawModel = source.model;
+  if (rawModel !== undefined && rawModel !== null && rawModel !== "") {
+    if (
+      rawModel &&
+      typeof rawModel === "object" &&
+      nonEmptyString((rawModel as Record<string, unknown>).provider) &&
+      nonEmptyString((rawModel as Record<string, unknown>).modelId)
+    ) {
+      const model = rawModel as { provider: string; modelId: string };
+      record.model = { provider: model.provider, modelId: model.modelId };
+    }
+  }
   return record;
 }
 

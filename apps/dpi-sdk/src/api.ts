@@ -103,7 +103,10 @@ export interface DeviceInfo {
   storage: { dataDir: string; catalogPath: string; appStatePath: string };
   /** The checkout the backend runs from (repo root locally, `code_dir` on deployed devices). */
   codeDir?: string;
-  capabilities: Array<"events" | "docs" | "demo" | "jobs">;
+  /** How this device holds the OS awake while sessions run: systemd idle-inhibit, caffeinate, or "none". */
+  keepAwake?: "inhibit" | "caffeinate" | "none";
+  /** Feature flags the hub/FE may key on ("keep-awake" since 0.0.43). */
+  capabilities: Array<"events" | "docs" | "demo" | "jobs" | "keep-awake">;
   /** Durable jobs any agent on this device can run (`POST .../demo/jobs` or the run_durable_job tool). */
   jobs?: JobDef[];
 }

@@ -411,3 +411,22 @@ test("concurrent ensures on one path still produce a single project", async () =
     await s.cleanup();
   }
 });
+
+test("a project's default model survives a registry reopen (boot regression)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "prj-model-"));
+  try {
+    const file = join(dir, "projects.json");
+    const first = await ProjectRegistry.open(file);
+    await first.ensure({ rootPath: "/a/modelled", kind: "plain" });
+    const [record] = first.list();
+    await first.update(record.id, { model: { provider: "zai", modelId: "glm-4.7" } });
+
+    // A device boot is exactly this: reopen the same file (commits are
+    // per-mutation, so there is no close to call).
+    const second = await ProjectRegistry.open(file);
+    const reloaded = second.list().find((p) => p.rootPath === "/a/modelled");
+    assert.deepEqual(reloaded?.model, { provider: "zai", modelId: "glm-4.7" }, "the boot reader dropped the model");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

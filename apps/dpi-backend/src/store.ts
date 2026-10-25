@@ -51,6 +51,7 @@ import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/pr
 import { deviceVitals, type DeviceVitals } from "./vitals.js";
 import { ProjectRegistry, type ProjectRecord } from "./projects.js";
 import { EnvFileEditor, type EnvFileView } from "./env-vars.js";
+import { KeepAwake } from "./awake.js";
 import { ScheduleRegistry, type ScheduleCreateInput, type ScheduleRecord } from "./schedules.js";
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, type ZipEntry } from "./zip.js";
@@ -282,6 +283,9 @@ export class Store {
   sinks!: NotifySinks;
   /** The daemon's env file, behind the guarded editor (secrets masked, managed keys refused). */
   readonly env: EnvFileEditor;
+  /** Keep-awake (Wave 3): holds the OS awake while any session is busy. */
+  readonly awake = new KeepAwake();
+  private awakeTimer?: ReturnType<typeof setTimeout>;
   uid!: string;
   modelList: ModelInfo[] = [];
   private unlockCatalog: () => void;
@@ -414,7 +418,37 @@ export class Store {
   }
   notify = () => {
     for (const fn of this.listeners) fn();
+    this.scheduleAwakeSync();
   };
+
+  /**
+   * Keep-awake piggybacks on notify (every state change) with a debounce, so
+   * there is no extra timer while the device is idle. The inhibitor itself is
+   * idempotent — start when the first session turns busy, stop at zero.
+   */
+  private scheduleAwakeSync() {
+    if (this.awakeTimer) return;
+    this.awakeTimer = setTimeout(() => {
+      this.awakeTimer = undefined;
+      void this.syncAwake();
+    }, 1000);
+    this.awakeTimer.unref?.();
+  }
+
+  /** Count busy sessions and tell the inhibitor. Never throws into a turn. */
+  private async syncAwake() {
+    try {
+      let busy = 0;
+      for (const [id, opened] of this.opened) {
+        if (!this.opened.has(id)) continue;
+        const tasks = await this.liveTasks(opened.harness);
+        if (tasks.some((t) => !t.background)) busy += 1;
+      }
+      this.awake.sync(busy);
+    } catch {
+      /* keep-awake must never break a turn */
+    }
+  }
 
   /** The git fs-watcher pokes the tree so every connected UI hears "dirty". */
   private gitWired = false;
@@ -443,7 +477,9 @@ export class Store {
       ...(this.modelsKeyless ? { providerKeyMissing: true } : {}),
       storage: { dataDir: this.options.dataDir, catalogPath: this.catalogPath, appStatePath: this.sharedStatePath },
       codeDir: CODE_DIR,
-      capabilities: ["events", "docs", "demo", "jobs"],
+      capabilities: this.awake.mode === "none" ? ["events", "docs", "demo", "jobs"] : ["events", "docs", "demo", "jobs", "keep-awake"],
+      /** How this device holds the OS awake while sessions run ("none" = it cannot). */
+      keepAwake: this.awake.mode,
       jobs: JOB_DEFS,
     };
   }
@@ -2093,6 +2129,8 @@ export class Store {
 
   async close() {
     this.stopScheduler();
+    if (this.awakeTimer) clearTimeout(this.awakeTimer);
+    this.awake.stop();
     for (const { harness, unlock, unsubscribe } of this.opened.values()) {
       unsubscribe();
       try {

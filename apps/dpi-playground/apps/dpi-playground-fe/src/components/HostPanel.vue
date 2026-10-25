@@ -6,6 +6,7 @@ import { computed, ref, watch } from "vue";
 import { Activity, RefreshCw, Server } from "lucide-vue-next";
 import type { DeviceVitals } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
+import { network } from "../client/store";
 import { notify, selected } from "../client/store";
 
 const vitals = ref<DeviceVitals>();
@@ -13,6 +14,11 @@ const busy = ref(false);
 const error = ref("");
 
 const deviceId = computed(() => selected.value?.deviceId);
+/** Keep-awake capability of THIS device (0.0.43+); absent on older builds. */
+const keepAwake = computed(
+  () => (network.devices.value.find((d) => d.id === deviceId.value)?.info as { keepAwake?: string } | undefined)
+    ?.keepAwake,
+);
 
 const kib = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0";
@@ -94,6 +100,11 @@ async function refresh() {
           <span class="label">Device process</span>
           <strong>{{ duration(vitals.processUptime) }}</strong>
           <em>pid {{ vitals.pid }}</em>
+        </div>
+        <div v-if="keepAwake" class="vital">
+          <span class="label">Keep-awake</span>
+          <strong>{{ keepAwake === "none" ? "off" : keepAwake }}</strong>
+          <em>{{ keepAwake === "none" ? "no inhibitor here" : "held while sessions run" }}</em>
         </div>
         <div class="vital">
           <span class="label">Load (1/5/15m)</span>
