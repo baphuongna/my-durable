@@ -301,11 +301,12 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
           role="tab"
           aria-controls="inspector-panel"
           :aria-selected="ui.tab === t.id"
+          :title="t.label"
           :class="{ active: ui.tab === t.id }"
           @click="ui.tab = t.id"
         >
-          <component :is="t.icon" :size="18" />{{ t.label
-          }}<span v-if="t.id === 'tasks' && tasks.length" class="count">{{ tasks.length }}</span>
+          <component :is="t.icon" :size="18" /><span class="tab-label">{{ t.label }}</span
+          ><span v-if="t.id === 'tasks' && tasks.length" class="count">{{ tasks.length }}</span>
         </button>
         <button
           class="icon-button panel-toggle"
