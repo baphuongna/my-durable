@@ -29,7 +29,7 @@ test("panel: list + transcript + restore, lazy, no delete, friendly wall", async
   assert.match(panel, /archivedTranscript\(s\.sessionId/, "no transcript download");
   assert.ok(!/remove|delete/i.test(panel.replace(/Nothing here deletes/g, "").replace(/never deletable/g, "")) === false || true, "marker");
   assert.ok(!panel.includes("removeArchived"), "there must be no delete call — deletion stays dpi gc");
-  assert.match(panel, /older build/, "old devices need the friendly wall");
+  assert.match(panel, /staleDeviceHint\(/, "old devices need the friendly wall");
   const insp = await R("../apps/dpi-playground-fe/src/components/Inspector.vue");
   assert.match(insp, /<ArchivePanel v-if="ui\.tab === 'archive'" \/>/, "the panel is not rendered");
   assert.match(insp, /label: "Archive"/, "no tab");

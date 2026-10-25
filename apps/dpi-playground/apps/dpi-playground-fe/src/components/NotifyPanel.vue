@@ -6,6 +6,7 @@ import { computed, ref, watch } from "vue";
 import { Bell, Plus, RefreshCw, Send, Trash2, Power } from "lucide-vue-next";
 import type { NotifyDelivery, NotifySinkView } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
+import { isStaleDeviceError, staleDeviceHint } from "../client/stale";
 import { notify, selected, ui } from "../client/store";
 
 const sinks = ref<NotifySinkView[]>([]);
@@ -26,11 +27,9 @@ async function load() {
   try {
     sinks.value = (await client().notifySinks()).sinks;
   } catch (e) {
-    const code = (e as { code?: string }).code;
-    error.value =
-      code === "not_found" || /allowlist/i.test(message(e))
-        ? "This device runs an older build: update it (`dpi update`) to use notifications."
-        : message(e).slice(0, 160);
+    error.value = isStaleDeviceError(e)
+      ? staleDeviceHint(deviceId.value, "notifications")
+      : message(e).slice(0, 220);
   } finally {
     loading.value = false;
   }

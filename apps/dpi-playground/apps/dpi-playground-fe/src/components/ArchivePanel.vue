@@ -7,6 +7,7 @@ import { computed, ref, watch } from "vue";
 import { Archive, RefreshCw, RotateCcw, Download } from "lucide-vue-next";
 import type { ArchivedView } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
+import { isStaleDeviceError, staleDeviceHint } from "../client/stale";
 import { notify, selected, ui } from "../client/store";
 
 const sessions = ref<ArchivedView[] | null>(null);
@@ -22,11 +23,9 @@ async function load() {
   try {
     sessions.value = (await client().archived()).sessions;
   } catch (e) {
-    const text = message(e);
-    error.value =
-      (e as { code?: string }).code === "not_found" || /allowlist/i.test(text)
-        ? "This device runs an older build: update it (`dpi update`) to browse old sessions."
-        : text.slice(0, 160);
+    error.value = isStaleDeviceError(e)
+      ? staleDeviceHint(deviceId.value, "browsing old sessions")
+      : message(e).slice(0, 220);
   } finally {
     loading.value = false;
   }

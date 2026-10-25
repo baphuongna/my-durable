@@ -6,6 +6,7 @@ import { computed, ref, watch } from "vue";
 import { CalendarClock, Play, Plus, RefreshCw, Trash2, Power } from "lucide-vue-next";
 import type { ScheduleView } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
+import { isStaleDeviceError, staleDeviceHint } from "../client/stale";
 import { notify, selected, ui } from "../client/store";
 
 const schedules = ref<ScheduleView[]>([]);
@@ -27,11 +28,9 @@ async function load() {
   try {
     schedules.value = (await client().schedules()).schedules;
   } catch (e) {
-    const code = (e as { code?: string }).code;
-    error.value =
-      code === "not_found" || /allowlist/i.test(message(e))
-        ? "This device runs an older build: update it (`dpi update`) to use schedules."
-        : message(e).slice(0, 160);
+    error.value = isStaleDeviceError(e)
+      ? staleDeviceHint(deviceId.value, "schedules")
+      : message(e).slice(0, 220);
   } finally {
     loading.value = false;
   }

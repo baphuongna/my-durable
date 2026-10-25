@@ -10,6 +10,7 @@ import { computed, ref, watch } from "vue";
 import { RefreshCw, Plus, Pencil, Trash2, FileCog, KeyRound } from "lucide-vue-next";
 import type { EnvFileView, EnvVarView, PiAuthView } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
+import { isStaleDeviceError, staleDeviceHint } from "../client/stale";
 import { notify, selected, ui } from "../client/store";
 
 const view = ref<EnvFileView | null>(null);
@@ -29,11 +30,9 @@ async function load() {
   try {
     view.value = await client().envView();
   } catch (e) {
-    const text = message(e);
-    error.value =
-      (e as { code?: string }).code === "not_found" || /allowlist/i.test(text)
-        ? "This device runs an older build: update it (`dpi update`) to edit env vars."
-        : text.slice(0, 160);
+    error.value = isStaleDeviceError(e)
+      ? staleDeviceHint(deviceId.value, "editing env vars")
+      : message(e).slice(0, 220);
   } finally {
     loading.value = false;
   }
@@ -57,10 +56,9 @@ async function loadKeys() {
     keysError.value = "";
   } catch (e) {
     const text = message(e);
-    keysError.value =
-      (e as { code?: string }).code === "not_found" || /allowlist/i.test(text)
-        ? "This device runs an older build: update it (`dpi update`) to manage pi keys."
-        : text.slice(0, 160);
+    keysError.value = isStaleDeviceError(e)
+      ? staleDeviceHint(deviceId.value, "managing pi keys")
+      : message(e).slice(0, 220);
   }
 }
 

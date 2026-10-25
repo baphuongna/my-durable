@@ -9,6 +9,20 @@ import { readFile } from "node:fs/promises";
 
 const R = (p: string) => readFile(new URL(p, import.meta.url), "utf8");
 
+test("the stale wall NAMES the device and gives the right migration command", async () => {
+  // Live-caught: "This device runs an older build" read like the WEB was old,
+  // and `dpi update` is wrong for a pre-rename durable 1.x install.
+  const helper = await R("../apps/dpi-playground-fe/src/client/stale.ts");
+  assert.match(helper, /pre-rename build/, "must detect durableVersion-only devices");
+  assert.match(helper, /npm i -g my-durable@latest/, "the migration command must be the npm install");
+  assert.match(helper, /runs an older build —/, "the generic wall still exists");
+  for (const f of ["UsagePanel", "SchedulesPanel", "EnvPanel", "NotifyPanel", "GraphPanel", "ArchivePanel"]) {
+    const src = await R(`../apps/dpi-playground-fe/src/components/${f}.vue`);
+    assert.match(src, /staleDeviceHint\(/, `${f} must use the shared wall`);
+    assert.ok(!/This device runs an older build/.test(src), `${f} still has the anonymous message`);
+  }
+});
+
 test("every device-scoped panel translates allowlist errors into an update hint", async () => {
   const panels = [
     "../apps/dpi-playground-fe/src/components/UsagePanel.vue",
@@ -19,14 +33,15 @@ test("every device-scoped panel translates allowlist errors into an update hint"
   ];
   for (const p of panels) {
     const src = await R(p);
-    assert.match(src, /allowlist/, `${p}: no allowlist translation`);
-    assert.match(src, /older build/, `${p}: no older-build message`);
+    assert.match(src, /isStaleDeviceError/, `${p}: no allowlist translation`);
+    assert.match(src, /staleDeviceHint/, `${p}: no older-build message`);
   }
-  // The raw tunnel text must not be what a human sees on the usage tab.
+  // The raw tunnel text must not be what a human sees: every panel routes
+  // through the shared wall before falling back to the raw message.
   const usage = await R("../apps/dpi-playground-fe/src/components/UsagePanel.vue");
   assert.ok(
-    usage.indexOf("not_found") < usage.indexOf("older build"),
-    "usage must check the code before falling back to the raw message",
+    usage.indexOf("isStaleDeviceError") < usage.indexOf("message(e)"),
+    "usage must check the stale wall before falling back to the raw message",
   );
 });
 

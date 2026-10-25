@@ -7,6 +7,7 @@ import { computed, ref, watch } from "vue";
 import { Activity, Cpu, FolderGit2, RefreshCw } from "lucide-vue-next";
 import type { DeviceUsageReport } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
+import { isStaleDeviceError, staleDeviceHint } from "../client/stale";
 import { notify, selected } from "../client/store";
 
 const usage = ref<DeviceUsageReport>();
@@ -54,11 +55,9 @@ async function load() {
   try {
     usage.value = await deviceClient(id).deviceUsage();
   } catch (e) {
-    const text = message(e);
-    error.value =
-      (e as { code?: string }).code === "not_found" || /allowlist|not found/i.test(text)
-        ? "This device runs an older build: update it (`dpi update`) to see usage."
-        : text.slice(0, 160);
+    error.value = isStaleDeviceError(e)
+      ? staleDeviceHint(deviceId.value, "usage")
+      : message(e).slice(0, 220);
   } finally {
     busy.value = false;
   }

@@ -6,6 +6,7 @@ import { computed, ref, watch } from "vue";
 import { RefreshCw, Play, Plus, Trash2, Waypoints } from "lucide-vue-next";
 import type { GraphRecord, GraphRunRecord } from "@sdk/api";
 import { deviceClient, message } from "../client/hub";
+import { isStaleDeviceError, staleDeviceHint } from "../client/stale";
 import { notify, selected, ui } from "../client/store";
 
 interface Listed extends GraphRecord {
@@ -31,11 +32,9 @@ async function load() {
     graphs.value = result.graphs;
     runs.value = {};
   } catch (e) {
-    const code = (e as { code?: string }).code;
-    error.value =
-      code === "not_found" || /allowlist/i.test(message(e))
-        ? "This device runs an older build: update it (`dpi update`) to run task-graphs."
-        : message(e).slice(0, 160);
+    error.value = isStaleDeviceError(e)
+      ? staleDeviceHint(deviceId.value, "running task-graphs")
+      : message(e).slice(0, 220);
   } finally {
     loading.value = false;
   }
