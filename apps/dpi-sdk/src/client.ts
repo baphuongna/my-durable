@@ -17,6 +17,8 @@ import type {
   Page,
   ProjectPatchBody,
   ProjectRecord,
+  SchedulePatchBody,
+  ScheduleView,
   SendResult,
   SessionSearchResult,
   SessionSummary,
@@ -223,6 +225,22 @@ export class DpiClient {
   }
   unarchiveProject(id: string) {
     return this.request<ProjectRecord>("POST", `/v1/projects/${enc(id)}/unarchive`, {});
+  }
+  /** Scheduled sessions on this device (device-owned clock). */
+  schedules() {
+    return this.request<{ schedules: ScheduleView[] }>("GET", "/v1/schedules");
+  }
+  createSchedule(input: SchedulePatchBody & { name: string; cwd: string; prompt: string }) {
+    return this.request<ScheduleView>("POST", "/v1/schedules", input);
+  }
+  updateSchedule(id: string, patch: SchedulePatchBody) {
+    return this.request<ScheduleView>("PATCH", `/v1/schedules/${enc(id)}`, patch);
+  }
+  removeSchedule(id: string) {
+    return this.request<{ removed: boolean }>("DELETE", `/v1/schedules/${enc(id)}`);
+  }
+  runSchedule(id: string) {
+    return this.request<ScheduleView>("POST", `/v1/schedules/${enc(id)}/run`, {});
   }
   /** Usage rollup over the sessions this device still holds. */
   deviceUsage() {

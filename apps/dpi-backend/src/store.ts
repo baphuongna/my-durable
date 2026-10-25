@@ -15,6 +15,8 @@ import type {
   SendResult,
   DeviceUsageReport,
   ProjectPatchBody,
+  SchedulePatchBody,
+  ScheduleView,
   SessionSearchMatch,
   SessionSearchResult,
   SessionSummary,
@@ -46,6 +48,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
 import { deviceVitals, type DeviceVitals } from "./vitals.js";
 import { ProjectRegistry, type ProjectRecord } from "./projects.js";
+import { ScheduleRegistry, type ScheduleCreateInput, type ScheduleRecord } from "./schedules.js";
 import { zipSync, type ZipEntry } from "./zip.js";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
@@ -91,6 +94,25 @@ export const DURABLE_VERSION = (() => {
   }
 })();
 
+/**
+ * The my-durable build this device runs. `DURABLE_VERSION` above is the
+ * pi-durable library; this is the package a human updates with `dpi update`, and
+ * the one a UI compares against the hub's own version.
+ */
+export const PACKAGE_VERSION = (() => {
+  let dir = import.meta.dirname;
+  for (let i = 0; i < 8; i += 1) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: string; version?: string };
+      if (pkg.name === "my-durable" && pkg.version) return pkg.version;
+    } catch {
+      /* keep walking */
+    }
+    dir = join(dir, "..");
+  }
+  return "unknown";
+})();
+
 /** Tools that create, update or delete: shell, files, App State, job runs, sessions, pages and subagents. */
 export const WRITE_TOOLS = new Set([
   "bash",
@@ -126,6 +148,10 @@ const CODE_DIR = resolve(import.meta.dirname, "../../..");
 
 /** Session search result cap: one screen of matches, not a transcript dump. */
 const SEARCH_LIMIT = 50;
+
+/** Scheduler granularity. Schedules are minute-granular, so 30 s is enough and
+ *  the timer is unref'd: it never holds the process open. */
+const SCHEDULE_TICK_MS = 30_000;
 
 /** Starting point for a per-model usage accumulator. */
 const ZERO_USAGE: UsageSummary = {
@@ -227,6 +253,8 @@ export class Store {
   /** Projects (Wave 2): a registry of roots with labels, grouped by the cwd a
    *  session starts in. Opened with the store so routes never see a half state. */
   projects!: ProjectRegistry;
+  /** Schedules (Wave 2): the device owns the clock, the hub only displays it. */
+  schedules!: ScheduleRegistry;
   uid!: string;
   modelList: ModelInfo[] = [];
   private unlockCatalog: () => void;
@@ -251,6 +279,9 @@ export class Store {
   }
   get projectsPath() {
     return join(this.options.dataDir, "projects.json");
+  }
+  get schedulesPath() {
+    return join(this.options.dataDir, "schedules.json");
   }
   get name() {
     return this.options.name;
@@ -311,6 +342,9 @@ export class Store {
           .ensure({ rootPath: status?.repo ? (status.root ?? row.cwd) : row.cwd, kind: status?.repo ? "git" : "plain" })
           .catch(() => undefined);
       }
+      store.schedules = await ScheduleRegistry.open(store.schedulesPath, {
+        warn: (m) => process.emitWarning(`schedules: ${m}`),
+      });
       store.unlockShared = lockFile(`${store.sharedStatePath}.lock`);
       store.shared = await SharedState.open(store.sharedStatePath);
       store.shared.harness.subscribeCommits(() => store.notify());
@@ -326,6 +360,7 @@ export class Store {
       store.modelList = await store.loadModels();
       for (const { harness } of store.opened.values()) harness.resume();
       store.wireGitWatcher();
+      store.startScheduler();
     return store;
     } catch (e) {
       await store.close().catch(() => {});
@@ -361,6 +396,7 @@ export class Store {
       platform: `${platform()}-${process.arch} node ${process.version}`,
       apiVersion: 1,
       durableVersion: DURABLE_VERSION,
+      packageVersion: PACKAGE_VERSION,
       startedAt: this.startedAt,
       startDirs: this.startDirs,
       models: this.modelList,
@@ -1598,6 +1634,120 @@ export class Store {
     };
   }
 
+  // ------------------------------------------------ schedules (Wave 2)
+
+  /** Schedules with their computed next run, for any UI that displays them. */
+  scheduleList(): ScheduleView[] {
+    const at = Date.now();
+    return this.schedules.list().map((record) => ({
+      ...record,
+      nextRunAt: this.schedules.nextRunAt(record, at) ?? null,
+      running: this.scheduleInFlight.has(record.id),
+    }));
+  }
+
+  async createSchedule(input: ScheduleCreateInput): Promise<ScheduleView> {
+    const record = await this.schedules.create(input);
+    this.notify();
+    return this.scheduleView(record);
+  }
+
+  async updateSchedule(id: string, patch: SchedulePatchBody): Promise<ScheduleView> {
+    const record = await this.schedules.update(id, patch);
+    this.notify();
+    return this.scheduleView(record);
+  }
+
+  async removeSchedule(id: string): Promise<{ removed: boolean }> {
+    const removed = await this.schedules.remove(id);
+    this.notify();
+    return { removed };
+  }
+
+  /** Run one schedule now (the "run" button) — same path the timer takes. */
+  async runScheduleNow(id: string): Promise<ScheduleView> {
+    const record = this.schedules.get(id);
+    if (!record) throw notFound(`no schedule ${id}`);
+    await this.dispatchSchedule(record);
+    return this.scheduleView(this.schedules.get(id) ?? record);
+  }
+
+  private scheduleView(record: ScheduleRecord): ScheduleView {
+    return {
+      ...record,
+      nextRunAt: this.schedules.nextRunAt(record, Date.now()) ?? null,
+      running: this.scheduleInFlight.has(record.id),
+    };
+  }
+
+  /** Ids with a turn in flight: `due()` keeps returning a record until `markRun`
+   *  lands, so the loop must not dispatch the same schedule twice. */
+  private scheduleInFlight = new Set<string>();
+  private scheduleTimer?: ReturnType<typeof setTimeout>;
+
+  /** The device owns the clock (orca automations): a 30 s tick is plenty for a
+   *  minute-granularity schedule and costs nothing when there is none. */
+  private startScheduler() {
+    if (this.scheduleTimer) return;
+    const tick = () => {
+      this.scheduleTimer = setTimeout(() => {
+        void this.runDueSchedules().finally(tick);
+      }, SCHEDULE_TICK_MS);
+      this.scheduleTimer.unref?.();
+    };
+    tick();
+    void this.runDueSchedules();
+  }
+
+  private stopScheduler() {
+    if (this.scheduleTimer) clearTimeout(this.scheduleTimer);
+    this.scheduleTimer = undefined;
+  }
+
+  /** One pass: dispatch everything due that is not already running. */
+  async runDueSchedules(at = Date.now()): Promise<string[]> {
+    const started: string[] = [];
+    for (const record of this.schedules.due(at)) {
+      if (this.scheduleInFlight.has(record.id)) continue;
+      started.push(record.id);
+      await this.dispatchSchedule(record).catch(() => undefined);
+    }
+    return started;
+  }
+
+  /**
+   * A schedule run = a fresh session (so each run has its own transcript and
+   * nothing overwrites yesterday's work), the prompt sent to its root agent,
+   * then the outcome recorded. Failures are recorded, never thrown: a broken
+   * schedule must not stop the loop or the daemon.
+   */
+  private async dispatchSchedule(record: ScheduleRecord) {
+    this.scheduleInFlight.add(record.id);
+    this.notify();
+    let sessionId: string | undefined;
+    try {
+      const session = await this.create({
+        name: `${record.name} · ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
+        cwd: record.cwd,
+        model: record.model,
+      });
+      sessionId = session.id;
+      const { c } = await this.resolveAgent(session.id, "main");
+      await this.send(c, { content: record.prompt, requestId: `schedule-${record.id}-${Date.now()}` });
+      await this.schedules.markRun(record.id, { sessionId, outcome: "ok" });
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      await this.schedules.markRun(record.id, {
+        ...(sessionId ? { sessionId } : {}),
+        outcome: "failed",
+        error: detail.slice(0, 300),
+      }).catch(() => undefined);
+    } finally {
+      this.scheduleInFlight.delete(record.id);
+      this.notify();
+    }
+  }
+
   // ------------------------------------------------- projects (Wave 2)
 
   /** Projects, newest activity first: the tree's group-by-cwd as an entity. */
@@ -1781,6 +1931,7 @@ export class Store {
   // ------------------------------------------------------------ lifecycle
 
   async close() {
+    this.stopScheduler();
     for (const { harness, unlock, unsubscribe } of this.opened.values()) {
       unsubscribe();
       try {

@@ -188,6 +188,15 @@ export function v1(
   r.post("/projects/:id/archive", route(async (req, res) => res.json(await store.archiveProject(param(req, "id")))));
   r.post("/projects/:id/unarchive", route(async (req, res) => res.json(await store.unarchiveProject(param(req, "id")))));
 
+  // -------------------------------------------------------- schedules
+  // The device owns execution (systemd/cron are deliberately rejected by config);
+  // these routes only read and edit the schedule records.
+  r.get("/schedules", (_req, res) => res.json({ schedules: store.scheduleList() }));
+  r.post("/schedules", route(async (req, res) => res.status(201).json(await store.createSchedule(req.body ?? {}))));
+  r.patch("/schedules/:id", route(async (req, res) => res.json(await store.updateSchedule(param(req, "id"), req.body ?? {}))));
+  r.delete("/schedules/:id", route(async (req, res) => res.json(await store.removeSchedule(param(req, "id")))));
+  r.post("/schedules/:id/run", route(async (req, res) => res.json(await store.runScheduleNow(param(req, "id")))));
+
   // ---------------------------------------------------------- sessions
   r.get("/sessions", route(async (_req, res) => res.json((await store.tree()).sessions)));
   r.post("/sessions", create, route(async (req, res) => res.status(201).json(await store.create(req.body ?? {}))));

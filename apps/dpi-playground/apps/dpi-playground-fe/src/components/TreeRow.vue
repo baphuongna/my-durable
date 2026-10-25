@@ -15,7 +15,7 @@ import {
 } from "lucide-vue-next";
 import DeviceIcon from "./DeviceIcon.vue";
 import type { TreeNode } from "@sdk/models";
-import { ago } from "../client/store";
+import { ago, hubVersion } from "../client/store";
 import { branchOf } from "../client/session-git";
 
 const props = defineProps<{
@@ -42,6 +42,12 @@ const background = computed(() =>
     : (agent.value?.background ?? 0),
 );
 const busy = computed(() => session.value?.busy || agent.value?.busy);
+/** Behind the hub's build: devices self-update, this is only a hint. */
+const behind = computed(() => {
+  const theirs = device.value?.info?.packageVersion;
+  const ours = hubVersion.value;
+  return Boolean(theirs && ours && ours !== "unknown" && theirs !== ours);
+});
 const statusText = computed(() => {
   const d = device.value;
   if (!d) return "";
@@ -113,6 +119,12 @@ const title = computed(() => {
       <DeviceIcon :device="device" :size="16" />
       <b class="name">{{ label }}</b>
       <span class="badge">{{ device.kind }}</span>
+      <span
+        v-if="behind"
+        class="tag update"
+        :title="`device runs ${device?.info?.packageVersion ?? '?'}; hub runs ${hubVersion}. Devices self-update: dpi update`"
+        >update</span
+      >
       <span class="meta" :class="{ err: dot === 'err' }">{{ statusText }}</span>
       <span class="acts" @click.stop>
         <button

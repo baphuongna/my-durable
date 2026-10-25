@@ -4,7 +4,8 @@
 import express from "express";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { extname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { extname, join, resolve } from "node:path";
 import { hostname, networkInterfaces } from "node:os";
 import { NetworkRegistry, UI_STATE_MAX_CHARS } from "../../../../dpi-sdk/src/node/registry.js";
 import { ByteBudget } from "../../../../dpi-sdk/src/node/chunk.js";
@@ -112,6 +113,24 @@ app.use((req, res, next) => {
   next();
 });
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
+// The hub's own version, so a UI can flag devices that are behind it (the hub
+// never pushes code — this is a badge, not an update channel).
+const HUB_VERSION = (() => {
+  // Walk up to the package that owns this build: the checkout and the published
+  // layout nest the hub at different depths, so a fixed "../.." would lie.
+  let dir = fileURLToPath(new URL(".", import.meta.url));
+  for (let i = 0; i < 8; i += 1) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: string; version?: string };
+      if (pkg.name === "my-durable" && pkg.version) return pkg.version;
+    } catch {
+      /* keep walking */
+    }
+    dir = resolve(dir, "..");
+  }
+  return "unknown";
+})();
+app.get("/api/version", (_req, res) => res.json({ version: HUB_VERSION, node: process.version }));
 // All CANON limits must be sane or the hub refuses to start (P2-22: fail startup, not per-request).
 assertLimitsConfig();
 /** Operator floor for free space on the registry volume (bytes); below it audited changes are refused with 503. */

@@ -26,6 +26,8 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 
 export const hub = {
   network: () => call<{ configFile?: string; devices: NetworkDevice[] }>("GET", "/network"),
+  /** The hub's own version, for the "device is behind" badge. */
+  version: () => call<{ version: string; node: string }>("GET", "/version"),
   /** Probe a device now. Devices themselves are configured in dpi-network.yaml, not here. */
   check: (id: string) =>
     call<NetworkDevice>("POST", `/devices/${encodeURIComponent(id)}/check`, {}),

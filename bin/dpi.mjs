@@ -3,6 +3,8 @@
 //   dpi hub    [--port N] [--host H] [--public-host H]   web UI + device tunnel server
 //   dpi device [start|stop|status|install|uninstall]     device-side daemon
 //   dpi tui                                               terminal admin client
+//   dpi schedule [list|add|enable|disable|run|remove]     scheduled sessions
+//   dpi gc --closed-before 30d [--dry-run|--yes]           retention (dry-run default)
 //   dpi doctor [--json] [--quiet]                         one-shot device health check
 // Every subcommand runs the TypeScript entry through tsx, so no build step is needed.
 import { access } from "node:fs/promises";
@@ -138,6 +140,19 @@ if (command === "update" || command === "upgrade") {
   register();
   const { runPairCommand } = await import("../apps/dpi-backend/src/pair-cli.ts");
   process.exit(await runPairCommand(commandRest));
+} else if (command === "schedule") {
+  // Scheduled sessions: the CLI only edits the device's records over its own API,
+  // so a running daemon picks changes up without a restart.
+  const { register } = await loadTsx();
+  register();
+  const { scheduleCli } = await import("../apps/dpi-backend/src/schedule-cli.ts");
+  process.exit(await scheduleCli(commandRest));
+} else if (command === "gc") {
+  // Retention: dry-run unless --yes. Never runs on its own (policy gate #3).
+  const { register } = await loadTsx();
+  register();
+  const { gcCli } = await import("../apps/dpi-backend/src/gc-cli.ts");
+  process.exit(await gcCli({ argv: commandRest }));
 } else if (command === "doctor") {
   // One-shot health check. The logic lives in the backend as TS (testable with
   // injected fakes); this is only the tsx loader + the exit code.

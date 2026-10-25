@@ -89,6 +89,8 @@ export interface DeviceInfo {
   platform: string;
   apiVersion: typeof API_VERSION;
   durableVersion: string;
+  /** The my-durable build this device runs (what `dpi update` replaces). */
+  packageVersion?: string;
   startedAt: number;
   /** Where new sessions start: the directory browser opens here, relative cwds resolve against the first. */
   startDirs: string[];
@@ -211,6 +213,50 @@ export interface ProjectRecord {
 export interface ProjectPatchBody {
   customName?: string;
   labels?: string[];
+}
+
+/** A scheduled session: the device owns the clock, the hub only displays it. */
+export interface ScheduleModelRef {
+  provider: string;
+  modelId: string;
+}
+
+export interface ScheduleRecord {
+  id: string;
+  name: string;
+  /** Directory each run's session starts in. */
+  cwd: string;
+  model: ScheduleModelRef;
+  /** Message sent to the new session's root agent. */
+  prompt: string;
+  /** Interval trigger in minutes (5–1440). Exactly one trigger is set. */
+  everyMinutes?: number;
+  /** Daily trigger, local time "HH:MM". Exactly one trigger is set. */
+  dailyAt?: string;
+  enabled: boolean;
+  lastRunAt?: number;
+  lastSessionId?: string;
+  lastOutcome?: "ok" | "failed";
+  lastError?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** What a UI shows: the record plus the clock the device computed and live state. */
+export interface ScheduleView extends ScheduleRecord {
+  nextRunAt: number | null;
+  /** A turn is in flight for this schedule right now. */
+  running: boolean;
+}
+
+export interface SchedulePatchBody {
+  name?: string;
+  cwd?: string;
+  model?: ScheduleModelRef;
+  prompt?: string;
+  everyMinutes?: number;
+  dailyAt?: string;
+  enabled?: boolean;
 }
 
 /** Device usage rollup over the sessions it still holds (archived are closed). */

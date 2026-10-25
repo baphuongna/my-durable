@@ -15,6 +15,9 @@ export const streamState = ref(stream.state);
 stream.onState((s) => (streamState.value = s));
 export const network = useNetwork(stream);
 export const configFile = ref<string>();
+/** The hub's own version. A device reporting another one is behind (badge only:
+ *  the hub never pushes code, devices self-update). */
+export const hubVersion = ref<string>();
 
 // ------------------------------------------------------------------ selection + persisted UI state
 
@@ -122,6 +125,7 @@ export async function boot() {
       hub.uiGet<{ tree: boolean; inspector: boolean }>("layout.panels"),
     ]);
     if (panels) Object.assign(layout, panels);
+    void hub.version().then((v) => (hubVersion.value = v.version)).catch(() => {});
     configFile.value = net.configFile;
     if (!network.model.devices.length)
       network.model.apply({ type: "network", devices: net.devices });

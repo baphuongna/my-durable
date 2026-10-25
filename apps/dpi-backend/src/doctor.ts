@@ -147,7 +147,9 @@ export function describeError(error: unknown, ms: number): string {
 
 // ------------------------------------------------------------------- checks
 
-interface Merged {
+/** Where the local device is and how to authenticate — shared by every CLI that
+ *  talks to it (`dpi doctor`, `dpi schedule`). */
+export interface DeviceEndpoint {
   /** process env wins over the env file, like loadConfig's `process.loadEnvFile`. */
   env: Record<string, string | undefined>;
   home: string;
@@ -156,7 +158,7 @@ interface Merged {
   baseUrl: string;
 }
 
-function mergedConfig(io: DoctorIo): Merged {
+export function deviceEndpoint(io: DoctorIo): DeviceEndpoint {
   const hd = io.homedir();
   // `||` not `??`: an empty DPI_HOME/DPI_ENV_FILE means "unset", never the cwd.
   const home = resolve(expand(io.env.DPI_HOME || join(hd, ".dpi"), hd));
@@ -183,7 +185,7 @@ function mergedConfig(io: DoctorIo): Merged {
   };
 }
 
-const authHeaders = (token: string): Record<string, string> =>
+export const authHeaders = (token: string): Record<string, string> =>
   token ? { authorization: `Bearer ${token}` } : {};
 
 async function getJson(
@@ -223,7 +225,7 @@ function nodeCheck(io: DoctorIo): DoctorCheck {
 }
 
 /** 3. start dirs — one check per dir so the failing one is named. */
-function startDirChecks(io: DoctorIo, cfg: Merged): DoctorCheck[] {
+function startDirChecks(io: DoctorIo, cfg: DeviceEndpoint): DoctorCheck[] {
   const raw = cfg.env.DPI_START_DIRS || "~/dpi-work";
   const dirs = parseStartDirs(raw, io.homedir());
   if (!dirs.length)
@@ -246,7 +248,7 @@ function startDirChecks(io: DoctorIo, cfg: Merged): DoctorCheck[] {
 }
 
 /** 4. model probe — the device's own default model, through the local-only route. */
-async function probeCheck(io: DoctorIo, cfg: Merged, reachable: boolean): Promise<DoctorCheck> {
+async function probeCheck(io: DoctorIo, cfg: DeviceEndpoint, reachable: boolean): Promise<DoctorCheck> {
   const id = "model_probe";
   if (!reachable) return { id, label: "model probe", status: "skip", detail: "device unreachable" };
   if (!cfg.token) return { id, label: "model probe", status: "skip", detail: `no DPI_TOKEN (looked in ${cfg.envFile})` };
@@ -294,7 +296,7 @@ async function probeCheck(io: DoctorIo, cfg: Merged, reachable: boolean): Promis
 }
 
 /** 5. hub — only when this device actually has one. */
-async function hubCheck(io: DoctorIo, cfg: Merged): Promise<DoctorCheck> {
+async function hubCheck(io: DoctorIo, cfg: DeviceEndpoint): Promise<DoctorCheck> {
   const id = "hub";
   let origin = (cfg.env.DPI_HUB_URL ?? "").trim().replace(/\/+$/, "");
   const source = origin ? "DPI_HUB_URL" : "pairing.json";
@@ -327,7 +329,7 @@ async function hubCheck(io: DoctorIo, cfg: Merged): Promise<DoctorCheck> {
 /** 2. healthz — is the daemon there at all. */
 async function healthzCheck(
   io: DoctorIo,
-  cfg: Merged,
+  cfg: DeviceEndpoint,
 ): Promise<{ check: DoctorCheck; reachable: boolean }> {
   const url = `${cfg.baseUrl}/healthz`;
   const label = `healthz ${url}`;
@@ -349,7 +351,7 @@ async function healthzCheck(
 /** Run every check. Warnings never make `ok` false; only a FAIL does. */
 export async function runDoctor(opts: Partial<DoctorIo> = {}): Promise<DoctorReport> {
   const io: DoctorIo = { ...defaultDoctorIo(), ...opts };
-  const cfg = mergedConfig(io);
+  const cfg = deviceEndpoint(io);
 
   const checks: DoctorCheck[] = [nodeCheck(io)];
   const health = await healthzCheck(io, cfg);
