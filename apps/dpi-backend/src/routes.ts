@@ -264,6 +264,17 @@ export function v1(
   r.get("/sessions/:s/compaction", route(async (_req, res) => res.json(store.compactionOf(L(res).row.id))));
   r.patch("/sessions/:s/compaction", route(async (req, res) => res.json(store.setCompaction(L(res).row, req.body ?? {}))));
   r.delete("/sessions/:s", route(async (_req, res) => res.json(await store.archive(L(res).row))));
+
+  // ------------------------------------------------------- old sessions
+  // The archive is a feature surface (policy #3): list, read a transcript,
+  // restore back to live. Nothing here deletes — deletion stays `dpi gc`.
+  r.get("/archive", route(async (_req, res) => res.json({ sessions: store.archivedList() })));
+  r.get("/archive/:id/transcript", route(async (req, res) =>
+    res.json(store.archivedTranscriptView(param(req, "id"), String(req.query.format ?? "markdown"))),
+  ));
+  r.post("/archive/:id/restore", route(async (req, res) =>
+    res.status(201).json(await store.restoreArchivedSession(param(req, "id"))),
+  ));
   // One downloadable .zip: manifest + session record + every agent's transcript/config.
   r.get("/sessions/:s/export", route(async (_req, res) => res.json(await store.exportSession(L(res).row))));
   r.get("/sessions/:s/events", route(async (_req, res) => sessionStream(store, L(res).row, res)));

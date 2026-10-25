@@ -233,6 +233,19 @@ export interface EnvVarView {
   managed: boolean;
 }
 
+/** One archived session bundle — the old-session surface (policy #3). */
+export interface ArchivedView {
+  sessionId: string;
+  archivedAt: number;
+  name: string;
+  cwd: string;
+  model: string;
+  turns: number;
+  lastMessageAt: number | null;
+  bytes: number;
+  hasManifest: boolean;
+}
+
 /** One provider credential in pi's auth.json — masked tail only, never the value. */
 export interface PiAuthEntry {
   providerId: string;

@@ -6,6 +6,7 @@ import {
   Download,
   PackageOpen,
   PiggyBank,
+  Archive,
   CalendarClock,
   Waypoints,
   Bell,
@@ -31,6 +32,7 @@ import GitPanel from "./GitPanel.vue";
 import HostPanel from "./HostPanel.vue";
 import UsagePanel from "./UsagePanel.vue";
 import SchedulesPanel from "./SchedulesPanel.vue";
+import ArchivePanel from "./ArchivePanel.vue";
 import GraphPanel from "./GraphPanel.vue";
 import NotifyPanel from "./NotifyPanel.vue";
 import EnvPanel from "./EnvPanel.vue";
@@ -76,6 +78,7 @@ const tabs = [
   { id: "host", label: "Host", icon: Activity },
   { id: "usage", label: "Usage", icon: PiggyBank },
   { id: "auto", label: "Auto", icon: CalendarClock },
+  { id: "archive", label: "Archive", icon: Archive },
   { id: "dag", label: "DAG", icon: Waypoints },
   { id: "notify", label: "Notify", icon: Bell },
   { id: "env", label: "Env", icon: FileCog },
@@ -498,6 +501,7 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
         <HostPanel v-if="ui.tab === 'host'" />
         <UsagePanel v-if="ui.tab === 'usage'" />
         <SchedulesPanel v-if="ui.tab === 'auto'" />
+        <ArchivePanel v-if="ui.tab === 'archive'" />
         <GraphPanel v-if="ui.tab === 'dag'" />
         <NotifyPanel v-if="ui.tab === 'notify'" />
         <EnvPanel v-if="ui.tab === 'env'" />

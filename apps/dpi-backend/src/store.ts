@@ -62,6 +62,14 @@ import {
   type GraphTask,
 } from "./graphs.js";
 import { ScheduleRegistry, type ScheduleCreateInput, type ScheduleRecord } from "./schedules.js";
+import {
+  listArchived,
+  findBundle,
+  archivedTranscript,
+  restoreArchive,
+  writeArchiveManifest,
+  type ArchivedView,
+} from "./archived.js";
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, type ZipEntry } from "./zip.js";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
@@ -1110,17 +1118,79 @@ export class Store {
       this.opened.delete(row.id);
     }
     await mkdir(this.archiveDir, { recursive: true });
-    const target = join(this.archiveDir, `${row.id}-${Date.now()}`);
+    const archivedAt = Date.now();
+    const target = join(this.archiveDir, `${row.id}-${archivedAt}`);
     try {
       await renamePath(dirname(row.dbPath), target);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
+    // The bundle keeps its identity: from now on every archive carries a
+    // session.json so the archive stays browsable years later (old bundles
+    // predating this are listed with a best-effort name).
+    writeArchiveManifest(target, {
+      sessionId: row.id,
+      name: row.name,
+      cwd: row.cwd,
+      model: row.model,
+      provider: row.provider,
+      createdAt: row.createdAt,
+      archivedAt,
+      packageVersion: PACKAGE_VERSION,
+    });
     this.catalog.prepare("DELETE FROM conversation_names WHERE sessionId=?").run(row.id);
     this.catalog.prepare("DELETE FROM sessions WHERE id=?").run(row.id);
     this.errors.delete(row.id);
     this.notify();
     return { archived: target };
+  }
+
+  /**
+   * The old-session surface (policy #3 rationale: nothing auto-deletes, so
+   * the archive is worth browsing). List is cheap and never throws; the
+   * transcript/restore paths map their module errors to API faults.
+   */
+  archivedList(): ArchivedView[] {
+    return listArchived(this.archiveDir);
+  }
+
+  archivedTranscriptView(sessionId: string, format: string) {
+    const bundle = findBundle(this.archiveDir, sessionId);
+    if (!bundle) throw notFound(`no archived session ${sessionId}`);
+    try {
+      return archivedTranscript(bundle, format === "markdown" ? "markdown" : "json");
+    } catch {
+      throw notFound(`archive bundle unreadable for ${sessionId}`);
+    }
+  }
+
+  async restoreArchivedSession(sessionId: string): Promise<SessionSummary> {
+    if (this.list().some((r) => r.id === sessionId))
+      throw invalid("a live session with this id already exists");
+    const manifest = await restoreArchive(this.archiveDir, this.options.dataDir, sessionId).catch(() => undefined);
+    if (!manifest) throw notFound(`no archived session ${sessionId}`);
+    const row: SessionRow = {
+      id: manifest.sessionId,
+      name: manifest.name || "Untitled session",
+      cwd: manifest.cwd,
+      dbPath: join(this.sessionsDir, manifest.sessionId, "agent.sqlite"),
+      createdAt: manifest.createdAt,
+      model: manifest.model,
+      provider: manifest.provider,
+    };
+    this.catalog.exec("BEGIN");
+    try {
+      this.catalog
+        .prepare("INSERT INTO sessions VALUES(?,?,?,?,?,?,?)")
+        .run(row.id, row.name, row.cwd, row.dbPath, row.createdAt, row.model, row.provider);
+      this.catalog.exec("COMMIT");
+    } catch (e) {
+      this.catalog.exec("ROLLBACK");
+      throw e;
+    }
+    this.notify();
+    // sessionSummary handles a not-yet-opened session (the closed-bundle path).
+    return await this.sessionSummary(row);
   }
 
   async openAgent(row: SessionRow, create = false, thinkingLevel: ThinkingLevel = "low") {

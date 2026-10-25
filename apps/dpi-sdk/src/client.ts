@@ -4,6 +4,7 @@ import type {
   AgentExtensions,
   AgentSummary,
   CompactionSettings,
+  ArchivedView,
   EnvFileView,
   PiAuthView,
   PiAuthWriteResult,
@@ -382,6 +383,19 @@ export class DpiClient {
   // ------------------------------------------------------------ sessions
   sessions() {
     return this.request<SessionSummary[]>("GET", "/v1/sessions");
+  }
+  /** Old sessions (policy #3): archived bundles, their transcripts, restore. */
+  archived() {
+    return this.request<{ sessions: ArchivedView[] }>("GET", "/v1/archive");
+  }
+  archivedTranscript(sessionId: string, format: "markdown" | "json" = "markdown") {
+    return this.request<{ format: string; text?: string; items?: unknown[] }>(
+      "GET",
+      `/v1/archive/${enc(sessionId)}/transcript?format=${format}`,
+    );
+  }
+  restoreArchived(sessionId: string) {
+    return this.request<SessionSummary>("POST", `/v1/archive/${enc(sessionId)}/restore`, {});
   }
   createSession(body: CreateSessionBody, idempotencyKey = newId()) {
     return this.request<SessionSummary>("POST", "/v1/sessions", body, { idempotencyKey });
