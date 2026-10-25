@@ -105,8 +105,8 @@ export interface DeviceInfo {
   codeDir?: string;
   /** How this device holds the OS awake while sessions run: systemd idle-inhibit, caffeinate, or "none". */
   keepAwake?: "inhibit" | "caffeinate" | "none";
-  /** Feature flags the hub/FE may key on ("keep-awake" since 0.0.43). */
-  capabilities: Array<"events" | "docs" | "demo" | "jobs" | "keep-awake">;
+  /** Feature flags the hub/FE may key on ("keep-awake", "telegram"). */
+  capabilities: Array<"events" | "docs" | "demo" | "jobs" | "keep-awake" | "telegram">;
   /** Durable jobs any agent on this device can run (`POST .../demo/jobs` or the run_durable_job tool). */
   jobs?: JobDef[];
 }

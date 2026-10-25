@@ -8,6 +8,7 @@
 //   dpi gc --closed-before 30d [--dry-run|--yes]           retention (dry-run default)
 //   dpi backup  [create|list|restore]                       whole-home snapshots
 //   dpi diagnostics [--out F]                                redacted bug-report bundle
+//   telegram status|bind|unbind|sessions                     Telegram chat bridge
 //   dpi doctor [--json] [--quiet]                         one-shot device health check
 // Every subcommand runs the TypeScript entry through tsx, so no build step is needed.
 import { access } from "node:fs/promises";
@@ -162,6 +163,13 @@ if (command === "update" || command === "upgrade") {
   register();
   const { gcCli } = await import("../apps/dpi-backend/src/gc-cli.ts");
   process.exit(await gcCli({ argv: commandRest }));
+} else if (command === "telegram") {
+  // Chat bridge: bind a Telegram chat to a device session (token in the env
+  // file as DPI_TELEGRAM_TOKEN). The daemon owns the polling loop.
+  const { register } = await loadTsx();
+  register();
+  const { telegramCli } = await import("../apps/dpi-backend/src/telegram-cli.ts");
+  process.exit(await telegramCli({ argv: commandRest }));
 } else if (command === "diagnostics") {
   // One redacted zip for a bug report: versions, doctor, device/vitals/env,
   // sessions/registries, log tail — every section fails independently.

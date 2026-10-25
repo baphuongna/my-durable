@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { hostname, networkInterfaces } from "node:os";
-import { NetworkRegistry, UI_STATE_MAX_CHARS } from "../../../../dpi-sdk/src/node/registry.js";
+import { NetworkRegistry, UI_STATE_MAX_CHARS, dpiHome } from "../../../../dpi-sdk/src/node/registry.js";
+import { ShareError, Shares, renderShareNotFound, renderSharePage } from "./shares.js";
 import { ByteBudget } from "../../../../dpi-sdk/src/node/chunk.js";
 import { DeviceMonitor } from "./monitor.js";
 import { StreamMux } from "./mux.js";
@@ -431,6 +432,51 @@ app.put(
     res.json({ ok: true });
   }),
 );
+// ------------------------------------------------ conversation shares
+// The shell (which holds the tunnel credentials) uploads prepared transcripts;
+// the hub mints a tokenized PUBLIC link. The token is the capability, every
+// share expires (retention is explicit — the checklist row demanded that
+// decision up front), and the admin routes can kill one early.
+const shares = await Shares.open(join(dpiHome(), "shares"));
+app.post(
+  "/api/shares",
+  denialLogging(audit),
+  apiRate,
+  express.json({ limit: "10mb" }),
+  adminAuth,
+  (req, res) => {
+    const body = req.body ?? {};
+    void shares
+      .create({ title: String(body.title ?? ""), agents: Array.isArray(body.agents) ? body.agents : [] })
+      .then((meta) =>
+        res.status(201).json({ token: meta.token, url: `/share/${meta.token}`, expiresAt: meta.expiresAt }),
+      )
+      .catch((e: unknown) => {
+        if (e instanceof ShareError) return res.status(400).json(err("invalid", e.message));
+        throw e;
+      });
+  },
+);
+app.get("/api/shares", adminAuth, (_req, res) => void shares.list().then((list) => res.json({ shares: list })));
+app.delete("/api/shares/:token", adminAuth, (req, res) =>
+  void shares.remove(String(req.params.token ?? "")).then((removed) => res.json({ removed })),
+);
+// The public page: transcripts only, no app shell, no scripts, inline-styled.
+app.get("/share/:token", (req, res) => {
+  void shares.get(String(req.params.token ?? "")).then((doc) => {
+    if (!doc) {
+      res.status(404);
+      res.set("Content-Type", "text/html; charset=utf-8");
+      res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+      return res.send(renderShareNotFound());
+    }
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+    res.set("Cache-Control", "no-store");
+    res.send(renderSharePage(doc));
+  });
+});
+
 app.get("/api/stream", (req, res) => mux.open(req, res));
 app.put(
   "/api/stream/:streamId",

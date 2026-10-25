@@ -34,7 +34,7 @@ import NotifyPanel from "./NotifyPanel.vue";
 import EnvPanel from "./EnvPanel.vue";
 import ExtensionsPanel from "./ExtensionsPanel.vue";
 import ContextBar from "./ContextBar.vue";
-import { deviceClient, message } from "../client/hub";
+import { deviceClient, hub, message } from "../client/hub";
 import { toolSignature } from "../client/signature";
 import {
   agentHandle,
@@ -143,6 +143,46 @@ async function downloadBundle() {
   } finally {
     exporting.value = false;
   }
+}
+
+/**
+ * Conversation share (Wave 3): upload this session's transcripts to the hub
+ * and hand back a public read-only link that expires (retention is explicit).
+ * The confirm step says what "public" means before anything leaves.
+ */
+const sharing = ref(false);
+function shareTranscript() {
+  const dev = device.value;
+  const summary = sessionSummary.value;
+  if (!dev || !summary || sharing.value) return;
+  ui.dialog = {
+    kind: "prompt",
+    title: "Share this transcript publicly?",
+    hint: "Anyone with the link can read this session's transcripts. The link expires in 7 days and can be removed on the hub.",
+    submit: "Create share link",
+    run: async () => {
+      sharing.value = true;
+      try {
+        const client = deviceClient(dev.id);
+        const agents = summary.agents.length ? summary.agents : [{ id: 1 as const, name: "main" }];
+        const docs: Array<{ name: string; markdown: string }> = [];
+        for (const agent of agents) {
+          const r = await client.agent(summary.id, agent.id).transcript("markdown");
+          const text =
+            typeof r === "string" ? r : ((r as { text?: string }).text ?? JSON.stringify(r, null, 2));
+          docs.push({ name: agent.name || `agent ${agent.id}`, markdown: text });
+        }
+        const share = await hub.createShare({ title: `${summary.name} · ${dev.name}`, agents: docs });
+        const url = `${location.origin}${share.url}`;
+        await navigator.clipboard?.writeText(url).catch(() => {});
+        notify(`Share link copied — expires ${share.expiresAt.slice(0, 10)}.`);
+      } catch (e) {
+        notify(`share failed: ${message(e).slice(0, 140)}`);
+      } finally {
+        sharing.value = false;
+      }
+    },
+  };
 }
 
 function renameSession() {
@@ -303,6 +343,14 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
                 @click="downloadBundle"
               >
                 <PackageOpen :size="18" />
+              </button><button
+                class="icon-button"
+                title="Share a public read-only link to this transcript"
+                aria-label="Share transcript"
+                :disabled="sharing"
+                @click="shareTranscript"
+              >
+                <Share2 :size="18" />
               </button>
             </h1>
             <button

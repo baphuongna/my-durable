@@ -31,6 +31,9 @@ export const hub = {
   /** Probe a device now. Devices themselves are configured in dpi-network.yaml, not here. */
   check: (id: string) =>
     call<NetworkDevice>("POST", `/devices/${encodeURIComponent(id)}/check`, {}),
+  /** Conversation share (Wave 3): upload prepared transcripts, get a public link. */
+  createShare: (input: { title: string; agents: Array<{ name: string; markdown: string }> }) =>
+    call<{ token: string; url: string; expiresAt: string }>("POST", "/shares", input),
   async uiGet<T>(key: string): Promise<T | undefined> {
     return ((await call<{ value: T | null }>("GET", `/ui-state/${encodeURIComponent(key)}`))
       .value ?? undefined) as T | undefined;

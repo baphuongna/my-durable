@@ -31,6 +31,7 @@ const store = await Store.open({
   name: config.name,
   provider: config.provider,
   envFile: config.envFile,
+  telegramToken: process.env.DPI_TELEGRAM_TOKEN,
 });
 
 const app = express();

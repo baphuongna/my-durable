@@ -52,6 +52,7 @@ import { deviceVitals, type DeviceVitals } from "./vitals.js";
 import { ProjectRegistry, type ProjectRecord } from "./projects.js";
 import { EnvFileEditor, type EnvFileView } from "./env-vars.js";
 import { KeepAwake } from "./awake.js";
+import { TelegramBridge, defaultTelegramIo, type TelegramBroker } from "./telegram.js";
 import { ScheduleRegistry, type ScheduleCreateInput, type ScheduleRecord } from "./schedules.js";
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, type ZipEntry } from "./zip.js";
@@ -147,6 +148,8 @@ export interface StoreOptions {
   provider: "openrouter" | "faux";
   /** The env file the daemon booted from (config.ts's `envFile`); backs the env UI. */
   envFile?: string;
+  /** Bot token for the Telegram chat bridge; absent = the bridge stays idle. */
+  telegramToken?: string;
 }
 
 /** Agent documents a client may read or stream, by kind. */
@@ -286,6 +289,8 @@ export class Store {
   /** Keep-awake (Wave 3): holds the OS awake while any session is busy. */
   readonly awake = new KeepAwake();
   private awakeTimer?: ReturnType<typeof setTimeout>;
+  /** Telegram chat bridge (Wave 3): bound chats talk to sessions. */
+  telegram?: TelegramBridge;
   uid!: string;
   modelList: ModelInfo[] = [];
   private unlockCatalog: () => void;
@@ -316,6 +321,9 @@ export class Store {
   }
   get notifyPath() {
     return join(this.options.dataDir, "notify.json");
+  }
+  get telegramPath() {
+    return join(this.options.dataDir, "telegram.json");
   }
   get name() {
     return this.options.name;
@@ -387,6 +395,12 @@ export class Store {
         // ntfy often lives on the LAN; the operator opts in explicitly.
         allowPrivateHosts: process.env.DPI_NOTIFY_ALLOW_PRIVATE === "1",
       });
+      // Telegram bridge (Wave 3): chats bound to sessions. The broker below is
+      // the ONLY bridge-to-store surface — the module itself knows the protocol.
+      store.telegram = await TelegramBridge.open(store.telegramPath, defaultTelegramIo(), store.telegramBroker(), {
+        warn: (m) => process.emitWarning(`telegram: ${m}`),
+      });
+      if (options.telegramToken) store.telegram.start(options.telegramToken);
       store.unlockShared = lockFile(`${store.sharedStatePath}.lock`);
       store.shared = await SharedState.open(store.sharedStatePath);
       store.shared.harness.subscribeCommits(() => store.notify());
@@ -477,7 +491,14 @@ export class Store {
       ...(this.modelsKeyless ? { providerKeyMissing: true } : {}),
       storage: { dataDir: this.options.dataDir, catalogPath: this.catalogPath, appStatePath: this.sharedStatePath },
       codeDir: CODE_DIR,
-      capabilities: this.awake.mode === "none" ? ["events", "docs", "demo", "jobs"] : ["events", "docs", "demo", "jobs", "keep-awake"],
+      capabilities: [
+        "events",
+        "docs",
+        "demo",
+        "jobs",
+        ...(this.awake.mode !== "none" ? (["keep-awake"] as const) : []),
+        ...(this.telegram?.running ? (["telegram"] as const) : []),
+      ],
       /** How this device holds the OS awake while sessions run ("none" = it cannot). */
       keepAwake: this.awake.mode,
       jobs: JOB_DEFS,
@@ -795,6 +816,30 @@ export class Store {
     const result = await this.env.unset(key);
     this.notify();
     return result;
+  }
+
+  /** The store side of the Telegram bridge: sessions in, answers out. */
+  private telegramBroker(): TelegramBroker {
+    return {
+      listSessions: () => this.list().map((row) => ({ id: row.id, name: row.name })),
+      sendToSession: async (sessionId, text) => {
+        const { c } = await this.resolveAgent(sessionId, "main");
+        const submission = await this.send(c, {
+          content: text,
+          whenBusy: "followUp",
+          requestId: `telegram-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        });
+        return { submissionId: submission.id as number };
+      },
+      awaitAnswer: async (sessionId, submissionId, timeoutMs) => {
+        const row = this.resolveSession(sessionId);
+        const h = this.harness(row);
+        await this.settled(h, submissionId, timeoutMs).catch(() => undefined);
+        const c = await h.conversation(1 as ConversationId, ctx);
+        if (!c) return undefined;
+        return lastAssistantText(await this.activeEntries(c)) ?? undefined;
+      },
+    };
   }
 
   /** `spawnKey` records which tool call created the session, in the same transaction as the session row. */
@@ -2131,6 +2176,7 @@ export class Store {
     this.stopScheduler();
     if (this.awakeTimer) clearTimeout(this.awakeTimer);
     this.awake.stop();
+    this.telegram?.stop();
     for (const { harness, unlock, unsubscribe } of this.opened.values()) {
       unsubscribe();
       try {
