@@ -42,11 +42,18 @@ const background = computed(() =>
     : (agent.value?.background ?? 0),
 );
 const busy = computed(() => session.value?.busy || agent.value?.busy);
-/** Behind the hub's build: devices self-update, this is only a hint. */
+/** Behind the hub's build: devices self-update, this is only a hint. The
+ * oldest devices predate the rename and report `durableVersion` instead of
+ * `packageVersion` — they are exactly the ones the badge exists for. */
 const behind = computed(() => {
-  const theirs = device.value?.info?.packageVersion;
+  const info = device.value?.info as { packageVersion?: string; durableVersion?: string } | undefined;
+  const theirs = info?.packageVersion ?? info?.durableVersion;
   const ours = hubVersion.value;
   return Boolean(theirs && ours && ours !== "unknown" && theirs !== ours);
+});
+const theirVersion = computed(() => {
+  const info = device.value?.info as { packageVersion?: string; durableVersion?: string } | undefined;
+  return info?.packageVersion ?? info?.durableVersion ?? "?";
 });
 const statusText = computed(() => {
   const d = device.value;
@@ -122,7 +129,7 @@ const title = computed(() => {
       <span
         v-if="behind"
         class="tag update"
-        :title="`device runs ${device?.info?.packageVersion ?? '?'}; hub runs ${hubVersion}. Devices self-update: dpi update`"
+        :title="`device runs ${theirVersion}; hub runs ${hubVersion}. Devices self-update: dpi update`"
         >update</span
       >
       <span class="meta" :class="{ err: dot === 'err' }">{{ statusText }}</span>

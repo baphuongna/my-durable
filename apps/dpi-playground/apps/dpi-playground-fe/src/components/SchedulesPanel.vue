@@ -78,15 +78,22 @@ const remove = (s: ScheduleView) =>
 
 /** The model is picked from the device's own catalog, not typed from memory. */
 const models = ref<{ key: string }[]>([]);
+/** While the device's model catalog loads the form must say so — a silent
+ * dead Create button is how live-driving caught this (tunnel first-hit lag). */
+const modelsLoading = ref(false);
 async function openAdd() {
   adding.value = true;
-  draft.value = { name: "", cwd: selected.value?.sessionId ? "" : "", prompt: "", model: "" };
+  draft.value = { name: "", cwd: "", prompt: "", model: "" };
+  models.value = [];
+  modelsLoading.value = true;
   try {
     const device = await client().device();
     models.value = device.models.map((m) => ({ key: `${m.provider}/${m.id}` }));
     draft.value.model = device.defaultModel;
   } catch {
     models.value = [];
+  } finally {
+    modelsLoading.value = false;
   }
 }
 
@@ -94,7 +101,11 @@ async function save() {
   const d = draft.value;
   const [provider, ...rest] = d.model.split("/");
   const modelId = rest.join("/");
-  if (!d.name.trim() || !d.cwd.trim() || !d.prompt.trim() || !provider || !modelId) return;
+  if (!d.name.trim() || !d.cwd.trim() || !d.prompt.trim()) return;
+  if (!provider || !modelId) {
+    notify(modelsLoading.value ? "Still loading the model list — one moment." : "Pick a model first.");
+    return;
+  }
   busy.value = "new";
   try {
     await client().createSchedule({
@@ -138,7 +149,9 @@ async function save() {
       <label>Prompt<textarea v-model="draft.prompt" rows="3" placeholder="Run the tests and summarise failures" required /></label>
       <label
         >Model
-        <select v-model="draft.model">
+        <select v-model="draft.model" :disabled="modelsLoading">
+          <option v-if="modelsLoading" value="">loading…</option>
+          <option v-else-if="!models.length" value="">(no models — check the device)</option>
           <option v-for="m in models" :key="m.key" :value="m.key">{{ m.key }}</option>
         </select>
       </label>
@@ -148,8 +161,8 @@ async function save() {
         <label class="inline">daily at <input v-model="daily" class="num time" placeholder="03:00" :disabled="!!every" /></label>
       </div>
       <div class="row">
-        <button class="primary small" type="submit" :disabled="busy === 'new'">
-          {{ busy === "new" ? "creating…" : "Create schedule" }}
+        <button class="primary small" type="submit" :disabled="busy === 'new' || modelsLoading || !draft.model">
+          {{ busy === "new" ? "creating…" : modelsLoading ? "loading models…" : "Create schedule" }}
         </button>
         <button class="small" type="button" @click="adding = false">Cancel</button>
       </div>

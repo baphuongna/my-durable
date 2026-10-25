@@ -93,7 +93,10 @@ function add() {
         :disabled="disabled"
         @change="emit('change', $event)"
       />
-      <form v-if="adding && kind === 'array'" class="state-add" @submit.prevent="add">
+      <!-- The add-form/button must exist for BOTH objects and arrays: live-
+           driving caught that the `kind === "array"` guards made object
+           containers (including the ROOT) unable to gain fields at all. -->
+      <form v-if="adding" class="state-add" @submit.prevent="add">
         <input
           v-if="kind !== 'array'"
           v-model="key"
@@ -115,7 +118,7 @@ function add() {
         <button type="button" class="text-button" @click="adding = false">Cancel</button>
       </form>
       <button
-        v-else-if="kind === 'array'"
+        v-else
         class="text-button state-add-button"
         :disabled="disabled"
         :aria-label="`Add ${kind === 'array' ? 'item' : 'field'} to ${path || '/'}`"

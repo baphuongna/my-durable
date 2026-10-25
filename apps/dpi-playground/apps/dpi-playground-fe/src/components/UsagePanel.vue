@@ -54,7 +54,11 @@ async function load() {
   try {
     usage.value = await deviceClient(id).deviceUsage();
   } catch (e) {
-    error.value = message(e).slice(0, 160);
+    const text = message(e);
+    error.value =
+      (e as { code?: string }).code === "not_found" || /allowlist|not found/i.test(text)
+        ? "This device runs an older build: update it (`dpi update`) to see usage."
+        : text.slice(0, 160);
   } finally {
     busy.value = false;
   }
