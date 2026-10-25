@@ -1,7 +1,7 @@
 # Host / Project / Device / Session Management Feature Checklist — orca / paseo / zcode / herdr / piggery → durable-pi
 
 Run: `team_20261024143910_47d06fe8b77400d4` · Steps: 01_explore (inventory) → 02_analyze (verify/correct) → 03_write (this file)
-Status: **ALL WAVES ADOPTED (0.0.45 — live-verified in production Chrome: bell+panel, usage chip+total row, transcript download, prompt library, bulk select bar, recent-cwds chips; Host vitals with real uptime/load/memory/disk, tunnel-routed session search, and a bundle zip that real `unzip` opens).** Wave 2 complete (0.0.42); Wave 3 complete: diagnostics + keep-awake (0.0.43), telegram bridge + conversation share (0.0.44), task-graph DAG (0.0.45); ssh-interactivity and bulk-resume closed by design. NOTHING left on the feature list. Policy ledger: **#1 crash reporting DECIDED+SHIPPED (0.0.46, local-only)** · **#2 writable pi credentials DECIDED+SHIPPED (0.0.46, write-only)** · #3 implemented as manual-only GC (no defaults, no timer) · #4 stays hint-only badge (the hub never pushes code). Companion to `docs/git-ui-checklist.md` (CLOSED): that file covered the git panel; this one covers everything **around** the agent runtime — projects/workspaces, host/device management, session lifecycle, config/credentials, diagnostics, maintenance. Git-panel features are deliberately absent here. Every load-bearing citation below was re-read in the actual files during this run (see [Verification log](#verification-log)).
+Status: **ALL WAVES ADOPTED (0.0.45 — live-verified in production Chrome: bell+panel, usage chip+total row, transcript download, prompt library, bulk select bar, recent-cwds chips; Host vitals with real uptime/load/memory/disk, tunnel-routed session search, and a bundle zip that real `unzip` opens).** Wave 2 complete (0.0.42); Wave 3 complete: diagnostics + keep-awake (0.0.43), telegram bridge + conversation share (0.0.44), task-graph DAG (0.0.45); ssh-interactivity and bulk-resume closed by design. NOTHING left on the feature list. Policy ledger: **ALL FOUR DECIDED** — #1 crash reporting local-only ✅ (0.0.46) · #2 pi credentials write-only ✅ (0.0.46) · #3 retention manual-only PERMANENTLY ✅ (user 2026-10-25: old sessions are future feature surface — nothing ever auto-deletes) · #4 remote updates hint-only badge ✅ (hub never pushes code). Companion to `docs/git-ui-checklist.md` (CLOSED): that file covered the git panel; this one covers everything **around** the agent runtime — projects/workspaces, host/device management, session lifecycle, config/credentials, diagnostics, maintenance. Git-panel features are deliberately absent here. Every load-bearing citation below was re-read in the actual files during this run (see [Verification log](#verification-log)).
 
 ## Why this doc exists
 
@@ -101,13 +101,20 @@ The analyst corrected the explorer's first draft; the writer re-verified each co
 Four rows below cannot default; they need the leader's decision before their wave enters the roadmap.
 None of them blocks Wave 1.
 
-1. **Crash reporting** (Wave 3) — privacy posture: what is collected, opt-in vs opt-out.
-2. **Writable provider credentials** (Wave 3) — pi owns `~/.pi/agent/auth.json`; our read-only view is
-   deliberate (`pi-config.ts:10-11`). A write path means deciding who owns that file.
-3. **Retention / auto-archive defaults** (Wave 2) — deletes user data; needs explicit defaults and a
-   dry-run story before any automatic deletion.
-4. **Hub-driven remote updates** (Wave 2) — trust boundary: the hub must never push code to devices.
-   Badge-only (device self-updates, hub informs) is the safe shape; anything more needs a decision.
+All four are DECIDED (0.0.46, user-approved):
+
+1. **Crash reporting — DECIDED: local-only.** One short redacted markdown file per crash under
+   `<home>/backend/crashes/`; no telemetry, no upload, no opt-in question — *we cannot leak what we
+   never send*. Human- and agent-readable fixed template; `dpi doctor` surfaces reports as a warn.
+2. **Writable provider credentials — DECIDED: write-only.** pi keeps owning `~/.pi/agent/auth.json`;
+   the device may set/remove exactly one `api_key` entry. Values never leave the file (masked tails
+   only), oauth logins and corrupt files are refused, writes atomic 0600 + `.bak`.
+3. **Retention / auto-archive — DECIDED: manual-only, permanently.** `dpi gc --closed-before 30d`
+   (dry-run default, `--yes` to act) stays the ONLY deletion path; nothing ever schedules itself.
+   Rationale (user, 2026-10-25): old sessions are a likely FEATURE surface later (search/resume/
+   history mining), so the device must never silently destroy them — the operator is the only deleter.
+4. **Hub-driven remote updates — DECIDED: hint-only badge.** The hub informs, the device self-updates;
+   the hub never pushes code to devices. If more is ever needed, that is a new decision, not a default.
 
 ## Wave 1a — FE-only, no BE change (start here)
 
@@ -138,7 +145,7 @@ None of them blocks Wave 1.
 | MUST | Usage dashboard | orca `usage/agent-token-usage.ts` + `usage-calendar-range.ts` (46-file suite incl. per-provider parsers) | ✅ (`0.0.39`) | GET `/device/usage` sums each harness's usage per session/model/project; Inspector **Usage** tab. Live: 4,307 tok → `opencode-go/claude-haiku-5-5`, attributed to its project. No calendar/persistence yet (archived sessions are closed stores) |
 | SHOULD | Notification delivery fan-out | orca `notification-delivery-service.ts:15-49` (tray→mobile→desktop, burst cooldown); piggery notify hooks desktop/herdr/ntfy (`docs/reference.md:15`) | ✅ (`0.0.41`) | `notify-sinks.ts`: webhook + ntfy sinks, per-(sink,event-kind) 10 s cooldown, SSRF guard with `DPI_NOTIFY_ALLOW_PRIVATE=1` for LAN. Events: `session.failed`, `schedule.ok`, `schedule.failed`, `test`. `dpi notify list/add/enable/disable/remove/test/events`; Inspector **Notify** tab. Live: ntfy.sh received the test sent from the panel |
 | SHOULD | Env-var management UI | orca `settings/HostAgentEnvironmentEditor.tsx` + `agent-default-env-draft.ts` | ✅ (`0.0.42`) | `env-vars.ts`: the DEVICE's env file, not the laptop's yaml — managed keys (DPI_TOKEN/port/…) refused, secret-NAMED values return masked (`••••••••t123`), process-only vars listed read-only (`loadEnvFile` never overrides them). `GET/POST/DELETE /v1/device/env`; Inspector **Env** tab with a restart-required banner (nothing pretends to hot-apply). Caught live: the hub caches the tunnel allowlist in memory, so new device routes also need a hub restart |
-| MUST | Retention / auto-GC — **policy #3** | orca `terminal-history-gc.ts`; piggery `gc --closed-before DURATION [--dry-run]` (`docs/reference.md:31`) | ✅ manual-only (`0.0.40`) | `gc.ts` + `dpi gc --closed-before 30d [--yes]`: **dry-run is the default and nothing schedules itself** — the retention policy stays the operator's call (gate #3 remains open for defaults) |
+| MUST | Retention / auto-GC — **policy #3** | orca `terminal-history-gc.ts`; piggery `gc --closed-before DURATION [--dry-run]` (`docs/reference.md:31`) | ✅ manual-only (`0.0.40`) | `gc.ts` + `dpi gc --closed-before 30d [--yes]`: **dry-run is the default and nothing schedules itself** — and per the user's decision (2026-10-25) this is PERMANENT: no auto-archive will ever ship, because old sessions are a likely future feature surface (search/resume/history mining). The operator is the only deleter |
 | SHOULD | Remote update badge — **policy #4** | orca `ssh/managed-server-update-check.ts` + `orcad-update-plan.ts` | ✅ (`0.0.40`) | `GET /api/version` (hub walks up to the `my-durable` package.json) + device `packageVersion` in `/v1/device` → tree badge "update". Hint only: devices self-update, the hub never pushes code. Verified 0 badges when versions match, and the 1.3.0-vs-0.0.39 trap (pi-durable's version) is fixed by reporting both |
 | SHOULD | Backup/restore of session data | orca `rolling-file-backup.ts`; paseo `migrations/` (schema side) | ✅ (`0.0.42`) | `dpi backup create|list|restore` (executor module + 16 tests): whole-home zip (binary-capable writer reusing zip.ts's crc32) into a SIBLING `<home>-backups/` dir so a backup never contains itself; restore is plan-first (`--yes`), refuses while the daemon answers healthz, and never deletes — the old home becomes `home.bak-<ts>`. Live: 73 files / 5.4 MiB from the real device home, `unzip`/`zipfile`-clean, restore refused with exit 1 while running |
 | SHOULD | Rate-limit surfacing | orca `rate-limits/` | ✅ device-side (`0.0.41`) | `classifyProviderError`: 429/quota → `rate_limited` (+`retryAfterMs` from Retry-After), 401/403 → `auth`, 404 → `missing`; `probeModel` returns the provider's own words, `dpi doctor` prints "rate limited — retry in 30s" / "provider key rejected". **Not** in the web picker: `probe-model` is deliberately local-only (never tunnelled), so the FE cannot probe |
