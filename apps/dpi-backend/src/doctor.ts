@@ -292,7 +292,25 @@ async function probeCheck(io: DoctorIo, cfg: DeviceEndpoint, reachable: boolean)
   if (!res.ok) return { id, label, status: "warn", detail: `probe-model → ${res.status}` };
   const detail = typeof body.detail === "string" && body.detail ? body.detail : body.ok === true ? "answered" : "no answer";
   // A dead provider is a WARN by design: the FE rotates past it, the device is fine.
-  return { id, label, status: body.ok === true ? "ok" : "warn", detail: detail.slice(0, 160) };
+  if (body.ok === true) return { id, label, status: "ok", detail: detail.slice(0, 160) };
+  // Say what the failure means when the device classified it: "wait 30s" is a
+  // different instruction from "fix the key" or "pick another model".
+  const status = typeof body.status === "string" ? body.status : "error";
+  const retryMs = typeof body.retryAfterMs === "number" ? body.retryAfterMs : undefined;
+  const meaning =
+    status === "rate_limited"
+      ? `rate limited${retryMs ? ` — retry in ${Math.max(1, Math.round(retryMs / 1000))}s` : " — retry later"}`
+      : status === "auth"
+        ? "provider key rejected — fix the credential"
+        : status === "missing"
+          ? "model not in the provider's catalog"
+          : "";
+  return {
+    id,
+    label,
+    status: "warn",
+    detail: `${detail.slice(0, 110)}${meaning ? ` (${meaning})` : ""}`.slice(0, 200),
+  };
 }
 
 /** 5. hub — only when this device actually has one. */

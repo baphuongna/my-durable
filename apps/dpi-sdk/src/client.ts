@@ -14,6 +14,9 @@ import type {
   ForkBody,
   Frame,
   DeviceUsageReport,
+  NotifyDelivery,
+  NotifySinkBody,
+  NotifySinkView,
   Page,
   ProjectPatchBody,
   ProjectRecord,
@@ -225,6 +228,23 @@ export class DpiClient {
   }
   unarchiveProject(id: string) {
     return this.request<ProjectRecord>("POST", `/v1/projects/${enc(id)}/unarchive`, {});
+  }
+  /** Outbound notification sinks (webhook/ntfy) on this device. */
+  notifySinks() {
+    return this.request<{ sinks: NotifySinkView[] }>("GET", "/v1/notify/sinks");
+  }
+  createNotifySink(input: NotifySinkBody) {
+    return this.request<NotifySinkView>("POST", "/v1/notify/sinks", input);
+  }
+  updateNotifySink(id: string, patch: Partial<NotifySinkBody>) {
+    return this.request<NotifySinkView>("PATCH", `/v1/notify/sinks/${enc(id)}`, patch);
+  }
+  removeNotifySink(id: string) {
+    return this.request<{ removed: boolean }>("DELETE", `/v1/notify/sinks/${enc(id)}`);
+  }
+  /** Fire a test event through every enabled sink. */
+  testNotifySinks() {
+    return this.request<{ results: NotifyDelivery[] }>("POST", "/v1/notify/test", {});
   }
   /** Scheduled sessions on this device (device-owned clock). */
   schedules() {

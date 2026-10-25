@@ -4,6 +4,7 @@
 //   dpi device [start|stop|status|install|uninstall]     device-side daemon
 //   dpi tui                                               terminal admin client
 //   dpi schedule [list|add|enable|disable|run|remove]     scheduled sessions
+//   dpi notify   [list|add|enable|disable|remove|test]    outbound notifications
 //   dpi gc --closed-before 30d [--dry-run|--yes]           retention (dry-run default)
 //   dpi doctor [--json] [--quiet]                         one-shot device health check
 // Every subcommand runs the TypeScript entry through tsx, so no build step is needed.
@@ -147,6 +148,12 @@ if (command === "update" || command === "upgrade") {
   register();
   const { scheduleCli } = await import("../apps/dpi-backend/src/schedule-cli.ts");
   process.exit(await scheduleCli(commandRest));
+} else if (command === "notify") {
+  // Outbound fan-out: the CLI edits the device's sinks over its own API.
+  const { register } = await loadTsx();
+  register();
+  const { notifyCli } = await import("../apps/dpi-backend/src/notify-cli.ts");
+  process.exit(await notifyCli(commandRest));
 } else if (command === "gc") {
   // Retention: dry-run unless --yes. Never runs on its own (policy gate #3).
   const { register } = await loadTsx();

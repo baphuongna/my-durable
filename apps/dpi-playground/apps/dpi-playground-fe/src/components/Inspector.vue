@@ -7,6 +7,7 @@ import {
   PackageOpen,
   PiggyBank,
   CalendarClock,
+  Bell,
   GitBranch,
   ChevronDown,
   FolderOpen,
@@ -28,6 +29,7 @@ import GitPanel from "./GitPanel.vue";
 import HostPanel from "./HostPanel.vue";
 import UsagePanel from "./UsagePanel.vue";
 import SchedulesPanel from "./SchedulesPanel.vue";
+import NotifyPanel from "./NotifyPanel.vue";
 import ExtensionsPanel from "./ExtensionsPanel.vue";
 import ContextBar from "./ContextBar.vue";
 import { deviceClient, message } from "../client/hub";
@@ -70,6 +72,7 @@ const tabs = [
   { id: "host", label: "Host", icon: Activity },
   { id: "usage", label: "Usage", icon: PiggyBank },
   { id: "auto", label: "Auto", icon: CalendarClock },
+  { id: "notify", label: "Notify", icon: Bell },
   { id: "state", label: "State", icon: Braces },
   { id: "tasks", label: "Tasks", icon: Activity },
   { id: "tools", label: "Tools", icon: Wrench },
@@ -441,6 +444,7 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
         <HostPanel v-if="ui.tab === 'host'" />
         <UsagePanel v-if="ui.tab === 'usage'" />
         <SchedulesPanel v-if="ui.tab === 'auto'" />
+        <NotifyPanel v-if="ui.tab === 'notify'" />
         <ExtensionsPanel v-if="ui.tab === 'extensions'" />
         <template v-if="ui.tab === 'tools'"
           ><div class="panel-heading">

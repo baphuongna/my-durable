@@ -215,6 +215,60 @@ export interface ProjectPatchBody {
   labels?: string[];
 }
 
+/** What a live model probe found. `status` is what a picker can show as a hint. */
+export interface ModelProbe {
+  ok: boolean;
+  detail: string;
+  /** "rate_limited" is the actionable one: the model works, you must wait. */
+  status?: "rate_limited" | "auth" | "missing" | "error";
+  /** From a provider's Retry-After, when it said so. */
+  retryAfterMs?: number;
+}
+
+/** One outbound notification target on the device (webhook or ntfy). */
+export type NotifySinkKind = "webhook" | "ntfy";
+
+export interface NotifySinkRecord {
+  id: string;
+  kind: NotifySinkKind;
+  url: string;
+  enabled: boolean;
+  /** Empty/absent = every event; supports `schedule.*` wildcards. */
+  events?: string[];
+  label?: string;
+  priority?: "min" | "low" | "default" | "high" | "max";
+  tags?: string[];
+  createdAt: number;
+  updatedAt: number;
+  lastDeliveryAt?: number;
+  lastError?: string;
+  lastStatus?: number;
+}
+
+/** What a UI shows: the record plus live cooldown state. */
+export interface NotifySinkView extends NotifySinkRecord {
+  silencedUntil: number | null;
+}
+
+export interface NotifySinkBody {
+  kind: NotifySinkKind;
+  url: string;
+  enabled?: boolean;
+  events?: string[];
+  label?: string;
+  priority?: NotifySinkRecord["priority"];
+  tags?: string[];
+}
+
+/** Per-sink result of one fan-out (also what `POST /v1/notify/test` returns). */
+export interface NotifyDelivery {
+  id: string;
+  kind: NotifySinkKind;
+  status: "sent" | "skipped" | "failed";
+  detail?: string;
+  ms?: number;
+}
+
 /** A scheduled session: the device owns the clock, the hub only displays it. */
 export interface ScheduleModelRef {
   provider: string;

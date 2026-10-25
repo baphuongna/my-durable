@@ -188,6 +188,14 @@ export function v1(
   r.post("/projects/:id/archive", route(async (req, res) => res.json(await store.archiveProject(param(req, "id")))));
   r.post("/projects/:id/unarchive", route(async (req, res) => res.json(await store.unarchiveProject(param(req, "id")))));
 
+  // ---------------------------------------------------- notifications
+  // Outbound fan-out (webhook/ntfy). Configured here, delivered by the device.
+  r.get("/notify/sinks", (_req, res) => res.json({ sinks: store.notifySinkList() }));
+  r.post("/notify/sinks", route(async (req, res) => res.status(201).json(await store.createNotifySink(req.body ?? {}))));
+  r.patch("/notify/sinks/:id", route(async (req, res) => res.json(await store.updateNotifySink(param(req, "id"), req.body ?? {}))));
+  r.delete("/notify/sinks/:id", route(async (req, res) => res.json(await store.removeNotifySink(param(req, "id")))));
+  r.post("/notify/test", route(async (_req, res) => res.json({ results: await store.testNotifySinks() })));
+
   // -------------------------------------------------------- schedules
   // The device owns execution (systemd/cron are deliberately rejected by config);
   // these routes only read and edit the schedule records.

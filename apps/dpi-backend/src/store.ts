@@ -14,6 +14,8 @@ import type {
   Page,
   SendResult,
   DeviceUsageReport,
+  ModelProbe,
+  NotifySinkView,
   ProjectPatchBody,
   SchedulePatchBody,
   ScheduleView,
@@ -49,6 +51,7 @@ import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/pr
 import { deviceVitals, type DeviceVitals } from "./vitals.js";
 import { ProjectRegistry, type ProjectRecord } from "./projects.js";
 import { ScheduleRegistry, type ScheduleCreateInput, type ScheduleRecord } from "./schedules.js";
+import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, type ZipEntry } from "./zip.js";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
@@ -225,6 +228,23 @@ type Resolved = { row: SessionRow; h: Harness; c: Conversation };
  * cause message, so no SQL values, tokens or transcript can reach a REST error message. The library reports the
  * full cause through the Harness `onReport` (server-side) for diagnostics.
  */
+/**
+ * Turn a provider's error text into something a picker can act on. Rate limits
+ * are the case worth naming: the model works, you just have to wait.
+ */
+export function classifyProviderError(text: string): Pick<ModelProbe, "status" | "retryAfterMs"> {
+  const value = text ?? "";
+  const retry = /retry[- ]after[:\s]*(\d+)/iu.exec(value) ?? /(\d+)\s*(?:seconds|s)\b/iu.exec(value);
+  const retryAfterMs = retry ? Number(retry[1]) * 1000 : undefined;
+  if (/429|rate.?limit|too many requests|quota exceeded|overloaded/iu.test(value))
+    return { status: "rate_limited", ...(retryAfterMs ? { retryAfterMs } : {}) };
+  if (/401|403|unauthori[sz]ed|invalid api key|authentication|api key/i.test(value))
+    return { status: "auth" };
+  if (/404|model not found|no such model|unknown model|does not exist/i.test(value))
+    return { status: "missing" };
+  return { status: "error" };
+}
+
 function sessionFailureMessage(error: unknown): string {
   const kind = (error instanceof Error && error.name ? error.name : "unknown").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40);
   return `Session failed and is unavailable (${kind || "unknown"}); reconnect after it is reopened`;
@@ -255,6 +275,8 @@ export class Store {
   projects!: ProjectRegistry;
   /** Schedules (Wave 2): the device owns the clock, the hub only displays it. */
   schedules!: ScheduleRegistry;
+  /** Outbound notifications (webhook/ntfy). Delivery never throws into a turn. */
+  sinks!: NotifySinks;
   uid!: string;
   modelList: ModelInfo[] = [];
   private unlockCatalog: () => void;
@@ -282,6 +304,9 @@ export class Store {
   }
   get schedulesPath() {
     return join(this.options.dataDir, "schedules.json");
+  }
+  get notifyPath() {
+    return join(this.options.dataDir, "notify.json");
   }
   get name() {
     return this.options.name;
@@ -344,6 +369,11 @@ export class Store {
       }
       store.schedules = await ScheduleRegistry.open(store.schedulesPath, {
         warn: (m) => process.emitWarning(`schedules: ${m}`),
+      });
+      store.sinks = await NotifySinks.open(store.notifyPath, {
+        warn: (m) => process.emitWarning(`notify: ${m}`),
+        // ntfy often lives on the LAN; the operator opts in explicitly.
+        allowPrivateHosts: process.env.DPI_NOTIFY_ALLOW_PRIVATE === "1",
       });
       store.unlockShared = lockFile(`${store.sharedStatePath}.lock`);
       store.shared = await SharedState.open(store.sharedStatePath);
@@ -642,9 +672,66 @@ export class Store {
     try {
       opened.unlock();
     } catch {}
-    this.errors.set(id, sessionFailureMessage(error));
+    const reason = sessionFailureMessage(error);
+    this.errors.set(id, reason);
     this.taskLabels.clear();
     this.notify();
+    // A failed session is the one thing a human must hear about even when no
+    // UI is open — fire and forget, delivery never throws.
+    void this.notifyEvent({
+      kind: "session.failed",
+      title: `Session failed on ${this.name}`,
+      body: `${this.sessionName(id)}: ${reason}`,
+      data: { sessionId: id, device: this.name },
+    });
+  }
+
+  private sessionName(id: string): string {
+    return this.list().find((row) => row.id === id)?.name ?? id;
+  }
+
+  // ------------------------------------------------- notifications (Wave 2)
+
+  notifySinkList(): NotifySinkView[] {
+    const recent = new Map(this.sinks.recent().map((r) => [r.id, r.silencedUntil]));
+    return this.sinks.list().map((sink) => ({ ...sink, silencedUntil: recent.get(sink.id) ?? null }));
+  }
+
+  async createNotifySink(input: SinkInput): Promise<NotifySinkView> {
+    const sink = await this.sinks.create(input);
+    this.notify();
+    return { ...sink, silencedUntil: null };
+  }
+
+  async updateNotifySink(id: string, patch: Partial<SinkInput> & { enabled?: boolean }): Promise<NotifySinkView> {
+    const sink = await this.sinks.update(id, patch);
+    this.notify();
+    return { ...sink, silencedUntil: null };
+  }
+
+  async removeNotifySink(id: string): Promise<{ removed: boolean }> {
+    const removed = await this.sinks.remove(id);
+    this.notify();
+    return { removed };
+  }
+
+  /** Fan one event out. Returns per-sink results so a UI can show what happened. */
+  async notifyEvent(event: Parameters<NotifySinks["deliver"]>[0]): Promise<DeliveryResult[]> {
+    try {
+      return await this.sinks.deliver(event, { device: this.name });
+    } catch {
+      return [];
+    }
+  }
+
+  /** Send a test event through every enabled sink (the "test" button). */
+  async testNotifySinks(): Promise<DeliveryResult[]> {
+    return this.notifyEvent({
+      kind: "test",
+      title: `Test notification from ${this.name}`,
+      body: `If you can read this, ${this.name} can reach your sink.`,
+      data: { device: this.name },
+    });
   }
 
   /** `spawnKey` records which tool call created the session, in the same transaction as the session row. */
@@ -998,7 +1085,7 @@ export class Store {
   }
 
   /** One provider, one model, one throwaway session — is it alive? */
-  async probeModel(provider: string, modelId: string): Promise<{ ok: boolean; detail: string }> {
+  async probeModel(provider: string, modelId: string): Promise<ModelProbe> {
     if (!provider || !modelId) throw invalid("provider and modelId are required");
     const created: SessionRow[] = [];
     try {
@@ -1010,15 +1097,33 @@ export class Store {
       const submission = await this.send(c, { content: "Reply with exactly: ok", whenBusy: "followUp", requestId: `probe-${Date.now()}` });
       const result = await this.settled(h, submission.id as number, 45_000);
       const text = result.status === "done" ? result.answer.text.trim() : "";
-      return {
-        ok: result.status === "done" && !!text,
-        detail: result.status === "done" ? (text || "empty answer").slice(0, 120) : ((result as { reason?: string }).reason ?? "no answer").slice(0, 120),
-      };
+      if (result.status === "done" && text) return { ok: true, detail: text.slice(0, 120) };
+      const reason = ((result as { reason?: string }).reason ?? "no answer").slice(0, 120);
+      // The submission only says "model_error"; the provider's own words live on
+      // the last assistant entry. That text is what tells a human whether to wait
+      // (429), fix a key (401) or pick another model (404).
+      const providerError = await this.lastProviderError(c);
+      return { ok: false, detail: (providerError || reason).slice(0, 300), ...classifyProviderError(providerError || reason) };
     } catch (e) {
-      return { ok: false, detail: String((e as Error).message).slice(0, 160) };
+      const detail = String((e as Error).message).slice(0, 300);
+      return { ok: false, detail: detail.slice(0, 160), ...classifyProviderError(detail) };
     } finally {
       for (const r of created) void this.archive(r).catch(() => {});
     }
+  }
+
+  /** The most recent assistant error string, if the run failed with one. */
+  private async lastProviderError(c: Conversation): Promise<string | undefined> {
+    try {
+      const entries = await this.activeEntries(c);
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const error = (entries[i] as { error?: unknown } | undefined)?.error;
+        if (typeof error === "string" && error.trim()) return error.trim();
+      }
+    } catch {
+      /* a probe that cannot read its own transcript reports the reason it had */
+    }
+    return undefined;
   }
 
   // ------------------------------------------------------------ agents
@@ -1735,6 +1840,12 @@ export class Store {
       const { c } = await this.resolveAgent(session.id, "main");
       await this.send(c, { content: record.prompt, requestId: `schedule-${record.id}-${Date.now()}` });
       await this.schedules.markRun(record.id, { sessionId, outcome: "ok" });
+      void this.notifyEvent({
+        kind: "schedule.ok",
+        title: `Schedule ran: ${record.name}`,
+        body: `${this.name} started a session for "${record.name}" in ${record.cwd}.`,
+        data: { scheduleId: record.id, sessionId },
+      });
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       await this.schedules.markRun(record.id, {
@@ -1742,6 +1853,12 @@ export class Store {
         outcome: "failed",
         error: detail.slice(0, 300),
       }).catch(() => undefined);
+      void this.notifyEvent({
+        kind: "schedule.failed",
+        title: `Schedule failed: ${record.name}`,
+        body: detail.slice(0, 300),
+        data: { scheduleId: record.id },
+      });
     } finally {
       this.scheduleInFlight.delete(record.id);
       this.notify();
