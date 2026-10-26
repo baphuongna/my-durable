@@ -74,7 +74,7 @@ import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } fro
 import { zipSync, type ZipEntry } from "./zip.js";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
-import { join, dirname, relative, resolve } from "node:path";
+import { join, dirname, relative, resolve, sep } from "node:path";
 import { homedir, hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -698,6 +698,44 @@ export class Store {
 
   // ------------------------------------------------------------ directories
 
+  /** Every start dir, realpathed (missing ones dropped): the containment roots
+   *  for /fs/dirs and the git routes — symlinks cannot tunnel under them. */
+  async startDirRoots(): Promise<string[]> {
+    const roots: string[] = [];
+    for (const dir of this.startDirs) {
+      try {
+        roots.push(await realpath(dir));
+      } catch {}
+    }
+    return roots;
+  }
+
+  /** A resolved path IS a start dir root or lives under one. */
+  private underRoots(candidate: string, roots: string[]): boolean {
+    return roots.some((root) => candidate === root || candidate.startsWith(root + sep) || candidate.startsWith(root + "/"));
+  }
+
+  /** A caller-supplied path that must stay inside the start dirs: `~` expands,
+   *  symlinks resolve, and anything outside answers 400 `invalid`. A path that
+   *  does not exist is judged lexically (git then reports "not a repository"). */
+  async containedPath(input: string): Promise<string> {
+    const expanded = input === "~" ? homedir() : input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
+    let candidate: string;
+    try {
+      candidate = await realpath(resolve(expanded));
+    } catch {
+      candidate = resolve(expanded);
+    }
+    if (!this.underRoots(candidate, await this.startDirRoots())) throw invalid("path must live under a start dir");
+    return candidate;
+  }
+
+  /** The deterministic default when a git route gets no path: the first start
+   *  dir — never the daemon's own cwd. */
+  async firstStartDir(): Promise<string> {
+    return (await this.startDirRoots())[0] ?? resolve(this.startDirs[0] ?? homedir());
+  }
+
   async directories(): Promise<DirListing> {
     const dirs: { name: string; path: string }[] = [];
     for (const root of this.startDirs) {
@@ -718,6 +756,10 @@ export class Store {
     } catch {
       throw notFound(`Not a directory on ${this.name}: ${path}`);
     }
+    // Containment: only the start dirs and their subdirectories are listable —
+    // `~` and ".." traversal count only when they land inside one.
+    const roots = await this.startDirRoots();
+    if (!this.underRoots(real, roots)) throw invalid("path must live under a start dir");
     const dirs: { name: string; path: string }[] = [];
     try {
       for (const entry of await readdir(real, { withFileTypes: true })) {
@@ -728,7 +770,10 @@ export class Store {
       throw new ApiFault("unavailable", `Cannot list ${real}: ${(e as Error).message}`);
     }
     dirs.sort((a, b) => a.name.localeCompare(b.name));
-    return { path: real, parent: dirname(real) !== real ? dirname(real) : undefined, dirs: dirs.slice(0, 500) };
+    // Parent navigation clamps at the roots: a start dir's parent is outside
+    // and is never offered to the picker.
+    const up = dirname(real) !== real && this.underRoots(dirname(real), roots) ? dirname(real) : undefined;
+    return { path: real, parent: up, dirs: dirs.slice(0, 500) };
   }
 
   // ------------------------------------------------------------ sessions
@@ -801,14 +846,19 @@ export class Store {
     return this.sinks.list().map((sink) => ({ ...sink, silencedUntil: recent.get(sink.id) ?? null }));
   }
 
-  async createNotifySink(input: SinkInput): Promise<NotifySinkView> {
-    const sink = await this.sinks.create(input);
+  async createNotifySink(input: SinkInput & { allowPrivateHosts?: boolean }): Promise<NotifySinkView> {
+    const { allowPrivateHosts, ...sink } = input;
+    const created = await this.sinks.create(sink, { allowPrivateHosts: allowPrivateHosts === true });
     this.notify();
-    return { ...sink, silencedUntil: null };
+    return { ...created, silencedUntil: null };
   }
 
-  async updateNotifySink(id: string, patch: Partial<SinkInput> & { enabled?: boolean }): Promise<NotifySinkView> {
-    const sink = await this.sinks.update(id, patch);
+  async updateNotifySink(
+    id: string,
+    patch: Partial<SinkInput> & { enabled?: boolean; allowPrivateHosts?: boolean },
+  ): Promise<NotifySinkView> {
+    const { allowPrivateHosts, ...rest } = patch;
+    const sink = await this.sinks.update(id, rest, { allowPrivateHosts: allowPrivateHosts === true });
     this.notify();
     return { ...sink, silencedUntil: null };
   }

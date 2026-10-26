@@ -133,7 +133,9 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
         break;
       }
       await app.run(async () => {
-        const created = await app.client.session(app.sessionId!).createAgent(arg ? { name: arg } : {});
+        // The device API requires a name (B6); without an argument, number the new agent.
+        const name = arg || `Agent ${app.session.state.agents.length + 1}`;
+        const created = await app.client.session(app.sessionId!).createAgent({ name });
         await app.attach(app.sessionId!, created.id);
         app.flash(`New agent ${created.name}`);
       });

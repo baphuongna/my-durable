@@ -24,6 +24,8 @@ export interface PairCliDeps {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   print?: (line: string) => void;
+  /** Where failures and usage go (stdout stays clean for pipes, like every other subcommand). */
+  printErr?: (line: string) => void;
   /** Poll interval while waiting for approval (tests shrink it). */
   pollMs?: number;
   /** Give up waiting after this long (0 = wait forever, the default). */
@@ -42,6 +44,7 @@ function io(deps: PairCliDeps) {
     env: deps.env ?? process.env,
     fetch: deps.fetchImpl ?? fetch,
     print: deps.print ?? ((line: string) => process.stdout.write(`${line}\n`)),
+    printErr: deps.printErr ?? ((line: string) => process.stderr.write(`${line}\n`)),
     pollMs: deps.pollMs ?? 1000,
     timeoutMs: deps.timeoutMs ?? 0,
     sleep: deps.sleep ?? realSleep,
@@ -154,10 +157,10 @@ export async function pairThisDevice(
   args: { target?: string; hub?: string; force: boolean },
   deps: PairCliDeps = {},
 ): Promise<number> {
-  const { env, fetch: f, print, pollMs, timeoutMs, sleep } = io(deps);
+  const { env, fetch: f, print, printErr, pollMs, timeoutMs, sleep } = io(deps);
   const local = localTarget(env);
   if (!local.token) {
-    print("no local device token — is `dpi device` installed here? (looked in DPI_TOKEN / backend.env)");
+    printErr("no local device token — is `dpi device` installed here? (looked in DPI_TOKEN / backend.env)");
     return 1;
   }
   const auth = { authorization: `Bearer ${local.token}`, "content-type": "application/json" };
@@ -171,7 +174,7 @@ export async function pairThisDevice(
     // Device-initiated: no secret to carry between machines.
     body.hub = args.hub;
   } else {
-    print("pair needs a code, a pair link, or --hub <origin> to ask the hub itself");
+    printErr("pair needs a code, a pair link, or --hub <origin> to ask the hub itself");
     return 1;
   }
   if (args.force) body.force = true;
@@ -183,7 +186,7 @@ export async function pairThisDevice(
       "pairing start",
     );
   } catch (error) {
-    print(`pairing failed: ${(error as Error).message}`);
+    printErr(`pairing failed: ${(error as Error).message}`);
     return 1;
   }
 
@@ -213,7 +216,7 @@ export async function pairThisDevice(
     try {
       now = await jsonOrThrow(await f(`${local.url}/v1/pairing`, { headers: auth }), "pairing status");
     } catch (error) {
-      print(`lost the local backend: ${(error as Error).message}`);
+      printErr(`lost the local backend: ${(error as Error).message}`);
       return 1;
     }
     const state = String(now.state ?? "");
@@ -222,11 +225,11 @@ export async function pairThisDevice(
       return 0;
     }
     if (state === "unpaired" || state === "failed") {
-      print(`pairing ended: ${String((now as { lastError?: string }).lastError ?? state)}`);
+      printErr(`pairing ended: ${String((now as { lastError?: string }).lastError ?? state)}`);
       return 1;
     }
     if (deadline && Date.now() > deadline) {
-      print("still waiting for approval — approve it and run `dpi pair` again, or wait longer with --wait");
+      printErr("still waiting for approval — approve it and run `dpi pair` again, or wait longer with --wait");
       return 1;
     }
   }
@@ -234,11 +237,11 @@ export async function pairThisDevice(
 
 /** Operator side: mint an offer link for a machine that has no CLI pairing yet. */
 async function pairOffer(deps: PairCliDeps, hubArg?: string): Promise<number> {
-  const { env, fetch: f, print } = io(deps);
+  const { env, fetch: f, print, printErr } = io(deps);
   const hub = hubTarget(env, deps.hubHome);
   const origin = hubArg ?? hub.origin;
-  if (!origin) return print("offer needs --hub <origin> (or DPI_HUB_URL)"), 1;
-  if (!hub.token) return print("offer needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
+  if (!origin) return printErr("offer needs --hub <origin> (or DPI_HUB_URL)"), 1;
+  if (!hub.token) return printErr("offer needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
   try {
     const minted = await jsonOrThrow(
       await f(`${origin}/api/pair/code`, {
@@ -254,7 +257,7 @@ async function pairOffer(deps: PairCliDeps, hubArg?: string): Promise<number> {
     print("paste that link on the machine:  dpi pair <link>   (or dpi tui --pair <link>)");
     return 0;
   } catch (error) {
-    print(`offer failed: ${(error as Error).message}`);
+    printErr(`offer failed: ${(error as Error).message}`);
     return 1;
   }
 }
@@ -306,14 +309,14 @@ async function pendingCodes(origin: string, token: string, f: typeof fetch): Pro
 }
 
 async function pairList(deps: PairCliDeps, hubArg?: string, watch = false): Promise<number> {
-  const { env, fetch: f, print, pollMs, sleep } = io(deps);
+  const { env, fetch: f, print, printErr, pollMs, sleep } = io(deps);
   if (watch) {
     // Live: reprint only when the set of waiting machines changes, so the
     // operator sees a device appear (or leave) without re-running the command.
     let previous = "";
     for (;;) {
       const snapshot = await pendingCodesOrError(deps, hubArg);
-      if (typeof snapshot === "string") return print(snapshot), 1;
+      if (typeof snapshot === "string") return printErr(snapshot), 1;
       const key = snapshot.map((c) => `${c.codeId}:${c.phase}:${c.deviceName ?? ""}`).join("|");
       if (key !== previous) {
         previous = key;
@@ -326,8 +329,8 @@ async function pairList(deps: PairCliDeps, hubArg?: string, watch = false): Prom
   }
   const hub = hubTarget(env, deps.hubHome);
   const origin = hubArg ?? hub.origin;
-  if (!origin) return print("list needs --hub <origin> (or DPI_HUB_URL)"), 1;
-  if (!hub.token) return print("list needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
+  if (!origin) return printErr("list needs --hub <origin> (or DPI_HUB_URL)"), 1;
+  if (!hub.token) return printErr("list needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
   try {
     const codes = await pendingCodes(origin, hub.token, f);
     if (!codes.length) {
@@ -339,25 +342,25 @@ async function pairList(deps: PairCliDeps, hubArg?: string, watch = false): Prom
     for (const c of codes) printPending(c, print);
     return 0;
   } catch (error) {
-    print(`list failed: ${(error as Error).message}`);
+    printErr(`list failed: ${(error as Error).message}`);
     return 1;
   }
 }
 
 async function pairApprove(deps: PairCliDeps, target?: string, hubArg?: string): Promise<number> {
-  const { env, fetch: f, print } = io(deps);
+  const { env, fetch: f, print, printErr } = io(deps);
   const hub = hubTarget(env, deps.hubHome);
   const origin = hubArg ?? hub.origin;
-  if (!origin) return print("approve needs --hub <origin> (or DPI_HUB_URL)"), 1;
-  if (!hub.token) return print("approve needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
-  if (!target) return print("approve needs a machine name or code id (see: dpi pair list)"), 1;
+  if (!origin) return printErr("approve needs --hub <origin> (or DPI_HUB_URL)"), 1;
+  if (!hub.token) return printErr("approve needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
+  if (!target) return printErr("approve needs a machine name or code id (see: dpi pair list)"), 1;
   try {
     const codes = await pendingCodes(origin, hub.token, f);
     const code =
       codes.find((c) => c.codeId === target) ??
       codes.find((c) => (c.deviceName ?? "").toLowerCase() === target.toLowerCase());
     if (!code) {
-      print(`nothing waiting matches “${target}” — run: dpi pair list`);
+      printErr(`nothing waiting matches “${target}” — run: dpi pair list`);
       return 1;
     }
     // The approval body is the hub's own view of the request; the fingerprint is
@@ -378,18 +381,18 @@ async function pairApprove(deps: PairCliDeps, target?: string, hubArg?: string):
     print(`  fingerprint ${code.keyFingerprint ?? "?"}`);
     return 0;
   } catch (error) {
-    print(`approve failed: ${(error as Error).message}`);
+    printErr(`approve failed: ${(error as Error).message}`);
     return 1;
   }
 }
 
 async function pairRevoke(deps: PairCliDeps, target?: string, hubArg?: string): Promise<number> {
-  const { env, fetch: f, print } = io(deps);
+  const { env, fetch: f, print, printErr } = io(deps);
   const hub = hubTarget(env, deps.hubHome);
   const origin = hubArg ?? hub.origin;
-  if (!origin) return print("revoke needs --hub <origin> (or DPI_HUB_URL)"), 1;
-  if (!hub.token) return print("revoke needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
-  if (!target) return print("revoke needs a device name or id (see: dpi devices)"), 1;
+  if (!origin) return printErr("revoke needs --hub <origin> (or DPI_HUB_URL)"), 1;
+  if (!hub.token) return printErr("revoke needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
+  if (!target) return printErr("revoke needs a device name or id (see: dpi devices)"), 1;
   try {
     const net = await jsonOrThrow(
       await f(`${origin}/api/network`, { headers: { authorization: `Bearer ${hub.token}` } }),
@@ -399,7 +402,7 @@ async function pairRevoke(deps: PairCliDeps, target?: string, hubArg?: string): 
     const device =
       devices.find((d) => d.id === target) ?? devices.find((d) => d.name.toLowerCase() === target.toLowerCase());
     if (!device) {
-      print(`no device matches “${target}” — known: ${devices.map((d) => d.name).join(", ") || "none"}`);
+      printErr(`no device matches “${target}” — known: ${devices.map((d) => d.name).join(", ") || "none"}`);
       return 1;
     }
     await jsonOrThrow(
@@ -413,7 +416,7 @@ async function pairRevoke(deps: PairCliDeps, target?: string, hubArg?: string): 
     print(`revoked ${device.name} — its next request will be refused`);
     return 0;
   } catch (error) {
-    print(`revoke failed: ${(error as Error).message}`);
+    printErr(`revoke failed: ${(error as Error).message}`);
     return 1;
   }
 }
@@ -438,11 +441,11 @@ interface HubDevice {
 
 /** `dpi devices [--watch]` — the paired machines and their live status. */
 export async function listDevices(deps: PairCliDeps = {}, hubArg?: string, watch = false): Promise<number> {
-  const { env, fetch: f, print, sleep } = io(deps);
+  const { env, fetch: f, print, printErr, sleep } = io(deps);
   const hub = hubTarget(env, deps.hubHome);
   const origin = hubArg ?? hub.origin;
-  if (!origin) return print("devices needs --hub <origin> (or DPI_HUB_URL)"), 1;
-  if (!hub.token) return print("devices needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
+  if (!origin) return printErr("devices needs --hub <origin> (or DPI_HUB_URL)"), 1;
+  if (!hub.token) return printErr("devices needs the hub admin token (DPI_ADMIN_TOKEN or the hub's admin.token)"), 1;
   let previous = "";
   for (;;) {
     let devices: HubDevice[];
@@ -453,7 +456,7 @@ export async function listDevices(deps: PairCliDeps = {}, hubArg?: string, watch
       );
       devices = (net.devices ?? []) as HubDevice[];
     } catch (error) {
-      print(`devices failed: ${(error as Error).message}`);
+      printErr(`devices failed: ${(error as Error).message}`);
       return 1;
     }
     const key = devices.map((d) => `${d.id}:${d.status ?? ""}`).join("|");
@@ -486,4 +489,14 @@ export const PAIR_USAGE = `dpi pair — pairing from the CLI (no browser needed)
 
 Hub admin token: DPI_ADMIN_TOKEN, or the hub's admin.token (DPI_HOME).
 Device token:    DPI_TOKEN, or the device's backend.env (DPI_HOME).
+`;
+
+export const DEVICES_USAGE = `dpi devices — the paired machines and their live status
+
+  dpi devices [--hub <origin>] [--watch]
+
+  --hub <origin>   the hub to ask (default: DPI_HUB_URL)
+  --watch          keep watching: reprint only when a machine or its status changes
+
+Needs the hub admin token: DPI_ADMIN_TOKEN, or the hub's admin.token (DPI_HOME).
 `;

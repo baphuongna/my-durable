@@ -586,9 +586,12 @@ export class NotifySinks {
    * Add a sink. Validation throws (`NotifySinkError` `invalid`) rather than
    * coercing, so a UI can show the reason: the URL is the one field a typo makes
    * silently useless.
+   *
+   * `options.allowPrivateHosts` grants this one call on top of the env default
+   * (`DPI_NOTIFY_ALLOW_PRIVATE`) — a LAN sink is an explicit per-request opt-in.
    */
-  async create(input: SinkInput): Promise<SinkRecord> {
-    const fields = validateInput(input, { allowPrivateHosts: this.allowPrivateHosts });
+  async create(input: SinkInput, options: { allowPrivateHosts?: boolean } = {}): Promise<SinkRecord> {
+    const fields = validateInput(input, { allowPrivateHosts: this.allowPrivateHosts || options.allowPrivateHosts === true });
     return this.run(async () => {
       const staged = new Map(this.records);
       let id = newSinkId();
@@ -607,7 +610,11 @@ export class NotifySinks {
    * will actually be used. `enabled: false` keeps the record — muting a noisy
    * sink is not the same as forgetting it.
    */
-  async update(id: string, patch: Partial<SinkInput> & { enabled?: boolean }): Promise<SinkRecord> {
+  async update(
+    id: string,
+    patch: Partial<SinkInput> & { enabled?: boolean },
+    options: { allowPrivateHosts?: boolean } = {},
+  ): Promise<SinkRecord> {
     return this.run(async () => {
       const staged = new Map(this.records);
       const existing = staged.get(id);
@@ -625,7 +632,7 @@ export class NotifySinks {
       else if (existing.priority) merged.priority = existing.priority;
       if ("tags" in patch) merged.tags = patch.tags;
       else if (existing.tags) merged.tags = existing.tags;
-      const fields = validateInput(merged, { allowPrivateHosts: this.allowPrivateHosts });
+      const fields = validateInput(merged, { allowPrivateHosts: this.allowPrivateHosts || options.allowPrivateHosts === true });
       const next: SinkRecord = { ...existing, ...fields, id: existing.id, createdAt: existing.createdAt };
       next.updatedAt = this.now();
       // A field that validation dropped (empty label, no tags) must not linger from the old record.

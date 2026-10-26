@@ -25,8 +25,9 @@ const COMMANDS = {
 const HELP = `dpi — Durable Pi (bare "dpi" opens the TUI)
 
 Usage:
-  dpi hub [--port 4781] [--host 127.0.0.1] [--public-host <host>]
-      Web UI + device tunnel server (devices dial this).
+  dpi hub [--port 4781] [--host 127.0.0.1] [--public-host <host>] [--dev]
+      Web UI + device tunnel server (devices dial this). --dev serves the web
+      client straight from Vite instead of the built shell (local development).
   dpi device                                          run the device daemon (foreground)
   dpi device start | stop | status                    background daemon without a terminal
   dpi device install | uninstall                      OS service (systemd/launchd); Windows: no
@@ -35,6 +36,13 @@ Usage:
   dpi pair --hub <origin>                             this machine asks the hub itself
   dpi pair offer|list|approve|revoke                  operator side, from the CLI (dpi pair --help)
   dpi devices [--watch] [--hub <origin>]              paired machines + live status (CLI, no web)
+  dpi schedule [list|add|enable|disable|run|remove]   scheduled sessions (dpi schedule --help)
+  dpi notify [list|add|enable|disable|remove|test]    outbound notifications (dpi notify --help)
+  dpi gc --closed-before 30d [--dry-run|--yes]        retention for archived sessions (dry-run default)
+  dpi backup [create|list|restore]                    whole-home snapshots (restore is plan-first)
+  dpi diagnostics [--out F]                           redacted bug-report bundle
+  dpi telegram status|bind|unbind|sessions            Telegram chat bridge
+  dpi graph list|show|add|run|remove|archive|unarchive  task-graph DAG (dpi graph --help)
   dpi tui
       Terminal admin client.
   dpi doctor [--json] [--quiet]
@@ -42,7 +50,7 @@ Usage:
       the default-model probe and the hub. Exit 1 when a check fails.
   dpi help | dpi --help | dpi -h
   dpi version | dpi --version | dpi -v
-  dpi update [--check]
+  dpi update | upgrade [--check]
       --check  compare the installed version with the registry, change nothing
       (no flag) install the latest published version globally
 
@@ -124,6 +132,11 @@ if (command === "update" || command === "upgrade") {
   process.argv = [process.argv[0], process.argv[1], ...commandRest];
   const { register } = await loadTsx();
   register();
+  if (commandRest.includes("--help") || commandRest.includes("-h")) {
+    const { DEVICES_USAGE } = await import("../apps/dpi-backend/src/pair-cli.ts");
+    process.stdout.write(DEVICES_USAGE);
+    process.exit(0);
+  }
   const { listDevices } = await import("../apps/dpi-backend/src/pair-cli.ts");
   const hubIdx = commandRest.indexOf("--hub");
   process.exit(

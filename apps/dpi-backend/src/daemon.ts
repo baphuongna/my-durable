@@ -20,12 +20,25 @@ import { openSync, closeSync, existsSync, readFileSync, mkdirSync, rmSync, write
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export type DeviceSub = "run" | "start" | "stop" | "status" | "install" | "uninstall";
+export type DeviceSub = "run" | "start" | "stop" | "status" | "install" | "uninstall" | "help";
+
+/** `dpi device --help` — printed without touching the daemon or its home. */
+export const DEVICE_USAGE = `dpi device — the device-side daemon
+
+  dpi device                             run the daemon in the foreground
+  dpi device start                       start it detached (no terminal, logs to device.log)
+  dpi device stop                        graceful stop (token-authed shutdown, pid kill as fallback)
+  dpi device status                      health + pid + pairing state
+  dpi device install | uninstall         OS service (systemd --user / launchd / Startup VBS)
+
+Any other word — or none — runs the daemon in the foreground, flags included.
+Environment: DPI_HUB_URL, DPI_HOME (see dpi --help).`;
 
 /** First argv word decides: a subcommand runs and exits, anything else = foreground daemon. */
 export function parseDeviceSub(argv: string[]): { sub: DeviceSub; rest: string[] } {
   const subs: DeviceSub[] = ["start", "stop", "status", "install", "uninstall"];
   const [first, ...rest] = argv;
+  if (first === "-h" || first === "--help" || first === "help") return { sub: "help", rest: [] };
   return subs.includes(first as DeviceSub)
     ? { sub: first as DeviceSub, rest }
     : { sub: "run", rest: argv };
@@ -425,6 +438,10 @@ async function cmdUninstall(io: Io): Promise<number> {
 
 export async function runDeviceCommand(sub: DeviceSub, rest: string[], opts: RunOpts = {}): Promise<number> {
   const io = ioOf(opts);
+  if (sub === "help") {
+    io.print(DEVICE_USAGE);
+    return 0;
+  }
   if (sub === "start") return cmdStart(io, rest);
   if (sub === "stop") return cmdStop(io);
   if (sub === "status") return cmdStatus(io);

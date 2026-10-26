@@ -150,7 +150,11 @@ export function renderHerd(
     if (showAge) line += `  ${fit(c.muted(ageOf(s.createdAt)), cols.age)}`;
     lines.push(atCursor && !selected ? c.inverse(fit(line, w)) : fit(line, w));
   }
-  if (!rows.length && !opts.filter) {
+  if (!rows.length && opts.filter) {
+    // A filter that matches nothing must say so: 0 rows alone reads as
+    // "the sessions vanished", not "your filter is hiding them".
+    lines.push("", `  ${c.muted(`no sessions match “${opts.filter}” — esc clears`)}`);
+  } else if (!rows.length) {
     // herdr never shows a bare header over nothing: the empty state points at
     // the next move instead of a wall of blank rows.
     lines.push(

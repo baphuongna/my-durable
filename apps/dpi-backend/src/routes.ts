@@ -10,7 +10,7 @@ import type { DevicePairing } from "./pairing.js";
 
 type Async = (req: Request, res: Response) => Promise<unknown>;
 const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
-import { gitOp, gitStatus, gitStatusBatch, type GitOp } from "./git.ts";
+import { gitOp, gitStatus, gitStatusBatch, isNotARepoError, type GitOp } from "./git.ts";
 const GIT_OPS: GitOp[] = ["diff", "log", "log-list", "fetch", "pull", "push", "switch", "branch", "commit", "stage", "unstage", "discard", "diff-file", "stash-push", "stash-pop", "compare", "merge-abort", "show-files", "ignore", "checkpoint", "checkpoints", "rewind", "resolve", "submodule-update", "pr-create", "pr-list", "pr-merge", "pr-checks", "pr-comment", "worktree-list", "worktree-add", "worktree-remove"];
 
 interface Locals {
@@ -24,6 +24,16 @@ const int = (value: unknown, name: string) => {
   const n = Number(value);
   if (!Number.isSafeInteger(n)) throw invalid(`${name} must be an integer`);
   return n;
+};
+
+/** A numeric query/body param: absent → fallback, non-integer or below min → 400,
+ *  above max → clamped. `Number(query)` alone lets NaN reach SQLite and brick
+ *  the session, so every limit/waitMs goes through here. */
+const intArg = (raw: unknown, name: string, fallback: number, min: number, max: number) => {
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min) throw invalid(`${name} must be an integer from ${min} to ${max}`);
+  return Math.min(n, max);
 };
 
 export function v1(
@@ -133,17 +143,43 @@ export function v1(
   });
   r.get("/fs/dirs", route(async (req, res) => res.json(await store.browse(String(req.query.path ?? "")))));
   // Git, spoken by the device itself: status for the UIs, ops for the humans.
-  // The path must live under a start dir (same rule as every other fs route).
-  r.get("/git/status", route(async (req, res) => res.json(await gitStatus(String(req.query.path ?? ".")))));
+  // The path must live under a start dir (same rule as every other fs route);
+  // an omitted path means the FIRST start dir, never the daemon's own cwd.
+  const gitPath = async (raw: unknown) => {
+    if (raw === undefined || raw === null) return store.firstStartDir();
+    if (typeof raw !== "string" || !raw.trim()) throw invalid("path must be a non-empty string");
+    return store.containedPath(raw);
+  };
+  /** A git failure answers 400 with a bounded message — never raw CLI usage
+   *  text, never a 500 (B3). */
+  const gitFault = (e: unknown, path: string) =>
+    isNotARepoError(e)
+      ? invalid(`not a git repository: ${path}`)
+      : invalid(String((e as Error)?.message ?? e).slice(0, 200));
+  r.get("/git/status", route(async (req, res) => {
+    const path = await gitPath(req.query.path);
+    try {
+      res.json(await gitStatus(path));
+    } catch (e) {
+      throw gitFault(e, path);
+    }
+  }));
   r.post("/git/status-batch", route(async (req, res) => {
-    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map(String).slice(0, 50) : [];
-    res.json(await gitStatusBatch(paths));
+    const raw: string[] = Array.isArray(req.body?.paths) ? req.body.paths.map(String).filter(Boolean).slice(0, 50) : [];
+    const paths = await Promise.all(raw.map((p) => store.containedPath(p)));
+    try {
+      res.json(await gitStatusBatch(paths));
+    } catch (e) {
+      throw gitFault(e, paths[0] ?? "");
+    }
   }));
   r.post("/git", route(async (req, res) => {
     const body = req.body ?? {};
     const op = String(body.op ?? "") as GitOp;
     if (!GIT_OPS.includes(op)) throw invalid(`Unknown git op ${String(body.op ?? "")}`);
-    const out = await gitOp(String(body.path ?? "."), op, {
+    const path = await gitPath(body.path);
+    try {
+      const out = await gitOp(path, op, {
       ref: body.ref,
       branch: body.branch,
       message: body.message,
@@ -160,8 +196,11 @@ export function v1(
       method: body.method === "merge" ? "merge" : "squash",
       body: typeof body.body === "string" ? body.body : undefined,
       n: Number.isInteger(body.n) ? Number(body.n) : undefined,
-    });
-    res.json(out);
+      });
+      res.json(out);
+    } catch (e) {
+      throw gitFault(e, path);
+    }
   }));
   r.get(
     "/docs/:kind",
@@ -215,6 +254,8 @@ export function v1(
   r.put("/device/pi-auth/:provider", route(async (req, res) => {
     const body = req.body ?? {};
     if (typeof body.key !== "string" || !body.key.trim()) throw invalid("key is required");
+    // Same bound as pi's own auth.json writer — a paste of the wrong buffer is a 400, not a 500.
+    if (body.key.length > 4096) throw invalid("key must be 1–4096 non-whitespace characters");
     res.json(store.setPiApiKey(param(req, "provider"), body.key));
   }));
   r.delete("/device/pi-auth/:provider", route(async (req, res) => res.json(store.removePiApiKey(param(req, "provider")))));
@@ -222,8 +263,19 @@ export function v1(
   // ---------------------------------------------------- notifications
   // Outbound fan-out (webhook/ntfy). Configured here, delivered by the device.
   r.get("/notify/sinks", (_req, res) => res.json({ sinks: store.notifySinkList() }));
-  r.post("/notify/sinks", route(async (req, res) => res.status(201).json(await store.createNotifySink(req.body ?? {}))));
-  r.patch("/notify/sinks/:id", route(async (req, res) => res.json(await store.updateNotifySink(param(req, "id"), req.body ?? {}))));
+  // allowPrivateHosts (B5) is a per-request grant on top of the env default — strictly boolean.
+  const sinkBody = (body: unknown): Parameters<Store["createNotifySink"]>[0] => {
+    if (
+      body &&
+      typeof body === "object" &&
+      (body as { allowPrivateHosts?: unknown }).allowPrivateHosts !== undefined &&
+      typeof (body as { allowPrivateHosts?: unknown }).allowPrivateHosts !== "boolean"
+    )
+      throw invalid("allowPrivateHosts must be a boolean");
+    return (body ?? {}) as Parameters<Store["createNotifySink"]>[0];
+  };
+  r.post("/notify/sinks", route(async (req, res) => res.status(201).json(await store.createNotifySink(sinkBody(req.body)))));
+  r.patch("/notify/sinks/:id", route(async (req, res) => res.json(await store.updateNotifySink(param(req, "id"), sinkBody(req.body)))));
   r.delete("/notify/sinks/:id", route(async (req, res) => res.json(await store.removeNotifySink(param(req, "id")))));
   r.post("/notify/test", route(async (_req, res) => res.json({ results: await store.testNotifySinks() })));
 
@@ -290,7 +342,7 @@ export function v1(
       if (!["live", "terminal"].includes(status)) throw invalid("status must be live or terminal");
       const h = store.harness(L(res).row);
       if (status === "live") return res.json(await store.liveTasks(h));
-      res.json(await store.tasks(h, status, Number(req.query.limit ?? 20)));
+      res.json(await store.tasks(h, status, intArg(req.query.limit, "limit", 20, 1, 5000)));
     }),
   );
   r.post(
@@ -307,7 +359,7 @@ export function v1(
         await store.settled(
           store.harness(L(res).row),
           int(req.params.id, "submission id"),
-          Math.min(Number(req.query.waitMs ?? 0) || 0, 300_000),
+          intArg(req.query.waitMs, "waitMs", 0, 0, 300_000),
           closed.signal,
         ),
       );
@@ -319,7 +371,13 @@ export function v1(
   r.post(
     "/sessions/:s/agents",
     create,
-    route(async (req, res) => res.status(201).json(await store.createAgent(L(res).row, req.body ?? {}))),
+    route(async (req, res) => {
+      // An agent is a deliberate act: a body with a name is required, so a
+      // mistyped request never spawns a default agent (B6).
+      const body = req.body ?? {};
+      if (typeof body.name !== "string" || !body.name.trim()) throw invalid("name is required");
+      res.status(201).json(await store.createAgent(L(res).row, body));
+    }),
   );
   const a = "/sessions/:s/agents/:a";
   r.get(a, route(async (_req, res) => res.json(await store.agentDetail(L(res).row, L(res).c))));
@@ -336,7 +394,7 @@ export function v1(
     route(async (req, res) => {
       const scope = String(req.query.scope ?? "all");
       if (scope === "active") return res.json({ items: await store.activeEntries(L(res).c) });
-      res.json(await store.entries(L(res).c, req.query.cursor as string | undefined, Number(req.query.limit ?? 500)));
+      res.json(await store.entries(L(res).c, req.query.cursor as string | undefined, intArg(req.query.limit, "limit", 500, 1, 5000)));
     }),
   );
   r.get(`${a}/transcript`, route(async (req, res) => res.json(await store.transcript(L(res).c, String(req.query.format ?? "json")))));
@@ -345,7 +403,7 @@ export function v1(
     route(async (req, res) => {
       const { h, c } = L(res);
       const submission = await store.send(c, req.body ?? {});
-      const waitMs = Number(req.body?.waitMs ?? 0) || 0;
+      const waitMs = intArg(req.body?.waitMs, "waitMs", 0, 0, 300_000);
       if (!waitMs) return res.status(202).json({ submissionId: submission.id, status: "queued" });
       const closed = new AbortController();
       res.on("close", () => closed.abort());

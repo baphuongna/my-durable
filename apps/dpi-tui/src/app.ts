@@ -84,18 +84,47 @@ export function slashSuggestions(
   return names.length ? { names, prefix } : null;
 }
 
+// The palette mirrors the "slash" door: the 4 view switches first, then
+// every command COMMANDS (commands.ts) knows — the same handler runs for both
+// entrances, so behavior can never drift between them.
 const PALETTE: { name: string; hint: string; run: (a: App) => void }[] = [
   { name: "herd", hint: "session dashboard", run: (a) => a.setView("herd") },
   { name: "network", hint: "devices and sessions", run: (a) => a.setView("network") },
   { name: "agent", hint: "back to the conversation", run: (a) => a.setView("agent") },
   { name: "log", hint: "device events", run: (a) => a.setView("log") },
   { name: "sessions", hint: "switch or create a session", run: (a) => void a.command("sessions") },
+  { name: "agents", hint: "switch agent: roots, forks, subagents", run: (a) => void a.command("agents") },
   { name: "model", hint: "choose this agent's model", run: (a) => void a.command("model") },
+  { name: "devices", hint: "switch device", run: (a) => void a.command("devices") },
+  { name: "new", hint: "new agent in this session", run: (a) => void a.command("new") },
   { name: "fork", hint: "fork at the last reply", run: (a) => void a.command("fork") },
+  { name: "thinking", hint: "set the thinking level", run: (a) => void a.command("thinking") },
   { name: "compact", hint: "summarize older context", run: (a) => void a.command("compact") },
+  { name: "reset", hint: "start a fresh context", run: (a) => void a.command("reset") },
+  { name: "name", hint: "rename this agent", run: (a) => void a.command("name") },
+  { name: "tasks", hint: "live tasks in this session", run: (a) => void a.command("tasks") },
+  { name: "git", hint: "git on the session's folder", run: (a) => void a.command("git") },
+  { name: "help", hint: "keys and commands", run: (a) => void a.command("help") },
   { name: "pair", hint: "pair this device with a hub", run: (a) => void a.command("pair") },
   { name: "quit", hint: "exit (the agent keeps running)", run: (a) => a.exit() },
 ];
+
+/** The palette's live filter — ONE predicate shared by the rendered list and
+ * enter, so what enter runs is always a row the filter actually showed
+ * (typing "device events" narrows to `log`; enter used to answer
+ * ◆ no command "device events"). */
+const paletteRows = (query: string) =>
+  PALETTE.filter((p) => p.name.includes(query) || p.hint.includes(query));
+
+/** Enter's deterministic pick: an exact name wins; otherwise the query must
+ * narrow the palette to exactly one row; anything wider (or empty) keeps the
+ * no-command toast rather than guessing which row was meant. */
+const palettePick = (query: string) => {
+  const exact = PALETTE.find((p) => p.name === query);
+  if (exact) return exact;
+  const rows = paletteRows(query);
+  return rows.length === 1 ? rows[0] : undefined;
+};
 
 const newId = () => crypto.randomUUID();
 const shellWord = (s: string) => (/^[\w.:@/~-]+$/.test(s) ? s : `'${s}'`);
@@ -709,7 +738,7 @@ export class App {
         this.cursor = 0;
         this.notify(this.filter ? `filter: ${this.filter}` : "filter cleared");
       } else if (input.kind === "palette") {
-        const cmd = PALETTE.find((p) => p.name.startsWith(value.trim()));
+        const cmd = palettePick(value.trim());
         if (cmd) cmd.run(this);
         else this.notify(`no command “${value.trim()}”`);
       } else if (input.kind === "kill") {
@@ -1184,7 +1213,11 @@ export class App {
   private logBody(w: number, h: number): string[] {
     const rows = this.events.filter((e) => !this.filter || e.text.toLowerCase().includes(this.filter.toLowerCase()));
     const lines = [c.muted(` ${this.events.length} events · this client`)];
-    const visible = h - 1;
+    // A committed filter persists here like the herd's `filter: X` line — a
+    // transient toast alone read as "events vanished", not "events hidden".
+    if (this.filter)
+      lines.push(c.warn(` filter: ${this.filter} · ${rows.length}/${this.events.length} shown — esc clears`));
+    const visible = h - lines.length;
     for (const e of rows.slice(-visible)) lines.push(` ${c.muted(e.at)} ${c.accent(e.glyph)} ${c.text(e.text.slice(0, w - 18))}`);
     return lines;
   }
@@ -1245,7 +1278,7 @@ export class App {
 
   private palettePanel(w: number, h: number): string[] {
     const query = (this.input?.value ?? "").trim();
-    const items = PALETTE.filter((p) => p.name.includes(query) || p.hint.includes(query));
+    const items = paletteRows(query);
     const width = Math.min(62, w - 4);
     const height = Math.min(items.length + 2, h);
     const x = Math.floor((w - width) / 2);

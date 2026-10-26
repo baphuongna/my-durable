@@ -1,6 +1,11 @@
 import type { ErrorRequestHandler } from "express";
 import { ConversationBusy, SessionFailed } from "@earendil-works/pi-durable";
 import type { ErrorCode } from "../../dpi-sdk/src/api.js";
+import { ScheduleRegistryError } from "./schedules.js";
+import { GraphError } from "./graphs.js";
+import { NotifySinkError } from "./notify-sinks.js";
+import { ProjectRegistryError } from "./projects.js";
+import { EnvError } from "./env-vars.js";
 
 const STATUS: Record<ErrorCode, number> = {
   unauthorized: 401,
@@ -30,9 +35,25 @@ export class ApiFault extends Error {
 export const invalid = (message: string) => new ApiFault("invalid", message);
 export const notFound = (message: string) => new ApiFault("not_found", message);
 
+/** Typed registry failures carry their own 4xx code (`invalid`/`not_found`) — map them
+ * to the matching status with the message intact, instead of a 500 "internal". */
+const registryFault = (err: unknown): ApiFault | undefined => {
+  if (
+    err instanceof ScheduleRegistryError ||
+    err instanceof GraphError ||
+    err instanceof NotifySinkError ||
+    err instanceof ProjectRegistryError ||
+    err instanceof EnvError
+  )
+    return err.code === "not_found" ? notFound(err.message) : invalid(err.message);
+  return undefined;
+};
+
 export const errorMiddleware: ErrorRequestHandler = (err, req, res, _next) => {
   let fault: ApiFault;
+  const typed = registryFault(err);
   if (err instanceof ApiFault) fault = err;
+  else if (typed) fault = typed;
   else if (err instanceof SessionFailed)
     fault = new ApiFault("unavailable", "The session failed and is closed; it is unavailable until reopened");
   else if (err instanceof ConversationBusy) fault = new ApiFault("busy", "The agent is busy and the input asked to be rejected while busy");

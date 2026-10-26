@@ -7,6 +7,7 @@ import {
   refreshDetail,
   select,
   selected,
+  sessionAgents,
   sessionHandle,
   showInspector,
   ui,
@@ -50,9 +51,10 @@ export const commands: SlashCommand[] = [
     description: "New agent in this workspace",
     run: async (arg) => {
       const t = need(selected.value, "workspace");
-      const created = await need(sessionHandle.value, "workspace").createAgent(
-        arg ? { name: arg } : {},
-      );
+      // The device API requires a name (B6); without an argument, number the new agent.
+      const created = await need(sessionHandle.value, "workspace").createAgent({
+        name: arg || `Agent ${sessionAgents.value.length + 1}`,
+      });
       select({ ...t, agentId: created.id });
       notify(`New agent ${created.name}.`);
     },

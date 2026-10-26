@@ -427,7 +427,7 @@ export interface DoctorCliDeps extends Partial<DoctorIo> {
  * `dpi doctor [--json] [--quiet]` — parse, run, print, return the exit code.
  * Kept here (not in bin/dpi.mjs) so the exit-code derivation is unit-testable.
  */
-export async function doctorCli(argv: string[] = [], deps: DoctorCliDeps = {}): Promise<0 | 1> {
+export async function doctorCli(argv: string[] = [], deps: DoctorCliDeps = {}): Promise<0 | 1 | 2> {
   const print = deps.print ?? ((line: string) => process.stdout.write(`${line}\n`));
   const printErr = deps.printErr ?? ((line: string) => process.stderr.write(`${line}\n`));
   const json = argv.includes("--json");
@@ -439,7 +439,7 @@ export async function doctorCli(argv: string[] = [], deps: DoctorCliDeps = {}): 
   }
   if (unknown.length) {
     printErr(`dpi doctor: unknown flag '${unknown[0]}'\n\n${DOCTOR_HELP}`);
-    return 1;
+    return 2;
   }
 
   const { print: _p, printErr: _e, ...io } = deps;
@@ -457,5 +457,6 @@ start-dir writability, the default-model probe and the hub's /healthz.
   --json    machine-readable { checks: [{ id, label, status, detail }], ok }
   --quiet   print only warnings and failures
 
-Exit code: 1 when a check fails, 0 otherwise (warnings are not failures).
+Exit codes: 0 ok, 1 when a check fails (warnings are not failures),
+            2 bad usage — the same code every other subcommand uses.
 `;

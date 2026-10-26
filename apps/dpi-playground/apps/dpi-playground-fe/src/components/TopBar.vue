@@ -13,6 +13,7 @@ import {
   online,
   select,
   selected,
+  sessionAgents,
   sessionHandle,
   streamState,
   ui,
@@ -61,7 +62,8 @@ async function newAgent() {
   const t = selected.value;
   if (!handle || !t || creatingAgent.value) return;
   creatingAgent.value = true;
-  const created = await attempt(() => handle.createAgent({}));
+  // The device API requires a name (B6); without a prompt, number the new agent.
+  const created = await attempt(() => handle.createAgent({ name: `Agent ${sessionAgents.value.length + 1}` }));
   creatingAgent.value = false;
   if (created) {
     select({ ...t, agentId: created.id });

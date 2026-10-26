@@ -344,10 +344,10 @@ test("doctorCli: --quiet shows only problems (and always the verdict)", async ()
   assert.match(text, /doctor: OK — 6 checks, 1 warning/);
 });
 
-test("doctorCli: a bad flag is refused with help, exit 1", async () => {
+test("doctorCli: a bad flag is refused with help, exit 2 (the canonical usage-error code)", async () => {
   const err: string[] = [];
   const code = await doctorCli(["--nope"], { print: () => {}, printErr: (l) => err.push(l) });
-  assert.equal(code, 1);
+  assert.equal(code, 2);
   assert.match(err.join("\n"), /unknown flag '--nope'/);
 });
 

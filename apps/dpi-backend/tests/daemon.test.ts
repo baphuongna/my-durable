@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
+import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,6 +27,31 @@ test("subcommands: start/stop/status/install/uninstall parsed, anything else run
   assert.deepEqual(parseDeviceSub(["--port", "5000"]), { sub: "run", rest: ["--port", "5000"] });
   assert.deepEqual(parseDeviceSub(["status", "--x"]), { sub: "status", rest: ["--x"] });
   assert.deepEqual(parseDeviceSub([]), { sub: "run", rest: [] });
+});
+
+test("subcommands: --help/-h/help is help, never the foreground daemon", () => {
+  assert.deepEqual(parseDeviceSub(["--help"]), { sub: "help", rest: [] });
+  assert.deepEqual(parseDeviceSub(["-h"]), { sub: "help", rest: [] });
+  assert.deepEqual(parseDeviceSub(["help"]), { sub: "help", rest: [] });
+  // The documented design stays: any other unknown word still runs the daemon.
+  assert.deepEqual(parseDeviceSub(["runnow"]), { sub: "run", rest: ["runnow"] });
+});
+
+test("runDeviceCommand(help): usage on stdout, exit 0 — no daemon, no home touched", async () => {
+  const out: string[] = [];
+  const probe = join(tmpdir(), "dpi-device-help-must-not-create-this");
+  rmSync(probe, { recursive: true, force: true });
+  const code = await runDeviceCommand("help", [], {
+    env: { DPI_HOME: probe },
+    print: (l) => out.push(l),
+  });
+  assert.equal(code, 0);
+  const text = out.join("\n");
+  assert.match(text, /dpi device/);
+  assert.match(text, /start[\s\S]*stop[\s\S]*status/);
+  assert.match(text, /install \| uninstall/);
+  assert.match(text, /runs the daemon in the foreground/);
+  assert.equal(existsSync(probe), false, "help never touches the device home");
 });
 
 test("paths: pid and log live inside the device home (DPI_HOME respected)", () => {

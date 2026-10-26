@@ -101,6 +101,9 @@ test("renderHerd: header columns, selection marker, group counts — every line 
   }
   const filtered = renderHerd(80, herdRows(sessions, "nope"), sessions, { filter: "nope" });
   assert.match(filtered.map(stripAnsi).at(-1)!, /filter: nope/);
+  // A filter matching nothing must explain itself instead of 0 silent rows.
+  assert.match(filtered.map(stripAnsi).join("\n"), /no sessions match .*nope.* — esc clears/);
+  assert.doesNotMatch(filtered.map(stripAnsi).join("\n"), /no sessions yet on this device/);
 });
 
 test("networkRows + renderNetwork: devices with status dots, sessions nested, current device marked", () => {

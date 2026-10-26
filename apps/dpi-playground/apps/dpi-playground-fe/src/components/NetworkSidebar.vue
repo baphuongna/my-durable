@@ -193,7 +193,8 @@ async function action(node: TreeNode, name: string) {
   if (node.type === "session") {
     const s = node.session;
     if (name === "new-agent") {
-      const created = await attempt(() => client.session(s.id).createAgent({}));
+      // The device API requires a name (B6); number the new agent from the tree.
+      const created = await attempt(() => client.session(s.id).createAgent({ name: `Agent ${s.agents.length + 1}` }));
       if (created) {
         select({ deviceId: device.id, sessionId: s.id, agentId: created.id });
         notify("New agent. Same session, same shared App State.");

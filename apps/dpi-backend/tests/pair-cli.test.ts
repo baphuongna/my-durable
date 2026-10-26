@@ -119,17 +119,19 @@ test("device: --hub alone asks the hub itself (no code travels between machines)
   assert.match(out.join("\n"), /asks? the hub|pairing with/i);
 });
 
-test("device: an approval timeout is reported, never claimed as success", async () => {
+test("device: an approval timeout is reported on stderr, never claimed as success", async () => {
   const { fetchImpl } = scripted({
     "POST /v1/pairing/start": { state: "pairing", deviceName: "box", fingerprint: FP, pending: { hubOrigin: HUB } },
     "GET /v1/pairing": { state: "pairing" },
   });
   const out: string[] = [];
+  const err: string[] = [];
   let now = 0;
   const code = await runPairCommand(["--hub", HUB], {
     env: { DPI_TOKEN: "dpi_x", DPI_PORT: "4799" },
     fetchImpl,
     print: (l) => out.push(l),
+    printErr: (l) => err.push(l),
     sleep: async () => {
       now += 5_000;
     },
@@ -137,7 +139,8 @@ test("device: an approval timeout is reported, never claimed as success", async 
     timeoutMs: 10_000,
   });
   assert.equal(code, 1);
-  assert.match(out.join("\n"), /still waiting for approval/);
+  assert.match(err.join("\n"), /still waiting for approval/);
+  assert.doesNotMatch(out.join("\n"), /still waiting for approval/, "stdout stays clean");
   assert.doesNotMatch(out.join("\n"), /paired ✓/);
   assert.ok(now >= 10_000, "the loop respected the timeout");
 });
@@ -223,16 +226,19 @@ test("operator: approve sends the hub's own fingerprint, never a claimed one", a
   assert.match(out.join("\n"), /approved Laptop/);
 });
 
-test("operator: approve with an unknown name lists what IS waiting", async () => {
+test("operator: approve with an unknown name lists what IS waiting (on stderr)", async () => {
   const { fetchImpl } = scripted({ "GET /api/pair/codes": { codes: [] } });
   const out: string[] = [];
+  const err: string[] = [];
   const code = await runPairCommand(["approve", "ghost", "--hub", HUB], {
     env: { DPI_ADMIN_TOKEN: "adm_x" },
     fetchImpl,
     print: (l) => out.push(l),
+    printErr: (l) => err.push(l),
   });
   assert.equal(code, 1);
-  assert.match(out.join("\n"), /nothing waiting matches/);
+  assert.match(err.join("\n"), /nothing waiting matches/);
+  assert.equal(out.length, 0, "stdout stays clean");
 });
 
 test("operator: revoke resolves the device by name and posts the reason", async () => {
@@ -253,15 +259,29 @@ test("operator: revoke resolves the device by name and posts the reason", async 
 
 test("hub commands refuse to run without an admin token instead of guessing", async () => {
   const out: string[] = [];
+  const err: string[] = [];
   const code = await runPairCommand(["list", "--hub", HUB], {
     env: { DPI_HOME: "/nonexistent-home" },
     fetchImpl: (async () => new Response("{}")) as unknown as typeof fetch,
     print: (l) => out.push(l),
+    printErr: (l) => err.push(l),
   });
   assert.equal(code, 1);
-  assert.match(out.join("\n"), /admin token/);
+  assert.match(err.join("\n"), /admin token/);
+  assert.equal(out.length, 0, "stdout stays clean");
 });
 
+test("pair + devices: every failure lands on stderr so stdout stays pipeable", async () => {
+  const out: string[] = [];
+  const err: string[] = [];
+  const capture = { print: (l: string) => out.push(l), printErr: (l: string) => err.push(l) };
+  // No hub, no token: pure usage errors, no network involved.
+  assert.equal(await runPairCommand(["list"], { env: {}, ...capture }), 1);
+  assert.equal(await listDevices({ env: {}, ...capture }), 1);
+  assert.equal(out.length, 0, "stdout untouched by failures");
+  assert.match(err.join("\n"), /list needs --hub/);
+  assert.match(err.join("\n"), /devices needs --hub/);
+});
 
 test("devices: lists paired machines with live status, --watch reprints only on change", async () => {
   const calls: string[] = [];

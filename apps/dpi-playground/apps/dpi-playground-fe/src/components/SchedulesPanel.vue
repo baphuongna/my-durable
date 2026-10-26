@@ -35,6 +35,9 @@ async function load() {
     loading.value = false;
   }
 }
+/** The empty state must wait for the first fetch: a tunnel first-hit can take
+ * seconds, and "No schedules yet." painted at ~11ms was a lie the real list
+ * replaced at ~4s. Same class as the modelsLoading fix (0.0.47). */
 watch(deviceId, load, { immediate: true });
 
 const when = (at: number | null) => {
@@ -168,7 +171,7 @@ async function save() {
     </form>
 
     <p v-if="!adding && !schedules.length && deviceId && !error" class="hint">
-      No schedules yet. Press ＋ to add one.
+      {{ loading ? "Reading schedules…" : "No schedules yet. Press ＋ to add one." }}
     </p>
 
     <ul v-if="schedules.length" class="schedule-list">

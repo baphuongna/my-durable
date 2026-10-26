@@ -40,7 +40,31 @@ import {
   HUB_BUFFER_BUDGET_BYTES,
 } from "../../../../dpi-sdk/src/protocol/limits.js";
 
+// Help must never boot the server: the flag parser below only knows value
+// flags, so --help has to be answered here — before the registry opens, a
+// token is minted or the listener binds.
+const HUB_USAGE = `dpi hub — web UI + device tunnel server
+
+Usage:
+  dpi hub [--port 4781] [--host 127.0.0.1] [--public-host <host>] [--dev]
+
+  --port N         hub port (DPI_HUB_PORT, default 4781)
+  --host H         interface to bind (DPI_HUB_HOST, default 127.0.0.1)
+  --public-host H  browser-facing host when behind the TLS proxy
+                   (DPI_HUB_PUBLIC_HOST; also turns on the require-TLS checks,
+                   DPI_HUB_REQUIRE_TLS overrides either way)
+  --dev            serve the web client from Vite instead of the built shell
+                   (local development only)
+
+Environment: DPI_HOME, DPI_HUB_PORT, DPI_HUB_HOST, DPI_HUB_PUBLIC_HOST,
+             DPI_HUB_ORIGIN, DPI_HUB_REQUIRE_TLS
+`;
+
 const args = process.argv.slice(2);
+if (args.includes("--help") || args.includes("-h") || args[0] === "help") {
+  process.stdout.write(HUB_USAGE);
+  process.exit(0);
+}
 const option = (key: string, fallback: string) => {
   const i = args.indexOf(key);
   if (i < 0) return fallback;
