@@ -5,7 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { HubMux } from "../src/hub-mux.ts";
+import { HubMux, type MuxState } from "../src/hub-mux.ts";
+import type { Socket } from "node:net";
 
 /** A minimal mux: one SSE stream, subscription keys echoed as tagged frames. */
 async function fakeHub() {
@@ -95,5 +96,87 @@ test("HubMux subscribes on the hub (PUT carries the key) and unsubscribes on abo
     assert.deepEqual(after, [], "abort drops the key so the hub closes its upstream");
     mux.stop();
     await hub.close();
+  }
+});
+
+// -- state transitions surfaced to the app (R4 finding 5) ---------------------
+// The header/toast work rides HubMux's onState callback; pin the live →
+// offline → live sequence against a hub that can be switched off and on.
+
+test("HubMux reports live → offline → live through onState as the hub dies and returns", async () => {
+  let healthy = true;
+  const sockets = new Set<Socket>();
+  const streams = new Map<string, (line: string) => void>();
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://x");
+    if (!healthy) return void res.destroy(); // hub process up, stream refused
+    if (req.method === "GET" && url.pathname === "/api/stream") {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      const id = `s${streams.size + 1}`;
+      const send = (line: string) => res.write(line);
+      streams.set(id, send);
+      sockets.add(res.socket as Socket);
+      send(`data: ${JSON.stringify({ sub: "hello", frame: { type: "stream", streamId: id } })}\n\n`);
+      req.on("close", () => {
+        streams.delete(id);
+        sockets.delete(res.socket as Socket);
+      });
+      return;
+    }
+    if (req.method === "PUT" && url.pathname.startsWith("/api/stream/")) {
+      const id = url.pathname.split("/").pop()!;
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+        // Every fresh subscription opens an upstream whose first frame is the
+        // hello — pushed onto the SSE stream, the way the real hub does it.
+        const send = streams.get(id);
+        for (const key of (JSON.parse(body || "{}").subs ?? []) as string[])
+          send?.(`data: ${JSON.stringify({ sub: key, frame: { type: "hello", device: key.split("/")[0] } })}\n\n`);
+      });
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const port = (server.address() as AddressInfo).port;
+  const seen: MuxState[] = [];
+  const mux = new HubMux({ url: `http://127.0.0.1:${port}`, token: "t" }, (state) => seen.push(state));
+  const waitFor = async (state: MuxState, ms: number) => {
+    for (let end = Date.now() + ms; !seen.includes(state) && Date.now() < end; )
+      await new Promise((r) => setTimeout(r, 100));
+    assert.ok(seen.includes(state), `mux never reached ${state} (seen: ${JSON.stringify(seen)})`);
+  };
+  try {
+    // One subscriber drives the lazy mux loop.
+    const ctl = new AbortController();
+    const it = mux.events("dev/agent/s/1", ctl.signal)[Symbol.asyncIterator]();
+    const first = await it.next();
+    assert.equal(first.value.type, "hello");
+    await waitFor("live", 2000);
+    const liveAt = seen.indexOf("live");
+
+    // Kill the stream sockets: the SSE ends → offline; the backoff loop then
+    // reconnects once the hub serves again → live.
+    healthy = false;
+    for (const s of [...sockets]) s.destroy();
+    await waitFor("offline", 6000);
+    const offlineAt = seen.indexOf("offline");
+    assert.ok(offlineAt > liveAt, "offline follows the first live");
+
+    healthy = true;
+    // Wait for a live state RECORDED AFTER the offline one — the pre-drop live
+    // is still in `seen` and must not satisfy this.
+    for (let end = Date.now() + 10000; seen.indexOf("live", offlineAt) <= offlineAt && Date.now() < end; )
+      await new Promise((r) => setTimeout(r, 100));
+    assert.ok(seen.indexOf("live", offlineAt) > offlineAt, `a fresh live follows the offline (seen: ${JSON.stringify(seen)})`);
+    ctl.abort();
+  } finally {
+    mux.stop();
+    for (const s of [...sockets]) s.destroy();
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
   }
 });

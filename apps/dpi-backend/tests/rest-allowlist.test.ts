@@ -2,8 +2,9 @@
  * Gate A GA-07 — the REST allowlist the tunnel enforces matches the API this device really serves, and the
  * connector keeps every spelling of a local-only or streaming route away from it.
  *
- * Express matches routes case-insensitively, so before the allowlist `POST /v1/Pairing/start` came through the
- * tunnel and reached the device's pairing control point.
+ * Express matched routes case-insensitively, so `POST /v1/Pairing/start` once came through the tunnel and
+ * reached the device's pairing control point. Since round 4 the device router is case-sensitive, so a
+ * case-spelled route is refused at BOTH layers: the tunnel allowlist first, and locally by express itself.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -127,14 +128,16 @@ test("GA-07: through the connector, no spelling of a local-only or streaming rou
     app(req, res);
   });
   try {
-    // Premise: the device API itself answers the case variant, so only the tunnel allowlist stands in the way.
+    // Premise: the case variant cannot reach the pairing control point even on
+    // a direct local call — the device router is case-sensitive now, so the
+    // tunnel allowlist is no longer the only layer standing in the way.
     const direct = await fetch(`${r.api.baseUrl}/v1/Pairing/start`, {
       method: "POST",
       headers: { authorization: "Bearer local-token", "content-type": "application/json" },
       body: JSON.stringify({ code: "12345678", hub: "https://direct.invalid" }),
     });
-    assert.equal(direct.status, 200);
-    assert.deepEqual(calls.list, ["pairing.start hub=https://direct.invalid"], "Express is case-insensitive: the variant hit the pairing control point");
+    assert.equal(direct.status, 404);
+    assert.deepEqual(calls.list, [], "Express matches case-sensitively: the variant never hit the pairing control point");
     calls.list.length = 0;
     reached.length = 0;
 

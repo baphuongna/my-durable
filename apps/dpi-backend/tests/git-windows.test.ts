@@ -27,6 +27,8 @@ import {
   GH_EXEC_OPTS,
   setGitExecForTests,
   clearGitStatusCache,
+  cacheKey,
+  markDirty,
 } from "../src/git.js";
 
 const sh = (cmd: string, args: string[], cwd?: string) => execFileSync(cmd, args, { cwd, encoding: "utf8" });
@@ -390,5 +392,88 @@ test("gitStatus: a shared in-flight FAILURE rejects for every waiter, one spawn"
     restore();
     clearGitStatusCache();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------ 6. cache keys
+// Round-4 win-compat: ONE cache entry per repo, not per spelling. `d:/repo`,
+// `D:/repo/` and `D:\repo` must share a single key (and a single in-flight
+// spawn), and a watcher dirty-mark must find the entry under ANY spelling.
+
+test("cacheKey: one key per repo spelling — slashes, trailing slash, case", () => {
+  assert.equal(cacheKey("D:\\source\\repo", "win32"), "d:/source/repo");
+  assert.equal(cacheKey("d:/source/repo/", "win32"), "d:/source/repo");
+  assert.equal(cacheKey("D:/SOURCE/Repo", "win32"), "d:/source/repo");
+  // Root edge cases survive: "/" stays "/", UNC shares keep their double slash.
+  assert.equal(cacheKey("/", "win32"), "/");
+  assert.equal(cacheKey("//server/share/", "win32"), "//server/share");
+  // POSIX: byte-identical — case matters and a backslash is a legal filename char.
+  assert.equal(cacheKey("/home/x/Repo", "linux"), "/home/x/Repo");
+  assert.equal(cacheKey("/home/x/re\\po", "linux"), "/home/x/re\\po");
+  assert.equal(cacheKey("/tmp/x/", "linux"), "/tmp/x");
+});
+
+test("cacheKey vs gitPathFor: cache keys fold case on win32, argv paths never do", () => {
+  // argv must preserve case (git reads the real filesystem); the CACHE must not.
+  assert.equal(gitPathFor("D:/Source/Repo", "win32"), "D:/Source/Repo");
+  assert.equal(cacheKey("D:/Source/Repo", "win32"), "d:/source/repo");
+});
+
+test("gitStatus: d:/repo, D:/repo/ and D:\\repo land on ONE entry — one spawn", async () => {
+  clearGitStatusCache();
+  let revParse = 0;
+  const calls = captureSpawns((c) => {
+    if (c.args.includes("--show-toplevel")) {
+      revParse++;
+      return { stdout: "d:/repo\n" };
+    }
+    return {};
+  });
+  try {
+    const all = await withPlatform("win32", () =>
+      Promise.all([gitStatus("d:/repo"), gitStatus("D:/repo/"), gitStatus("D:\\repo")]),
+    );
+    assert.equal(revParse, 1, `rev-parse spawns: ${revParse} (expected 1 — the three spellings share one entry)`);
+    for (const s of all) assert.equal(s.repo, true);
+    // A fourth spelling inside the TTL is served from the SAME entry: no spawn.
+    await withPlatform("win32", () => gitStatus("D:/REPO"));
+    assert.equal(revParse, 1, "a case-only respelling must hit the cached entry");
+    assert.ok(calls.length >= 13, "the one statusOnce should have made its git calls");
+  } finally {
+    restore();
+    clearGitStatusCache();
+  }
+});
+
+test("markDirty: 'D:\\repo' invalidates the entry cached as 'd:/repo' — siblings survive", async () => {
+  clearGitStatusCache();
+  let revParse = 0;
+  captureSpawns((c) => {
+    if (c.args.includes("--show-toplevel")) {
+      revParse++;
+      return { stdout: "d:/repo\n" };
+    }
+    return {};
+  });
+  try {
+    await withPlatform("win32", () => gitStatus("d:/repo"));
+    await withPlatform("win32", () => gitStatus("d:/repo-other"));
+    assert.equal(revParse, 2, "two distinct repos, two spawns");
+    // Same TTL window: both answers are cached, no new spawns (a trailing
+    // slash and a case-only respelling hit the same entries).
+    await withPlatform("win32", () => gitStatus("D:/repo/"));
+    await withPlatform("win32", () => gitStatus("d:/repo-other"));
+    assert.equal(revParse, 2);
+    // The watcher reports the root the way GIT prints it on Windows
+    // (backslashes, real case): the canonical mark must still find the entry,
+    // and must not touch the sibling prefix `d:/repo-other`.
+    await withPlatform("win32", () => markDirty("D:\\repo"));
+    await withPlatform("win32", () => gitStatus("d:/repo"));
+    assert.equal(revParse, 3, "markDirty must have invalidated the cached status");
+    await withPlatform("win32", () => gitStatus("d:/repo-other"));
+    assert.equal(revParse, 3, "the sibling d:/repo-other must still be cached");
+  } finally {
+    restore();
+    clearGitStatusCache();
   }
 });

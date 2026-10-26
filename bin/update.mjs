@@ -159,6 +159,7 @@ export function spawnNpm(args) {
     const child = spawn(onWindows ? "npm.cmd" : "npm", args, {
       stdio: ["ignore", "pipe", "pipe"],
       shell: onWindows,
+      windowsHide: true,
     });
     let output = "";
     child.stdout?.on("data", (x) => {
@@ -191,7 +192,7 @@ export async function fetchLatestVersion() {
 export function daemonControl(dpiPath, port) {
   const call = (args) =>
     new Promise((resolve) => {
-      const child = spawn(process.execPath, [dpiPath, ...args], { stdio: "ignore" });
+      const child = spawn(process.execPath, [dpiPath, ...args], { stdio: "ignore", windowsHide: true });
       child.on("error", () => resolve(1));
       child.on("exit", (code) => resolve(code ?? 1));
     });

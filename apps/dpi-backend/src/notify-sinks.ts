@@ -121,6 +121,11 @@ export interface SinkRecord {
   lastError?: string;
   /** HTTP status of that attempt; absent when the request never got a response. */
   lastStatus?: number;
+  /** The per-sink grant this record was created (or last patched) with — a LAN
+   *  sink must survive its own patches: re-validating the SAME url on a later
+   *  PATCH reuses this flag instead of 400ing. Pointing the sink at a NEW url
+   *  is judged like a fresh create: env default or an explicit opt-in. */
+  allowPrivateHosts?: boolean;
 }
 
 /** The on-disk document. `version` exists so a future shape can be migrated instead of discarded. */
@@ -385,12 +390,9 @@ function validateInput(
   if (!input || typeof input !== "object") throw invalid("sink input is required");
   if (!isKind(input.kind)) throw invalid(`kind must be "webhook" or "ntfy"`);
   const kind = input.kind;
-  const url = normaliseSinkUrl(input.url, { allowPrivateHosts: options.allowPrivateHosts === true });
-  if (kind === "ntfy") {
-    // ntfy publishes to <server>/<topic>; a bare server URL would 404 on every event.
-    const path = new URL(url).pathname.replace(/^\/+|\/+$/g, "");
-    if (!path) throw invalid(`ntfy url must include the topic: https://ntfy.sh/<topic>`);
-  }
+  // Scalar fields first, so a patch that carries both a bad label and a url
+  // problem reports the label — the field the caller can fix without deciding
+  // the url question again.
   if (input.enabled !== undefined && typeof input.enabled !== "boolean") {
     throw invalid("enabled must be true or false");
   }
@@ -400,8 +402,14 @@ function validateInput(
   if (input.priority !== undefined && kind !== "ntfy") throw invalid("priority is ntfy-only");
   if (input.tags !== undefined && kind !== "ntfy") throw invalid("tags are ntfy-only");
   const label = normaliseLabel(input.label);
-  const priority = input.priority;
   const tags = normaliseTags(input.tags);
+  const priority = input.priority;
+  const url = normaliseSinkUrl(input.url, { allowPrivateHosts: options.allowPrivateHosts === true });
+  if (kind === "ntfy") {
+    // ntfy publishes to <server>/<topic>; a bare server URL would 404 on every event.
+    const path = new URL(url).pathname.replace(/^\/+|\/+$/g, "");
+    if (!path) throw invalid(`ntfy url must include the topic: https://ntfy.sh/<topic>`);
+  }
   return {
     kind,
     url,
@@ -447,6 +455,7 @@ function coerceRecord(raw: unknown, now: number): SinkRecord | undefined {
   if (label) record.label = label;
   if (source.kind === "ntfy" && isPriority(source.priority)) record.priority = source.priority;
   if (tags) record.tags = tags;
+  if (source.allowPrivateHosts === true) record.allowPrivateHosts = true;
   if (typeof source.lastDeliveryAt === "number") record.lastDeliveryAt = source.lastDeliveryAt;
   if (typeof source.lastStatus === "number") record.lastStatus = source.lastStatus;
   const lastError = nonEmptyString(source.lastError);
@@ -598,6 +607,10 @@ export class NotifySinks {
       while (staged.has(id)) id = newSinkId();
       const now = this.now();
       const record: SinkRecord = { id, ...fields, createdAt: now, updatedAt: now };
+      // Remember the per-request grant on the record: it is what lets later
+      // patches of the SAME url re-validate instead of 400ing (the env default
+      // needs no record — it applies on its own).
+      if (options.allowPrivateHosts === true) record.allowPrivateHosts = true;
       staged.set(record.id, record);
       await this.commit(staged);
       return clone(record);
@@ -632,9 +645,30 @@ export class NotifySinks {
       else if (existing.priority) merged.priority = existing.priority;
       if ("tags" in patch) merged.tags = patch.tags;
       else if (existing.tags) merged.tags = existing.tags;
-      const fields = validateInput(merged, { allowPrivateHosts: this.allowPrivateHosts || options.allowPrivateHosts === true });
+      // The grant persisted at create re-validates the sink's OWN url on every
+      // patch — {"label":"x"} on a LAN sink must not 400. A NEW url is judged
+      // like a fresh create: env default or an explicit per-request opt-in
+      // (B5), so the flag is not a one-time skeleton key for future hosts.
+      let urlUnchanged = true;
+      if (patch.url !== undefined) {
+        try {
+          urlUnchanged = normaliseSinkUrl(patch.url, { allowPrivateHosts: true }) === existing.url;
+        } catch {
+          urlUnchanged = false; // the real validation below reports why
+        }
+      }
+      const fields = validateInput(merged, {
+        allowPrivateHosts:
+          this.allowPrivateHosts ||
+          options.allowPrivateHosts === true ||
+          (existing.allowPrivateHosts === true && urlUnchanged),
+      });
       const next: SinkRecord = { ...existing, ...fields, id: existing.id, createdAt: existing.createdAt };
       next.updatedAt = this.now();
+      // An explicit opt-in on this patch re-grants the record (for its new url);
+      // otherwise the create-time grant rides along untouched.
+      if (options.allowPrivateHosts === true || existing.allowPrivateHosts === true) next.allowPrivateHosts = true;
+      else delete next.allowPrivateHosts;
       // A field that validation dropped (empty label, no tags) must not linger from the old record.
       if (!fields.label) delete next.label;
       if (!fields.priority) delete next.priority;

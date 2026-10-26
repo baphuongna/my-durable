@@ -10,7 +10,7 @@ import type { DevicePairing } from "./pairing.js";
 
 type Async = (req: Request, res: Response) => Promise<unknown>;
 const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
-import { gitOp, gitStatus, gitStatusBatch, isNotARepoError, type GitOp } from "./git.ts";
+import { gitOp, gitStatus, gitStatusBatch, isNotARepoError, type GitOp } from "./git.js";
 const GIT_OPS: GitOp[] = ["diff", "log", "log-list", "fetch", "pull", "push", "switch", "branch", "commit", "stage", "unstage", "discard", "diff-file", "stash-push", "stash-pop", "compare", "merge-abort", "show-files", "ignore", "checkpoint", "checkpoints", "rewind", "resolve", "submodule-update", "pr-create", "pr-list", "pr-merge", "pr-checks", "pr-comment", "worktree-list", "worktree-add", "worktree-remove"];
 
 interface Locals {
@@ -42,7 +42,11 @@ export function v1(
   connector?: { status(): unknown },
   stop?: () => void,
 ) {
-  const r = Router();
+  // caseSensitive: the hub tunnel's allowlist is lowercase-exact, so the
+  // device-local surface must not be looser than what can actually reach it
+  // (/V1/DEVICE used to answer 200 over loopback and 404 through the tunnel).
+  // Every client (sdk/TUI/web) speaks lowercase — verified against sdk client.ts.
+  const r = Router({ caseSensitive: true });
   const create = idempotent(store);
   // `dpi device stop`: graceful local shutdown (token-authed like every /v1
   // route). The response flushes BEFORE the daemon tears down so the caller

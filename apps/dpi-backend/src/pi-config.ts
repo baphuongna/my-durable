@@ -250,6 +250,32 @@ export function piAuthView(auth: Record<string, Credential>, modelsJson: PiModel
 
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+export type PiConfigErrorCode = "invalid" | "not_found";
+
+/** Typed failure so routes can answer 400 (`invalid`) or 404 (`not_found`)
+ *  without string matching — a hostile provider id (path-traversal shape,
+ *  spaces, unicode) is caller error, not a 500 with a stack. */
+export class PiConfigError extends Error {
+  readonly code: PiConfigErrorCode;
+
+  constructor(code: PiConfigErrorCode, message: string) {
+    super(message);
+    this.name = "PiConfigError";
+    this.code = code;
+  }
+}
+
+/** Provider ids reach a filename key in pi's auth.json, so anything outside
+ *  PROVIDER_ID — including `../` shapes, spaces and non-ASCII — is refused
+ *  before any file is touched. */
+function assertProviderId(providerId: string): void {
+  if (!PROVIDER_ID.test(providerId))
+    throw new PiConfigError(
+      "invalid",
+      `invalid provider id: ${JSON.stringify(providerId)} (use 1–64 characters of letters, digits, dot, dash or underscore)`,
+    );
+}
+
 /** Read auth.json strictly: absent → {}, corrupt → REFUSE (pi owns the fix). */
 function readAuthStrict(dir: string): Record<string, Credential> {
   const path = join(dir, "auth.json");
@@ -281,7 +307,7 @@ function writeAuthAtomic(dir: string, next: Record<string, Credential>): void {
 
 /** Set one api_key. Refuses invalid ids, oversized keys, and oauth entries. */
 export function writePiApiKey(dir: string, providerId: string, key: string): PiAuthEntry {
-  if (!PROVIDER_ID.test(providerId)) throw Error(`invalid provider id: ${JSON.stringify(providerId)}`);
+  assertProviderId(providerId);
   if (!key.trim() || key.length > 4096) throw Error("key must be 1–4096 non-whitespace characters");
   const auth = readAuthStrict(dir);
   const existing = auth[providerId];
@@ -294,7 +320,7 @@ export function writePiApiKey(dir: string, providerId: string, key: string): PiA
 
 /** Remove one api_key entry. Same refusals; returns whether it existed. */
 export function removePiApiKey(dir: string, providerId: string): boolean {
-  if (!PROVIDER_ID.test(providerId)) throw Error(`invalid provider id: ${JSON.stringify(providerId)}`);
+  assertProviderId(providerId);
   const auth = readAuthStrict(dir);
   const existing = auth[providerId];
   if (existing && existing.type !== "api_key")

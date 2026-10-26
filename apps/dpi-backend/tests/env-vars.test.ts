@@ -98,3 +98,26 @@ test("a missing file views as empty-but-existing-path, and set creates it", asyn
   await editor.set("DPI_SSH_KNOWN_HOSTS", "/etc/known");
   assert.equal(files.get("/env"), "DPI_SSH_KNOWN_HOSTS=/etc/known\n");
 });
+
+test("CRLF files parse cleanly: no trailing \\r reaches a value (Notepad-edited keys)", async () => {
+  const { io, files } = fakeIo("KEY=abc\r\nOTHER=def\r\n");
+  const editor = new EnvFileEditor("/env", io);
+  const view = await editor.view();
+  const byKey = Object.fromEntries(view.vars.map((v) => [v.key, v]));
+  assert.equal(byKey.KEY?.masked, "abc", `got ${JSON.stringify(byKey.KEY?.masked)}`);
+  assert.equal(byKey.OTHER?.masked, "def", `got ${JSON.stringify(byKey.OTHER?.masked)}`);
+  // Write-back on the same file: the edited line is stored without \r, and
+  // untouched lines keep their content (endings normalize to LF).
+  await editor.set("OTHER", "xyz");
+  assert.equal(files.get("/env"), "KEY=abc\nOTHER=xyz\n");
+});
+
+test("a value with intentional trailing spaces is preserved verbatim (no trim beyond the CR fix)", async () => {
+  const { io, files } = fakeIo("SPACED_VALUE=keep  \n");
+  const editor = new EnvFileEditor("/env", io);
+  const view = await editor.view();
+  assert.equal(view.vars.find((v) => v.key === "SPACED_VALUE")?.masked, "keep  ");
+  // Rewriting an unrelated line must not trim the spaced value either.
+  await editor.set("OTHER", "x");
+  assert.equal(files.get("/env"), "SPACED_VALUE=keep  \nOTHER=x\n");
+});

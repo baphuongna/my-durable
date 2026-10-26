@@ -19,7 +19,10 @@ const WORK = join(backend, ".contract-negative");
 
 const checkerSource = readFileSync(CHECKER, "utf8");
 const apiSource = readFileSync(join(SDK_SRC, "api.ts"), "utf8");
-const tsc = join(backend, "node_modules/.bin/tsc");
+// `node_modules/.bin/tsc` is a POSIX sh shim — not executable on win32. Run
+// the real JS entry through the CURRENT node instead: same TypeScript, no
+// shell, works on every platform.
+const tsc = join(backend, "node_modules", "typescript", "bin", "tsc");
 
 const tsconfig = {
   compilerOptions: {
@@ -95,7 +98,11 @@ function prepare(directory, api) {
 }
 
 function compile(directory) {
-  const result = spawnSync(tsc, ["--noEmit", "-p", "tsconfig.json"], { cwd: directory, encoding: "utf8" });
+  const result = spawnSync(process.execPath, [tsc, "--noEmit", "-p", "tsconfig.json"], {
+    cwd: directory,
+    encoding: "utf8",
+    windowsHide: true,
+  });
   return { status: result.status ?? 1, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
 }
 

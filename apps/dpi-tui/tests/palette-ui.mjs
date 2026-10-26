@@ -177,24 +177,36 @@ try {
   });
 
   // ------------------------------ (3) the new entries actually run
-  await check("palette: 'thinking' runs the /thinking handler (levels flash)", async () => {
+  await check("palette: 'thinking' opens the thinking-level picker (no dead-end flash)", async () => {
     await palette("thinking");
     await press("enter");
-    assert.match(await snap(), /Levels: off, minimal, low/, "no thinking-levels flash after palette enter");
+    const screen = await snap();
+    assert.match(screen, /Thinking level/, "the thinking picker did not open after palette enter");
+    assert.match(screen, /off/, "the picker does not list the levels");
+    assert.doesNotMatch(screen, /✗ Levels:/, "the old dead-end levels flash still shows");
+    await press("escape");
+    assert.doesNotMatch(await snap(), /Thinking level/, "esc closed the thinking picker");
   });
 
-  await check("palette: 'name' runs the /name handler (usage flash)", async () => {
+  await check("palette: 'name' opens the rename Prompt (no usage dead-end)", async () => {
     await palette("name");
     await press("enter");
-    assert.match(await snap(), /Usage: \/name/, "no /name usage flash after palette enter");
+    const screen = await snap();
+    assert.match(screen, /Agent name/, "the rename prompt did not open after palette enter");
+    assert.doesNotMatch(screen, /Usage: \/name/, "the old usage dead-end still shows");
+    await press("escape"); // cancel — nothing renamed
+    assert.doesNotMatch(await snap(), /Agent name/, "esc closed the rename prompt");
   });
 
-  await check("palette: 'tasks' runs the /tasks handler (overlay panel)", async () => {
+  await check("palette: 'tasks' runs the /tasks handler (overlay panel with visible content)", async () => {
     await palette("tasks");
     await press("enter");
     const screen = await snap();
     assert.match(screen, /(Live tasks|No live tasks)/, "the tasks panel did not open");
+    assert.match(screen, /No live tasks\./, "the empty task list is not announced in words");
+    assert.match(screen, /esc close/, "the tasks panel shows no visible close hint (invisible overlay)");
     await press("escape");
+    assert.doesNotMatch(await snap(), /No live tasks/, "esc did not close the tasks panel");
   });
 
   // ------------------------------ (4) herd empty state for a dead filter
@@ -230,7 +242,10 @@ try {
   // ------------------------------ (2b) EVERY entry runs — walk all 19
   // FIX 2's acceptance: “Every palette entry must actually run when selected.”
   // Each row is driven through the real palette and must leave an observable
-  // effect (view switch, picker/overlay, or toast). quit goes last — it exits.
+  // effect (view switch, picker/overlay, or toast). reset now confirms y/n
+  // before it wipes (R4 finding 4), thinking/name open their flows (R4 finding
+  // 2) — the loop completes those flows with the keys a user would send. quit
+  // goes last — it exits.
   await check("palette: every one of the 19 entries actually runs", async () => {
     const expect = [
       ["herd", /NAME\s+STATE\s+AGENTS/],
@@ -243,10 +258,10 @@ try {
       ["devices", /Devices|No saved devices/],
       ["new", /New agent /],
       ["fork", /Forked at #|Nothing to fork yet/],
-      ["thinking", /Levels: off, minimal, low/],
+      ["thinking", /Thinking level/],
       ["compact", /Compaction requested|✗/],
-      ["reset", /New context started/],
-      ["name", /Usage: \/name/],
+      ["reset", /reset .*y\/n/i],
+      ["name", /Agent name/],
       ["tasks", /(Live tasks|No live tasks)/],
       ["git", /is not a git repository|⎇/],
       ["help", /\/sessions\s+switch or create a session/],
@@ -258,6 +273,15 @@ try {
       const screen = await snap();
       assert.match(screen, re, `palette '${name}' left no observable effect`);
       assert.doesNotMatch(screen, /no command/, `palette '${name}' refused to run`);
+      if (name === "thinking") {
+        await press("escape"); // close the picker; the flow door is pinned above
+      } else if (name === "name") {
+        await press("escape"); // cancel the rename prompt
+      } else if (name === "reset") {
+        await type("y");
+        await press("enter");
+        assert.match(await snap(), /New context started/, "the confirmed reset did not run");
+      }
       await reset();
     }
     // quit: the honest signal is the process status, not the frozen PTY buffer.

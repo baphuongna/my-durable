@@ -42,7 +42,7 @@ import {
 } from "./views.ts";
 import { appendFileSync } from "node:fs";
 import { fetchHubNetwork } from "./hub-feed.ts";
-import { HubMux } from "./hub-mux.ts";
+import { HubMux, type MuxState } from "./hub-mux.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 
 export interface DeviceRef {
@@ -175,6 +175,10 @@ export class App {
   }
   /** The hub's /api/stream mux — tunnel-device attach (same transport as the web). */
   private mux?: HubMux;
+  /** Last mux state, surfaced in the header (R4 finding 5: the loss used to be silent). */
+  private muxState?: MuxState;
+  /** One-shot disconnect toast: shown once per outage, echoed by the reconnect note. */
+  private muxToastShown = false;
   /** True while the current device is reached through the hub proxy. */
   private viaHub = false;
   private hubRows: DeviceRow[] = [];
@@ -240,6 +244,8 @@ export class App {
   private deviceOnline = false;
   private events: { at: string; glyph: string; text: string }[] = [];
   private selectedId?: string;
+  /** Long-running fetch note (dirs on a cold tunnel, R4 finding 8): message line. */
+  private pendingNote: string | null = null;
 
   constructor(
     device: DeviceRef,
@@ -265,10 +271,7 @@ export class App {
     this.model.subscribe(() => this.requestRender());
     this.session.subscribe(() => this.requestRender());
     this.ticker = setInterval(() => this.tick(), 120);
-    if (this.hub)
-      void fetchHubNetwork(this.hub.url, this.hub.token).then((rows) => {
-        if (rows) (this.hubRows = rows), this.requestRender();
-      });
+    this.refreshHubNetwork();
     this.tui.start();
     void this.refreshSessions();
     this.requestRender();
@@ -338,7 +341,7 @@ export class App {
       // (REST) + the hub's stream mux (events), exactly like the web FE.
       if (!this.hub) return this.notify(`${row.name} is tunnel-only — start the TUI with --hub-url/--hub-token`, true);
       const client = new DpiClient(`${this.hub.url}/api/devices/${row.id}`, this.hub.token);
-      this.mux ??= new HubMux(this.hub);
+      this.mux ??= new HubMux(this.hub, (state) => this.onMuxState(state));
       return void this.run(async () => {
         this.info = await client.device({ timeoutMs: 10_000 });
         this.streams?.abort();
@@ -384,6 +387,42 @@ export class App {
     }
   }
 
+  /** One /api/network poll — boot, tick, mux reconnect and network entry all ride this. */
+  private refreshHubNetwork() {
+    if (!this.hub) return;
+    void fetchHubNetwork(this.hub.url, this.hub.token).then((rows) => {
+      if (rows) {
+        this.hubRows = rows;
+        if (this.view === "network") this.devicesCache = this.networkDevices();
+        this.requestRender();
+      }
+    });
+  }
+
+  /**
+   * Hub mux state → header chip + one-shot toast. Live-caught (R4 finding 5):
+   * killing the hub left the header at stale `● live` with zero feedback — the
+   * agent stream never errors, it just stops delivering frames.
+   */
+  private onMuxState(state: MuxState) {
+    this.muxState = state;
+    if (state === "offline") {
+      if (!this.muxToastShown) {
+        this.muxToastShown = true;
+        this.notify("hub offline — reconnecting…", true);
+      }
+    } else if (state === "live") {
+      if (this.muxToastShown) {
+        this.muxToastShown = false;
+        this.notify("hub back online");
+      }
+      // Frames flow again: re-fetch the network rows that froze with the old
+      // connection (R4 finding 6 — the view stayed empty through every switch).
+      this.refreshHubNetwork();
+    }
+    this.requestRender();
+  }
+
   /** The open session's working folder — what /git operates on. */
   cwd(): string | undefined {
     return this.sessionSummary()?.cwd ?? undefined;
@@ -410,7 +449,12 @@ export class App {
     this.scrollOffset = 0;
     if (view === "herd") void this.refreshSessions();
     if (view === "herd") this.refreshBranches();
-    if (view === "network") this.devicesCache = this.networkDevices();
+    if (view === "network") {
+      this.devicesCache = this.networkDevices();
+      // Entering an empty network view while the mux is live means the rows were
+      // lost with a reconnecting hub — poll once instead of waiting out the tick.
+      if (!this.devicesCache.length && this.mux?.live) this.refreshHubNetwork();
+    }
     this.requestRender();
   }
 
@@ -418,11 +462,14 @@ export class App {
     // The hub feed is the same source the web sidebar renders; fall back to
     // the local registry when no hub is configured or before the first poll.
     let rows = this.hubRows.length ? this.hubRows : this.registry ? this.registry.list() : [];
-    // The current device also appears as a hub row (same deviceUid) — drop
-    // that one and keep the direct LAN row, but inherit the hub's tree so its
-    // sessions still list here.
+    // The current device also appears as a hub row (same deviceUid) — drop that
+    // one ONLY when a sibling row for the same device survives (the direct LAN
+    // row, whose tree the hub row was enriching). A tunnel-only current device
+    // must keep its hub row: dropping the only row emptied the network view
+    // through every view switch (R4 finding 6).
     const mine = this.info?.uid ? rows.find((r) => r.deviceUid === this.info!.uid) : undefined;
-    if (mine) rows = rows.filter((r) => r !== mine);
+    if (mine && rows.some((r) => r !== mine && r.deviceUid === mine.deviceUid))
+      rows = rows.filter((r) => r !== mine);
     if (this.device.id !== "adhoc" || rows.some((r) => r.id === "adhoc")) return rows;
     return [
       ...rows,
@@ -560,6 +607,25 @@ export class App {
     const next = THINKING_LEVELS[(THINKING_LEVELS.indexOf(current) + 1) % THINKING_LEVELS.length];
     await this.run(() => this.handle!.configure({ thinkingLevel: next }));
     this.notify(`thinking: ${next}`);
+  }
+
+  /**
+   * Shared reset tail. The x key lands here AFTER its own y/n line; the /reset
+   * command door asks its own confirm first (R4 finding 4 — the command used to
+   * wipe the context with no question at all).
+   */
+  resetContext(note?: string) {
+    if (!this.handle) return Promise.resolve(this.notify("Pick a session first (g, then ↵).", true));
+    return this.run(async () => {
+      await this.handle!.reset(note);
+      this.notify("New context started; history stays stored");
+    });
+  }
+
+  /** A long fetch (dirs on a cold tunnel) holds the message line with a ◌ note. */
+  setPending(text: string | null) {
+    this.pendingNote = text;
+    this.requestRender();
   }
 
   // ------------------------------------------------------------------- input
@@ -742,7 +808,9 @@ export class App {
         if (cmd) cmd.run(this);
         else this.notify(`no command “${value.trim()}”`);
       } else if (input.kind === "kill") {
-        if (value.trim().toLowerCase().startsWith("y")) void this.command("reset");
+        // The x line IS the confirm — run the shared tail, not the command door
+        // (which asks its own y/n and would double-prompt).
+        if (value.trim().toLowerCase().startsWith("y")) void this.resetContext();
         else this.notify("reset cancelled");
       } else if (input.kind === "new") void newSession(this, value);
       return true;
@@ -849,8 +917,12 @@ export class App {
   // ------------------------------------------------------------- overlays
 
   overlay(component: Component, onClose?: () => void) {
+    // minWidth 60 fits the widest picker hint ("↑↓/j/k move │ enter select │
+    // type to filter │ esc close" = 55 visible cols + padding) at a bare 80-col
+    // terminal — at the old 40 the hint's operative verb clipped to `esc c…`
+    // (R4 finding 7).
     this.overlays.push({
-      handle: this.tui.showOverlay(component, { width: "70%", minWidth: 40, maxHeight: "80%" }),
+      handle: this.tui.showOverlay(component, { width: "70%", minWidth: 60, maxHeight: "80%" }),
       onClose,
     });
     this.tui.requestRender();
@@ -860,12 +932,17 @@ export class App {
     return this.overlays.length;
   }
 
-  closeOverlay(exitIfNothing = false) {
+  /**
+   * Esc must never surprise-quit (the 0.0.52 decision): closing the last
+   * overlay lands on the live view, and quitting stays on q / ctrl+c / /quit.
+   * Live-caught (R4 finding 1): the session picker passed `exitIfNothing` so
+   * picker→Esc→Esc with no attached session silently killed the process.
+   */
+  closeOverlay() {
     const overlay = this.overlays.pop();
     overlay?.handle.hide();
     overlay?.onClose?.();
     if (!this.overlays.length) this.tui.setFocus(this.root);
-    if (exitIfNothing) return this.exit();
     this.tui.requestRender();
   }
 
@@ -974,13 +1051,7 @@ export class App {
     // paired from the CLI shows up while the operator is looking at the list.
     if (this.hub && ++this.hubTick >= 42) {
       this.hubTick = 0;
-      void fetchHubNetwork(this.hub.url, this.hub.token).then((rows) => {
-        if (rows) {
-          this.hubRows = rows;
-          if (this.view === "network") this.devicesCache = this.networkDevices();
-          this.requestRender();
-        }
-      });
+      this.refreshHubNetwork();
     }
     this.requestRender();
   }
@@ -1014,6 +1085,18 @@ export class App {
 
   private header(w: number): string {
     const devices = this.registry ? this.networkDevices() : [];
+    // A hub-routed device reports the MUX truth first: when the SSE died the
+    // agent stream stays nominally "live" while frames stop (R4 finding 5).
+    const hubDown = this.viaHub && this.mux && this.muxState !== "live";
+    const conn = hubDown
+      ? this.muxState === "offline"
+        ? "hub offline"
+        : "hub connecting"
+      : this.connection === "live"
+        ? "live"
+        : this.connection === "idle"
+          ? "no agent"
+          : String(this.connection);
     return (
       " " +
       renderHeader(w - 2, {
@@ -1021,8 +1104,8 @@ export class App {
         sessions: this.sessions.length,
         devicesOnline: devices.filter((d) => d.lastStatus === "online").length,
         devicesTotal: devices.length || undefined,
-        conn: this.connection === "live" ? "live" : this.connection === "idle" ? "no agent" : String(this.connection),
-        connOk: this.connection === "live",
+        conn,
+        connOk: hubDown ? false : this.connection === "live",
       })
     );
   }
@@ -1245,6 +1328,7 @@ export class App {
       return " " + `${c.muted(this.toast)}${c.text(shown)}${c.accent("▌")}`.slice(0, w);
     }
     if (this.toast) return " " + `${this.toast.startsWith("✗") ? c.err(this.toast) : c.accent("◆") + " " + c.text(this.toast)}`.slice(0, w);
+    if (this.pendingNote) return " " + c.warn(`◌ ${this.pendingNote}`).slice(0, w);
     if (this.view === "agent") {
       const hint =
         this.tab === "transcript"
@@ -1310,6 +1394,7 @@ export class App {
       `${c.muted("·")} every turn is checkpointed on the device`,
       `${c.muted("·")} interrupt leaves the run resumable; only reset starts fresh`,
       `${c.muted("·")} sends retry by requestId — the device admits each exactly once`,
+      `${c.muted("·")} a lost hub shows ○ hub offline in the header and reconnects alone`,
       `${c.muted("·")} /commands still work: type them in the message line`,
     ];
     const height = Math.min(rows.length + 2, h);

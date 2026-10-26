@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import { Check, X } from "lucide-vue-next";
 import type { ModelInfo } from "@sdk/api";
 import {
@@ -16,6 +16,10 @@ import {
 
 const emit = defineEmits<{ close: [] }>();
 const search = ref("");
+const searchInput = ref<HTMLInputElement>();
+// House pattern (LoginCard, PromptDialog): land the cursor in the primary input
+// when the dialog opens.
+onMounted(() => void nextTick(() => searchInput.value?.focus()));
 const filtered = computed(() =>
   models.value.filter((m) =>
     `${m.name} ${m.id} ${m.tier}`.toLowerCase().includes(search.value.toLowerCase()),
@@ -39,17 +43,22 @@ async function choose(m: ModelInfo) {
 
 <template>
   <div class="modal-backdrop" @click.self="emit('close')">
-    <section class="modal model-modal">
+    <section class="modal model-modal" role="dialog" aria-modal="true" aria-label="Model picker">
       <header>
         <div>
-          <span class="eyebrow">PER AGENT · {{ device?.id }}</span>
+          <span class="eyebrow">PER AGENT · {{ device?.name ?? device?.id }}</span>
           <h2>Choose a model</h2>
         </div>
         <button class="icon-button" aria-label="Close model picker" @click="emit('close')">
           <X :size="18" />
         </button>
       </header>
-      <input v-model="search" placeholder="Search models or tiers…" aria-label="Search models" />
+      <input
+        ref="searchInput"
+        v-model="search"
+        placeholder="Search models or tiers…"
+        aria-label="Search models"
+      />
       <div class="model-list">
         <button
           v-for="m in filtered"

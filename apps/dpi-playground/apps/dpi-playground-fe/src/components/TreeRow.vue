@@ -47,13 +47,17 @@ const busy = computed(() => session.value?.busy || agent.value?.busy);
  * oldest devices predate the rename and report `durableVersion` instead of
  * `packageVersion` — they are exactly the ones the badge exists for. */
 const behind = computed(() => {
-  const info = device.value?.info as { packageVersion?: string; durableVersion?: string } | undefined;
+  const info = device.value?.info as
+    | { packageVersion?: string; durableVersion?: string }
+    | undefined;
   const theirs = info?.packageVersion ?? info?.durableVersion;
   const ours = hubVersion.value;
   return Boolean(theirs && ours && ours !== "unknown" && theirs !== ours);
 });
 const theirVersion = computed(() => {
-  const info = device.value?.info as { packageVersion?: string; durableVersion?: string } | undefined;
+  const info = device.value?.info as
+    | { packageVersion?: string; durableVersion?: string }
+    | undefined;
   return info?.packageVersion ?? info?.durableVersion ?? "?";
 });
 const statusText = computed(() => {
@@ -87,8 +91,11 @@ const label = computed(
   () => device.value?.name ?? device.value?.id ?? session.value?.name ?? agent.value?.name ?? "",
 );
 const title = computed(() => {
-  if (device.value)
-    return `${device.value.name} · ${device.value.url}${device.value.error ? `\n${device.value.error}` : ""}`;
+  // A tunnel device has no url (NetworkDevice.url is nullable) — never render `· null`.
+  if (device.value) {
+    const d = device.value;
+    return `${d.name}${d.url ? ` · ${d.url}` : ""}${d.error ? `\n${d.error}` : ""}`;
+  }
   if (session.value) return `${session.value.name}\n${session.value.cwd}`;
   const a = agent.value!;
   return a.kind === "fork"
@@ -176,7 +183,9 @@ const title = computed(() => {
       <FolderOpen class="ico" :size="16" />
       <b class="name">{{ label }}</b>
       <span class="path">…/{{ session.cwd.split("/").filter(Boolean).at(-1) }}</span>
-      <span v-if="branch" class="branch" :title="`git branch of ${session.cwd}`">⎇ {{ branch }}</span>
+      <span v-if="branch" class="branch" :title="`git branch of ${session.cwd}`"
+        >⎇ {{ branch }}</span
+      >
       <span
         v-if="session.model"
         class="tag"
@@ -250,4 +259,9 @@ const title = computed(() => {
   </div>
 </template>
 
-<style scoped>.bulk-check { margin-left: 2px; flex-shrink: 0; }</style>
+<style scoped>
+.bulk-check {
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+</style>

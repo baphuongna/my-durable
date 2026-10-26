@@ -41,6 +41,19 @@ export function gitPathFor(p: string, platform: NodeJS.Platform): string {
 /** `gitPathFor` against THIS platform — the form every argv path must take. */
 export const gitPath = (p: string): string => gitPathFor(p, process.platform);
 
+/**
+ * Cache-map key for a repo path: ONE entry per repo, not per spelling. Like
+ * `gitPathFor` it forward-slashes on win32, plus trailing-slash strip and case
+ * fold — `D:\\x`, `d:/x/` and `D:/x` are the same repo, and the status caches,
+ * the single-flight map and markDirty only dedupe if every spelling lands on
+ * the same key. NOT for argv (case must survive there) — cache maps only.
+ */
+export function cacheKey(p: string, platform: NodeJS.Platform = process.platform): string {
+  const slashed = platform === "win32" ? p.replace(/\\/g, "/") : p;
+  const trimmed = slashed.length > 1 ? slashed.replace(/\/+$/, "") : slashed;
+  return platform === "win32" ? trimmed.toLowerCase() : trimmed;
+}
+
 /** Same, for the `-- <paths...>` lists (stage/discard/commit/unstage/resolve). */
 const gitPaths = (paths: string[]): string[] => paths.map(gitPath);
 
@@ -153,11 +166,18 @@ export function gitDirtyMarks(): { root: string; at: number }[] {
   return dirty.slice(-10);
 }
 
-function markDirty(root: string) {
+/**
+ * Drop every cached status at or under this repo root (the fs watcher's dirty
+ * mark; exported as a test seam like clearGitStatusCache). The comparisons run
+ * on canonical `cacheKey`s, so a root git printed as `D:\repo` invalidates an
+ * entry cached as `d:/repo` — and `d:/repo-other` survives untouched.
+ */
+export function markDirty(root: string) {
   const now = Date.now();
-  for (const [p] of statusCache) if (p === root || p.startsWith(root + "/") || p.startsWith(root + "\\")) statusCache.delete(p);
+  const key = cacheKey(root);
+  for (const [p] of statusCache) if (p === key || p.startsWith(key + "/")) statusCache.delete(p);
   // A repo whose files change must get a fresh ATTEMPT, failures included.
-  for (const [p] of statusFailCache) if (p === root || p.startsWith(root + "/") || p.startsWith(root + "\\")) statusFailCache.delete(p);
+  for (const [p] of statusFailCache) if (p === key || p.startsWith(key + "/")) statusFailCache.delete(p);
   dirty.push({ root, at: now });
   dirtyListener?.();
 }
@@ -214,9 +234,9 @@ export function clearGitStatusCache() {
 /** Structured status for a folder: everything the UIs show, one call.
  *  `now` is injectable so a test can age the caches without sleeping. */
 export async function gitStatus(path: string, now = Date.now()): Promise<GitStatus> {
-  // One key per repo, not per spelling: `D:\\x` and `D:/x` are the same repo,
-  // and single-flight only dedupes if both land on the same entry.
-  const key = gitPath(path);
+  // One key per repo, not per spelling: `D:\\x`, `d:/x/` and `D:/x` land on
+  // the SAME entry (cacheKey), so single-flight dedupes every spelling.
+  const key = cacheKey(path);
   const cached = statusCache.get(key);
   if (cached && now - cached.at < STATUS_TTL) return cached.s;
   const failed = statusFailCache.get(key);

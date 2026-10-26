@@ -16,7 +16,7 @@ const fix = computed(() => {
   switch (d.status) {
     case "checking":
       return {
-        title: `Checking ${d.id}…`,
+        title: `Checking ${d.name}…`,
         text: "Probing the device. This view fills in as soon as it answers.",
       };
     case "unauthorized":
@@ -24,12 +24,12 @@ const fix = computed(() => {
         // The hub never parks tunnel devices on unauthorized; if it happens,
         // point at pairing, not at a token the browser does not hold.
         return {
-          title: `${d.id} tunnel credentials are not valid`,
+          title: `${d.name} tunnel credentials are not valid`,
           text: "Pair the device again — the hub will mint a fresh credential.",
         };
       }
       return {
-        title: d.hasToken ? `${d.id} rejected its token` : `No token for ${d.id}`,
+        title: d.hasToken ? `${d.name} rejected its token` : `No token for ${d.name}`,
         text: d.hasToken
           ? "The device's DPI_TOKEN changed (a rotate or a rebuilt device). Copy the current token into this hub's registry, then check again."
           : "This hub has no token for the device yet. Register it, then check again.",
@@ -40,7 +40,7 @@ const fix = computed(() => {
       };
     case "mismatch":
       return {
-        title: `${d.id} answers as a different device`,
+        title: `${d.name} answers as a different device`,
         text: "The URL now reaches a backend with another identity (a rebuilt VM or a new data directory). If that is expected, register it again: that trusts the identity it answers with now.",
         command:
           d.kind === "url"
@@ -49,13 +49,13 @@ const fix = computed(() => {
       };
     case "incompatible":
       return {
-        title: `${d.id} speaks another API version`,
+        title: `${d.name} speaks another API version`,
         text: "Update the device's dpi-backend.",
         command: config ? `just net deploy ${d.id}` : undefined,
       };
     default:
       return {
-        title: `${d.id} is offline`,
+        title: `${d.name} is offline`,
         text: `Last seen ${ago(d.lastSeenAt)}. Its agents keep their state on the device and resume when its backend starts again. The tree shows the last known sessions.`,
         command: !config
           ? undefined

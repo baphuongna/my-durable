@@ -185,12 +185,19 @@ function run(name, suite) {
   const cwd = join(ROOT, suite.cwd);
   process.stdout.write(`\n▶ ${name} — ${suite.title}\n  cwd: ${suite.cwd}\n  cmd: ${suite.cmd.join(" ")}\n`);
   const t0 = Date.now();
+  // Bare npm/npx are .cmd shims on Windows — a shell-less spawn cannot find
+  // them and fails with ENOENT. The suite commands are fixed arrays with no
+  // user input, so a shell is safe there; windowsHide keeps the runner
+  // console-free on both platforms.
+  const onWindows = process.platform === "win32";
   const r = spawnSync(suite.cmd[0], suite.cmd.slice(1), {
     cwd,
     env: { ...process.env, DPI_TEST: "1", NO_COLOR: "1" },
     encoding: "utf8",
     timeout: 1_800_000,
     maxBuffer: 256 * 1024 * 1024,
+    shell: onWindows,
+    windowsHide: true,
   });
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;

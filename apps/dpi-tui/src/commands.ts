@@ -2,7 +2,7 @@
 import type { SlashCommand } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import type { App } from "./app.ts";
-import { Panel, pickAgent, pickDevice, pickModel, pickSession } from "./pickers.ts";
+import { Panel, pickAgent, pickDevice, pickModel, pickSession, pickThinking } from "./pickers.ts";
 import { parsePairArgs, runPairing } from "./pairing.ts";
 import { c } from "./theme.ts";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -155,11 +155,23 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       break;
     }
     case "thinking": {
-      if (!THINKING_LEVELS.includes(arg as ThinkingLevel))
-        return app.flash(`Levels: ${THINKING_LEVELS.join(", ")}`, true), true;
-      await app.run(async () => {
-        await handle!.configure({ thinkingLevel: arg as ThinkingLevel });
-      });
+      // A bare /thinking (the palette door) opens the same picker the
+      // new-session flow uses — it used to dead-end in a "Levels: …" flash
+      // (R4 finding 2). A valid argument still sets directly.
+      const apply = async (level: ThinkingLevel) => {
+        if (!handle) return app.flash("Pick a session first (g, then ↵).", true);
+        await app.run(async () => {
+          await handle!.configure({ thinkingLevel: level });
+          app.flash(`thinking: ${level}`);
+        });
+      };
+      if (!THINKING_LEVELS.includes(arg as ThinkingLevel)) {
+        const picked = await pickThinking(app, String(app.model.state.agent.thinkingLevel ?? "low"));
+        if (!picked) break;
+        await apply(picked);
+        break;
+      }
+      await apply(arg as ThinkingLevel);
       break;
     }
     case "compact":
@@ -169,18 +181,33 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       });
       break;
     case "reset":
+      // The x key confirms y/n before reset (app.ts) — the command door must
+      // not skip that gate (R4 finding 4: the palette entry used to wipe the
+      // context unconditionally). A typed handoff note carries its own intent.
+      if (!arg) {
+        const ok = await app.prompt(`Reset ${app.sessionSummary()?.name ?? "context"}? y/n`, "");
+        if (ok === undefined || !ok.trim().toLowerCase().startsWith("y"))
+          return app.flash("reset cancelled"), true;
+      }
+      await app.resetContext(arg || undefined);
+      break;
+    case "name": {
+      // A bare /name (the palette door) opens the rename Prompt instead of the
+      // dead-end usage flash (R4 finding 2).
+      let value = arg;
+      if (!value) {
+        const current = app.sessionSummary()?.agents.find((a) => a.id === app.agentId)?.name ?? "";
+        const typed = await app.prompt("Agent name", current && current !== "main" ? current : "");
+        value = (typed ?? "").trim();
+        if (!value) return app.flash("rename cancelled"), true;
+      }
+      if (!handle) return app.flash("Pick a session first (g, then ↵).", true), true;
       await app.run(async () => {
-        await handle!.reset(arg || undefined);
-        app.flash("New context started; history stays stored");
+        await handle!.rename(value);
+        app.flash(`Agent renamed to ${value}`);
       });
       break;
-    case "name":
-      if (!arg) return app.flash("Usage: /name <name>", true), true;
-      await app.run(async () => {
-        await handle!.rename(arg);
-        app.flash(`Agent renamed to ${arg}`);
-      });
-      break;
+    }
     case "git":
       await gitCommand(app, arg);
       break;

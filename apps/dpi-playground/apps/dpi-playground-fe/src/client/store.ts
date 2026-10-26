@@ -2,6 +2,7 @@
 // plus the command helpers every component shares.
 import { computed, reactive, ref, shallowRef, watch } from "vue";
 import type { AgentDetail, ModelInfo, NetworkDevice, TaskNode } from "@sdk/api";
+import { DpiError } from "@sdk/errors";
 import { sumUsage } from "@sdk/transcript";
 import { lineage } from "@sdk/models";
 import { HubStream } from "./stream";
@@ -116,16 +117,37 @@ watch(treeWidth, (v) => uiLoaded.value && saveLater("tree.width", v));
 watch(layout, (v) => uiLoaded.value && saveLater("layout.panels", { ...v }));
 
 export async function boot() {
+  // Auth gate: the network read goes first and alone. withAdminLogin
+  // (client/auth.ts) raises the login card when it answers 401 and retries the
+  // same call once after a successful login, so this await settles only once
+  // the hub accepts an admin request. The stream and the ui-state reads stay
+  // shut until then — a fresh logged-out load used to fire all five (stream,
+  // network, three ui-state) and collect a 401 on each.
+  let net: { configFile?: string; devices: NetworkDevice[] };
+  try {
+    net = await hub.network();
+  } catch (e) {
+    // Dismissed login → stay gated: opening the stream or reading ui-state now
+    // would only collect more 401s. Any other failure (hub unreachable) still
+    // opens the stream: it reconnects with backoff and recovers the network
+    // live once the hub answers again.
+    if (!(e instanceof DpiError && e.status === 401)) stream.start();
+    ui.error = message(e);
+    uiLoaded.value = true;
+    return;
+  }
   stream.start();
   try {
-    const [net, sel, width, panels] = await Promise.all([
-      hub.network(),
+    const [sel, width, panels] = await Promise.all([
       hub.uiGet<AgentTarget>("tree.selected"),
       hub.uiGet<number>("tree.width"),
       hub.uiGet<{ tree: boolean; inspector: boolean }>("layout.panels"),
     ]);
     if (panels) Object.assign(layout, panels);
-    void hub.version().then((v) => (hubVersion.value = v.version)).catch(() => {});
+    void hub
+      .version()
+      .then((v) => (hubVersion.value = v.version))
+      .catch(() => {});
     configFile.value = net.configFile;
     if (!network.model.devices.length)
       network.model.apply({ type: "network", devices: net.devices });
@@ -277,7 +299,9 @@ let toastTimer: ReturnType<typeof setTimeout>;
 /** In-app notification center (orca delivery-service, FE-only v1): every
  *  notify() is kept as history — the bell lists what happened while you
  *  were elsewhere. Capped, newest first, marked read when the panel opens. */
-export const notifications = reactive<{ id: number; text: string; at: number; read: boolean }[]>([]);
+export const notifications = reactive<{ id: number; text: string; at: number; read: boolean }[]>(
+  [],
+);
 let notifSeq = 1;
 export function markNotificationsRead() {
   for (const n of notifications) n.read = true;

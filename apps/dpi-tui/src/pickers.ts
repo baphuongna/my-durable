@@ -269,7 +269,13 @@ export async function pickSession(app: App) {
       const s = tree.sessions.find((x) => x.id === item.value)!;
       const root = s.agents.find((a) => a.kind === "root") ?? s.agents[0];
       void app.attach(s.id, root?.id ?? 1);
-    }, () => app.closeOverlay(!app.sessionId)),
+    }, () => {
+      // Esc must never surprise-quit (0.0.52): with no attached session the
+      // cancel used to pass exitIfNothing=true and picker→Esc→Esc killed the
+      // whole process (R4 finding 1). Landing in the herd/network view is the
+      // honest cancel; quitting stays on q / ctrl+c / /quit.
+      app.closeOverlay();
+    }),
   );
 }
 
@@ -278,7 +284,12 @@ export async function newSession(app: App, presetName?: string) {
   const name = presetName !== undefined ? presetName : await app.prompt("Session name", "");
   if (name === undefined) return app.sessionId ? undefined : pickSession(app);
   const cwd = await walkDirs(app, "");
-  if (!cwd) return app.sessionId ? undefined : pickSession(app);
+  // undefined = esc (back to the sessions picker when detached); null = the
+  // device could not list directories — the error is already flashed, so
+  // dead-end HERE instead of silently swapping to the unrelated "Sessions on…"
+  // picker (R4 finding 8).
+  if (cwd === undefined) return app.sessionId ? undefined : pickSession(app);
+  if (cwd === null) return;
   // A device without a provider key (the Windows default) lists ZERO models —
   // the picker would be empty and creation dead-ends. Fall back to the device's
   // own default exactly like the web dialog's "(device default)" option.
@@ -289,26 +300,44 @@ export async function newSession(app: App, presetName?: string) {
   if (!model) return;
   // Thinking rides the create call: pick a level up front instead of paying
   // for "high" on a scratch session the device default never asked for.
-  const thinking = await chooseThinking(app);
+  const thinking = await pickThinking(app);
   if (!thinking) return;
   await app.run(async () => {
-    const s = await app.client.createSession({
-      name: name || "New session",
-      cwd,
-      model: { provider: model.provider, modelId: model.id },
-      thinkingLevel: thinking,
-    });
-    await app.attach(s.id, s.agents.find((a) => a.kind === "root")?.id ?? 1);
-    app.flash(`Session created in ${cwd}`);
-    if (!models.length) app.flash(`no model catalog on the device — using its default (${app.info.defaultModel})`);
+    // The create+attach round-trip is the silent 2-20s dead-air on a cold
+    // tunnel (R4 finding 8) — hold the message line while it flies.
+    app.setPending(`creating ${name || "New session"} on ${app.device.name}…`);
+    try {
+      const s = await app.client.createSession({
+        name: name || "New session",
+        cwd,
+        model: { provider: model.provider, modelId: model.id },
+        thinkingLevel: thinking,
+      });
+      await app.attach(s.id, s.agents.find((a) => a.kind === "root")?.id ?? 1);
+      app.flash(`Session created in ${cwd}`);
+      if (!models.length) app.flash(`no model catalog on the device — using its default (${app.info.defaultModel})`);
+    } finally {
+      app.setPending(null);
+    }
   });
 }
 
-function walkDirs(app: App, path: string): Promise<string | undefined> {
+/**
+ * The directory walk for a new session's working folder. Resolves:
+ *   string      — the chosen directory;
+ *   undefined   — the user canceled (esc);
+ *   null        — the device RPC failed (the error is already flashed).
+ * Exported for the busy-note / failure-path unit tests.
+ */
+export function walkDirs(app: App, path: string): Promise<string | undefined | null> {
   return new Promise((done) => {
     const step = async (at: string) => {
+      // A cold tunnel lists in 2-20s — hold the message line so the silence
+      // never reads as a dead app (R4 finding 8).
+      app.setPending(`listing ${at || "start dirs"} on ${app.device.name}…`);
       const listing = await app.client.dirs(at).catch((e: Error) => (app.flash(e.message, true), undefined));
-      if (!listing) return done(undefined);
+      app.setPending(null);
+      if (!listing) return done(null);
       const items: SelectItem[] = [
         ...(listing.path ? [{ value: `use:${listing.path}`, label: `✓ Use ${listing.path}` }] : []),
         ...(listing.path ? [{ value: listing.parent ?? "", label: listing.parent ? ".." : "⌂ start dirs" }] : []),
@@ -356,8 +385,12 @@ function chooseModel(app: App, current?: string) {
   });
 }
 
-/** The new-session thinking step: the same levels `y` cycles in-session. */
-function chooseThinking(app: App) {
+/**
+ * The thinking-level picker: the new-session step AND the /thinking command
+ * door (R4 finding 2 — the palette entry used to dead-end in a usage flash).
+ * Preselects the agent's current level, else the backend create default.
+ */
+export function pickThinking(app: App, current?: string) {
   return new Promise<ThinkingLevel | undefined>((done) => {
     const picker = new Picker(
       "Thinking level",
@@ -371,8 +404,8 @@ function chooseThinking(app: App) {
         done(undefined);
       },
     );
-    // Preselect the backend's create default, so a bare enter keeps "medium".
-    const index = THINKING_LEVELS.indexOf("medium");
+    const wanted = current && THINKING_LEVELS.includes(current as ThinkingLevel) ? current : "medium";
+    const index = THINKING_LEVELS.indexOf(wanted as ThinkingLevel);
     if (index >= 0) picker.list.setSelectedIndex(index);
     app.overlay(picker);
   });

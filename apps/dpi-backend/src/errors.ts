@@ -6,6 +6,7 @@ import { GraphError } from "./graphs.js";
 import { NotifySinkError } from "./notify-sinks.js";
 import { ProjectRegistryError } from "./projects.js";
 import { EnvError } from "./env-vars.js";
+import { PiConfigError } from "./pi-config.js";
 
 const STATUS: Record<ErrorCode, number> = {
   unauthorized: 401,
@@ -43,7 +44,8 @@ const registryFault = (err: unknown): ApiFault | undefined => {
     err instanceof GraphError ||
     err instanceof NotifySinkError ||
     err instanceof ProjectRegistryError ||
-    err instanceof EnvError
+    err instanceof EnvError ||
+    err instanceof PiConfigError
   )
     return err.code === "not_found" ? notFound(err.message) : invalid(err.message);
   return undefined;

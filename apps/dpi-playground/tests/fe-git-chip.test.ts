@@ -298,7 +298,7 @@ test("GitPanel: defer-items un-deferred — modal confirm, PRs via gh, turns, fo
   for (const op of ["submodule-update", "pr-create", "pr-list", "pr-merge", "pr-checks", "pr-comment"]) {
     assert.ok(be.includes(`case "${op}"`), `device op ${op} missing`);
   }
-  assert.match(be, /execFile..gh/, "gh must run through execFile, no shell");
+  assert.match(be, /execFileImpl\("gh"/, "gh must run through the execFile seam (execFile under the hood, GH_EXEC_OPTS, windowsHide) — no shell");
   const store = await readFile(new URL("../../dpi-backend/src/store.ts", import.meta.url), "utf8");
   assert.match(store, /sessionGitTurns/, "store turns missing");
   assert.match(store, /probeModel/, "model probe missing");

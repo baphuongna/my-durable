@@ -61,7 +61,13 @@ import {
   type GraphRunRecord,
   type GraphTask,
 } from "./graphs.js";
-import { ScheduleRegistry, type ScheduleCreateInput, type ScheduleRecord } from "./schedules.js";
+import {
+  MAX_SCHEDULE_NAME_LENGTH,
+  ScheduleRegistry,
+  normaliseCwd,
+  type ScheduleCreateInput,
+  type ScheduleRecord,
+} from "./schedules.js";
 import {
   listArchived,
   findBundle,
@@ -254,6 +260,25 @@ export function lockFile(path: string) {
 
 type Opened = { harness: Harness; unlock: () => void; unsubscribe: () => void; jobs: Jobs; addons: Addons };
 type Resolved = { row: SessionRow; h: Harness; c: Conversation };
+
+/**
+ * Is `cwd` the project root `root` itself, or inside it? Pure and
+ * platform-injected (the gitPathFor convention): on win32 backslashes and
+ * forward slashes compare equal and drive/path case is folded, while POSIX
+ * stays byte-identical (a backslash is a legal filename character there).
+ * Trailing slashes are normalized on both sides, and the prefix match is
+ * boundary-checked, so `D:/src/repo-other` is NOT under `D:/src/repo`.
+ */
+export function pathsUnder(root: string, cwd: string, platform: NodeJS.Platform = process.platform): boolean {
+  const norm = (p: string): string => {
+    const slashed = platform === "win32" ? p.replace(/\\/g, "/") : p;
+    const trimmed = slashed.length > 1 ? slashed.replace(/\/+$/, "") : slashed;
+    return platform === "win32" ? trimmed.toLowerCase() : trimmed;
+  };
+  const base = norm(root);
+  const path = norm(cwd);
+  return path === base || path.startsWith(`${base}/`);
+}
 
 /**
  * Bounded, secret-free description of the error that failed a Session. It names the error class only: never the
@@ -746,6 +771,30 @@ export class Store {
     return (await this.startDirRoots())[0] ?? resolve(this.startDirs[0] ?? homedir());
   }
 
+  /** Start-dir containment for a would-be session cwd — the rule behind
+   *  `create` and every schedule record. `~` expands, a relative path resolves
+   *  against the FIRST start dir (what `create` has always done), and the
+   *  resolved path must land inside the start-dir roots: the bare `resolve()`
+   *  in create used to let an absolute cwd override the base entirely, so
+   *  {"cwd":"/etc"} could root a session — or a schedule's run — outside the
+   *  sandbox the operator configured. A path that does not exist (a schedule
+   *  may point at a mount that is offline right now) is judged lexically, like
+   *  `containedPath`. Read paths never re-check: existing sessions whose cwd
+   *  predates the rule are not retroactively broken. */
+  async assertSessionCwdAllowed(input: string): Promise<void> {
+    const expanded = input === "~" ? homedir() : input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
+    const base = this.startDirs[0] ?? homedir();
+    let candidate: string;
+    try {
+      candidate = await realpath(resolve(base, expanded));
+    } catch {
+      candidate = resolve(base, expanded);
+    }
+    const roots = await this.startDirRoots();
+    if (!this.underRoots(candidate, roots))
+      throw invalid(`cwd must live under a start dir (${roots.join(", ") || "none configured on this device"})`);
+  }
+
   async directories(): Promise<DirListing> {
     const dirs: { name: string; path: string }[] = [];
     for (const root of this.startDirs) {
@@ -1093,6 +1142,11 @@ export class Store {
     } catch {
       throw invalid(`cwd must be an existing folder on ${this.name}`);
     }
+    // Same containment rule as the fs/git routes: the resolve() above lets an
+    // absolute cwd override the start-dir base entirely, which is how
+    // {"cwd":"/etc"} used to root a session outside the sandbox. This is the
+    // single choke point — schedule runs and graph runs create here too.
+    await this.assertSessionCwdAllowed(path);
     // Every session roots a project: the registry is the tree's group-by-cwd,
     // promoted to an entity you can name, label and archive (paseo model).
     const status = await gitStatus(cwd).catch(() => undefined);
@@ -1169,7 +1223,15 @@ export class Store {
 
   rename(row: SessionRow, name: unknown) {
     if (typeof name !== "string" || !name.trim()) throw invalid("A name is required");
-    this.catalog.prepare("UPDATE sessions SET name=? WHERE id=?").run(name.trim().slice(0, 100), row.id);
+    const trimmed = name.trim();
+    // Same cap and phrasing as a schedule's name — a display name, not a
+    // description (the old slice(0,100) silently swallowed a 10k paste).
+    if (trimmed.length > MAX_SCHEDULE_NAME_LENGTH)
+      throw invalid(`name is ${trimmed.length} characters; the limit is ${MAX_SCHEDULE_NAME_LENGTH}`);
+    // Control characters never belong in a display name: reject rather than
+    // store verbatim (a newline) or silently truncate at a NUL.
+    if (/[\u0000-\u001f\u007f]/.test(trimmed)) throw invalid("name must not contain control characters");
+    this.catalog.prepare("UPDATE sessions SET name=? WHERE id=?").run(trimmed, row.id);
     this.notify();
     return this.sessionSummary(this.row(row.id));
   }
@@ -2179,12 +2241,18 @@ export class Store {
   }
 
   async createSchedule(input: ScheduleCreateInput): Promise<ScheduleView> {
+    // The registry stores cwd as typed (it never stats), so an out-of-sandbox
+    // cwd used to surface only when the run spawned its session. Reject the
+    // POST up front with the same rule Store.create applies.
+    if (typeof input?.cwd === "string" && input.cwd.trim()) await this.assertSessionCwdAllowed(normaliseCwd(input.cwd));
     const record = await this.schedules.create(input);
     this.notify();
     return this.scheduleView(record);
   }
 
   async updateSchedule(id: string, patch: SchedulePatchBody): Promise<ScheduleView> {
+    // Same early refusal when a patch repoints the schedule at /etc.
+    if (typeof patch?.cwd === "string" && patch.cwd.trim()) await this.assertSessionCwdAllowed(normaliseCwd(patch.cwd));
     const record = await this.schedules.update(id, patch);
     this.notify();
     return this.scheduleView(record);
@@ -2298,8 +2366,9 @@ export class Store {
   private projectForPath(cwd: string): ProjectRecord | undefined {
     let best: ProjectRecord | undefined;
     for (const project of this.projects.list({ includeArchived: false })) {
-      const root = project.rootPath.endsWith("/") ? project.rootPath : `${project.rootPath}/`;
-      const isUnder = cwd === project.rootPath || cwd.startsWith(root);
+      // Slash/case-normalized compare (pathsUnder): a session cwd recorded as
+      // `D:\src\repo` must match a project registered as `D:/src/repo`.
+      const isUnder = pathsUnder(project.rootPath, cwd);
       if (isUnder && (!best || project.rootPath.length > best.rootPath.length)) best = project;
     }
     return best;

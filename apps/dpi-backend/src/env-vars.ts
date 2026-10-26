@@ -120,7 +120,10 @@ const isSecret = (key: string) => SECRET_KEY.test(key);
  */
 function parseLines(text: string): Array<{ key?: string; value?: string; line: string }> {
   if (text === "") return [];
-  const raw = text.split("\n");
+  // CRLF-tolerant: a file edited in Notepad carries \r at every line end —
+  // splitting on \n alone would leave it glued to every VALUE (`KEY=abc\r`
+  // reads as the key "abc\r", silently corrupting API keys).
+  const raw = text.split(/\r?\n/);
   if (raw.length > 1 && raw[raw.length - 1] === "") raw.pop();
   return raw.map((line) => {
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
@@ -213,6 +216,12 @@ export class EnvFileEditor {
 
   /** Remove one key's line. Only file-sourced keys can be removed. */
   async unset(key: string): Promise<{ removed: boolean }> {
+    // Same guard as set(): a managed key has its own dedicated setting (token,
+    // port, start dirs, …) — deleting its line from a remote browser locks the
+    // operator out just as surely as overwriting it (the set-side guard alone
+    // left DELETE /device/env/DPI_TOKEN a working bypass).
+    if ((READONLY_KEYS as readonly string[]).includes(key))
+      throw invalid(`${key} has its own setting (port, host, start_dirs, …); change that instead`);
     const lines = parseLines(await this.read());
     const kept = lines.filter((entry) => entry.key !== key);
     if (kept.length === lines.length) return { removed: false };
