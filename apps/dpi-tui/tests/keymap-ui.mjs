@@ -80,6 +80,28 @@ const selected = async () => {
   const m = (await snap()).match(/▌ (\S+)/);
   return m?.[1] ?? null;
 };
+
+/**
+ * Open alpha — the harness-seeded git repo — from any view: herd, k-clamp
+ * to the top row, then walk j until the ▌ marker names alpha, enter. The git
+ * checks used to ride digit "2" (the old nth-session jump), which v0.0.52
+ * replaced with view switching; j/k+enter is the model the app teaches and is
+ * deterministic regardless of cursor or view state.
+ *
+ * The marker is the SELECTED row and j/k move cursor+selected together — but
+ * only AFTER a move: entering the herd can leave a stale marker while the
+ * cursor (what enter opens) sits elsewhere. The k-clamp + one j resyncs the
+ * pair before the walk relies on the marker.
+ */
+const openAlpha = async () => {
+  await press("g");
+  for (let i = 0; i < 4; i += 1) await press("k"); // clamp the cursor to the top row
+  await press("j"); // onto the first session row — marker and cursor agree again
+  for (let i = 0; i < 6 && (await selected()) !== "alpha"; i += 1) await press("j");
+  assert.equal(await selected(), "alpha", "could not reach the alpha row");
+  await press("enter");
+  await tui("wait", "› alpha › #1", "--timeout", "10000");
+};
 const body = async () => {
   const screen = await snap();
   return screen;
@@ -173,19 +195,21 @@ try {
     assert.match(await body(), /NAME\s+STATE\s+AGENTS/, "esc did not return to the list");
   });
 
-  await check("herd: digits open the nth session", async () => {
-    // Order is newest-first, so derive the expectation from what each digit did
-    // rather than assuming which name sits at which index.
-    const opened = async (n) => {
-      await press(String(n));
-      const m = (await body()).match(/› (\S+) › #1/);
-      await press("escape");
-      return m?.[1] ?? null;
-    };
-    const first = await opened(1);
-    const second = await opened(2);
-    assert.ok(first && second, `digit jump opened nothing (${first}, ${second})`);
-    assert.notEqual(first, second, "digits 1 and 2 opened the same session");
+  await check("herd: digits 1-4 switch views (viewbar order), 5-9 notify instead", async () => {
+    // v0.0.52: digits follow VIEW_TABS (network/herd/agent/log — pinned by
+    // tests/navredesign.test.ts), not the old nth-session jump. 5-9 hint.
+    await press("1");
+    assert.match(await body(), /keybox/, "digit 1 did not open the network view");
+    await press("2");
+    assert.match(await body(), /NAME\s+STATE\s+AGENTS/, "digit 2 did not open the herd");
+    await press("3");
+    assert.match(await body(), /› \S+ › #1/, "digit 3 did not open the agent view");
+    await press("4");
+    assert.match(await body(), /events · this client/, "digit 4 did not open the log");
+    await press("6");
+    assert.match(await body(), /views are 1-4/, "digit 6 produced no hint");
+    assert.match(await body(), /events · this client/, "digit 6 switched views");
+    await press("g");
   });
 
   await check("herd: N opens the network view", async () => {
@@ -347,27 +371,34 @@ try {
   // ------------------------------------------------- view cycling (reported:
   // "không điều hướng xem tab khác ngoài tab session đầu nhất" — Tab on the
   // outermost list used to do nothing; now it cycles the four views, pi-style.)
-  await check("herd: tab walks herd→network→agent, L reaches the log, tab wraps home", async () => {
+  await check("herd: tab follows VIEW_TABS (herd→agent), L reaches the log, tab wraps home", async () => {
+    // VIEW_TABS order is network→herd→agent→log (pinned in
+    // tests/navredesign.test.ts), so tab from herd lands on the AGENT view.
     await press("tab");
-    assert.match(await body(), /keybox/, "tab from herd did not reach the network view");
-    await press("tab");
-    assert.match(await body(), /#1\s+idle|#1/, "tab from network did not reach the agent view");
+    assert.match(await body(), /› \S+ › #1|#1/, "tab from herd did not reach the agent view");
     // inside the agent view Tab belongs to the AGENT's tab strip (pi semantics):
     // views keep their direct keys — L for the log.
     await press("L");
     assert.match(await body(), /events · this client/, "L from agent did not reach the log");
-    await press("tab");
-    assert.match(await body(), /NAME\s+STATE\s+AGENTS/, "tab from log did not wrap to the herd");
-    await tui("press", "shift", "tab");
+    await press("tab"); // log → network
+    assert.match(await body(), /keybox/, "tab from log did not reach the network view");
+    await press("tab"); // network → herd (wraps)
+    assert.match(await body(), /NAME\s+STATE\s+AGENTS/, "tab from network did not wrap to the herd");
+    await tui("press", "shift", "tab"); // herd → network (one step back)
     await new Promise((r) => setTimeout(r, 300));
-    assert.match(await body(), /events · this client/, "shift+tab did not step back to the log");
+    assert.match(await body(), /keybox/, "shift+tab did not step back to the network view");
   });
 
-  await check("herd: [ and ] step the views one at a time", async () => {
-    await press("]");
-    assert.match(await body(), /keybox/, "] did not go forward to network");
+  await check("herd: [ and ] step the views one at a time (VIEW_TABS order)", async () => {
+    await press("]"); // herd → agent (forward one)
+    assert.match(await body(), /› \S+ › #1|#1/, "] did not go forward to the agent view");
+    // In the agent view [ belongs to the AGENT's tab strip (pi semantics), so
+    // exercise [ on a view where it steps views: N to network, [ wraps back
+    // to the log.
+    await press("N");
+    assert.match(await body(), /keybox/, "N did not reach the network view");
     await press("[");
-    assert.match(await body(), /NAME\s+STATE\s+AGENTS/, "[ did not come back to herd");
+    assert.match(await body(), /events · this client/, "[ did not step back to the log view");
   });
 
   await check("network: enter on the local device row returns to its sessions", async () => {
@@ -427,7 +458,7 @@ try {
 
   // ------------------------------------------------------ ambient git display
   await check("git: the OVERVIEW panel shows ⎇ branch ±dirty without any command", async () => {
-    await press("2"); // alpha, the git repo
+    await openAlpha(); // alpha, the seeded git repo
     await tui("wait", "⎇ main", "--timeout", "8000");
     const panel = await body();
     assert.match(panel, /⎇ main/, "no branch line in the OVERVIEW panel");
@@ -435,10 +466,7 @@ try {
   });
 
   await check("git: the agent header carries the branch too", async () => {
-    await press("2");
-    await tui("wait", /#1/, "--timeout", "6000").catch(async () => {
-      await press("enter");
-    });
+    await openAlpha();
     await tui("wait", "⎇ main", "--timeout", "8000");
     assert.match(await body(), /⎇ main/, "agent header lost the branch");
     await press("esc");
@@ -446,7 +474,7 @@ try {
 
   // ------------------------------------------------------ /git (device API)
   await check("git: /git status shows branch and dirty for the session's repo", async () => {
-    await press("2"); // digits jump: alpha is the 2nd session and the git repo
+    await openAlpha();
     await press("m");
     await type("/git");
     await press("enter");
@@ -456,7 +484,7 @@ try {
   });
 
   await check("git: /git worktree new creates a sibling worktree", async () => {
-    await press("2");
+    await openAlpha();
     await press("m");
     await type("/git worktree new wtx");
     await press("enter");

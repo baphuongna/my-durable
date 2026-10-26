@@ -8,6 +8,7 @@ import {
   ProcessTerminal,
   TuiAltScreen,
   matchesKey,
+  truncateToWidth,
   type Component,
   type OverlayHandle,
   type TuiInputListenerResult,
@@ -599,6 +600,7 @@ export class App {
     else if (data === "m") this.beginInput("message", "follow-up ❯ ");
     else if (data === "]" || matchesKey(data, "tab")) this.cycleTab(1);
     else if (data === "[" || matchesKey(data, "shift+tab")) this.cycleTab(-1);
+    else if (data === "t") this.cycleTab(1); // t = tabs, same walk as ]
     else if (/^[1-9]$/.test(data)) this.jump(Number(data));
     // No catch-all: a stray letter used to jump views or open the composer with
     // itself as the first character. herdr and piggery both require an explicit
@@ -1259,9 +1261,9 @@ export class App {
     const rows = [
       `${c.accent("▲")} ${c.bold("dpi keymap (herdr template)")}`,
       "",
-      `${c.accent("j k ↑ ↓")}  move/scroll     ${c.accent("1-9")}  jump to session`,
-      `${c.accent("↵")}       open           ${c.accent("g N L")}  herd / network / log`,
-      `${c.accent("[ ]")}     agent tabs     ${c.accent("m")}    message (enter sends)`,
+      `${c.accent("j k ↑ ↓")}  move/scroll     ${c.accent("1-4")}  views: net/herd/agent/log`,
+      `${c.accent("↵")}       open           ${c.accent("g N L")}  same views, aliases`,
+      `${c.accent("[ ] t")}   agent tabs     ${c.accent("m")}    message (enter sends)`,
       `${c.accent("esc")}     back/interrupt ${c.accent("i")}    interrupt ≠ kill`,
       `${c.accent("F")}       fork           ${c.accent("c")}    compact context`,
       `${c.accent("y")}       thinking level ${c.accent("x")}    reset (y/n confirm)`,
@@ -1300,9 +1302,13 @@ export class App {
 
   private panelLine(width: number, content: string, active: boolean): string {
     const inner = width - 4;
-    let body = content;
-    while (body.length > inner) body = body.slice(0, -2); // crude but ANSI-safe enough for short rows
-    const padded = body + rep(" ", Math.max(0, inner - body.length));
+    // Visible-width clip + pad, not raw length: the theme's truecolor spans
+    // add ~19 invisible raw chars each, so raw slicing ate the overlay's
+    // right column at every width (help's "views: net/herd/agent/log" never
+    // rendered). truncateToWidth counts ANSI-stripped columns, keeps the
+    // spans, closes any cut style and pads to exactly `inner` — the line can
+    // never exceed the panel. Same helper views.ts already trusts.
+    const padded = truncateToWidth(content, inner, "", true);
     return `${c.muted(box.v)} ${active ? c.inverse(padded) : padded} ${c.muted(box.v)}`;
   }
 
@@ -1332,7 +1338,10 @@ function place(panel: string[], width: number, height: number, x: number, y: num
   panel.forEach((line, index) => {
     const row = y + index;
     if (row < 0 || row >= height) return;
-    out[row] = rep(" ", x) + line.slice(0, Math.max(0, width - x));
+    // Visible columns again: raw slicing could cut an escape mid-sequence and
+    // drop the right border; truncateToWidth clips safely and pads the row
+    // to exactly the screen width.
+    out[row] = rep(" ", x) + truncateToWidth(line, Math.max(0, width - x), "", true);
   });
   return out;
 }
