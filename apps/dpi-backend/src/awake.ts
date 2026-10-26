@@ -42,6 +42,8 @@ export const defaultAwakeIo = (): AwakeIo => ({
       const child: ChildProcess = nodeSpawn(cmd, args as string[], {
         stdio: "ignore",
         detached: false,
+        // A keep-awake holder is background machinery: no console window.
+        windowsHide: true,
       });
       child.unref();
       return { kill: () => void child.kill("SIGTERM") };

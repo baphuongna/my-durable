@@ -162,7 +162,9 @@ interface Io {
 
 const execDefault = (cmd: string, args: string[]) =>
   new Promise<{ ok: boolean; output: string; code: number }>((resolve) => {
-    execFile(cmd, args, { timeout: 30_000 }, (error, stdout, stderr) => {
+    // windowsHide: this daemon runs under a supervisor with no terminal — a
+    // console window flashing per call is pure noise on Windows.
+    execFile(cmd, args, { timeout: 30_000, windowsHide: true }, (error, stdout, stderr) => {
       const code = (error as { code?: number } | null)?.code ?? 0;
       resolve({ ok: !error, output: String(stdout ?? "") + String(stderr ?? ""), code });
     });
@@ -272,6 +274,8 @@ export function startBackendDetached(
     stdio: ["ignore", fd, fd],
     env: cleanChildEnv(env),
     cwd: dirname(dpi),
+    // The whole point of this spawn is "no terminal" — never flash a console.
+    windowsHide: true,
   });
   child.unref();
   closeSync(fd);

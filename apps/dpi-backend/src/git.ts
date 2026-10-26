@@ -20,7 +20,42 @@ const GIT_SLOW_TIMEOUT = 45_000;
 /** Same-path status within this window returns the cached answer — the UIs
  *  poll, and a 20s status must not restart on every poll tick. */
 const STATUS_TTL = 5_000;
+/** A FAILED status is cached too, but briefly: without this, a repo git cannot
+ *  reach re-spawned git on every UI poll tick (935 failures in one user log).
+ *  Short enough that a fixed path (git installed, drive mounted) recovers on
+ *  its own; long enough that a poll storm costs one spawn. */
+const STATUS_FAIL_TTL = 15_000;
 const statusCache = new Map<string, { at: number; s: GitStatus }>();
+const statusFailCache = new Map<string, { at: number; msg: string }>();
+/** One in-flight status per path: N UI clients polling the same repos through
+ *  /git/status-batch must share ONE git spawn, not N. */
+const statusInFlight = new Map<string, Promise<GitStatus>>();
+
+/** Paths as git ARGV: Git-for-Windows' msys layer mangles backslashes inside
+ *  argv (`D:\source\x` arrives as `D:source?x` → "cannot change to"), while
+ *  the very same path with forward slashes works. Pure — no fs, no resolution. */
+export function gitPathFor(p: string, platform: NodeJS.Platform): string {
+  return platform === "win32" ? p.replace(/\\/g, "/") : p;
+}
+
+/** `gitPathFor` against THIS platform — the form every argv path must take. */
+export const gitPath = (p: string): string => gitPathFor(p, process.platform);
+
+/** Same, for the `-- <paths...>` lists (stage/discard/commit/unstage/resolve). */
+const gitPaths = (paths: string[]): string[] => paths.map(gitPath);
+
+/** Child-process options, exported so a test can assert the Windows console
+ *  window stays hidden: a daemon that polls git must never flash a terminal. */
+export const GIT_EXEC_OPTS = (timeout: number) => ({ timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+export const GH_EXEC_OPTS = (cwd: string, timeout: number) => ({ cwd, timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+
+/** Test seam for counting/driving spawns: `node:child_process`'s ESM namespace
+ *  is not redefinable, so `mock.method` cannot reach `execFile`. Pass nothing
+ *  to restore the real one. */
+let execFileImpl: typeof execFile = execFile;
+export function setGitExecForTests(fn?: typeof execFile) {
+  execFileImpl = fn ?? execFile;
+}
 
 /** The ONE stderr that legitimately means "no repo here" — anything else
  *  (git missing, permission, timeout) is a failure we must not flatten into
@@ -34,7 +69,8 @@ export function isNotARepoError(e: unknown): boolean {
 /** One git call; rejects on non-zero exit with stderr in the message. */
 export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise<string> {
   return new Promise((ok, fail) => {
-    execFile("git", ["-C", cwd, ...args], { timeout, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    // `-C` is ARGV, so the path goes out forward-slashed (see gitPath).
+    execFileImpl("git", ["-C", gitPath(cwd), ...args], GIT_EXEC_OPTS(timeout), (error, stdout, stderr) => {
       if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
       // git chats on stderr for worktree add/switch/fetch — keep both.
       else ok(`${String(stdout)}${String(stdout) && String(stderr) ? "\n" : ""}${String(stderr)}`);
@@ -48,7 +84,8 @@ export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise
 export function gh(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise<string> {
   return new Promise((ok, fail) => {
     // gh resolves the repo from cwd (a --repo flag wants a slug, not a path).
-    execFile("gh", args, { cwd, timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    // cwd is a Node spawn option, not argv — Node handles Windows paths here.
+    execFileImpl("gh", args, GH_EXEC_OPTS(cwd, timeout), (error, stdout, stderr) => {
       if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
       else ok(String(stdout));
     });
@@ -118,7 +155,9 @@ export function gitDirtyMarks(): { root: string; at: number }[] {
 
 function markDirty(root: string) {
   const now = Date.now();
-  for (const [p, c] of statusCache) if (p === root || p.startsWith(root + "/") || p.startsWith(root + "\\")) statusCache.delete(p);
+  for (const [p] of statusCache) if (p === root || p.startsWith(root + "/") || p.startsWith(root + "\\")) statusCache.delete(p);
+  // A repo whose files change must get a fresh ATTEMPT, failures included.
+  for (const [p] of statusFailCache) if (p === root || p.startsWith(root + "/") || p.startsWith(root + "\\")) statusFailCache.delete(p);
   dirty.push({ root, at: now });
   dirtyListener?.();
 }
@@ -169,12 +208,30 @@ function ensureWatcher(root: string) {
 /** Test hook: the TTL cache would serve a pre-mutation answer. */
 export function clearGitStatusCache() {
   statusCache.clear();
+  statusFailCache.clear();
 }
 
-/** Structured status for a folder: everything the UIs show, one call. */
-export async function gitStatus(path: string): Promise<GitStatus> {
-  const cached = statusCache.get(path);
-  if (cached && Date.now() - cached.at < STATUS_TTL) return cached.s;
+/** Structured status for a folder: everything the UIs show, one call.
+ *  `now` is injectable so a test can age the caches without sleeping. */
+export async function gitStatus(path: string, now = Date.now()): Promise<GitStatus> {
+  // One key per repo, not per spelling: `D:\\x` and `D:/x` are the same repo,
+  // and single-flight only dedupes if both land on the same entry.
+  const key = gitPath(path);
+  const cached = statusCache.get(key);
+  if (cached && now - cached.at < STATUS_TTL) return cached.s;
+  const failed = statusFailCache.get(key);
+  // Same error text as the original failure — the UI still shows WHY.
+  if (failed && now - failed.at < STATUS_FAIL_TTL) throw new Error(failed.msg);
+  const running = statusInFlight.get(key);
+  if (running) return running;
+  const p = statusOnce(path, key).finally(() => {
+    if (statusInFlight.get(key) === p) statusInFlight.delete(key);
+  });
+  statusInFlight.set(key, p);
+  return p;
+}
+
+async function statusOnce(path: string, key: string): Promise<GitStatus> {
   const out: GitStatus = { repo: false };
   try {
     // Reach git at all before trusting any "empty" answer: git missing from
@@ -275,7 +332,8 @@ export async function gitStatus(path: string): Promise<GitStatus> {
     // silently (checklist fs-auto-refresh, device side).
     ensureWatcher(root);
     const wl = wlP.value;
-    statusCache.set(path, { at: Date.now(), s: out });
+    statusCache.set(key, { at: Date.now(), s: out });
+    statusFailCache.delete(key);
     out.worktrees = wl
       .split("\n\n")
       .map((b) => b.trim())
@@ -288,7 +346,29 @@ export async function gitStatus(path: string): Promise<GitStatus> {
   } catch (e) {
     // Only a GENUINE "not a git repository" is repo:false. Anything else —
     // git not found, EACCES, timeout — is a real failure the UIs must show.
-    if (!isNotARepoError(e)) throw new Error(`git failed on the device: ${(e as Error).message.slice(0, 160)}`);
+    if (!isNotARepoError(e)) {
+      const msg = `git failed on the device: ${(e as Error).message.slice(0, 160)}`;
+      // Cache the FAILURE (briefly): the UIs poll, and a path git cannot reach
+      // must cost one spawn per TTL, not one per tick.
+      const at = Date.now();
+      for (const [k, v] of statusFailCache) if (at - v.at >= STATUS_FAIL_TTL) statusFailCache.delete(k);
+      statusFailCache.set(key, { at, msg });
+      throw new Error(msg);
+    }
+    // "Not a repository" is an ANSWER, not a failure: cache it exactly like a
+    // success (STATUS_TTL). Without this, every UI poll tick re-spawned git for
+    // a plain folder — and on Windows each spawn flashes a console window, the
+    // "spam terminal" symptom. Sessions routinely live in non-git folders, so
+    // this is the common path. Deliberately NOT in statusFailCache: nothing
+    // throws here, so the 15s fail TTL must not apply.
+    //
+    // Recovery when the folder BECOMES a repo: a plain dir has no fs watcher
+    // (ensureWatcher runs on the success path only), so markDirty is
+    // unreachable for it — the 5s TTL IS the recovery path: `git init` shows
+    // up within STATUS_TTL. Do not add a watcher for it.
+    // Keyed by the normalized gitPath key, so markDirty/clearGitStatusCache
+    // (which clear statusCache by that key) invalidate it too.
+    statusCache.set(key, { at: Date.now(), s: out });
   }
   return out;
 }
@@ -419,16 +499,16 @@ export async function gitOp(
     }
     case "stage": {
       if (!files?.length) throw Error("stage needs files");
-      return { text: (await git(path, ["add", "--", ...files])).trim() || `staged ${files.length} file(s)` };
+      return { text: (await git(path, ["add", "--", ...gitPaths(files)])).trim() || `staged ${files.length} file(s)` };
     }
     case "discard": {
       // IntelliJ's Rollback: index AND worktree back to HEAD for these paths.
       if (!files?.length) throw Error("discard needs files");
-      return { text: (await git(path, ["checkout", "HEAD", "--", ...files])).trim() || `discarded ${files.length} file(s)` };
+      return { text: (await git(path, ["checkout", "HEAD", "--", ...gitPaths(files)])).trim() || `discarded ${files.length} file(s)` };
     }
     case "diff-file": {
       if (!target) throw Error("diff-file needs a file path");
-      return { text: (await git(path, ["--no-pager", "diff", ...(staged ? ["--cached"] : []), "HEAD", "--", target])).trim() || "no diff" };
+      return { text: (await git(path, ["--no-pager", "diff", ...(staged ? ["--cached"] : []), "HEAD", "--", gitPath(target)])).trim() || "no diff" };
     }
     case "stash-push":
       return { text: (await git(path, ["stash", "push", ...(message ? ["-m", message] : [])])).trim() || "stashed" };
@@ -438,10 +518,10 @@ export async function gitOp(
       // IntelliJ's Unstage: index only, worktree keeps its changes.
       if (!files?.length) throw Error("unstage needs files");
       try {
-        return { text: (await git(path, ["reset", "-q", "HEAD", "--", ...files])).trim() || `unstaged ${files.length} file(s)` };
+        return { text: (await git(path, ["reset", "-q", "HEAD", "--", ...gitPaths(files)])).trim() || `unstaged ${files.length} file(s)` };
       } catch {
         // unborn branch: HEAD does not resolve yet — reset against the empty tree.
-        return { text: (await git(path, ["reset", "-q", "--", ...files])).trim() || `unstaged ${files.length} file(s)` };
+        return { text: (await git(path, ["reset", "-q", "--", ...gitPaths(files)])).trim() || `unstaged ${files.length} file(s)` };
       }
     }
     case "compare": {
@@ -518,8 +598,8 @@ export async function gitOp(
       // orca's conflicts section, one click: pick a side, stage the result.
       if (side !== "ours" && side !== "theirs") throw Error("resolve needs side=ours|theirs");
       if (!files?.length) throw Error("resolve needs files");
-      await git(path, ["checkout", `--${side}`, "--", ...files]);
-      return { text: (await git(path, ["add", "--", ...files])).trim() || `resolved ${files.length} file(s) with --${side}` };
+      await git(path, ["checkout", `--${side}`, "--", ...gitPaths(files)]);
+      return { text: (await git(path, ["add", "--", ...gitPaths(files)])).trim() || `resolved ${files.length} file(s) with --${side}` };
     }
     case "submodule-update":
       return { text: (await git(path, ["submodule", "update", "--init", "--recursive"], GIT_SLOW_TIMEOUT)).trim() || "submodules up to date" };
@@ -559,7 +639,7 @@ export async function gitOp(
       // IntelliJ-style: chosen files only, when the caller picked some.
       if (files?.length) {
         for (const f of files) if (f.includes("\0") || f === "") throw Error("bad file path");
-        return { text: (await git(path, ["commit", "-m", msg, "--", ...files])).split("\n")[0]?.trim() ?? "committed" };
+        return { text: (await git(path, ["commit", "-m", msg, "--", ...gitPaths(files)])).split("\n")[0]?.trim() ?? "committed" };
       }
       return { text: (await git(path, ["commit", "-am", msg])).split("\n")[0]?.trim() ?? "committed" };
     }
@@ -571,14 +651,14 @@ export async function gitOp(
       if (!target || !isAbsolute(target)) throw Error("worktree-add needs an absolute target path");
       if (branch) {
         if (!safeRef(branch)) throw Error("worktree-add branch name is invalid (letters, digits, ./-_)");
-        return { text: (await git(path, ["worktree", "add", "-b", branch, target])).trim() };
+        return { text: (await git(path, ["worktree", "add", "-b", branch, gitPath(target)])).trim() };
       }
       if (!ref || !safeRef(ref)) throw Error("worktree-add needs a branch (new) or ref (existing)");
-      return { text: (await git(path, ["worktree", "add", target, ref])).trim() };
+      return { text: (await git(path, ["worktree", "add", gitPath(target), ref])).trim() };
     }
     case "worktree-remove": {
       if (!target || !isAbsolute(target)) throw Error("worktree-remove needs an absolute path");
-      return { text: (await git(path, ["worktree", "remove", target])).trim() || `removed ${target}` };
+      return { text: (await git(path, ["worktree", "remove", gitPath(target)])).trim() || `removed ${target}` };
     }
   }
 }
