@@ -204,6 +204,57 @@ function renameSession() {
   };
 }
 
+/** Per-project default models (same fetch as NewSessionDialog): they decide
+ *  what "(default)" means for the current session — the project's model when
+ *  the cwd names a registered root, the device's otherwise. */
+const projectModels = ref<Record<string, { provider: string; modelId: string }>>({});
+watch(
+  device,
+  async (d) => {
+    projectModels.value = {};
+    if (!d) return;
+    try {
+      const { projects } = await deviceClient(d.id).projects(true);
+      projectModels.value = Object.fromEntries(
+        projects.filter((p) => p.model).map((p) => [p.rootPath, p.model!]),
+      );
+    } catch {
+      /* older device: no project defaults, the device default stays */
+    }
+  },
+  { immediate: true },
+);
+/** The current model with provenance: the agent's configured model when set,
+ *  else the model the session was created with (SessionSummary). */
+const sessionModel = computed(() => {
+  const m = agentState.value.agent.model;
+  if (m?.modelId) return m;
+  const s = sessionSummary.value;
+  return s?.model ? { provider: s.provider ?? "", modelId: s.model } : undefined;
+});
+/** Longest registered root wins — the same rule the device applies on create. */
+const modelIsDefault = computed(() => {
+  const m = sessionModel.value;
+  if (!m) return false;
+  const cwd = sessionSummary.value?.cwd;
+  const roots = Object.keys(projectModels.value)
+    .filter((root) => cwd === root || (cwd ?? "").startsWith(`${root}/`))
+    .sort((a, b) => b.length - a.length);
+  const projectDefault = roots.length ? projectModels.value[roots[0]] : undefined;
+  const key = projectDefault
+    ? `${projectDefault.provider}/${projectDefault.modelId}`
+    : (device.value?.info?.defaultModel ?? "");
+  return Boolean(key) && key === `${m.provider}/${m.modelId}`;
+});
+/** "model: <id> (<provider>)" + " (default)" when it is the effective default. */
+const modelLine = computed(
+  () =>
+    sessionModel.value &&
+    `model: ${sessionModel.value.modelId} (${sessionModel.value.provider})${
+      modelIsDefault.value ? " (default)" : ""
+    }`,
+);
+
 // ------------------------------------------------------------ App State (device-wide document)
 
 const shared = deviceFeed.sharedState;
@@ -396,11 +447,12 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
               </div>
               <ChevronDown :size="18" />
             </button>
+            <p v-if="modelLine" class="hint model-provenance">{{ modelLine }}</p>
             <div class="thinking-row">
               <span>Thinking</span
               ><select
                 aria-label="Thinking level"
-                :value="agentState.agent.thinkingLevel ?? 'low'"
+                :value="agentState.agent.thinkingLevel ?? 'medium'"
                 @change="
                   configure(
                     { thinkingLevel: ($event.target as HTMLSelectElement).value as ThinkingLevel },

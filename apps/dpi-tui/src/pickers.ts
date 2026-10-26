@@ -11,6 +11,7 @@ import {
   type Focusable,
   type SelectItem,
 } from "@earendil-works/pi-tui";
+import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import { agentTree, type TreeNode } from "../../dpi-sdk/src/models.ts";
 import type { App } from "./app.ts";
 import { c, selectTheme } from "./theme.ts";
@@ -286,8 +287,17 @@ export async function newSession(app: App, presetName?: string) {
     ? await chooseModel(app, app.info.defaultModel)
     : { provider: (app.info as { provider?: string }).provider ?? "openrouter", id: app.info.defaultModel, name: "(device default)" };
   if (!model) return;
+  // Thinking rides the create call: pick a level up front instead of paying
+  // for "high" on a scratch session the device default never asked for.
+  const thinking = await chooseThinking(app);
+  if (!thinking) return;
   await app.run(async () => {
-    const s = await app.client.createSession({ name: name || "New session", cwd, model: { provider: model.provider, modelId: model.id } });
+    const s = await app.client.createSession({
+      name: name || "New session",
+      cwd,
+      model: { provider: model.provider, modelId: model.id },
+      thinkingLevel: thinking,
+    });
     await app.attach(s.id, s.agents.find((a) => a.kind === "root")?.id ?? 1);
     app.flash(`Session created in ${cwd}`);
     if (!models.length) app.flash(`no model catalog on the device — using its default (${app.info.defaultModel})`);
@@ -341,6 +351,28 @@ function chooseModel(app: App, current?: string) {
         : undefined,
     );
     const index = models.findIndex((m) => m.id === current);
+    if (index >= 0) picker.list.setSelectedIndex(index);
+    app.overlay(picker);
+  });
+}
+
+/** The new-session thinking step: the same levels `y` cycles in-session. */
+function chooseThinking(app: App) {
+  return new Promise<ThinkingLevel | undefined>((done) => {
+    const picker = new Picker(
+      "Thinking level",
+      THINKING_LEVELS.map((level) => ({ value: level, label: level })),
+      (item) => {
+        app.closeOverlay();
+        done(item.value as ThinkingLevel);
+      },
+      () => {
+        app.closeOverlay();
+        done(undefined);
+      },
+    );
+    // Preselect the backend's create default, so a bare enter keeps "medium".
+    const index = THINKING_LEVELS.indexOf("medium");
     if (index >= 0) picker.list.setSelectedIndex(index);
     app.overlay(picker);
   });

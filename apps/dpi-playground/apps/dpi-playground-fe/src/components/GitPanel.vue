@@ -35,6 +35,7 @@ import {
 import { deviceId, network, sessionSummary, notify, select } from "../client/store";
 import { deviceClient } from "../client/hub";
 import { ensureGit, gitEntry, wireGitAutoRefresh } from "../client/git-store";
+import { addWorktree as gitAddWorktree, createSessionOn } from "../client/worktree";
 import type { GitStatus } from "@sdk/client";
 
 const props = defineProps<{ deviceId?: string; cwd?: string }>();
@@ -717,14 +718,10 @@ watch(cpsOpen, (open) => {
 async function addWorktree(branch: string) {
   wtMenu.value = false;
   if (!devId.value || !cwd.value || !status.value?.root) return;
-  const root = status.value.root;
-  const parent = root.slice(0, root.lastIndexOf("/"));
-  const base = root.slice(root.lastIndexOf("/") + 1);
-  const target = `${parent}/${base}-${branch.replace(/[/\\]+/g, "-")}`;
   busy.value = "wt";
   try {
-    const r = await deviceClient(devId.value).gitOp(cwd.value, "worktree-add", { branch, target });
-    notify(r.text.split("\n")[0] ?? `worktree ${target}`);
+    const r = await gitAddWorktree(deviceClient(devId.value), cwd.value, status.value.root, branch);
+    notify(r.text);
     newBranch.value = "";
     await refresh();
   } catch (e) {
@@ -741,11 +738,12 @@ async function sessionOn(path: string, branch: string | null) {
     const info = network.devices.value.find((d) => d.id === devId.value)?.info;
     const model = modelCandidates(info)[0];
     if (!model) return notify(`no model available on ${devId.value} — cannot create a session`);
-    const s = await deviceClient(devId.value).createSession({
-      name: branch ?? path.slice(path.lastIndexOf("/") + 1),
-      cwd: path,
-      model: { provider: model.provider, modelId: model.id },
-    });
+    const s = await createSessionOn(
+      deviceClient(devId.value),
+      path,
+      branch ?? path.slice(path.lastIndexOf("/") + 1),
+      { provider: model.provider, modelId: model.id },
+    );
     select({ deviceId: devId.value, sessionId: s.id, agentId: 1 });
     notify(`session "${s.name}" on ${path}`);
   } catch (e) {

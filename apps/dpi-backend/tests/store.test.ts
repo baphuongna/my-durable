@@ -38,8 +38,15 @@ test("sessions, browse, names, forks, jobs, restart recovery, approval, interrup
     const session = await store.create({ name: "Test", cwd: "project/nested", model: faux });
     assert.equal(session.cwd, join(t.work, "project", "nested"));
     assert.ok(session.dbPath.startsWith(join(t.options.dataDir, "sessions")));
+    assert.equal(session.provider, "faux", "summaries carry the provider alongside the model");
+    assert.equal(session.model, faux.modelId);
     assert.equal(store.resolveSession("test").id, session.id);
     assert.deepEqual(session.agents.map((a) => [a.id, a.name, a.kind]), [[1, "Main", "root"]]);
+    // New sessions start at pi's defaultThinkingLevel; a create without a level no longer means "low".
+    {
+      const fresh = await store.resolveAgent(session.id, "main");
+      assert.equal((await store.agentDetail(fresh.row, fresh.c)).config.thinkingLevel, "medium");
+    }
     const db = new DatabaseSync(store.catalogPath);
     assert.equal((db.prepare("SELECT count(*) as n FROM sessions").get() as { n: number }).n, 1);
     db.close();

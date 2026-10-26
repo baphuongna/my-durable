@@ -6,6 +6,7 @@ import type { TreeNode } from "@sdk/models";
 import TreeRow from "./TreeRow.vue";
 import ProjectBar from "./ProjectBar.vue";
 import { deviceClient, hub } from "../client/hub";
+import { createWorktreeSession } from "../client/worktree";
 import {
   attempt,
   expanded,
@@ -207,6 +208,26 @@ async function action(node: TreeNode, name: string) {
         value: s.name,
         submit: "Save name",
         run: (value) => client.session(s.id).rename(value),
+      };
+    else if (name === "worktree")
+      ui.dialog = {
+        kind: "prompt",
+        title: "New worktree session",
+        label: "Branch name",
+        value: s.name.replace(/[/\\]+/g, "-"),
+        hint: `Adds a sibling checkout of ${s.cwd} on the branch (git worktree add) and opens a session in it.`,
+        submit: "Create worktree session",
+        run: async (branch) => {
+          const created = await createWorktreeSession({
+            deviceApi: client,
+            cwd: s.cwd,
+            sessionName: branch,
+            branch,
+          });
+          const root = created.agents.find((a) => a.kind === "root") ?? created.agents[0];
+          select({ deviceId: device.id, sessionId: created.id, agentId: root?.id ?? 1 });
+          notify(`session "${created.name}" on ${created.cwd}`);
+        },
       };
     else if (name === "archive")
       ui.dialog = {

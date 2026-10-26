@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { Plus, X } from "lucide-vue-next";
+import { THINKING_LEVELS, type ThinkingLevel } from "@sdk/api";
 import DirBrowser from "./DirBrowser.vue";
 import { deviceClient, message } from "../client/hub";
 import { network, notify, select } from "../client/store";
@@ -41,7 +42,7 @@ const catalogEmpty = computed(
 /** The device lists its built-in catalog but chat needs the key (0.0.12+ devices). */
 const keyless = computed(() => !!(device.value?.info as { providerKeyMissing?: boolean } | undefined)?.providerKeyMissing);
 const key = (m: { provider: string; id: string }) => `${m.provider}/${m.id}`;
-const draft = ref({ name: "", cwd: "", model: "" });
+const draft = ref({ name: "", cwd: "", model: "", thinking: "medium" as ThinkingLevel });
 /** orca new-workspace composer: the last N working dirs per device, one click
  *  away. localStorage only — the device never learns about recents. */
 const RECENT_KEY = "dpi-recent-cwds";
@@ -123,6 +124,7 @@ async function create() {
       name: draft.value.name.trim() || "New session",
       cwd: draft.value.cwd.trim(),
       model: { provider: model.provider, modelId: model.id },
+      thinkingLevel: draft.value.thinking,
     });
     rememberCwd(device.value.id, created.cwd);
     const root = created.agents.find((a) => a.kind === "root") ?? created.agents[0];
@@ -199,6 +201,13 @@ async function create() {
           ><select v-model="draft.model" aria-label="New session model">
             <option v-for="m in models" :key="key(m)" :value="key(m)">
               {{ m.tier }} / {{ m.name }}
+            </option>
+          </select></label
+        >
+        <label
+          >Thinking<select v-model="draft.thinking" aria-label="New session thinking level">
+            <option v-for="level in THINKING_LEVELS" :key="level" :value="level">
+              {{ level }}
             </option>
           </select></label
         >

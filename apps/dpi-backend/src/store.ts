@@ -1107,7 +1107,7 @@ export class Store {
       model: model.modelId,
       provider: model.provider,
     };
-    await this.openAgent(row, true, body.thinkingLevel ?? "low");
+    await this.openAgent(row, true, body.thinkingLevel ?? "medium");
     this.catalog.exec("BEGIN");
     try {
       this.catalog
@@ -1243,7 +1243,7 @@ export class Store {
     return await this.sessionSummary(row);
   }
 
-  async openAgent(row: SessionRow, create = false, thinkingLevel: ThinkingLevel = "low") {
+  async openAgent(row: SessionRow, create = false, thinkingLevel: ThinkingLevel = "medium") {
     const current = this.opened.get(row.id);
     if (current) return current.harness;
     if (!create) await stat(row.dbPath);
@@ -2030,6 +2030,7 @@ export class Store {
       name: row.name,
       cwd: row.cwd,
       model: row.model,
+      provider: row.provider,
       createdAt: row.createdAt,
       dbPath: row.dbPath,
       compaction: this.compactionOf(row.id),

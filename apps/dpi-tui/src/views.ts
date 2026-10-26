@@ -302,6 +302,8 @@ export function renderHerdPanel(
   ctxLeft?: number,
   device?: string,
   git?: { repo: boolean; branch?: string; head?: string; staged?: number; unstaged?: number; untracked?: number; ahead?: number; behind?: number; worktreeOf?: string },
+  /** The device's advertised default model id — a session on it is "(default)". */
+  defaultModel?: string,
 ): string[] {
   // No session selected: a blank panel next to the divider is what made the
   // wide layout look broken — herdr's panel always carries a device header.
@@ -321,10 +323,13 @@ export function renderHerdPanel(
   const agents = s.agents.map((a) =>
     a.kind === "fork" ? `⑂ ${a.name}` : a.kind === "subagent" ? `↳ ${a.name}` : `● ${a.name}`,
   );
+  // A session on exactly the device's default model says so, muted — the same
+  // signal the web dialog's "(device default)" row carries.
+  const onDefault = defaultModel !== undefined && s.model === defaultModel;
   const lines = [
     c.muted(" OVERVIEW"),
     ` ${c.bold(s.name)}`,
-    ` ${c.muted(basename(s.cwd))} ${c.muted("·")} ${c.text(basename(s.model) || s.model)}`,
+    ` ${c.muted(basename(s.cwd))} ${c.muted("·")} ${c.text(basename(s.model) || s.model)}${onDefault ? c.muted(" (default)") : ""}`,
     git?.repo
       ? ` ${c.muted("⎇")} ${c.text(git.branch ?? git.head ?? "?")}${c.muted("±")}${c.text(String((git.staged ?? 0) + (git.unstaged ?? 0) + (git.untracked ?? 0)))}${git.ahead ? c.text(` ↑${git.ahead}`) : ""}${git.behind ? c.text(` ↓${git.behind}`) : ""}${git.worktreeOf ? c.muted(" · worktree") : ""}`
       : "",

@@ -2,8 +2,9 @@
 // session" → `No session "undefined"`): the box runs the REAL backend with
 // provider default and NO provider key — the exact laptop configuration
 // (empty model catalog). Drives `n` → name → directory → (model step must be
-// SKIPPED) → session created, and checks the empty herd state + overview
-// panel render instead of a bare table with a floating divider.
+// SKIPPED) → thinking level → session created, and checks the empty herd
+// state + overview panel render instead of a bare table with a floating
+// divider.
 // Run: node tests/newsession-ui.mjs (requires tuistory).
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
@@ -122,6 +123,14 @@ try {
   await tui("wait", "Model (", "--timeout", "5000");
   assert.match(await tui("snapshot", "--trim"), /no API key on this device/, "the keyless hint must be visible");
   await tui("press", "enter");
+  // The thinking step: after the model, before the create. The backend's
+  // create default ("medium") must be preselected, and the level picked here
+  // must reach the created session's agent config.
+  await tui("wait", "Thinking level", "--timeout", "5000");
+  assert.match(await tui("snapshot", "--trim"), /→ medium/, "medium (create default) is preselected");
+  await tui("press", "j");
+  assert.match(await tui("snapshot", "--trim"), /→ high/, "j moves the selection off the default");
+  await tui("press", "enter");
   // A successful create attaches straight into the agent view — waiting for the
   // flash text is a race; the attached session address is the real signal.
   await tui("wait", "scratch › #1", "--timeout", "10000").catch(async (e) => {
@@ -131,11 +140,40 @@ try {
   const after = await tui("snapshot", "--trim");
   assert.doesNotMatch(after, /No session "undefined"/, "the reported error must be gone");
   assert.match(after, /1 session/, "the header counts the new session");
-  console.log("PASS R02 n › name › directory › model picker (built-in catalog, keyless hint) creates a session");
+  console.log("PASS R02 n › name › directory › model › thinking (high) creates a session");
 
   const sessions = await (await fetch(`${url}/v1/sessions`, { headers: auth })).json();
-  assert.ok(sessions.some((s) => s.name === "scratch"), "the session exists on the device");
+  const created = sessions.find((s) => s.name === "scratch");
+  assert.ok(created, "the session exists on the device");
   console.log("PASS R03 the created session is really on the device");
+  const rootAgent = created.agents.find((a) => a.kind === "root") ?? created.agents[0];
+  const config = await (
+    await fetch(`${url}/v1/sessions/${created.id}/agents/${rootAgent.id}/config`, { headers: auth })
+  ).json();
+  assert.equal(config.thinkingLevel, "high", "the picked thinking level reached the created agent");
+  console.log("PASS R04 the thinking step's choice (high) is the created agent's config");
+
+  // Esc at the thinking step cancels the WHOLE flow — nothing reaches the device.
+  await tui("press", "n");
+  await tui("type", "aborted");
+  await tui("press", "enter");
+  await tui("wait", "Working directory", "--timeout", "5000");
+  await new Promise((r) => setTimeout(r, 400));
+  await tui("press", "enter");
+  await tui("wait", "✓ Use", "--timeout", "5000");
+  await new Promise((r) => setTimeout(r, 300));
+  await tui("press", "enter");
+  await tui("wait", "Model (", "--timeout", "5000");
+  await tui("press", "enter");
+  await tui("wait", "Thinking level", "--timeout", "5000");
+  await tui("press", "escape");
+  await new Promise((r) => setTimeout(r, 500));
+  const cancelled = await tui("snapshot", "--trim");
+  assert.doesNotMatch(cancelled, /Thinking level/, "esc closed the picker");
+  assert.doesNotMatch(cancelled, /Working directory/, "the whole flow is gone, not just the last step");
+  const afterEsc = await (await fetch(`${url}/v1/sessions`, { headers: auth })).json();
+  assert.ok(!afterEsc.some((s) => s.name === "aborted"), "esc at the thinking step created nothing");
+  console.log("PASS R05 esc at the thinking step cancels the whole flow");
 
   await tui("close");
 } finally {

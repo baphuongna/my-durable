@@ -1062,7 +1062,7 @@ export class App {
     if (!wide) return table;
     const selected = this.sessions.find((s) => s.id === (this.selectedId ?? this.sessionId));
     if (selected?.cwd) this.refreshGit(selected.cwd);
-    const panel = renderHerdPanel(panelW, h, selected, this.contextLeft(), this.device.name, this.gitOf(selected?.cwd));
+    const panel = renderHerdPanel(panelW, h, selected, this.contextLeft(), this.device.name, this.gitOf(selected?.cwd), this.info.defaultModel);
     return joinPanel(table, panel, tableW, w, h);
   }
 

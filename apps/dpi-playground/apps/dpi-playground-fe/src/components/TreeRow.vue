@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Archive,
   KeyRound,
+  Split,
 } from "lucide-vue-next";
 import DeviceIcon from "./DeviceIcon.vue";
 import type { TreeNode } from "@sdk/models";
@@ -176,6 +177,12 @@ const title = computed(() => {
       <b class="name">{{ label }}</b>
       <span class="path">…/{{ session.cwd.split("/").filter(Boolean).at(-1) }}</span>
       <span v-if="branch" class="branch" :title="`git branch of ${session.cwd}`">⎇ {{ branch }}</span>
+      <span
+        v-if="session.model"
+        class="tag"
+        :title="session.provider ? `${session.provider} / ${session.model}` : session.model"
+        >{{ session.model }}</span
+      >
       <i v-if="busy" class="dot work" title="Working" />
       <span v-if="background" class="bg-count" :title="`${background} background task(s)`"
         ><i class="dot bg" />{{ background }} bg</span
@@ -197,6 +204,14 @@ const title = computed(() => {
           @click="emit('action', 'rename')"
         >
           <Pencil :size="16" /></button
+        ><button
+          class="icon-button"
+          :disabled="!online"
+          :aria-label="`New worktree session from ${label}`"
+          title="New worktree session: branch this folder's repo and open a session in the sibling checkout"
+          @click="emit('action', 'worktree')"
+        >
+          <Split :size="16" /></button
         ><button
           class="icon-button"
           :disabled="!online"

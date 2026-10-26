@@ -54,7 +54,7 @@ export type ErrorCode =
   | "offline"
   | "rate_limited"
   | "timeout";
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "off",
   "minimal",
@@ -62,6 +62,7 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "medium",
   "high",
   "xhigh",
+  "max",
 ];
 export type WhenBusy = "followUp" | "steer" | "reject";
 
@@ -146,6 +147,8 @@ export interface SessionSummary {
   name: string;
   cwd: string;
   model: string;
+  /** Provider id of the session's model ("faux" offline; same column the catalog stores). */
+  provider: string;
   createdAt: number;
   dbPath: string;
   busy: boolean;

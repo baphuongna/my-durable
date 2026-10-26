@@ -84,7 +84,10 @@ test("REST v1: auth, sessions, agents, messages, waits, idempotency, errors", as
     assert.equal(detail.config.model?.modelId, "echo");
     const config = await client.agent(s1.id, "reviewer").configure({ thinkingLevel: "high", instructions: "Be brief." });
     assert.equal(config.thinkingLevel, "high");
-    await assert.rejects(() => client.agent(s1.id, "reviewer").configure({ thinkingLevel: "max" as never }), (e: DpiError) => e.code === "invalid");
+    // pi 1.4.0 tops out at "max"; anything past the scale is still rejected.
+    const topped = await client.agent(s1.id, "reviewer").configure({ thinkingLevel: "max" });
+    assert.equal(topped.thinkingLevel, "max");
+    await assert.rejects(() => client.agent(s1.id, "reviewer").configure({ thinkingLevel: "ultra" as never }), (e: DpiError) => e.code === "invalid");
     await assert.rejects(() => client.agent(s1.id, "nobody").get(), (e: DpiError) => e.code === "not_found");
     const agents = await client.session(s1.id).agents();
     assert.deepEqual(agents.map((a) => a.name).sort(), ["Lead", "branch", "reviewer"]);

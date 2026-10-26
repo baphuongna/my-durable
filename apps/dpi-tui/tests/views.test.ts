@@ -16,6 +16,7 @@ import {
   networkRows,
   renderHeader,
   renderHerd,
+  renderHerdPanel,
   renderNetwork,
   renderStatusbar,
   renderViewbar,
@@ -36,6 +37,7 @@ const session = (id: string, name: string, cwd: string, busy = false): SessionSu
   name,
   cwd,
   model: "echo/echo-mini",
+  provider: "openrouter",
   createdAt: Date.now() - 90_000,
   dbPath: `/tmp/${id}.db`,
   busy,
@@ -194,6 +196,21 @@ test("ageOf: compact human ages", () => {
   assert.equal(ageOf(now - 65_000, now), "1m");
   assert.equal(ageOf(now - 7_200_000, now), "2h");
   assert.equal(ageOf(now - 90_000_000, now), "1d");
+});
+
+test("renderHerdPanel: the model carries a muted (default) tag only when it IS the device default", () => {
+  const s = session("s1", "alpha", "/home/bom/source/my-durable");
+  const flat = (lines: string[]) => lines.map(stripAnsi).join("\n");
+  // The session's model id equals the device's advertised default → annotated.
+  const onDefault = renderHerdPanel(44, 20, s, 40, "box-one", undefined, "echo/echo-mini");
+  for (const line of onDefault) assert.equal(visibleWidth(line), 44, "panel lines stay width-exact");
+  assert.match(flat(onDefault), /echo-mini \(default\)/, "default model is tagged");
+  // Any other model → no tag.
+  const other = renderHerdPanel(44, 20, s, 40, "box-one", undefined, "anthropic/claude-sonnet-5.5");
+  assert.doesNotMatch(flat(other), /\(default\)/, "non-default model is not tagged");
+  // No default known (older device info) → never annotate.
+  const unknown = renderHerdPanel(44, 20, s, 40, "box-one");
+  assert.doesNotMatch(flat(unknown), /\(default\)/, "no device default → no tag");
 });
 
 // ---------- slashSuggestions ----------
