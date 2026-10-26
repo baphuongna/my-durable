@@ -561,6 +561,16 @@ export class Store {
       : (catalog[0] ? `${catalog[0].provider}/${catalog[0].id}` : defaultModelId);
   }
 
+  /** defaultModel() as a ModelRef, for callers that need the pair (create's
+   *  ladder). Faux ids carry no provider prefix; catalog ids are provider/id. */
+  private defaultModelRef(): ModelRef | undefined {
+    const id = this.defaultModel();
+    if (this.options.provider === "faux") return { provider: "faux", modelId: id };
+    const slash = id.indexOf("/");
+    if (slash <= 0 || slash === id.length - 1) return undefined;
+    return { provider: id.slice(0, slash), modelId: id.slice(slash + 1) };
+  }
+
   /** True when the device has no provider key: the catalog shown is the built-in
    *  list, and chat requests will fail until a key is set (deviceInfo carries it
    *  so every client can say so instead of showing a mystery empty picker). */
@@ -1094,7 +1104,20 @@ export class Store {
     // project's choice. The project of a path is its longest registered root.
     const explicit = body.model as ModelRef | undefined;
     const projectDefault = explicit ? undefined : this.projectForPath(cwd)?.model;
-    const model = this.validateModel(explicit ?? projectDefault);
+    // Nothing explicit and no project default: fall back to the DEVICE default
+    // (GET /v1/device defaultModel — the value every client dialog prefills).
+    // Only the genuinely-nothing-available case keeps the old error, so a
+    // resolution that cannot be validated (empty catalog, unknown id) falls
+    // through to validateModel(undefined).
+    let deviceDefault: ModelRef | undefined;
+    if (!explicit && !projectDefault) {
+      try {
+        deviceDefault = this.validateModel(this.defaultModelRef());
+      } catch {
+        deviceDefault = undefined;
+      }
+    }
+    const model = this.validateModel(explicit ?? projectDefault ?? deviceDefault);
     if (body.thinkingLevel !== undefined && !THINKING_LEVELS.includes(body.thinkingLevel))
       throw invalid("Invalid thinking level");
     const id = randomUUID();

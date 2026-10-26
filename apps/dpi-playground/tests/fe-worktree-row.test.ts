@@ -90,6 +90,14 @@ function stubApi(opts: { status?: object; failOp?: boolean } = {}) {
         return { text: "Preparing worktree (checking out 'feat/x')\nHEAD is now at abc" };
       },
       createSession: async (body: unknown) => {
+        // Wire CONTRACT, not call-count: CreateSessionBody.model is either
+        // absent or exactly { provider, modelId } — a bare modelId string is
+        // the 400 the live bug was caught with, so it fails the test here.
+        const m = (body as { model?: unknown }).model;
+        if (m !== undefined && (typeof m !== "object" || m === null || typeof (m as { provider?: unknown }).provider !== "string" || typeof (m as { modelId?: unknown }).modelId !== "string" || Object.keys(m).sort().join(",") !== "modelId,provider"))
+          throw new TypeError(
+            `createSession body.model must be absent or { provider, modelId }, got: ${JSON.stringify(m)}`,
+          );
         calls.push("create");
         createBody = body;
         return { ...summary, id: "s9", cwd: (body as { cwd: string }).cwd, name: (body as { name: string }).name };
@@ -157,4 +165,124 @@ test("createWorktreeSession: non-repo cwd fails fast — no git op, no session",
   );
   assert.deepEqual(s.calls, ["status:/plain/dir"], "nothing may run after a non-repo status");
   assert.equal(s.createBody, undefined);
+});
+
+// ------------------------------------------------ model wire shape (live bug)
+// Caught live: the create body carried SessionSummary.model — a bare modelId
+// string — and the device answered 400 "model must be { provider, modelId }".
+// The stub's createSession now enforces the shape at runtime; these pin the
+// two legitimate shapes: rewrapped object when the source has both fields,
+// absent when it doesn't.
+
+test("createWorktreeSession: a source session's model+provider ride along as { provider, modelId }", async () => {
+  const wt = await vite.ssrLoadModule("/src/client/worktree.ts");
+  const s = stubApi();
+  await wt.createWorktreeSession({
+    deviceApi: s.api,
+    cwd: "/w/repo",
+    sessionName: "fix",
+    branch: "feat/x",
+    source: { model: "claude-x", provider: "faux" },
+  });
+  assert.deepEqual(
+    s.createBody,
+    { name: "fix", cwd: "/w/repo-feat-x", model: { provider: "faux", modelId: "claude-x" } },
+    "model must be the object the create route validates",
+  );
+});
+
+test("createWorktreeSession without a catalog: source missing provider (or model) omits model — never a string", async () => {
+  const wt = await vite.ssrLoadModule("/src/client/worktree.ts");
+  for (const source of [{ model: "claude-x" }, { provider: "faux" }, undefined]) {
+    const s = stubApi();
+    await wt.createWorktreeSession({ deviceApi: s.api, cwd: "/w/repo", sessionName: "fix", branch: "b", source });
+    assert.deepEqual(
+      s.createBody,
+      { name: "fix", cwd: "/w/repo-b" },
+      `model must be absent when the source lacks model or provider (source=${JSON.stringify(source)})`,
+    );
+  }
+});
+
+test("the stub rejects a string model: a regression to the wire bug fails createSession itself", async () => {
+  const s = stubApi();
+  // The live-bug body, verbatim: model forwarded as the bare modelId string
+  // SessionSummary stores. The stub — like the device — must refuse it.
+  await assert.rejects(
+    s.api.createSession({ name: "regress", cwd: "/w/repo-b", model: "claude-x" } as never),
+    /must be absent or \{ provider, modelId \}/,
+  );
+  assert.deepEqual(s.calls, [], "a rejected body never counts as a created session");
+});
+
+test("createWorktreeSession + catalog: a served source model is forwarded; a stale one falls to the catalog default", async () => {
+  const wt = await vite.ssrLoadModule("/src/client/worktree.ts");
+  const catalog = [
+    { provider: "zai", id: "glm-4.7" },
+    { provider: "faux", id: "faux-1" },
+  ];
+  // Served pair → forwarded in the object shape.
+  const served = stubApi();
+  await wt.createWorktreeSession({
+    deviceApi: served.api,
+    cwd: "/w/repo",
+    sessionName: "fix",
+    branch: "b",
+    source: { model: "glm-4.7", provider: "zai" },
+    catalog,
+    defaultModel: "faux/faux-1",
+  });
+  assert.deepEqual(served.createBody, {
+    name: "fix",
+    cwd: "/w/repo-b",
+    model: { provider: "zai", modelId: "glm-4.7" },
+  });
+  // Stale pair (session outlived a catalog change, seen live) → the catalog
+  // default, NEVER omitted: the worktree's brand-new project has no default
+  // and the create route 400s an absent model (both proven live).
+  const stale = stubApi();
+  await wt.createWorktreeSession({
+    deviceApi: stale.api,
+    cwd: "/w/repo",
+    sessionName: "fix",
+    branch: "b",
+    source: { model: "claude-x", provider: "openrouter" },
+    catalog,
+    defaultModel: "faux/faux-1",
+  });
+  assert.deepEqual(stale.createBody, {
+    name: "fix",
+    cwd: "/w/repo-b",
+    model: { provider: "faux", modelId: "faux-1" },
+  });
+  // Stale pair, defaultModel not in the catalog → catalog[0] (NewSessionDialog's rule).
+  const first = stubApi();
+  await wt.createWorktreeSession({
+    deviceApi: first.api,
+    cwd: "/w/repo",
+    sessionName: "fix",
+    branch: "b",
+    source: { model: "claude-x", provider: "openrouter" },
+    catalog,
+  });
+  assert.deepEqual(first.createBody, {
+    name: "fix",
+    cwd: "/w/repo-b",
+    model: { provider: "zai", modelId: "glm-4.7" },
+  });
+  // No source at all → still a valid explicit model when a catalog exists.
+  const none = stubApi();
+  await wt.createWorktreeSession({
+    deviceApi: none.api,
+    cwd: "/w/repo",
+    sessionName: "fix",
+    branch: "b",
+    catalog,
+    defaultModel: "faux/faux-1",
+  });
+  assert.deepEqual(none.createBody, {
+    name: "fix",
+    cwd: "/w/repo-b",
+    model: { provider: "faux", modelId: "faux-1" },
+  });
 });

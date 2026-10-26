@@ -155,13 +155,16 @@ test("per-project default model: applies when a session sets none, explicit wins
     const inherited = await store.create({ name: "No model given", cwd: "project" });
     assert.equal(inherited.model, other.modelId, "the project default applies");
 
-    // Clearing the default goes back to "the caller must name a model".
+    // Clearing the default falls back to the DEVICE default (never an error):
+    // the faux device advertises "echo", so a model-less create still works.
     await store.updateProject(project.id, { model: "" });
     assert.equal(store.projectList()[0].model, undefined, 'model: "" clears');
-    await assert.rejects(
-      () => store.create({ name: "No default any more", cwd: "project" }),
-      /model must be/,
-      "with no project default and no explicit model, create says so again",
+    const deviceFallback = await store.create({ name: "No default any more", cwd: "project" });
+    assert.equal(deviceFallback.provider, "faux");
+    assert.equal(
+      deviceFallback.model,
+      store.deviceInfo().defaultModel,
+      "with no project default and no explicit model, create uses the device default",
     );
   } finally {
     await store.close();

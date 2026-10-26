@@ -223,6 +223,9 @@ async function action(node: TreeNode, name: string) {
             cwd: s.cwd,
             sessionName: branch,
             branch,
+            source: s,
+            catalog: device.info?.models,
+            defaultModel: device.info?.defaultModel,
           });
           const root = created.agents.find((a) => a.kind === "root") ?? created.agents[0];
           select({ deviceId: device.id, sessionId: created.id, agentId: root?.id ?? 1 });

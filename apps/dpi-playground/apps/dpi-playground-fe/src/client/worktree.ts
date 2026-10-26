@@ -54,6 +54,24 @@ export interface CreateWorktreeSessionArgs {
   /** Repo root when the caller already has it (GitPanel's cached status);
    *  resolved from the device otherwise. */
   root?: string;
+  /** The session this one is branched from (session tree, F3). Its model rides
+   *  along ONLY in the object shape the create route requires — SessionSummary
+   *  stores `model` as a bare modelId string, so it is rewrapped as
+   *  `{ provider, modelId }`; a bare string is a 400 ("model must be
+   *  { provider, modelId }"). A field missing — or a pair the device no
+   *  longer serves (seen live: sessions outliving a curated-model removal) —
+   *  falls to the catalog default, NOT to omitting: the worktree is a sibling
+   *  folder, its brand-new project has no default, and the create route has
+   *  no device-default fallback for an absent model (both proven live). */
+  source?: Pick<SessionSummary, "model" | "provider">;
+  /** The device's served catalog (the tree's device.info.models) and its
+   *  default (device.info.defaultModel, "provider/id"). With a catalog the
+   *  resolution is: source pair if served → catalog default → catalog[0]
+   *  (NewSessionDialog's rule). Without one, any { model, provider } pair is
+   *  forwarded as-is and a missing pair omits `model` (the documented
+   *  create-body contract: absent or { provider, modelId }, never a string). */
+  catalog?: ReadonlyArray<{ provider: string; id: string }>;
+  defaultModel?: string;
 }
 
 /** Worktree + session in one call (session tree, F3): add the sibling
@@ -66,6 +84,9 @@ export async function createWorktreeSession({
   sessionName,
   branch,
   root,
+  source,
+  catalog,
+  defaultModel,
 }: CreateWorktreeSessionArgs): Promise<SessionSummary> {
   let repoRoot = root;
   if (!repoRoot) {
@@ -74,5 +95,16 @@ export async function createWorktreeSession({
     repoRoot = status.root;
   }
   const { target } = await addWorktree(deviceApi, cwd, repoRoot, branch);
-  return createSessionOn(deviceApi, target, sessionName);
+  // Wire shape, not a passthrough: SessionSummary.model is a modelId string,
+  // CreateSessionBody.model is { provider, modelId } — never a bare string.
+  const { model: srcModel, provider: srcProvider } = source ?? {};
+  const served =
+    srcModel && srcProvider && (!catalog || catalog.some((m) => m.provider === srcProvider && m.id === srcModel))
+      ? { provider: srcProvider, modelId: srcModel }
+      : undefined;
+  const fallback = catalog?.length
+    ? (catalog.find((m) => `${m.provider}/${m.id}` === defaultModel) ?? catalog[0])
+    : undefined;
+  const model = served ?? (fallback ? { provider: fallback.provider, modelId: fallback.id } : undefined);
+  return createSessionOn(deviceApi, target, sessionName, model);
 }
