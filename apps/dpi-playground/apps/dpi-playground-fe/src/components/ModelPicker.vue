@@ -4,7 +4,6 @@ import { Check, X } from "lucide-vue-next";
 import type { ModelInfo } from "@sdk/api";
 import {
   agentHandle,
-  agentState,
   attempt,
   device,
   icon,
@@ -12,6 +11,7 @@ import {
   notify,
   number,
   refreshDetail,
+  sessionModel,
 } from "../client/store";
 
 const emit = defineEmits<{ close: [] }>();
@@ -25,9 +25,20 @@ const filtered = computed(() =>
     `${m.name} ${m.id} ${m.tier}`.toLowerCase().includes(search.value.toLowerCase()),
   ),
 );
-const isCurrent = (m: ModelInfo) =>
-  m.id === agentState.value.agent.model?.modelId &&
-  m.provider === agentState.value.agent.model?.provider;
+const isCurrent = (m: ModelInfo) => {
+  const c = sessionModel.value;
+  return !!c && m.id === c.modelId && m.provider === c.provider;
+};
+/** The active model when this device's catalog does not list it (picked on
+ *  another device, or a newer catalog there): pinned and disabled, so the
+ *  current model is always visible — searching the catalog alone cannot find
+ *  it. */
+const offCatalog = computed(() => {
+  const m = sessionModel.value;
+  return m && !models.value.some((x) => x.provider === m.provider && x.id === m.modelId)
+    ? m
+    : undefined;
+});
 
 async function choose(m: ModelInfo) {
   const done = await attempt(() =>
@@ -60,6 +71,13 @@ async function choose(m: ModelInfo) {
         aria-label="Search models"
       />
       <div class="model-list">
+        <div v-if="offCatalog" class="model-row off-catalog" aria-disabled="true">
+          <img :src="icon(offCatalog.modelId)" alt="" />
+          <div>
+            <strong>{{ offCatalog.modelId }}</strong>
+            <small>{{ offCatalog.provider }} / current · not in this device's catalog</small>
+          </div>
+        </div>
         <button
           v-for="m in filtered"
           :key="`${m.provider}/${m.id}`"

@@ -30,30 +30,55 @@ const USAGE = `usage: dpi-tui [device[:session[:agent]]] [options]
   --url, --token        connect to any dpi-backend directly (also DPI_URL, DPI_TOKEN)
   --save <id>           store a --url device in ~/.dpi/network.sqlite under <id>`;
 
+/** Run a parser whose failure is a usage error (exit 2), never a raw
+ *  ERR_PARSE_ARGS_UNKNOWN_OPTION stack — the convention of the other subcommands
+ *  (R6 cli finding 4: `dpi tui --bogus` used to throw). */
+function parseOrUsage<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (e) {
+    process.stderr.write(`dpi tui: ${(e as Error).message}\n\n${USAGE}\n`);
+    process.exit(2);
+  }
+}
+
+/** A connect URL must be absolute http(s) — checked at the door so a typo is a
+ *  one-line error, not `TypeError: Invalid URL` deep in startup (R6 cli finding 3). */
+export function isValidConnectUrl(candidate: string): boolean {
+  try {
+    const u = new URL(candidate);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
   process.exit(1);
 }
 
-const { values, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    url: { type: "string" },
-    token: { type: "string" },
-    save: { type: "string" },
-    session: { type: "string", short: "s" },
-    agent: { type: "string", short: "a" },
-    new: { type: "string" },
-    cwd: { type: "string" },
-    model: { type: "string" },
-    pair: { type: "string" },
-    hub: { type: "string" },
-    "hub-url": { type: "string" },
-    "hub-token": { type: "string" },
-    force: { type: "boolean" },
-    help: { type: "boolean", short: "h" },
-  },
-});
+const { values, positionals } = parseOrUsage(() =>
+  parseArgs({
+    allowPositionals: true,
+    options: {
+      url: { type: "string" },
+      token: { type: "string" },
+      save: { type: "string" },
+      session: { type: "string", short: "s" },
+      agent: { type: "string", short: "a" },
+      new: { type: "string" },
+      cwd: { type: "string" },
+      model: { type: "string" },
+      pair: { type: "string" },
+      hub: { type: "string" },
+      "hub-url": { type: "string" },
+      "hub-token": { type: "string" },
+      force: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  }),
+);
 if (values.help) {
   process.stdout.write(`${USAGE}\n`);
   process.exit(0);
@@ -64,6 +89,8 @@ const config = tryLoadNetworkConfig(process.env.INIT_CWD ?? process.cwd());
 if (config) syncConfigToRegistry(config, registry);
 
 const url = values.url ?? process.env.DPI_URL;
+// R6 cli finding 3: a bogus --url/DPI_URL crashed later at `new URL(url)` — fail here.
+if (url !== undefined && !isValidConnectUrl(url)) fail("--url must be a valid http(s) URL");
 const [deviceRef = "", sessionRef = values.session, agentRef = values.agent] = (
   positionals[0] ?? (url ? "" : (process.env.DPI_DEVICE ?? ""))
 ).split(":");

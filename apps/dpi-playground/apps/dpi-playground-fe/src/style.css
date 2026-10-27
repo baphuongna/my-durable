@@ -1821,6 +1821,25 @@ svg {
   gap: 5px;
   flex: 1;
 }
+/* The pinned current model outside this device's catalog: laid out like a
+   catalog row, but visibly inert — it cannot be chosen from here. */
+.model-list .model-row.off-catalog {
+  width: 100%;
+  display: flex;
+  text-align: left;
+  justify-content: flex-start;
+  padding: 12px 10px;
+  border-radius: 6px;
+  gap: 12px;
+  opacity: 0.75;
+  cursor: default;
+}
+.model-list .model-row.off-catalog > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+}
 .model-list strong {
   font-size: 16px;
   font-weight: 500;

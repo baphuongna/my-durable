@@ -28,6 +28,9 @@ async function submit() {
   }
 }
 onMounted(() => void nextTick(() => (input.value?.focus(), input.value?.select())));
+// App's Escape policy asks whether an action is in flight: a busy dialog
+// stays open (cf. client/dialog-escape.ts).
+defineExpose({ busy });
 </script>
 
 <template>

@@ -16,7 +16,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import { createServer } from "node:http";
-import type { NextFunction, Request, RequestHandler, Response } from "express";
+import type { ErrorRequestHandler, NextFunction, Request, Response } from "express";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +54,7 @@ async function backend() {
   return { t, store, api, close };
 }
 
-const errorOf = async (res: Response | globalThis.Response) => {
+const errorOf = async (res: globalThis.Response) => {
   assert.equal(res.headers.get("content-type") ?? "", "application/json; charset=utf-8", "errors are JSON");
   return ((await res.json()) as { error: { code: string; message: string } }).error;
 };
@@ -203,7 +203,7 @@ const runMiddleware = (err: unknown) => {
     },
     end() {},
   };
-  (errorMiddleware as unknown as RequestHandler)(err, {} as Request, res as unknown as Response, (() => {}) as NextFunction);
+  (errorMiddleware as unknown as ErrorRequestHandler)(err, {} as Request, res as unknown as Response, (() => {}) as NextFunction);
   return captured;
 };
 

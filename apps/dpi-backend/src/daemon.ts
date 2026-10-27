@@ -172,6 +172,43 @@ const execDefault = (cmd: string, args: string[]) =>
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** R6 cli finding 10: `dpi device stop` twice hung 40s+ with zero output while
+ *  the daemon stayed healthy. No shutdown step may block forever: race the
+ *  step against a ceiling; on expiry say so and CONTINUE (the shutdown caller
+ *  still force-exits). A step that throws rejects normally — only the hang is
+ *  bounded. Exported so the sequencing is unit-testable. */
+export async function boundedStep<T>(
+  label: string,
+  ms: number,
+  run: () => T | Promise<T>,
+  log: (line: string) => void = () => {},
+): Promise<T | undefined> {
+  let done = false;
+  let failed: { error: unknown } | undefined;
+  const step = Promise.resolve(run()).then(
+    (v) => {
+      done = true;
+      return v;
+    },
+    (error: unknown) => {
+      done = true;
+      failed = { error };
+    },
+  );
+  let timer: NodeJS.Timeout | undefined;
+  const ceiling = new Promise<void>((resolve) => {
+    timer = setTimeout(() => resolve(), ms);
+  });
+  await Promise.race([step, ceiling]);
+  if (timer) clearTimeout(timer);
+  if (!done) {
+    log(`shutdown: ${label} did not finish within ${ms}ms — continuing without it`);
+    return undefined;
+  }
+  if (failed) throw failed.error;
+  return (await step) as T;
+}
+
 function ioOf(opts: RunOpts): Io {
   return {
     env: opts.env ?? process.env,
@@ -385,6 +422,17 @@ async function cmdInstall(io: Io): Promise<number> {
   if (!env.DPI_HOME) env.DPI_HOME = daemonPaths(io.env).home;
   if (p === "linux") {
     const unit = join(homedir(), ".config/systemd/user/dpi-device.service");
+    // R6 cli finding 8: probe systemd BEFORE writing anything. A host without a
+    // user systemd (containers, non-systemd distros) used to get a stray unit
+    // file plus an empty "systemctl enable failed:" — daemon-reload is the same
+    // first step a real install takes, so it is the honest probe.
+    const probe = await io.exec("systemctl", ["--user", "daemon-reload"]);
+    if (!probe.ok) {
+      const reason = probe.output.trim().split("\n")[0] || "systemctl is not usable on this host";
+      io.print(`no systemd --user on this host — nothing was installed (${reason})`);
+      io.print("start the daemon after login instead:  dpi device start");
+      return 1;
+    }
     await io.writeFile(unit, systemdUnit({ node, dpi, env }));
     await io.exec("systemctl", ["--user", "daemon-reload"]);
     const enable = await io.exec("systemctl", ["--user", "enable", "--now", "dpi-device.service"]);

@@ -131,6 +131,11 @@ export function splitModel(
 ): { provider: string; modelId: string } | undefined {
   const exact = models?.find((m) => `${m.provider}/${m.id}` === defaultModel);
   if (exact) return { provider: exact.provider, modelId: exact.id };
+  // R6 cli finding 7: local catalogs (faux provider) report a BARE id as the
+  // defaultModel — match it against models[].id before the split heuristic so
+  // healthy faux devices stop warning "no usable defaultModel".
+  const bare = models?.find((m) => m.id === defaultModel && m.provider);
+  if (bare) return { provider: bare.provider, modelId: bare.id };
   const i = defaultModel.indexOf("/");
   if (i <= 0 || i === defaultModel.length - 1) return undefined;
   return { provider: defaultModel.slice(0, i), modelId: defaultModel.slice(i + 1) };
@@ -321,13 +326,21 @@ async function hubCheck(io: DoctorIo, cfg: DeviceEndpoint): Promise<DoctorCheck>
   const source = origin ? "DPI_HUB_URL" : "pairing.json";
   if (!origin) {
     const file = join(cfg.home, "pairing.json");
-    try {
-      if (io.exists(file)) {
+    if (io.exists(file)) {
+      try {
         const paired = JSON.parse(io.readFile(file)) as { hubOrigin?: unknown };
         if (typeof paired.hubOrigin === "string") origin = paired.hubOrigin.trim().replace(/\/+$/, "");
+      } catch (error) {
+        // R6 cli finding 6: a corrupt/unreadable pairing file is NOT "no hub
+        // configured" — the operator must learn the file is broken, because
+        // the hub check cannot run at all until it is fixed.
+        return {
+          id,
+          label: "hub",
+          status: "warn",
+          detail: `pairing.json is corrupt/unreadable — fix or delete ${file} (${describeError(error, 0)})`,
+        };
       }
-    } catch {
-      /* unreadable/garbled pairing file: report as not configured */
     }
   }
   if (!origin) return { id, label: "hub", status: "skip", detail: "no hub configured (no DPI_HUB_URL, no saved pairing)" };

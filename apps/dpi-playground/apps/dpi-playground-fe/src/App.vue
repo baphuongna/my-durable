@@ -34,10 +34,15 @@ import {
   toggleInspector,
 } from "./client/store";
 import { watchSessionGit } from "./client/session-git";
+import { escapeDialog } from "./client/dialog-escape";
 import { auth } from "./client/auth";
 
 const onlineCount = () => network.devices.value.filter((d) => d.status === "online").length;
 const pairWizard = ref<{ close(): Promise<void> }>();
+/** The live prompt dialog: App asks it whether its action is in flight before
+ *  letting Escape close it (closing a busy prompt would orphan the action and
+ *  lose the error it is about to render). */
+const promptDialog = ref<{ busy: boolean }>();
 
 function openNewSession() {
   ui.dialog = { kind: "new-session", deviceId: selected.value?.deviceId };
@@ -51,8 +56,9 @@ function keydown(e: KeyboardEvent) {
   }
   if (e.key !== "Escape") return;
   if (ui.dialog) {
-    if (ui.dialog.kind === "pair") void pairWizard.value?.close();
-    else ui.dialog = undefined;
+    const outcome = escapeDialog(ui.dialog, promptDialog.value?.busy ?? false);
+    if (outcome === "pair") void pairWizard.value?.close();
+    else if (outcome === "close") ui.dialog = undefined;
     return;
   }
   if (!e.repeat && !e.isComposing && busy.value) {
@@ -149,6 +155,7 @@ onBeforeUnmount(() => {
     />
     <PromptDialog
       v-else-if="ui.dialog?.kind === 'prompt'"
+      ref="promptDialog"
       :dialog="ui.dialog"
       @close="ui.dialog = undefined"
     />

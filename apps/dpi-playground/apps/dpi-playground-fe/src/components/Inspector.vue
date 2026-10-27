@@ -17,6 +17,7 @@ import {
   Pencil,
   Server,
   ShieldCheck,
+  Share2,
   Wrench,
   PanelLeftClose,
   PanelLeftOpen,
@@ -40,6 +41,8 @@ import ExtensionsPanel from "./ExtensionsPanel.vue";
 import ContextBar from "./ContextBar.vue";
 import { deviceClient, hub, message } from "../client/hub";
 import { toolSignature } from "../client/signature";
+import { useExportBundle } from "../client/export-bundle";
+import { useStateDraft } from "../client/state-draft";
 import {
   agentHandle,
   agentState,
@@ -49,6 +52,7 @@ import {
   detail,
   device,
   deviceFeed,
+  deviceId,
   hideInspector,
   icon,
   inspectorExpanded,
@@ -59,6 +63,7 @@ import {
   selected,
   session,
   sessionHandle,
+  sessionModel,
   sessionSummary,
   showInspector,
   tasks,
@@ -94,7 +99,6 @@ const usageRows = computed(() => [
   { label: "Cache write", tokens: usage.value.cacheWrite, cost: usage.value.cacheWriteCost },
 ]);
 const background = computed(() => tasks.value.filter((t) => t.background).length);
-const exporting = ref(false);
 
 function configure(
   patch: Parameters<NonNullable<typeof agentHandle.value>["configure"]>[0],
@@ -114,8 +118,12 @@ async function downloadTranscript() {
   const summary = sessionSummary.value;
   if (!dev || !summary) return;
   try {
-    const r = await deviceClient(dev.id).agent(summary.id, selected.value?.agentId ?? 1).transcript("markdown");
-    const blob = new Blob([typeof r === "string" ? r : JSON.stringify(r)], { type: "text/markdown" });
+    const r = await deviceClient(dev.id)
+      .agent(summary.id, selected.value?.agentId ?? 1)
+      .transcript("markdown");
+    const blob = new Blob([typeof r === "string" ? r : JSON.stringify(r)], {
+      type: "text/markdown",
+    });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `${summary.name.replace(/[^\w.-]+/g, "_") || "session"}-${summary.id.slice(0, 8)}.md`;
@@ -128,28 +136,14 @@ async function downloadTranscript() {
 }
 
 /** Whole-session bundle (Wave 1b): manifest + record + every agent's
- *  transcript and config, zipped on the device (base64 over the tunnel). */
-async function downloadBundle() {
-  const dev = device.value;
-  const summary = sessionSummary.value;
-  if (!dev || !summary) return;
-  exporting.value = true;
-  try {
-    const r = await deviceClient(dev.id).exportSession(summary.id);
-    const bytes = Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0));
-    const online = URL.createObjectURL(new Blob([bytes], { type: r.mime || "application/zip" }));
-    const a = document.createElement("a");
-    a.href = online;
-    a.download = r.filename;
-    a.click();
-    URL.revokeObjectURL(online);
-    notify(`Bundle downloaded (${Math.max(1, Math.round(r.bytes / 1024))} KiB).`);
-  } catch (e) {
-    notify(`bundle export failed: ${message(e).slice(0, 120)}`);
-  } finally {
-    exporting.value = false;
-  }
-}
+ *  transcript and config, zipped on the device (base64 over the tunnel). The
+ *  loop lives in client/export-bundle.ts: a failure stays inline here with a
+ *  retry instead of living only in a vanishing toast. */
+const {
+  exporting: exportingBundle,
+  error: bundleError,
+  run: downloadBundle,
+} = useExportBundle(computed(() => ({ device: device.value, summary: sessionSummary.value })));
 
 /**
  * Conversation share (Wave 3): upload this session's transcripts to the hub
@@ -175,10 +169,15 @@ function shareTranscript() {
         for (const agent of agents) {
           const r = await client.agent(summary.id, agent.id).transcript("markdown");
           const text =
-            typeof r === "string" ? r : ((r as { text?: string }).text ?? JSON.stringify(r, null, 2));
+            typeof r === "string"
+              ? r
+              : ((r as { text?: string }).text ?? JSON.stringify(r, null, 2));
           docs.push({ name: agent.name || `agent ${agent.id}`, markdown: text });
         }
-        const share = await hub.createShare({ title: `${summary.name} · ${dev.name}`, agents: docs });
+        const share = await hub.createShare({
+          title: `${summary.name} · ${dev.name}`,
+          agents: docs,
+        });
         const url = `${location.origin}${share.url}`;
         await navigator.clipboard?.writeText(url).catch(() => {});
         notify(`Share link copied — expires ${share.expiresAt.slice(0, 10)}.`);
@@ -224,14 +223,9 @@ watch(
   },
   { immediate: true },
 );
-/** The current model with provenance: the agent's configured model when set,
- *  else the model the session was created with (SessionSummary). */
-const sessionModel = computed(() => {
-  const m = agentState.value.agent.model;
-  if (m?.modelId) return m;
-  const s = sessionSummary.value;
-  return s?.model ? { provider: s.provider ?? "", modelId: s.model } : undefined;
-});
+/** The current model with provenance (store): the agent's configured model
+ *  when set, else the model the session was created with — raw ids, which may
+ *  not be in this device's catalog. */
 /** Longest registered root wins — the same rule the device applies on create. */
 const modelIsDefault = computed(() => {
   const m = sessionModel.value;
@@ -258,22 +252,21 @@ const modelLine = computed(
 // ------------------------------------------------------------ App State (device-wide document)
 
 const shared = deviceFeed.sharedState;
-const stateDraft = ref("");
-const stateBaseline = ref("");
-const stateDraftRevision = ref(0);
+/** The draft belongs to one device feed at one revision (client/state-draft):
+ *  a device switch resets it unconditionally — never a cross-device write —
+ *  and the text is pre-validated (debounced) with the SDK's own checks. */
+const {
+  draft: stateDraft,
+  dirty: stateDirty,
+  conflict: stateConflict,
+  deviceChanged: stateDeviceChanged,
+  problem: stateProblem,
+  revision: stateDraftRevision,
+  reset: resetStateDraft,
+  commit: commitStateDraft,
+} = useStateDraft(shared, deviceId);
 const stateSaving = ref(false);
 const stateError = ref("");
-const stateDirty = computed(() => stateDraft.value !== stateBaseline.value);
-const stateConflict = computed(
-  () => stateDirty.value && shared.value?.revision !== stateDraftRevision.value,
-);
-function resetStateDraft() {
-  stateDraft.value = json(shared.value?.value ?? {});
-  stateBaseline.value = stateDraft.value;
-  stateDraftRevision.value = shared.value?.revision ?? 0;
-  stateError.value = "";
-}
-watch(shared, () => !stateDirty.value && resetStateDraft(), { immediate: true });
 
 async function editState(change: StateChange) {
   if (stateSaving.value || !agentHandle.value) return;
@@ -288,7 +281,7 @@ async function editState(change: StateChange) {
   }
 }
 async function saveStateJson() {
-  if (stateSaving.value || !agentHandle.value) return;
+  if (stateSaving.value || stateConflict.value || !agentHandle.value) return;
   stateError.value = "";
   stateSaving.value = true;
   try {
@@ -301,9 +294,7 @@ async function saveStateJson() {
       value,
       expectedRevision: stateDraftRevision.value,
     });
-    stateDraft.value = json(saved.value);
-    stateBaseline.value = stateDraft.value;
-    stateDraftRevision.value = saved.revision;
+    commitStateDraft(saved.value, saved.revision);
     notify("Shared App State saved.");
   } catch (e) {
     stateError.value = message(e);
@@ -385,23 +376,23 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
                 aria-label="Rename session"
                 @click="renameSession"
               >
-                <Pencil :size="18" />
-              </button><button
+                <Pencil :size="18" /></button
+              ><button
                 class="icon-button"
                 title="Download transcript (markdown)"
                 aria-label="Download transcript"
                 @click="downloadTranscript"
               >
-                <Download :size="18" />
-              </button><button
+                <Download :size="18" /></button
+              ><button
                 class="icon-button"
                 title="Download session bundle (.zip: manifest, transcripts, configs)"
                 aria-label="Download session bundle"
-                :disabled="exporting"
+                :disabled="exportingBundle"
                 @click="downloadBundle"
               >
-                <PackageOpen :size="18" />
-              </button><button
+                <PackageOpen :size="18" /></button
+              ><button
                 class="icon-button"
                 title="Share a public read-only link to this transcript"
                 aria-label="Share transcript"
@@ -425,9 +416,17 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
               <span class="status-pill" :class="{ working: busy }"
                 ><i />{{ busy ? "Working" : "Idle" }}</span
               ><span v-if="background" class="background-pill">{{ background }} background</span
-              ><span class="saved" :title="device?.id"><Server :size="18" />{{ device?.name ?? device?.id }}</span>
+              ><span class="saved" :title="device?.id"
+                ><Server :size="18" />{{ device?.name ?? device?.id }}</span
+              >
               <TunnelStatusBar v-if="device" :device="device" />
             </div>
+            <p v-if="bundleError" class="message-error" role="alert">
+              {{ bundleError }}
+              <button class="small" :disabled="exportingBundle" @click="downloadBundle">
+                retry
+              </button>
+            </p>
           </section>
           <TokenManager v-if="device" :device="device" />
           <section class="model-section">
@@ -510,9 +509,10 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
             <Braces :size="18" />
           </div>
           <p class="hint app-state-description">
-            One shared JSON object for every agent, session and fork on {{ device?.name ?? device?.id }}. You and
-            your agents can read, create, update or delete values and fields. Changes appear live
-            and persist across closed browsers, interrupted agents and backend restarts.
+            One shared JSON object for every agent, session and fork on
+            {{ device?.name ?? device?.id }}. You and your agents can read, create, update or delete
+            values and fields. Changes appear live and persist across closed browsers, interrupted
+            agents and backend restarts.
           </p>
           <textarea
             v-model="stateDraft"
@@ -522,10 +522,16 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
             :disabled="stateSaving || !shared"
             rows="12"
           />
+          <p class="hint state-limits">
+            One JSON object, at most 24 levels of nesting and 100,000 characters, checked as you
+            type.
+          </p>
           <div class="state-json-actions">
-            <span v-if="stateConflict" class="hint"
-              >State changed elsewhere. Load the latest JSON before saving.</span
-            >
+            <span v-if="stateConflict" class="hint">{{
+              stateDeviceChanged
+                ? "Device changed since this draft loaded. Load the latest JSON before saving."
+                : "State changed elsewhere. Load the latest JSON before saving."
+            }}</span>
             <button
               v-if="stateDirty"
               class="secondary"
@@ -536,12 +542,13 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
             </button>
             <button
               class="primary small"
-              :disabled="!stateDirty || stateSaving || stateConflict"
+              :disabled="!stateDirty || stateSaving || stateConflict || !!stateProblem"
               @click="saveStateJson"
             >
               {{ stateSaving ? "Saving…" : "Save JSON" }}
             </button>
           </div>
+          <p v-if="stateProblem" class="message-error" role="alert">{{ stateProblem }}</p>
           <p v-if="stateError" class="message-error" role="alert">{{ stateError }}</p>
           <StateEditor
             :value="shared?.value ?? {}"
@@ -624,4 +631,10 @@ const offeredTools = computed(() => detail.value?.tools.filter((t) => t.offered)
   </aside>
 </template>
 
-<style scoped>.usage-total th, .usage-total td { border-top: 1px solid var(--line); font-weight: 650; }</style>
+<style scoped>
+.usage-total th,
+.usage-total td {
+  border-top: 1px solid var(--line);
+  font-weight: 650;
+}
+</style>

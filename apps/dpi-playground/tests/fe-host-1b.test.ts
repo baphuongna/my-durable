@@ -39,6 +39,11 @@ test("host-checklist Wave 1b: vitals, search and export reach every layer", asyn
   assert.match(sidebar, /extraHits/, "device-only hits section missing");
   const insp = await R("../apps/dpi-playground-fe/src/components/Inspector.vue");
   assert.match(insp, /downloadBundle/, "bundle download missing");
-  assert.match(insp, /exportSession\(summary\.id\)/, "bundle download must call the device");
+  const bundle = await R("../apps/dpi-playground-fe/src/client/export-bundle.ts");
+  assert.match(
+    bundle,
+    /deviceClient\(d\)\.exportSession\(s\)/,
+    "bundle download must call the device",
+  );
   assert.match(insp, /id: "host"/, "host tab missing");
 });

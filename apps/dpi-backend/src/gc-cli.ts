@@ -52,7 +52,25 @@ export function resolveDataDir(argv: readonly string[], io: GcIo): string {
     return i >= 0 ? argv[i + 1] : undefined;
   };
   const envFile = io.env.DPI_ENV_FILE;
-  const fileEnv = envFile ? readEnvFile(io.readFile(envFile)) : {};
+  let fileEnv: Record<string, string> = {};
+  if (envFile) {
+    // R6 cli finding 2: a missing/unreadable env file used to escape as a raw
+    // ENOENT/EACCES stack from deep inside resolution — say it in one line.
+    try {
+      fileEnv = readEnvFile(io.readFile(envFile));
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code;
+      const why =
+        code === "ENOENT"
+          ? "the file does not exist"
+          : code === "EACCES"
+            ? "the file is not readable"
+            : e instanceof Error
+              ? e.message
+              : String(e);
+      throw new Error(`cannot read DPI_ENV_FILE '${envFile}' — ${why}`);
+    }
+  }
   const value = (key: string) =>
     io.env[key] ?? (typeof fileEnv[key] === "string" ? fileEnv[key] : undefined);
   const dataDirArg = flag("--data-dir") ?? value("DPI_DATA_DIR");
@@ -87,7 +105,15 @@ export async function gcCli(args: GcArgs, io: GcIo = defaultGcIo()): Promise<num
     return 2;
   }
   const apply = argv.includes("--yes");
-  const archiveDir = join(resolveDataDir(argv, io), "archive");
+  // R6 cli finding 2: resolveDataDir touches the env file — keep its failures
+  // in the one-line pretty-error regime (exit 1), like the plan/apply calls.
+  let archiveDir: string;
+  try {
+    archiveDir = join(resolveDataDir(argv, io), "archive");
+  } catch (e) {
+    io.printErr(`dpi gc: ${e instanceof Error ? e.message : String(e)}`);
+    return 1;
+  }
   const options = { closedBeforeDays: days, now: io.now() };
 
   // The plan/apply calls live inside the pretty-error path (R5 finding 6): a bad

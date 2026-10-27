@@ -59,6 +59,13 @@ Environment (hub):    DPI_HOME, DPI_HUB_PORT, DPI_HUB_HOST, DPI_HUB_PUBLIC_HOST,
 Environment (device): DPI_HUB_URL, DPI_HOME
 `;
 
+const UPDATE_USAGE = `dpi update | upgrade [--check]
+
+  dpi update --check   compare the installed version with the registry, change nothing
+  dpi update           install the latest published version globally
+                       (stops and restarts the device daemon so npm can replace files)
+`;
+
 /**
  * tsx is a dependency of the published package, but a bare repository checkout has it only
  * inside the per-app node_modules. Try the normal resolution first, then the known local
@@ -92,6 +99,69 @@ async function loadTsx() {
 
 const [first, ...rest] = process.argv.slice(2);
 
+// R6 cli finding 9: every invocation that loads the store prints node:sqlite's
+// ExperimentalWarning — pure noise for a CLI, and a flag a running process
+// cannot take retroactively. When this launcher starts without the
+// suppression flag it relaunches itself ONCE with it. --disable-warning takes
+// the WARNING NAME ("experimental" does not match); any Node that has the
+// flag at all accepts unknown values — worst case nothing is suppressed — so
+// the version gate below is the only compatibility guard needed.
+const EXPERIMENTAL_WARNING_FLAG = "--disable-warning=ExperimentalWarning";
+
+/** Relaunch with the warning suppressed. Returns true when THIS process must
+ *  become a thin wrapper (its only remaining job is to wait for the child). */
+async function quietExperimentalWarning() {
+  if (process.execArgv.includes(EXPERIMENTAL_WARNING_FLAG)) return false;
+  if (process.env.DPI_WARNINGS_QUIETED === "1") return false;
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (!((major === 22 && minor >= 13) || major > 22)) return false;
+  const { spawn } = await import("node:child_process");
+  const child = spawn(
+    process.execPath,
+    [...process.execArgv, EXPERIMENTAL_WARNING_FLAG, fileURLToPath(import.meta.url), ...process.argv.slice(2)],
+    {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        DPI_WARNINGS_QUIETED: "1",
+        DPI_WRAPPER_PID: String(process.pid),
+      },
+    },
+  );
+  // Ctrl-C / service stop must reach the real process, not die with the wrapper.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+    process.on(signal, () => child.kill(signal));
+  child.on("error", (error) => {
+    process.stderr.write(`dpi: relaunch failed: ${error.message}\n`);
+    process.exit(1);
+  });
+  child.on("close", (code, signal) => {
+    if (signal) process.kill(process.pid, signal);
+    else process.exit(code ?? 0);
+  });
+  return true;
+}
+
+if (await quietExperimentalWarning()) await new Promise(() => {});
+
+// The relaunched child must not outlive a SIGKILLed wrapper: forwarded signals
+// cover SIGINT/SIGTERM/SIGHUP, but SIGKILL cannot be caught. A cheap liveness
+// poll on the wrapper closes that hole — if the wrapper is gone, this process
+// is an orphan and terminates itself. unref'd: it never keeps the CLI alive.
+if (process.env.DPI_WRAPPER_PID) {
+  const wrapperPid = Number(process.env.DPI_WRAPPER_PID);
+  if (Number.isInteger(wrapperPid) && wrapperPid > 0 && wrapperPid !== process.pid) {
+    const timer = setInterval(() => {
+      try {
+        process.kill(wrapperPid, 0);
+      } catch {
+        process.kill(process.pid, "SIGTERM");
+      }
+    }, 2_000);
+    timer.unref?.();
+  }
+}
+
 // Bare `dpi` opens the TUI — the app, not a help screen (convention of the
 // reference clients: the product IS the terminal UI; subcommands are the extras).
 const command = !first || first === "tui" ? "tui" : first;
@@ -110,6 +180,19 @@ if (command === "version" || command === "--version" || command === "-v") {
 }
 
 if (command === "update" || command === "upgrade") {
+  // R6 cli finding 1: `update` MUTATES the machine (it may stop the daemon and
+  // run `npm install -g`), so its argv is checked HERE — before the updater
+  // loads — unlike every other subcommand: --help must never self-update, and
+  // an unknown dash-arg is a typo the operator must see, not a real update.
+  if (commandRest.includes("--help") || commandRest.includes("-h") || commandRest.includes("help")) {
+    process.stdout.write(UPDATE_USAGE);
+    process.exit(0);
+  }
+  const unknownFlag = commandRest.find((a) => a.startsWith("-") && a !== "--check" && a !== "-c");
+  if (unknownFlag) {
+    process.stderr.write(`dpi update: unknown flag '${unknownFlag}'\n\n${UPDATE_USAGE}`);
+    process.exit(2);
+  }
   const { readFileSync } = await import("node:fs");
   const { runUpdate, fetchLatestVersion, spawnNpm, daemonControl } = await import("./update.mjs");
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));

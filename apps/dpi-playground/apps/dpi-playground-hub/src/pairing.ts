@@ -557,10 +557,17 @@ export class PairingService {
     });
   }
 
-  /** POST /api/pair/verify — proof, poll, and (post-approval) issuance. */
+  /** POST /api/pair/verify — proof, poll, and (post-approval) issuance.
+   *  `requestOrigin` is the origin the device DIALED (`${protocol}://${host}` of
+   *  the HTTP request), best-effort from the route. The wire proof carries no
+   *  declared origin (the signing payload binds one, but it is never sent), so
+   *  this is the only signal that separates "wrong key" from "the hub signs as
+   *  a different origin than the device dialed" — see the mismatch branch in
+   *  the first-proof path (R6 cli finding 5). */
   async verify(
     body: unknown,
     address: string,
+    requestOrigin?: string,
   ): Promise<{ ok: true; value: PairPendingOut | TokenIssue; status: number } | PairingFailure> {
     const now = this.now();
     const ip = ipKey(address);
@@ -724,27 +731,34 @@ export class PairingService {
     }
     if (now >= code.expiresAt) return this.fail(410, "code_expired", "Pairing code expired");
 
-    const payload = pairingSigningPayload({
-      hubOrigin: this.deps.hubOrigin,
-      hubId: this.deps.hubId,
-      enrollmentId: enrollment.enrollmentId,
-      nonce: enrollment.nonce,
-      issuedAt: enrollment.nonceIssuedAt,
-      deviceUid: enrollment.deviceUid,
-      keyFingerprint: enrollment.computedFingerprint,
-    });
     let valid = false;
     try {
-      valid = cryptoVerify(
-        null,
-        Buffer.from(payload, "utf8"),
-        createPublicKey(enrollment.publicKeyPem),
-        Buffer.from(req.signature, "base64url"),
-      );
+      valid = this.verifySignature(enrollment, req.signature, this.deps.hubOrigin);
     } catch {
       valid = false;
     }
     if (!valid) {
+      // R6 cli finding 5: a hub started WITHOUT DPI_HUB_ORIGIN signs as
+      // https://<hostname> while a LAN device signs the origin it dialed —
+      // every proof then "fails" and reads like an attack. When the same
+      // signature verifies under the request's origin, this is a misconfigured
+      // origin, not a bad key: say so and do NOT count it toward the cancel limit.
+      if (
+        requestOrigin &&
+        requestOrigin !== this.deps.hubOrigin &&
+        this.verifySignature(enrollment, req.signature, requestOrigin)
+      ) {
+        this.deps.audit.denied("auth.denied", ip, {
+          stage: "pair.verify",
+          enrollmentId: enrollment.enrollmentId,
+          originMismatch: `device=${requestOrigin} hub=${this.deps.hubOrigin}`,
+        });
+        return this.fail(
+          409,
+          "origin_mismatch",
+          `origin mismatch: device signed for ${requestOrigin}, hub signs as ${this.deps.hubOrigin} — set DPI_HUB_ORIGIN on the hub`,
+        );
+      }
       enrollment.badSignatures += 1;
       this.noteFailure(ip); // sliding-window IP counter (S-1): code/UID change does not reset
       this.deps.audit.denied("auth.denied", ip, {
@@ -782,8 +796,15 @@ export class PairingService {
 
   /** Proof check shared by first-verify and every receipt poll (F02). */
   private signatureOk(enrollment: Enrollment, signature: string): boolean {
+    return this.verifySignature(enrollment, signature, this.deps.hubOrigin);
+  }
+
+  /** Ed25519 proof check for a given hub origin — the signing payload binds it,
+   *  so the SAME signature can be retried under the request's origin (F02 + R6
+   *  cli finding 5: origin-mismatch detection without a protocol change). */
+  private verifySignature(enrollment: Enrollment, signature: string, hubOrigin: string): boolean {
     const payload = pairingSigningPayload({
-      hubOrigin: this.deps.hubOrigin,
+      hubOrigin,
       hubId: this.deps.hubId,
       enrollmentId: enrollment.enrollmentId,
       nonce: enrollment.nonce,

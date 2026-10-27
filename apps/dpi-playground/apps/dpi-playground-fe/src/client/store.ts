@@ -243,6 +243,21 @@ export const currentModel = computed(() => {
   const m = agentState.value.agent.model;
   return models.value.find((x) => x.provider === m?.provider && x.id === m?.modelId);
 });
+/** The configured model with provenance — the agent's model when set, else the
+ *  model the session was created with. Raw ids: the pair may sit outside this
+ *  device's catalog (picked on another device, or a newer catalog there), in
+ *  which case modelInCatalog is undefined and the UI must say so instead of
+ *  rendering as if no model were picked. */
+export const sessionModel = computed(() => {
+  const m = agentState.value.agent.model;
+  if (m?.modelId) return m;
+  const s = sessionSummary.value;
+  return s?.model ? { provider: s.provider ?? "", modelId: s.model } : undefined;
+});
+export const modelInCatalog = computed(() => {
+  const m = sessionModel.value;
+  return m ? models.value.find((x) => x.provider === m.provider && x.id === m.modelId) : undefined;
+});
 
 /** Tools and extensions come from GET agent (not streamed); refresh on selection and config changes. */
 export const detail = shallowRef<AgentDetail>();

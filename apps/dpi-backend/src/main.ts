@@ -14,7 +14,7 @@ import { v1 } from "./routes.js";
 import { DevicePairing } from "./pairing.js";
 import { DeviceConnector, readCaPem } from "./tunnel.js";
 import { PAIR_PAGE_HTML } from "./pair-page.js";
-import { parseDeviceSub, runDeviceCommand, daemonPaths } from "./daemon.js";
+import { parseDeviceSub, runDeviceCommand, daemonPaths, boundedStep } from "./daemon.js";
 
 // `dpi device start|stop|status|install|uninstall` manage a background daemon
 // and exit; everything else (bare `dpi device` or flags) runs the daemon here.
@@ -249,15 +249,35 @@ let closing = false;
 const shutdown = async () => {
   if (closing) return;
   closing = true;
-  connector.stop("backend shutdown"); // readers/pending ops before storage closes
+  // R6 cli finding 10: `dpi device stop` hung twice at teardown (40s+, zero
+  // output, device stayed healthy; direct SIGTERM exits <5s). No step of the
+  // shutdown may block forever:
+  //   - connector.stop is synchronous; a throw is logged, never fatal;
+  //   - store.close is raced against a 5s ceiling (boundedStep) and abandoned;
+  //   - a hard watchdog guarantees the process still exits at 10s.
+  const log = (line: string) => console.log(line);
+  const watchdog = setTimeout(() => {
+    console.log("shutdown: still not down after 10s — forcing exit");
+    process.exit(0);
+  }, 10_000);
+  try {
+    await boundedStep("connector.stop", 5_000, () => connector.stop("backend shutdown"), log);
+  } catch (e) {
+    log(`shutdown: connector stop failed (${e instanceof Error ? e.message : String(e)}) — continuing`);
+  }
   server.close();
   server.closeAllConnections();
-  await store.close();
+  try {
+    await boundedStep("store.close", 5_000, () => store.close(), log);
+  } catch (e) {
+    log(`shutdown: store close failed (${e instanceof Error ? e.message : String(e)}) — exiting anyway`);
+  }
   try {
     rmSync(daemonPaths(process.env).pid, { force: true });
   } catch {
     /* nothing to clean */
   }
+  clearTimeout(watchdog);
   process.exit(0);
 };
 process.on("SIGTERM", () => void shutdown());

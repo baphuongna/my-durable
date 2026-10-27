@@ -13,8 +13,9 @@ import {
 import {
   agentState,
   attempt,
-  currentModel,
+  modelInCatalog,
   sessionHandle,
+  sessionModel,
   sessionSummary,
   ui,
 } from "../client/store";
@@ -29,7 +30,14 @@ const k = (n: number) =>
     : n >= 1000
       ? `${(n / 1000).toFixed(1)}k`
       : String(n);
-const window = computed(() => currentModel.value?.contextWindow ?? 0);
+const window = computed(() => modelInCatalog.value?.contextWindow ?? 0);
+/** A model IS set but this device's catalog does not list it (picked on
+ *  another device, or a newer catalog there): raw ids plus a note — never the
+ *  pick-a-model prompt, which reads as "nothing chosen". */
+const offCatalog = computed(() => {
+  const m = sessionModel.value;
+  return m && !modelInCatalog.value ? `${m.provider ? `${m.provider} / ` : ""}${m.modelId}` : "";
+});
 
 /** The last reply's prompt plus output: what the next request starts from. */
 const used = computed(() => {
@@ -145,7 +153,10 @@ function key(which: "auto" | "wait", e: KeyboardEvent) {
         <Info :size="16" />Details
       </button>
     </div>
-    <div v-if="!window" class="hint">Pick a model to see its context window.</div>
+    <div v-if="offCatalog" class="hint">
+      {{ offCatalog }} — not in this device's catalog, so its context window is unknown here.
+    </div>
+    <div v-else-if="!window" class="hint">Pick a model to see its context window.</div>
     <template v-else>
       <div class="context-numbers">
         <strong>{{ k(used) }}</strong

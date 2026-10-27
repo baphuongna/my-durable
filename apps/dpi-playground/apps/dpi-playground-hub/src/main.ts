@@ -275,7 +275,11 @@ app.post("/api/pair/start", ...pairGuard, express.json({ limit: "16kb" }), (req,
   return r.ok ? res.json(r.value) : pairErr(r, res);
 });
 app.post("/api/pair/verify", ...pairGuard, express.json({ limit: "16kb" }), async (req, res) => {
-  const r = await pairing.verify(req.body, req.ip ?? "unknown");
+  // Third arg (R6 F5): the origin the device actually dialed — when a signature
+  // fails under it but not under the configured hubOrigin, pairing.verify says
+  // origin_mismatch (with the DPI_HUB_ORIGIN hint) instead of counting an
+  // invalid signature toward the enrollment cancel limit.
+  const r = await pairing.verify(req.body, req.ip ?? "unknown", `${req.protocol}://${req.get("host")}`);
   if (r.ok) return res.status(r.status).json(r.value);
   pairErr(r, res);
 });
