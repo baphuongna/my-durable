@@ -18,6 +18,23 @@ export interface ZipEntry {
   text: string;
 }
 
+/**
+ * R7 export memory guard. A bundle is built entirely in RAM — raw entry texts,
+ * then deflate, then base64 — which the R5 audit measured at ≈2-3× the transcript
+ * size held at once (a 13 MB probe already pushed RSS to ~150 MB). Until export
+ * streams (R8+), refuse above this ceiling instead of hitting the scale cliff:
+ * 32 MiB of raw serialized entries is a transcript nobody has compacted, and the
+ * refusal names the size and tells the operator to compact first.
+ */
+export const EXPORT_RAW_LIMIT_BYTES = 32 * 1024 * 1024;
+
+/** Total UTF-8 bytes an archive would hold — the "raw" side of the guard (pre-deflate). */
+export function zipRawBytes(entries: readonly ZipEntry[]): number {
+  let bytes = 0;
+  for (const entry of entries) bytes += Buffer.byteLength(entry.text, "utf8");
+  return bytes;
+}
+
 const LOCAL_SIG = 0x04034b50;
 const CENTRAL_SIG = 0x02014b50;
 const EOCD_SIG = 0x06054b50;

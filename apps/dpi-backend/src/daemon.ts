@@ -77,11 +77,17 @@ export function serviceEnv(env: Record<string, string | undefined>): Record<stri
   return out;
 }
 
-/** The env the detached child inherits: drop the Electron-node hazards (paseo lesson). */
+/** The env the detached child inherits: drop the Electron-node hazards (paseo lesson)
+ *  and the R6 relaunch marker. DPI_WRAPPER_PID is the launcher wrapper's pid for the
+ *  2s orphan-watch in bin/dpi.mjs — a DETACHED daemon outlives that wrapper by days
+ *  (the wrapper exits as soon as `device start` returns), so inheriting the marker
+ *  made every started daemon kill itself the moment its start shell's wrapper went
+ *  away. The daemon is its own supervisor; it must never watch a short-lived pid. */
 export function cleanChildEnv(env: Record<string, string | undefined>): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   delete out.ELECTRON_RUN_AS_NODE;
   delete out.ELECTRON_NO_ATTACH_CONSOLE;
+  delete out.DPI_WRAPPER_PID;
   return out;
 }
 

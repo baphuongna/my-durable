@@ -77,7 +77,8 @@ import {
   type ArchivedView,
 } from "./archived.js";
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
-import { zipSync, type ZipEntry } from "./zip.js";
+import { zipSync, EXPORT_RAW_LIMIT_BYTES, type ZipEntry } from "./zip.js";
+import { salvageFailureNote, salvageSessionDb } from "./salvage.js";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, statSync } from "node:fs";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 import { join, dirname, relative, resolve, sep } from "node:path";
@@ -1516,8 +1517,43 @@ export class Store {
       // Custom extensions are installed but not selected: an agent turns them on in its own selection.
       const addons = createAddons({ offline: this.options.provider === "faux" });
       for (const extension of addons.list) registry.install(extension);
+      // R7: an unreadable db (a corrupt header, per the R5 audit recipe — garbage
+      // bytes 32-64) used to hide intact data forever: the close-path checkpoint
+      // folds the WAL into the corrupt main file without fixing page 1, and the
+      // only recovery was a manual header patch. Before failing the open, ONE
+      // bounded salvage on a COPY (header patch + integrity_check + atomic
+      // promote; see salvage.ts). The original file is never modified — a failed
+      // salvage leaves it byte-identical and the failure surface says so. Any other
+      // open error (a held lock, a schema mismatch) keeps its existing behavior.
+      let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>>;
+      try {
+        storage = await openNodeSqliteStorage(row.dbPath);
+      } catch (error) {
+        if (create || !isUnreadableStorage(error)) throw error;
+        const outcome = await salvageSessionDb(row.dbPath);
+        if (!outcome.recovered) {
+          const note = salvageFailureNote(outcome);
+          const previous = this.errors.get(row.id);
+          this.errors.set(row.id, note); // rides the session summary and every later fault
+          this.notify();
+          // Same operator visibility failSession gives a mid-run failure — once per
+          // distinct note, so repeated failed opens do not spam the sinks.
+          if (previous !== note)
+            void this.notifyEvent({
+              kind: "session.failed",
+              title: `Session failed on ${this.name}`,
+              body: `${this.sessionName(row.id)}: ${note}`,
+              data: { sessionId: row.id, device: this.name },
+            });
+          throw new ApiFault("unavailable", note);
+        }
+        process.emitWarning(
+          `[dpi-backend] session ${row.id}'s database was unreadable; salvaged a copy (original kept as ${outcome.keptAs})`,
+        );
+        storage = await openNodeSqliteStorage(row.dbPath); // the ONE retry, on the promoted copy
+      }
       const harness = await Harness.open(
-        await openNodeSqliteStorage(row.dbPath),
+        storage,
         {
           models: this.models,
           registry,
@@ -1895,6 +1931,10 @@ export class Store {
         h = await this.reopenOnce(row);
       } catch (retryError) {
         if (isStorageBusy(retryError)) throw storageBusyFault();
+        // R7: a reopen that failed with its own typed fault (a salvage that was
+        // attempted and did not recover) is MORE specific than the recorded
+        // "Session X is unavailable" this path used to re-throw — surface it.
+        if (retryError instanceof ApiFault) throw retryError;
         throw e; // the recorded, bounded reason — never the raw storage error
       }
     }
@@ -2404,19 +2444,35 @@ export class Store {
       session: { id: row.id, name: row.name, cwd: row.cwd, model: row.model, createdAt: row.createdAt },
       agents: agents.map((a) => ({ id: a.id, name: a.name, kind: a.kind })),
     };
-    files.push({ path: "manifest.json", text: `${JSON.stringify(manifest, null, 2)}\n` });
-    files.push({ path: "session.json", text: `${JSON.stringify(this.sessionSummaryBase(row), null, 2)}\n` });
     const opened = this.opened.get(row.id);
+    // R7 memory guard: every entry text is held in RAM at zip time, and the zip
+    // writer adds deflate + base64 copies (≈2-3× raw). Refuse over the raw limit
+    // BEFORE the second copy exists — checked as files accumulate so a huge
+    // transcript also skips the per-agent extras that would follow it.
+    let rawBytes = 0;
+    const push = (entry: ZipEntry) => {
+      rawBytes += Buffer.byteLength(entry.text, "utf8");
+      if (rawBytes > EXPORT_RAW_LIMIT_BYTES) {
+        const mb = (n: number) => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+        throw invalid(
+          `Export refused: transcripts are ${mb(rawBytes)} of text, over the ${mb(EXPORT_RAW_LIMIT_BYTES)} in-memory limit. ` +
+            `Compact the session first, then export again`,
+        );
+      }
+      files.push(entry);
+    };
+    push({ path: "manifest.json", text: `${JSON.stringify(manifest, null, 2)}\n` });
+    push({ path: "session.json", text: `${JSON.stringify(this.sessionSummaryBase(row), null, 2)}\n` });
     for (const agent of agents) {
       const c = opened ? await opened.harness.conversation(agent.id as ConversationId, ctx) : undefined;
       if (!c) continue;
       const dir = `agents/${agent.id}`;
-      files.push({ path: `${dir}/transcript.json`, text: `${JSON.stringify(await this.transcript(c, "json"), null, 2)}\n` });
+      push({ path: `${dir}/transcript.json`, text: `${JSON.stringify(await this.transcript(c, "json"), null, 2)}\n` });
       const md = await this.transcript(c, "markdown");
-      if (typeof md.text === "string") files.push({ path: `${dir}/transcript.md`, text: md.text });
-      files.push({ path: `${dir}/config.json`, text: `${JSON.stringify((await this.agentDetail(row, c)).config, null, 2)}\n` });
+      if (typeof md.text === "string") push({ path: `${dir}/transcript.md`, text: md.text });
+      push({ path: `${dir}/config.json`, text: `${JSON.stringify((await this.agentDetail(row, c)).config, null, 2)}\n` });
     }
-    if (!agents.length) files.push({ path: "README.txt", text: NOT_OPENED_README });
+    if (!agents.length) push({ path: "README.txt", text: NOT_OPENED_README });
     const zip = zipSync(files);
     return {
       filename: `${slugName(row.name || row.id)}.bundle.zip`,

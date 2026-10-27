@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, loadavg } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store.js";
 
@@ -44,6 +44,21 @@ export async function freePort() {
 
 export const newToken = () => `dpi_${randomBytes(32).toString("base64url")}`;
 
+/**
+ * Healthz wait budget for a booted child. Flat 20 s flaked twice under real
+ * conditions (R7 evidence): external rust builds push the box to load 20+, and
+ * CLI spawns were observed D-state 40 s+ BEFORE module load (folio_wait_bit_common,
+ * disk saturation) — the child could not even reach healthz in time. So the
+ * budget scales with the live 1-minute load (20 s base + 2 s per point above 4,
+ * capped at 60 s). A booted-when-idle box still fails fast.
+ */
+function healthzDeadlineMs(): number {
+  const load = loadavg()[0] ?? 0;
+  const extraSeconds = load > 4 ? Math.ceil((load - 4) * 2) : 0;
+  return Math.min(60_000, 20_000 + extraSeconds * 1_000);
+}
+
+
 /** Boot the real backend as a child process (faux provider, temp DPI_HOME). */
 export async function bootServer(opts: {
   home: string;
@@ -76,7 +91,8 @@ export async function bootServer(opts: {
     });
     child.stdout?.on("data", (x) => (output += x));
     child.stderr?.on("data", (x) => (output += x));
-    for (let i = 0; i < Math.ceil(20_000 / healthPollMs); i++) {
+    const deadlineMs = healthzDeadlineMs();
+    for (let i = 0; i < Math.ceil(deadlineMs / healthPollMs); i++) {
       try {
         if ((await fetch(`${base}/healthz`)).ok) return;
       } catch {}

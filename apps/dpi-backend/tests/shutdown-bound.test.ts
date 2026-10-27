@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boundedStep } from "../src/daemon.js";
+import { boundedStep, cleanChildEnv } from "../src/daemon.js";
 
 test("a fast step resolves with its value", async () => {
   const logs: string[] = [];
@@ -67,4 +67,12 @@ test("a step resolving undefined in time is NOT mistaken for a hang", async () =
   const v = await boundedStep("legit-undefined", 1_000, () => Promise.resolve(undefined), (l) => logs.push(l));
   assert.equal(v, undefined);
   assert.deepEqual(logs, [], "no bound log — it settled");
+});
+
+test("cleanChildEnv strips the launcher's wrapper marker — a detached daemon must not inherit the 2s orphan-watch", () => {
+  const env = { DPI_HOME: "/tmp/x", DPI_WRAPPER_PID: "12345", DPI_WARNINGS_QUIETED: "1", PATH: "/usr/bin" };
+  const out = cleanChildEnv(env);
+  assert.equal(out.DPI_WRAPPER_PID, undefined, "the detached daemon must never watch a short-lived wrapper pid");
+  assert.equal(out.DPI_WARNINGS_QUIETED, "1", "warning suppression survives (name-form flag, not pid-scoped)");
+  assert.equal(out.DPI_HOME, "/tmp/x");
 });

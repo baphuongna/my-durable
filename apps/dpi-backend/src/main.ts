@@ -15,6 +15,7 @@ import { DevicePairing } from "./pairing.js";
 import { DeviceConnector, readCaPem } from "./tunnel.js";
 import { PAIR_PAGE_HTML } from "./pair-page.js";
 import { parseDeviceSub, runDeviceCommand, daemonPaths, boundedStep } from "./daemon.js";
+import { startEventLoopMonitor } from "./vitals.js";
 
 // `dpi device start|stop|status|install|uninstall` manage a background daemon
 // and exit; everything else (bare `dpi device` or flags) runs the daemon here.
@@ -24,6 +25,11 @@ import { parseDeviceSub, runDeviceCommand, daemonPaths, boundedStep } from "./da
 }
 
 assertLimitsConfig();
+
+// Event-loop lag sampling starts before anything else can block: if boot
+// itself stalls (sync SQLite migrations, registry writes), the first vitals
+// window records it. Idempotent; vitals() also starts it lazily.
+startEventLoopMonitor();
 
 // Crash reports (policy gate #1) are installed FIRST, before anything below can
 // throw: a config or store failure still leaves a redacted local report (nothing
