@@ -35,7 +35,7 @@ const offerFixture = (): PairOffer => ({
   exp: 1760000240000,
 });
 
-test("append: all 17 required actions round-trip with correlation fields", async () => {
+test("append: all 18 required actions round-trip with correlation fields", async () => {
   const { registry, audit, cleanup } = await tempAudit();
   try {
     for (const action of AUDIT_ACTIONS) {
@@ -48,15 +48,15 @@ test("append: all 17 required actions round-trip with correlation fields", async
         detail: { x: 1 },
       });
     }
-    assert.equal(AUDIT_ACTIONS.length, 17);
+    assert.equal(AUDIT_ACTIONS.length, 18);
     const all = rows(registry);
-    assert.equal(all.length, 17);
+    assert.equal(all.length, 18);
     assert.equal(all[0].action, "pair.code_created");
-    assert.equal(all[12].action, "admin.login");
-    assert.equal(all[13].action, "auth.denied");
-    assert.equal(all[16].action, "rotation.stale_cleared");
+    assert.equal(all[13].action, "admin.login");
+    assert.equal(all[14].action, "auth.denied");
+    assert.equal(all[17].action, "rotation.stale_cleared");
     assert.equal(
-      all[11].action,
+      all[12].action,
       "hub.identity_created",
       "the v3 pinning audit action is part of the contract",
     );

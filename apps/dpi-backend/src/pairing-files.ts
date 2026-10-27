@@ -10,6 +10,7 @@
 import {
   chmodSync,
   closeSync,
+  copyFileSync,
   fsyncSync,
   openSync,
   readFileSync,
@@ -98,6 +99,70 @@ export function loadJson<T>(path: string): T | undefined {
     return JSON.parse(readFileSync(path, "utf8")) as T;
   } catch {
     return undefined;
+  }
+}
+
+/** Outcome of loading the device pairing state. Exactly one of `file`/`corrupt` is set; a fresh device has neither. */
+export interface PairingFileLoad {
+  /** A parseable pairing.json (shape is judged by the caller). */
+  file?: PairingFile;
+  /** pairing.json existed but was not valid JSON — it was quarantined (or, if that failed, left in place). */
+  corrupt?: { quarantinedAs: string };
+}
+
+/**
+ * R9 (audit 1.1): a corrupt pairing.json must never read as a silent "unpaired" —
+ * that orphans a live hub credential with no trace on disk. Following the
+ * schedules registry pattern (schedules.ts load(): move aside + warn): a parse
+ * failure renames the file aside so the bytes survive for inspection/restore,
+ * with a loud warning naming the quarantine path. A read failure (permissions,
+ * I/O) keeps the file in place — its bytes may be fine — but is warned about,
+ * never swallowed.
+ */
+export function loadPairingFile(home: string): PairingFileLoad {
+  const path = pairingPath(home);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {}; // fresh device: nothing to load
+    console.warn(
+      `[pairing] ${path} could not be read (${(e as Error).message}); the device reads as unpaired — fix the file before re-pairing, or a live hub credential stays orphaned`,
+    );
+    return {};
+  }
+  try {
+    return { file: JSON.parse(raw) as PairingFile };
+  } catch (e) {
+    const aside = `${path}.corrupt-${Date.now()}`;
+    try {
+      renameSync(path, aside);
+    } catch {
+      console.warn(
+        `[pairing] pairing.json is not valid JSON (${(e as Error).message}) and could not be moved aside; it was left untouched in place`,
+      );
+      return { corrupt: { quarantinedAs: path } };
+    }
+    console.warn(
+      `[pairing] pairing.json was not valid JSON (${(e as Error).message}) — a live hub credential may now be orphaned. ` +
+        `The unreadable file was quarantined as ${aside}; recover it from a backup (or the last-good ${path}.bak), or re-pair this device`,
+    );
+    return { corrupt: { quarantinedAs: aside } };
+  }
+}
+
+/**
+ * Keep the previous good pairing.json as `.bak` before it is replaced (R9 1.1,
+ * same recovery story as the schedules registry): even after the corrupt
+ * original was quarantined there is a known-good recovery source on disk.
+ * Best effort — a failed backup never blocks the atomic replacement.
+ */
+export function backUpPairingFile(path: string): void {
+  try {
+    copyFileSync(path, `${path}.bak`);
+    ensureFileMode0600(`${path}.bak`);
+  } catch {
+    /* nothing to back up (first pairing) or the copy failed — the new file still lands atomically */
   }
 }
 

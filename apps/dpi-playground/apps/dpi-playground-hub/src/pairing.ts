@@ -49,6 +49,7 @@ import {
 import type { PairCodeIssue, TokenIssue } from "../../../../dpi-sdk/src/protocol/pairing.js";
 import type { Audit } from "./audit.js";
 import { AuditUnavailableError } from "./audit.js";
+import { revokeAbandonedCredential } from "./credentials.js";
 import { ipKey } from "./client-ip.js";
 import { observeIdentity } from "./identity.js";
 import { SlidingWindows, TokenBuckets, type Take } from "./limiter.js";
@@ -104,6 +105,10 @@ interface Enrollment {
   issued?: { tokenIssue: TokenIssue; at: number };
   /** In-flight issuance (F03): concurrent polls share ONE promise and ONE credential. */
   issuing?: Promise<TokenIssue>;
+  /** R9 1.3: first time the token was served on a 200 (optimistic — the route voids it if the socket died before the flush). */
+  receiptDeliveredAt?: number;
+  /** Monotonic 200-with-token counter: lets the route void a stale optimistic marker without erasing a newer delivery. */
+  receiptSeq?: number;
 }
 
 interface CodeEntry {
@@ -475,16 +480,24 @@ export class PairingService {
     if (live === "cancelled")
       return this.fail(410, "enrollment_cancelled", "Pairing code cancelled");
 
-    // Same requestId + same tuple → same live challenge (idempotent retry).
+    // Same identity → the SAME live ceremony (R9 audit 1.2). The tuple is the
+    // device's real identity — deviceUid + deviceName + declared fingerprint +
+    // the public key itself; requestId is deliberately IGNORED on a match: the
+    // device mints one per start(), so a retry after a lost hub response (the
+    // enrollment committed but the challenge never arrived) would otherwise
+    // 409-lock the code against its own owner for the rest of the TTL. A match
+    // re-enters the existing enrollment — same challenge nonce, same state —
+    // which is only usable by the holder of that key. A DIFFERENT identity
+    // still gets 409 code_in_use (double-claim stays dead), and the enrollment
+    // creation below is untouched (sync check-then-set).
     if (live.enrollmentId) {
       const existing = this.enrollments.get(live.enrollmentId)!;
-      const sameTuple =
-        existing.requestId === req.requestId &&
+      const sameIdentity =
         existing.deviceUid === req.deviceUid &&
         existing.deviceName === req.deviceName &&
         existing.declaredFingerprint === req.keyFingerprint &&
         existing.publicKeyPem === req.publicKey;
-      if (!sameTuple)
+      if (!sameIdentity)
         return this.fail(409, "code_in_use", "This code is reserved for another enrollment");
       if (existing.cancelled) return this.fail(410, "enrollment_cancelled", "Enrollment cancelled");
       if (now >= live.expiresAt) return this.fail(410, "code_expired", "Pairing code expired");
@@ -568,7 +581,9 @@ export class PairingService {
     body: unknown,
     address: string,
     requestOrigin?: string,
-  ): Promise<{ ok: true; value: PairPendingOut | TokenIssue; status: number } | PairingFailure> {
+  ): Promise<
+    { ok: true; value: PairPendingOut | TokenIssue; status: number; receiptSeq?: number } | PairingFailure
+  > {
     const now = this.now();
     const ip = ipKey(address);
     if (this.failureBlocked(ip))
@@ -646,7 +661,11 @@ export class PairingService {
             );
           }
         }
-        return { ok: true, value: enrollment.issued.tokenIssue, status: 200 };
+        return this.markReceiptServed(enrollment, {
+          ok: true,
+          value: enrollment.issued.tokenIssue,
+          status: 200,
+        });
       }
       if (now >= code.expiresAt)
         return this.fail(410, "code_expired", "Pairing code expired before approval");
@@ -689,7 +708,7 @@ export class PairingService {
       enrollment.issuing = inflight;
       try {
         const tokenIssue = await inflight;
-        return { ok: true, value: tokenIssue, status: 200 };
+        return this.markReceiptServed(enrollment, { ok: true, value: tokenIssue, status: 200 });
       } catch (e) {
         const code = (e as { code?: unknown }).code;
         if (code === "identity_changed" || code === "key_replacement_required") {
@@ -797,6 +816,35 @@ export class PairingService {
   /** Proof check shared by first-verify and every receipt poll (F02). */
   private signatureOk(enrollment: Enrollment, signature: string): boolean {
     return this.verifySignature(enrollment, signature, this.deps.hubOrigin);
+  }
+
+  /**
+   * R9 (audit 1.3): stamp the optimistic "delivered" marker on every 200 that
+   * carries the token, with a monotonic sequence so the route can void exactly
+   * the serve it is reporting (see markReceiptLost). Fail-safe default: without
+   * any route feedback the marker stays set — forgetting the hook can never
+   * mass-retire receipts; only an observed dead socket can.
+   */
+  private markReceiptServed(
+    enrollment: Enrollment,
+    outcome: { ok: true; value: TokenIssue; status: number },
+  ): { ok: true; value: TokenIssue; status: number; receiptSeq: number } {
+    enrollment.receiptSeq = (enrollment.receiptSeq ?? 0) + 1;
+    enrollment.receiptDeliveredAt = this.now();
+    return { ...outcome, receiptSeq: enrollment.receiptSeq };
+  }
+
+  /**
+   * R9 (audit 1.3): the verify route reports the token response never flushed —
+   * the client vanished mid-poll (local cancel, crash), so the plaintext died
+   * with the socket. Void the optimistic marker for THAT serve only: a newer
+   * 200 since then is a real delivery and must survive. If the receipt grace
+   * then lapses still undelivered, sweep() revokes the orphan credential.
+   */
+  markReceiptLost(enrollmentId: string, servedSeq: number): void {
+    const enrollment = this.enrollments.get(enrollmentId);
+    if (!enrollment || enrollment.receiptSeq !== servedSeq) return;
+    enrollment.receiptDeliveredAt = undefined;
   }
 
   /** Ed25519 proof check for a given hub origin — the signing payload binds it,
@@ -993,10 +1041,56 @@ export class PairingService {
     this.failWindows.sweep();
     for (const [codeId, code] of this.codes) {
       if (now > code.expiresAt + RECEIPT_GRACE_MS) {
+        this.retireUndeliveredReceipt(code);
         this.byCode.delete(code.code);
         this.codes.delete(codeId);
         if (code.enrollmentId) this.enrollments.delete(code.enrollmentId);
       }
+    }
+  }
+
+  /**
+   * R9 (audit 1.3): the receipt grace lapsed with the token never delivered —
+   * its plaintext only ever existed in this RAM cache, so the committed
+   * credential is permanently unusable (device cancelled locally / crashed
+   * mid-poll, operator approved anyway). Retire it through the normal revoke
+   * state machine instead of stranding a `paired` ghost forever. A DELIVERED
+   * receipt is never touched; re-pairing remains the device's recovery path.
+   */
+  private retireUndeliveredReceipt(code: CodeEntry): void {
+    const enrollment = code.enrollmentId ? this.enrollments.get(code.enrollmentId) : undefined;
+    const issue = enrollment?.issued;
+    if (!enrollment || !issue || enrollment.receiptDeliveredAt !== undefined) return;
+    // R9 6.2 (false-positive guard): markReceiptLost can fire when `close` races
+    // `finish` AFTER a fully-flushed response — revoking then would kill a WORKING
+    // pairing. If the device ever CONNECTED with this credential (a tunnel.connect
+    // audit row naming it), the receipt self-evidently reached it: never revoke.
+    try {
+      const inUse = this.deps.registry.db
+        .prepare("SELECT COUNT(*) AS n FROM events WHERE action='tunnel.connect' AND detail_json LIKE ?")
+        .get(`%${issue.tokenIssue.credentialId}%`) as { n: number };
+      if (inUse.n > 0) {
+        enrollment.receiptDeliveredAt = this.now(); // correct the marker, not just skip
+        return;
+      }
+    } catch {
+      // Audit table unreadable: fall through and revoke (pre-R9 behavior) — a
+      // stray ghost is a lesser evil than never cleaning abandoned credentials.
+    }
+    try {
+      const retired = revokeAbandonedCredential(this.deps.registry, this.deps.audit, issue.tokenIssue);
+      if (retired)
+        console.warn(
+          `[pairing] receipt for enrollment ${enrollment.enrollmentId} was never delivered; abandoned credential ${issue.tokenIssue.credentialId} revoked (pair.abandoned)`,
+        );
+    } catch (error) {
+      // F15 still wins: the RAM entry must go at expiry+grace even if the
+      // revoke could not commit (e.g. audit outage). The credential then lives
+      // on as before this fix — an operator revoke cleans it up.
+      console.warn(
+        `[pairing] could not revoke the undelivered credential for enrollment ${enrollment.enrollmentId}`,
+        error,
+      );
     }
   }
 }

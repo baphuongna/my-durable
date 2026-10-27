@@ -32,6 +32,7 @@ export const AUDIT_ACTIONS = [
   "pair.approved",
   "pair.cancelled",
   "pair.success",
+  "pair.abandoned",
   "pair.revoke",
   "token.rotate_started",
   "token.rotate_completed",

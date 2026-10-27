@@ -280,7 +280,27 @@ app.post("/api/pair/verify", ...pairGuard, express.json({ limit: "16kb" }), asyn
   // origin_mismatch (with the DPI_HUB_ORIGIN hint) instead of counting an
   // invalid signature toward the enrollment cancel limit.
   const r = await pairing.verify(req.body, req.ip ?? "unknown", `${req.protocol}://${req.get("host")}`);
-  if (r.ok) return res.status(r.status).json(r.value);
+  if (r.ok) {
+    // R9 (audit 1.3): a token 200 counts as DELIVERED only once it flushes to
+    // the socket. A client that vanished mid-poll (local cancel, crash) never
+    // reads it — report the loss so the receipt-grace sweep can revoke the
+    // undeliverable credential instead of stranding a permanent ghost pairing.
+    if (
+      r.status === 200 &&
+      r.receiptSeq !== undefined &&
+      (r.value as { type?: string }).type === "pair.token"
+    ) {
+      const enrollmentId = (r.value as { enrollmentId?: string }).enrollmentId;
+      let flushed = false;
+      res.on("finish", () => {
+        flushed = true;
+      });
+      res.on("close", () => {
+        if (!flushed && enrollmentId) pairing.markReceiptLost(enrollmentId, r.receiptSeq!);
+      });
+    }
+    return res.status(r.status).json(r.value);
+  }
   pairErr(r, res);
 });
 /**

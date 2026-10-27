@@ -33,7 +33,11 @@
 import { randomUUID, createHash } from "node:crypto";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { TunnelFrame } from "../../../../dpi-sdk/src/protocol/tunnel.js";
-import { ROTATION_INTERVAL_DAYS } from "../../../../dpi-sdk/src/protocol/limits.js";
+import {
+  ROTATION_INTERVAL_DAYS,
+  ROTATION_RECOVERY_LIMIT_PER_HOUR,
+  ROTATION_RECOVERY_WINDOW_MS,
+} from "../../../../dpi-sdk/src/protocol/limits.js";
 import { Audit } from "./audit.js";
 import { newTunnelToken } from "./tunnel-token.js";
 import type { TunnelServer } from "./tunnel.js";
@@ -44,6 +48,10 @@ export interface RotationHooks {
   cacheTtlMs?: number;
   /** RAM cache capacity (bounded). */
   cacheCapacity?: number;
+  /** Cache-loss recovery mints per device per hour (test policy; production CANON 6). */
+  recoveryLimitPerHour?: number;
+  /** Refusal-report window override (test policy; production 1 h). R9 6.1. */
+  recoveryWindowMs?: number;
   /** Publish committed metadata changes to open browser streams. */
   onChange?(): void;
 }
@@ -74,6 +82,17 @@ export class RotationService {
    */
   private readonly deliveries = new Map<string, string>();
   private readonly now: () => number;
+  /**
+   * R9 (audit 4.4): recovery-mint timestamps per device (1 h sliding window, RAM). recoverFromCacheLoss
+   * used to mint one generation per post-TTL reconnect on an asymmetric flapping link — tunnel_credentials
+   * grew a row per reconnect cycle for as long as the link stayed broken. Cleared only by time; a hub
+   * restart clears it too, which is fine (the limiter targets sustained flapping within one uptime).
+   */
+  private readonly recoveryMints = new Map<string, number[]>();
+  /** R9 6.1: refusal audit rows are sticky — one rate_limited row per device per
+   *  window, not one per handshake attempt forever (a flapping link handshakes
+   *  every few seconds; the row is a signal, not a log). */
+  private readonly recoveryRefusalsReported = new Map<string, number>();
 
   constructor(
     private readonly registry: NetworkRegistry,
@@ -316,6 +335,35 @@ export class RotationService {
     this.deliveries.set(rotationId, connectionId);
   }
 
+  // -- recovery-mint rate limit (R9 4.4) ---------------------------------
+
+  /** Recovery mints still inside the sliding window for this device (pruned as a side effect). */
+  private recentRecoveryMints(deviceId: string): number[] {
+    const windowStart = this.now() - ROTATION_RECOVERY_WINDOW_MS;
+    const kept = (this.recoveryMints.get(deviceId) ?? []).filter((t) => t >= windowStart);
+    if (kept.length > 0) this.recoveryMints.set(deviceId, kept);
+    else this.recoveryMints.delete(deviceId);
+    return kept;
+  }
+
+  private allowRecoveryMint(deviceId: string): boolean {
+    return (
+      this.recentRecoveryMints(deviceId).length <
+      (this.hooks.recoveryLimitPerHour ?? ROTATION_RECOVERY_LIMIT_PER_HOUR)
+    );
+  }
+
+  private rememberRecoveryMint(deviceId: string, at: number): void {
+    const kept = this.recentRecoveryMints(deviceId);
+    kept.push(at);
+    this.recoveryMints.set(deviceId, kept);
+    if (this.recoveryMints.size > 4_096) {
+      // Hard backstop (same order as the tunnel grace caps): one entry per device.
+      const oldest = this.recoveryMints.keys().next().value;
+      if (oldest !== undefined && oldest !== deviceId) this.recoveryMints.delete(oldest);
+    }
+  }
+
   // -- handshake-driven recovery ---------------------------------------------
 
   /** Called after every valid identity handshake. */
@@ -442,7 +490,10 @@ export class RotationService {
   /**
    * Cache lost/expired: retire the UNCONFIRMED current (it never reached the
    * device), keep the previous (the credential the device still holds) and
-   * mint the next generation as the new target.
+   * mint the next generation as the new target. Rate-limited per device: a
+   * link that keeps needing recoveries is flapping asymmetrically, and minting
+   * G+n per reconnect grows tunnel_credentials without bound — past the limit
+   * the hub refuses and the pairing needs a full re-pair instead (R9 4.4).
    */
   private recoverFromCacheLoss(
     deviceId: string,
@@ -450,6 +501,31 @@ export class RotationService {
     unconfirmedCredentialId: string | null,
   ): void {
     if (!oldRotationId || !unconfirmedCredentialId) return;
+    if (!this.allowRecoveryMint(deviceId)) {
+      // Refuse WITHOUT minting: the rotation stays pending, the device stays on its
+      // previous credential and generations stop climbing. The audit row is the
+      // operator signal that this pairing needs a full re-pair (revoke + pair),
+      // not another generation — and it is reported once per window (R9 6.1).
+      const windowStart = this.now() - (this.hooks.recoveryWindowMs ?? ROTATION_RECOVERY_WINDOW_MS);
+      const lastReport = this.recoveryRefusalsReported.get(deviceId) ?? 0;
+      if (lastReport < windowStart) {
+        this.recoveryRefusalsReported.set(deviceId, this.now());
+        this.audit.withTransaction(() => {
+          this.audit.append({
+            actor: "hub",
+            action: "rate_limited",
+            outcome: "denied",
+            detail: {
+              deviceId,
+              policy: "rotation_recovery_per_hour",
+              limit: this.hooks.recoveryLimitPerHour ?? ROTATION_RECOVERY_LIMIT_PER_HOUR,
+              reason: "cache-loss recovery mints exhausted (flapping link); re-pair required",
+            },
+          });
+        });
+      }
+      return;
+    }
     const pairing = this.registry.db
       .prepare(
         "SELECT pairing_epoch, credential_generation FROM pairings WHERE device_id=? AND status='paired'",
@@ -497,6 +573,8 @@ export class RotationService {
     });
     this.cacheForget(oldRotationId);
     this.deliveries.delete(oldRotationId);
+    // Count only mints that committed: a rolled-back recovery minted nothing.
+    this.rememberRecoveryMint(deviceId, now);
     this.cachePut(rotationId, {
       deviceId,
       token,

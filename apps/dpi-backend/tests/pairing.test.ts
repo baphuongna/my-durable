@@ -270,7 +270,7 @@ test("P-5: incumbent hub wins without force; force stops old connector + best-ef
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
-test("malformed pairing.json ignored at boot; keypair still loads", async () => {
+test("malformed pairing.json is quarantined at boot and surfaces file-error (R9 1.1); keypair still loads", async () => {
   const home = await tempHome();
   const hub = fakeHub();
   const dp1 = newPairing(home, hub);
@@ -278,7 +278,15 @@ test("malformed pairing.json ignored at boot; keypair still loads", async () => 
   try {
     writeFileSync(pairingPath(home), "{ not json", { mode: 0o600 });
     const dp2 = newPairing(home, hub);
-    assert.equal(dp2.status().state, "unpaired"); // malformed → ignored, no crash
+    // R9 1.1: never a silent "unpaired" — the corrupt bytes are preserved
+    // aside and the status names the quarantine path via lastError.
+    const s = dp2.status();
+    assert.equal(s.state, "file-error");
+    assert.match(s.lastError ?? "", /pairing\.json\.corrupt-/);
+    const aside = readdirSync(home).find((f) => f.startsWith("pairing.json.corrupt-"));
+    assert.ok(aside, "corrupt file moved aside");
+    assert.equal(readFileSync(join(home, aside!), "utf8"), "{ not json");
+    assert.ok(!existsSync(pairingPath(home)), "pairing.json itself is gone (renamed, not deleted)");
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 

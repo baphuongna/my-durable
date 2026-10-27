@@ -24,10 +24,11 @@ import {
 import { hostname, platform } from "node:os";
 import type { Store } from "./store.js";
 import {
+  backUpPairingFile,
   ensureFileMode0600,
   ensurePrivateDir,
   keypairPath,
-  loadJson,
+  loadPairingFile,
   pairingPath,
   readKeypairFile,
   removeStaleTemps,
@@ -80,7 +81,8 @@ export interface PairingStartInput {
 }
 
 export type PairingStatus = {
-  state: "unpaired" | "pairing" | "paired" | "revoked";
+  /** `file-error`: pairing.json was present but unreadable/unparseable — it was quarantined (R9 1.1); lastError names the path. */
+  state: "unpaired" | "pairing" | "paired" | "revoked" | "file-error";
   deviceUid: string;
   deviceName: string;
   fingerprint: string; // from the LOCAL key — never echoed from the hub
@@ -180,6 +182,8 @@ export class DevicePairing {
   private keypair: DeviceKeypair | undefined;
   private paired: PairingFile | undefined;
   private revokedNotice = false;
+  /** R9 1.1: pairing.json was quarantined at boot — a live hub credential may be orphaned (detail names the path). */
+  private fileError: string | undefined;
 
   constructor(
     private readonly store: Store,
@@ -197,7 +201,12 @@ export class DevicePairing {
     ensurePrivateDir(home);
     removeStaleTemps(home);
     this.loadKeypair();
-    this.paired = loadJson<PairingFile>(pairingPath(home));
+    const loaded = loadPairingFile(home);
+    if (loaded.corrupt)
+      this.fileError =
+        `pairing.json was not valid JSON and was quarantined as ${loaded.corrupt.quarantinedAs}; ` +
+        `a live hub credential may be orphaned — recover it from a backup or ${pairingPath(home)}.bak, or re-pair`;
+    this.paired = loaded.file;
     if (this.paired) ensureFileMode0600(pairingPath(home));
     if (this.paired) ensurePrivateDir(home);
   }
@@ -229,11 +238,13 @@ export class DevicePairing {
     const base: PairingStatus = {
       state: this.pending
         ? "pairing"
-        : this.revokedNotice
-          ? "revoked"
-          : this.paired
-            ? "paired"
-            : "unpaired",
+        : this.fileError
+          ? "file-error"
+          : this.revokedNotice
+            ? "revoked"
+            : this.paired
+              ? "paired"
+              : "unpaired",
       deviceUid: this.store.uid,
       deviceName: this.deviceName,
       fingerprint: this.keypair!.fingerprint,
@@ -254,7 +265,9 @@ export class DevicePairing {
             },
           }
         : {}),
-      ...(this.lastFailure ? { lastError: this.lastFailure } : {}),
+      ...((this.lastFailure ?? this.fileError)
+        ? { lastError: this.lastFailure ?? this.fileError }
+        : {}),
     };
     return base;
   }
@@ -680,6 +693,8 @@ export class DevicePairing {
       // never authenticated (the proof was checked at the challenge, not here).
       ...(pending.kfp ? { hubKeyFingerprint: pending.kfp } : {}),
     };
+    // R9 1.1: keep the previous good file recoverable before it is replaced.
+    backUpPairingFile(pairingPath(this.home));
     writeAtomic(pairingPath(this.home), JSON.stringify(file, null, 2));
     // Re-check: a newer operation/pairing must not be clobbered by this commit.
     if (this.pending?.operationId !== pending.operationId) return;
@@ -688,6 +703,7 @@ export class DevicePairing {
     this.paired = file;
     this.pending = undefined;
     this.lastFailure = undefined;
+    this.fileError = undefined; // a good file just landed; the quarantine notice is obsolete
     this.revokedNotice = false;
     // The old hub keeps its tunnel and its pairing right up to here: only a persisted replacement ends them.
     if (previous && previous.hubOrigin !== file.hubOrigin) {

@@ -56,6 +56,18 @@ export const REST_PENDING_PER_DEVICE = 32;
 /** Pending REST requests hub-wide. */
 export const REST_PENDING_PER_HUB = 256;
 
+/**
+ * Late-frame grace for settled/abandoned REST correlations and closed subscriptions (R9, audit 4.1).
+ * After the hub gives up on a request (REST_TIMEOUT_MS), a legitimately slow device may still be
+ * writing its answer: the device's own local REST deadline (320 s from receipt) plus per-chunk
+ * pacing (45 s idle cut) and hub-side reassembly (30 s) bound that tail, so the last honest frame
+ * lands ≈395 s after a hub-side abandonment. 420 s = that tail plus margin: entries younger than
+ * this stay matchable (normal lateness never cuts a connection); older entries are unmatchable by
+ * any in-flight caller and expire from the grace sets. The per-map capacity caps remain as the
+ * hard memory backstop.
+ */
+export const REST_GRACE_TTL_MS = 420_000;
+
 /** Tunnel identity handshake deadline after 101. 5 s. */
 export const HANDSHAKE_DEADLINE_MS = 5_000;
 /** WS ping interval, both directions. 15 s. */
@@ -139,6 +151,21 @@ export const WS_UPGRADE_LIMITS = {
 
 /** Routine credential rotation interval. 90 days. */
 export const ROTATION_INTERVAL_DAYS = 90;
+
+/**
+ * Cache-loss recovery mints per device per sliding hour (R9, audit 4.4). An asymmetric flapping
+ * link (device reconnects on the previous credential but never receives the rotate frame) mints
+ * one credential generation per post-TTL reconnect, growing tunnel_credentials without bound.
+ * 6/hour: a link that needs more than six recoveries in an hour has failed to deliver six
+ * consecutive rotations across ~12+ minutes of reconnects — minting further generations only
+ * grows the table, so the hub refuses and the pairing needs a full re-pair. Legitimate rotation
+ * (90-day expiry, admin request) mints via rotateOnline(), which this limiter never counts or
+ * blocks; a genuine cache loss heals in one or two mints, and even repeated hub restarts stay
+ * far below the cap.
+ */
+export const ROTATION_RECOVERY_LIMIT_PER_HOUR = 6;
+/** Sliding window for the recovery-mint limiter. 1 h. */
+export const ROTATION_RECOVERY_WINDOW_MS = 3_600_000;
 
 /**
  * Tunneled REST paths live under /v1 and must match the route allowlist (rest-routes.ts). SSE endpoints (streams

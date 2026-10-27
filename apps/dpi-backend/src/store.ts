@@ -216,6 +216,14 @@ const SCHEDULE_DISPATCH_TIMEOUT_MS = 60_000;
  *  `timeout` — an explicit intermediate outcome, never a green "ok". */
 const SCHEDULE_SETTLE_CAP_MS = 120_000;
 
+/** R9 2.1: schedule registry persists (markRun) run OUTSIDE the dispatch
+ *  deadline — a hung dataDir fs would hold the in-flight guard forever
+ *  (Run-now 409s indefinitely, due-skips forever). Every markRun await is
+ *  bounded by this cap; the write itself is fire-and-forget-safe (the registry
+ *  queue still completes it if the fs recovers, and markRun is idempotent per
+ *  run), so a timed-out persist only loses the CRASH-safety record, never the guard. */
+const SCHEDULE_REGISTRY_IO_MS = 10_000;
+
 /**
  * Race `work` against a wall-clock budget. The loser is NOT cancelled: a create
  * that timed out may still complete later (its session shows up in the tree);
@@ -2675,7 +2683,11 @@ export class Store {
       // Persist the intent before any await that can wedge. If this persist
       // itself fails (disk full), the run still proceeds — it just loses the
       // crash-safety guarantee, like every version before R8.
-      await this.schedules.markRun(record.id, { outcome: "started" }).catch(() => undefined);
+      await deadline(
+        this.schedules.markRun(record.id, { outcome: "started" }),
+        SCHEDULE_REGISTRY_IO_MS,
+        "schedule registry write timed out (started)",
+      ).catch(() => undefined);
       await this.dispatchBounded(record);
     } finally {
       this.scheduleInFlight.delete(record.id);
@@ -2698,11 +2710,15 @@ export class Store {
   private async dispatchBounded(record: ScheduleRecord): Promise<void> {
     let sessionId: string | undefined;
     const recordFailure = async (outcome: "failed" | "timeout", detail: string) => {
-      await this.schedules.markRun(record.id, {
-        ...(sessionId ? { sessionId } : {}),
-        outcome,
-        error: detail.slice(0, 300),
-      }).catch(() => undefined);
+      await deadline(
+        this.schedules.markRun(record.id, {
+          ...(sessionId ? { sessionId } : {}),
+          outcome,
+          error: detail.slice(0, 300),
+        }),
+        SCHEDULE_REGISTRY_IO_MS,
+        "schedule registry write timed out (failure)",
+      ).catch(() => undefined);
       void this.notifyEvent({
         kind: "schedule.failed",
         title: `Schedule failed: ${record.name}`,
@@ -2738,7 +2754,11 @@ export class Store {
         return;
       }
       if (result.status === "done") {
-        await this.schedules.markRun(record.id, { sessionId, outcome: "ok" }).catch(() => undefined);
+        await deadline(
+          this.schedules.markRun(record.id, { sessionId, outcome: "ok" }),
+          SCHEDULE_REGISTRY_IO_MS,
+          "schedule registry write timed out (ok)",
+        ).catch(() => undefined);
         void this.notifyEvent({
           kind: "schedule.ok",
           title: `Schedule ran: ${record.name}`,

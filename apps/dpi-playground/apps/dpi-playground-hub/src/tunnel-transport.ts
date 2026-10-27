@@ -9,8 +9,17 @@
  *
  * REST hardening (pending caps, path allowlist enforcement on the hub side,
  * chunked responses, mutation safety) lands in P2-16; this file owns routing.
+ *
+ * R9 (audit 4.1/4.3): the late-frame grace sets evict by TTL as well as by
+ * capacity — an entry older than REST_GRACE_TTL_MS is unmatchable by any
+ * in-flight caller — and every eviction (age or capacity) is remembered in a
+ * bounded `dropped` ring so the late frame that eventually arrives for it is
+ * recognized as inert instead of foreign: reconnect churn must never cut a
+ * healthy connection. Un-keyed tunnel mutations get a deterministic
+ * idempotency key so a hub retry after a connection swap deduplicates
+ * device-side instead of double-applying.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DpiError } from "../../../../dpi-sdk/src/errors.js";
 import type { Frame } from "../../../../dpi-sdk/src/api.js";
 import {
@@ -21,6 +30,7 @@ import {
 import {
   CONNECTION_BUFFER_BUDGET_BYTES,
   REST_BODY_MAX_BYTES,
+  REST_GRACE_TTL_MS,
   REST_PENDING_PER_DEVICE,
   REST_PENDING_PER_HUB,
   REST_TIMEOUT_MS,
@@ -58,6 +68,19 @@ interface Subscription {
   onAbort: () => void;
 }
 
+/** A grace-set entry: which connection owned the correlation, and when it left the pending maps. */
+interface GraceEntry {
+  connectionId: string;
+  at: number;
+}
+
+/** settled/abandoned reqId grace cap (hard memory backstop; TTL is the primary bound). */
+const REST_GRACE_MAP_CAP = 256;
+/** closed-subscription grace cap. */
+const CLOSED_SUBS_GRACE_CAP = 4_096;
+/** Hard cap for the evicted-correlation ring (same order as the grace caps). */
+const GRACE_RING_CAP = 4_096;
+
 /**
  * Routes inbound device→hub frames: rest-response resolves the matching
  * pending request, tunnel-data feeds the matching subscription. A frame for a
@@ -69,6 +92,10 @@ export interface DispatcherOptions {
   audit?: Audit;
   /** Test-only deadline policy (production: CANON REST_TIMEOUT_MS). */
   deadlineMs?: number;
+  /** Test-only late-frame grace TTL (production: CANON REST_GRACE_TTL_MS). */
+  graceTtlMs?: number;
+  /** Test-only clock for the grace sets (production: Date.now). */
+  now?: () => number;
   /** Shared admission for REST payloads, reassembly and SSE output. */
   budget?: ByteBudget;
   /** Per-connection share of `budget` (production: CANON 32 MiB). */
@@ -84,14 +111,20 @@ export class TunnelDispatcher {
   /** connectionId → that connection's share of the hub budget (reassembly + pending REST payloads). */
   private readonly connectionBudgets = new Map<string, ByteBudget>();
   private readonly reassemblers = new Map<string, ChunkReassembler>(); // connectionId → reassembler
-  /** reqId → connectionId of recently settled requests (late-response grace). */
-  private readonly settled = new Map<string, string>();
+  /** reqId → recently settled requests (late-response grace, TTL + capped). */
+  private readonly settled = new Map<string, GraceEntry>();
   /** The same grace for ABANDONED requests (timeout/abort/connection loss): the device may still be
    *  writing their response right now, and normal traffic must never churn these correlations away. */
-  private readonly abandoned = new Map<string, string>();
-  /** subscriptionId → connectionId of recently closed subscriptions (in-flight frames after an unsubscribe are benign). */
-  private readonly closedSubs = new Map<string, string>();
+  private readonly abandoned = new Map<string, GraceEntry>();
+  /** subscriptionId → recently closed subscriptions (in-flight frames after an unsubscribe are benign). */
+  private readonly closedSubs = new Map<string, GraceEntry>();
+  /** Correlations that left a grace set (TTL-expired or capacity-evicted) → removal time. Their
+   *  late frames resolve nothing and are dropped, never cut — cutting them is what turned reconnect
+   *  churn into connection storms (R9 4.1). Bounded like the grace sets themselves. */
+  private readonly dropped = new Map<string, number>();
   private readonly deadlineMs: number;
+  private readonly graceTtlMs: number;
+  private readonly now: () => number;
   private readonly audit?: Audit;
 
   constructor(
@@ -100,6 +133,8 @@ export class TunnelDispatcher {
   ) {
     this.audit = options.audit;
     this.deadlineMs = options.deadlineMs ?? REST_TIMEOUT_MS;
+    this.graceTtlMs = options.graceTtlMs ?? REST_GRACE_TTL_MS;
+    this.now = options.now ?? Date.now;
     this.budget = options.budget ?? new ByteBudget("rest", 64 * 1024 * 1024);
     this.connectionBudgetBytes = options.connectionBudgetBytes ?? CONNECTION_BUFFER_BUDGET_BYTES;
     server.setHandlers({
@@ -121,18 +156,89 @@ export class TunnelDispatcher {
     p.signal.removeEventListener("abort", p.onAbort);
     p.reservation?.release();
     this.reassemblers.get(p.connectionId)?.abort({ kind: "rest-response", reqId });
-    // Remember recently-settled reqIds (bounded): a late response for an
+    // Remember recently-settled reqIds (bounded + TTL'd): a late response for an
     // aborted/timed-out OWN request on the SAME connection is benign and must
     // not kill the connection; foreign reqIds still do (below). Abandoned
-    // correlations get their own FIFO so busy normal traffic cannot evict the
+    // correlations get their own map so busy normal traffic cannot evict the
     // correlation of a response that is still legitimately in flight.
     const map = outcome === "abandoned" ? this.abandoned : this.settled;
-    map.set(reqId, p.connectionId);
-    if (map.size > 256) {
-      const oldest = map.keys().next().value;
-      if (oldest !== undefined) map.delete(oldest);
-    }
+    this.gracePut(map, reqId, p.connectionId, REST_GRACE_MAP_CAP);
     return p;
+  }
+
+  /**
+   * Insert into a grace set: TTL-evict first (an entry older than the grace TTL is unmatchable by
+   * any in-flight caller — the device's own send tail is inside the TTL, see REST_GRACE_TTL_MS),
+   * then the capacity cap as the hard memory backstop. Everything removed lands in the `dropped`
+   * ring so the late frame that eventually arrives for it is inert, not foreign (R9 4.1).
+   */
+  private gracePut(
+    map: Map<string, GraceEntry>,
+    id: string,
+    connectionId: string,
+    cap: number,
+  ): void {
+    const ts = this.now();
+    for (const [key, entry] of map) {
+      if (ts - entry.at <= this.graceTtlMs) break; // insertion order == age order
+      map.delete(key);
+      this.rememberDropped(key, ts);
+    }
+    map.set(id, { connectionId, at: ts });
+    while (map.size > cap) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+      this.rememberDropped(oldest, ts);
+    }
+  }
+
+  /** Grace-set lookup: an entry past its TTL retires to the ring on first touch. */
+  private graceOwns(map: Map<string, GraceEntry>, id: string, connectionId: string): boolean {
+    const entry = map.get(id);
+    if (!entry) return false;
+    if (this.now() - entry.at > this.graceTtlMs) {
+      map.delete(id);
+      this.rememberDropped(id, this.now());
+    }
+    return entry.connectionId === connectionId;
+  }
+
+  /** True while a removed correlation is recent enough that its late frames are inert, not foreign. */
+  private wasDropped(id: string): boolean {
+    const at = this.dropped.get(id);
+    if (at === undefined) return false;
+    if (this.now() - at > this.graceTtlMs) {
+      this.dropped.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  private rememberDropped(id: string, at: number): void {
+    this.dropped.set(id, at);
+    for (const [key, t] of this.dropped) {
+      if (at - t <= this.graceTtlMs) break; // front is the oldest removal
+      this.dropped.delete(key);
+    }
+    while (this.dropped.size > GRACE_RING_CAP) {
+      const oldest = this.dropped.keys().next().value;
+      if (oldest === undefined) break;
+      this.dropped.delete(oldest);
+    }
+  }
+
+  /**
+   * A late rest frame for a correlation this hub recently issued: still inside a grace set, or
+   * recently expired/evicted from one (the `dropped` ring). Such a frame can resolve nothing — its
+   * pending is gone — so it is dropped silently; cutting the sender here is what turned reconnect
+   * churn into connection storms (R9 4.1). A correlation that is pending on ANOTHER connection or
+   * was never issued is still foreign and still cuts (T-7).
+   */
+  private lateFrameIsBenign(id: string, connectionId: string): boolean {
+    if (this.graceOwns(this.settled, id, connectionId)) return true;
+    if (this.graceOwns(this.abandoned, id, connectionId)) return true;
+    return this.wasDropped(id);
   }
 
   /**
@@ -167,14 +273,10 @@ export class TunnelDispatcher {
       // Foreign or already-settled responses never resolve someone else's
       // request; matching requires the SAME connection that owns the pending.
       if (!p || p.connectionId !== conn.connectionId) {
-        // Late response for an OWN settled request on the same connection:
-        // ignore silently (the caller already moved on).
-        if (
-          p === undefined &&
-          (this.settled.get(reqId) === conn.connectionId ||
-            this.abandoned.get(reqId) === conn.connectionId)
-        )
-          return;
+        // Late response for an OWN settled/abandoned request — or one whose grace
+        // entry just expired/was evicted — on the same connection: ignore silently
+        // (the caller already moved on; the frame resolves nothing).
+        if (p === undefined && this.lateFrameIsBenign(reqId, conn.connectionId)) return;
         if (p !== undefined && p.connectionId !== conn.connectionId) {
           // A response claiming a reqId owned by ANOTHER connection: attack.
         }
@@ -199,12 +301,7 @@ export class TunnelDispatcher {
       if (chunk.kind === "rest-response") {
         const pending = this.pending.get(chunk.reqId);
         // Match the plain-response grace before allocating any assembly.
-        if (
-          !pending &&
-          (this.settled.get(chunk.reqId) === conn.connectionId ||
-            this.abandoned.get(chunk.reqId) === conn.connectionId)
-        )
-          return;
+        if (!pending && this.lateFrameIsBenign(chunk.reqId, conn.connectionId)) return;
         if (!pending || pending.connectionId !== conn.connectionId) {
           this.denyDevice(
             conn,
@@ -311,8 +408,9 @@ export class TunnelDispatcher {
 
   /**
    * The live subscription a device frame addresses, if this connection owns it. A frame for a
-   * subscription it just closed is benign (the device had it in flight) and is dropped; anything
-   * else (never issued, or owned by another connection) is a protocol violation: deny, audit, cut (T-7).
+   * subscription it just closed (or whose closed-subscription grace entry just expired) is benign
+   * (the device had it in flight) and is dropped; anything else (never issued, or owned by another
+   * connection) is a protocol violation: deny, audit, cut (T-7).
    */
   private ownSubscription(
     conn: TunnelConnection,
@@ -320,7 +418,9 @@ export class TunnelDispatcher {
   ): Subscription | undefined {
     const sub = this.subs.get(subscriptionId);
     if (sub && sub.connectionId === conn.connectionId) return sub;
-    if (!sub && this.closedSubs.get(subscriptionId) === conn.connectionId) return undefined;
+    if (!sub && this.graceOwns(this.closedSubs, subscriptionId, conn.connectionId))
+      return undefined;
+    if (!sub && this.wasDropped(subscriptionId)) return undefined;
     this.denyDevice(
       conn,
       "foreign_subscription",
@@ -331,11 +431,7 @@ export class TunnelDispatcher {
   }
 
   private rememberClosedSubscription(subscriptionId: string, connectionId: string): void {
-    this.closedSubs.set(subscriptionId, connectionId);
-    if (this.closedSubs.size > 4_096) {
-      const oldest = this.closedSubs.keys().next().value;
-      if (oldest !== undefined) this.closedSubs.delete(oldest);
-    }
+    this.gracePut(this.closedSubs, subscriptionId, connectionId, CLOSED_SUBS_GRACE_CAP);
   }
 
   /**
@@ -399,6 +495,16 @@ export class TunnelDispatcher {
   pendingCount(): number {
     return this.pending.size;
   }
+
+  /** Test visibility into the bounded grace state (R9 4.1). */
+  graceSizes(): { settled: number; abandoned: number; closedSubs: number; dropped: number } {
+    return {
+      settled: this.settled.size,
+      abandoned: this.abandoned.size,
+      closedSubs: this.closedSubs.size,
+      dropped: this.dropped.size,
+    };
+  }
   subscriptionCount(deviceId?: string): number {
     return deviceId === undefined
       ? this.subs.size
@@ -424,6 +530,25 @@ export class TunnelDispatcher {
           new DpiError("invalid", `Request body exceeds ${REST_BODY_MAX_BYTES} bytes`, 413),
         );
     }
+    // R9 (audit 4.3): un-keyed tunnel MUTATIONS get a deterministic idempotency key so a
+    // hub retry after a connection swap/abandon (503 to the caller, then a re-send with a
+    // fresh reqId) lands on the SAME device-side key: the device's create-route idempotency
+    // (requests table + in-flight map) answers the replay instead of double-applying. The
+    // key is derived from the content — method + path + serialized body — so it is identical
+    // across the retry and independent of the connection that carried the first attempt.
+    // Reads (GET/HEAD) stay un-keyed: nothing to deduplicate. Collateral: two DELIBERATE
+    // identical mutations inside the device's 24 h requests retention collapse to the first
+    // outcome — accepted, because the alternative is a silent at-least-once mutation on every
+    // connection swap. The prefix marks hub-derived keys in device logs; 73 chars fits the
+    // device's 128-char header cap and the wire schema's 256.
+    const idempotencyKey =
+      input.idempotencyKey ??
+      (input.method === "GET" || input.method === "HEAD"
+        ? undefined
+        : "dpi-auto-" +
+          createHash("sha256")
+            .update(`${input.method} ${input.path}\u0000${serialized ?? ""}`, "utf8")
+            .digest("hex"));
     // Pending caps: 32/device, 256/hub (429 when full — no silent queueing).
     let deviceSet = this.pendingByDevice.get(deviceId);
     if (!deviceSet) {
@@ -468,7 +593,7 @@ export class TunnelDispatcher {
         reqId,
         method: input.method as "GET",
         path: input.path,
-        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(input.body !== undefined ? { body: input.body } : {}),
       });
       if (!sent) {

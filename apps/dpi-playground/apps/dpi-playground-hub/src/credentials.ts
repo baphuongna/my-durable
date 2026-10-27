@@ -267,3 +267,49 @@ export class CredentialService {
     return "invalid";
   }
 }
+
+/**
+ * R9 (audit 1.3): retire a credential whose pairing receipt was NEVER delivered
+ * (the device cancelled/crashed mid-poll and the receipt grace lapsed — the
+ * plaintext only ever lived in the hub's RAM cache). Same state machine as an
+ * operator revoke: pairing paired→revoked, every live credential of that epoch
+ * → revoked, tunnel state dropped, one `pair.abandoned` audit row — all in ONE
+ * transaction. Scoped to the issuance's OWN epoch, so a device that already
+ * re-paired (new epoch) is never touched. Returns true only when the pairing
+ * row actually flipped; a no-op (already revoked / re-paired / harness registry
+ * without rows) changes nothing and audits nothing.
+ */
+export function revokeAbandonedCredential(
+  registry: NetworkRegistry,
+  audit: Audit,
+  tokenIssue: Pick<TokenIssue, "deviceUid" | "deviceId" | "pairingEpoch" | "credentialId">,
+): boolean {
+  const now = Date.now();
+  return audit.withTransaction(() => {
+    const flipped = registry.db
+      .prepare(
+        "UPDATE pairings SET status='revoked', updated_at=? WHERE device_id=? AND pairing_epoch=? AND status='paired'",
+      )
+      .run(now, tokenIssue.deviceId, tokenIssue.pairingEpoch).changes;
+    if (!flipped) return false;
+    registry.db
+      .prepare(
+        "UPDATE tunnel_credentials SET status='revoked', revoked_at=? WHERE device_id=? AND pairing_epoch=? AND status IN ('current','previous','retired')",
+      )
+      .run(now, tokenIssue.deviceId, tokenIssue.pairingEpoch);
+    registry.db.prepare("DELETE FROM tunnel_state WHERE device_id=?").run(tokenIssue.deviceId);
+    audit.append({
+      actor: "hub",
+      action: "pair.abandoned",
+      outcome: "ok",
+      detail: {
+        deviceId: tokenIssue.deviceId,
+        deviceUid: tokenIssue.deviceUid,
+        pairingEpoch: tokenIssue.pairingEpoch,
+        credentialId: tokenIssue.credentialId,
+        reason: "receipt grace lapsed with the token never delivered; the credential was undeliverable",
+      },
+    });
+    return true;
+  });
+}
