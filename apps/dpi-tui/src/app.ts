@@ -8,7 +8,9 @@ import {
   ProcessTerminal,
   TuiAltScreen,
   matchesKey,
+  sliceByColumn,
   truncateToWidth,
+  visibleWidth,
   type Component,
   type OverlayHandle,
   type TuiInputListenerResult,
@@ -35,6 +37,7 @@ import {
   renderNetwork,
   renderStatusbar,
   renderViewbar,
+  gitStateSuffix,
   herdRows,
   joinPanel,
   networkRows,
@@ -43,6 +46,8 @@ import {
 import { appendFileSync } from "node:fs";
 import { fetchHubNetwork } from "./hub-feed.ts";
 import { HubMux, type MuxState } from "./hub-mux.ts";
+import { FOLLOW_TAIL, scrollBy, viewportTop, type ScrollState } from "./scroll.ts";
+import { wrapByColumn } from "./wrap.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 
 export interface DeviceRef {
@@ -162,7 +167,20 @@ export class App {
   helpOpen = false;
   toast = "";
   toastTicks = 0;
-  scrollOffset = 0;
+  /** Transcript viewport (R5 findings 2+3): offset counts lines BACK from the
+   *  tail (0 = follow it); scroll.ts holds the absolute-anchor math. */
+  private scrollState: ScrollState = FOLLOW_TAIL;
+  /** Public read for tests/debug: lines back from the tail. */
+  get scrollOffset(): number {
+    return this.scrollState.offset;
+  }
+  /** Last rendered transcript content length / inner height — scrollBy needs
+   *  them at keypress time, when no frame width is known. */
+  private lastContentLen = 0;
+  private lastInner = 0;
+  /** Transcript length when last following the tail — content growth beyond
+   *  this while scrolled up lights the "↓ new output" indicator (R5 finding 3). */
+  private followLen = 0;
   /** ctrl+o: show full tool output instead of the first lines. */
   expand = false;
   /** Slash autocomplete: which suggestion row is selected (0 = first). */
@@ -300,7 +318,7 @@ export class App {
     this.handle = this.client.agent(sessionId, agentId);
     this.model.clear();
     if (!sameSession) this.session.clear();
-    this.scrollOffset = 0;
+    this.scrollState = FOLLOW_TAIL;
     void this.refreshSessions();
     const handle = this.handle;
     // Hub-routed devices stream through the mux (same upstreams the web rides);
@@ -419,6 +437,16 @@ export class App {
       // Frames flow again: re-fetch the network rows that froze with the old
       // connection (R4 finding 6 — the view stayed empty through every switch).
       this.refreshHubNetwork();
+      // …and re-fetch the device info (R5 finding 5): the model catalog rode
+      // the boot-time /device fetch, so after a reconnect the cached catalog
+      // could miss the session's model and the ctx bar died ("ctx —").
+      void this.client
+        .device({ timeoutMs: 10_000 })
+        .then((info) => {
+          this.info = info;
+          this.requestRender();
+        })
+        .catch(() => {});
     }
     this.requestRender();
   }
@@ -446,7 +474,7 @@ export class App {
   setView(view: View) {
     this.view = view;
     this.cursor = 0;
-    this.scrollOffset = 0;
+    this.scrollState = FOLLOW_TAIL;
     if (view === "herd") void this.refreshSessions();
     if (view === "herd") this.refreshBranches();
     if (view === "network") {
@@ -863,7 +891,12 @@ export class App {
   private move(delta: number) {
     if (this.view === "agent" && this.tab === "transcript") {
       // Scroll the transcript instead of moving a cursor (herdr H04's lesson).
-      this.scrollOffset = Math.max(0, this.scrollOffset + delta);
+      // R5 finding 2: the offset counts lines BACK from the tail, so adding the
+      // raw movement delta scrolled INTO history on j and clamped k dead at the
+      // bottom — exactly inverted. scrollBy's delta moves the absolute top
+      // line instead: j/↓ = +1 = toward newer, k/↑ = -1 = toward older — the
+      // directions the help panel has always promised.
+      this.scrollState = scrollBy(this.scrollState, delta, this.lastContentLen, this.lastInner);
       this.requestRender();
       return;
     }
@@ -910,7 +943,7 @@ export class App {
     }
     const index = AGENT_TABS.findIndex((t) => t.id === this.tab);
     this.tab = AGENT_TABS[(index + delta + AGENT_TABS.length) % AGENT_TABS.length]!.id;
-    this.scrollOffset = 0;
+    this.scrollState = FOLLOW_TAIL;
     this.requestRender();
   }
 
@@ -1175,11 +1208,17 @@ export class App {
     const filled = ctx === undefined ? 0 : Math.round((ctx / 100) * barW);
     const g = this.gitOf(session?.cwd);
     if (session?.cwd) this.refreshGit(session.cwd);
-    const gitChip = g?.repo ? `  ${c.muted("⎇")} ${c.text(g.branch ?? g.head ?? "")}${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0) ? c.warn(` ±${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0)}`) : ""}` : "";
+    // Merge/detached join the chip (R5 finding 4): the backend reports both,
+    // the web shows a banner — the TUI used to show a healthy branch chip
+    // while the repo was mid-merge with conflicts.
+    const gitChip = g?.repo
+      ? `  ${c.muted("⎇")} ${c.text(g.branch ?? g.head ?? "")}${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0) ? c.warn(` ±${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0)}`) : ""}${g.merge ? c.err(gitStateSuffix(g)) : g.detached ? c.warn(gitStateSuffix(g)) : ""}`
+      : "";
     lines.push(
       `${c.muted(this.device.id)} ${c.muted("›")} ${c.text(session?.name ?? "—")} ${c.muted("›")} ${c.bold(`#${this.agentId ?? 1}`)}${gitChip}  ` +
         `${STATE_COLOR[state](STATE_GLYPH[state] + " " + (this.busy() ? "working" : "idle"))}  ` +
-        `${c.muted("ctx")} ${ctx === undefined ? c.muted("—") : c.accent(rep("█", filled)) + c.muted(rep("░", barW - filled)) + " " + c.muted(`${ctx}%`)}`,
+        // Catalog miss renders "?" not "—" (R5 finding 5): unknown window ≠ no usage.
+        `${c.muted("ctx")} ${ctx === undefined ? c.muted("?") : c.accent(rep("█", filled)) + c.muted(rep("░", barW - filled)) + " " + c.muted(`${ctx}%`)}`,
     );
     lines.push(
       AGENT_TABS.map((t) => (t.id === this.tab ? c.inverse(c.bold(` ${t.label} `)) : c.muted(` ${t.label} `))).join(
@@ -1189,19 +1228,44 @@ export class App {
     lines.push(c.muted(rep(box.h, w)));
     const inner = h - 3;
     const content = this.agentContent(w);
-    const from = Math.max(0, content.length - inner - this.scrollOffset);
-    for (const line of content.slice(from, from + inner)) lines.push(line);
+    // R5 finding 3: the viewport top is an ABSOLUTE anchor while scrolled up —
+    // new frames must not slide the page under the user. Only offset 0 (tail)
+    // follows the growth.
+    const view = viewportTop(this.scrollState, content.length, inner);
+    this.scrollState = view.state;
+    const newBelow = this.scrollState.offset > 0 && content.length > this.followLen;
+    if (this.scrollState.offset === 0) this.followLen = content.length;
+    this.lastContentLen = content.length;
+    this.lastInner = inner;
+    for (const line of content.slice(view.from, view.from + inner)) lines.push(line);
+    if (newBelow) {
+      // The "↓ new output" hint configured on the TuiAltScreen never renders —
+      // pi-tui draws it only for its own scroll views, and ours is app-owned
+      // (R5 finding 3). Center it on the last body row while scrolled up and
+      // frames landed below.
+      const at = lines.length - 1;
+      lines[at] = this.composeIndicator(lines[at] ?? "", w);
+    }
     return lines.slice(0, h);
+  }
+
+  /** Overlay the "↓ new output" label onto a body row, centered, content kept. */
+  private composeIndicator(row: string, width: number): string {
+    const label = truncateToWidth(c.muted(" ↓ new output "), Math.max(0, width - 2), "");
+    const labelWidth = visibleWidth(label);
+    if (!labelWidth) return row;
+    const col = Math.max(0, Math.floor((width - labelWidth) / 2));
+    const left = truncateToWidth(row, col, "");
+    const right = sliceByColumn(row, col + labelWidth, Math.max(0, width - col - labelWidth), true);
+    return left + label + right;
   }
 
   /** The transcript/tasks/tools/state/config tabs, from the REAL model state. */
   private agentContent(w: number): string[] {
     const s = this.model.state;
-    const wrap = (text: string, indent = "  ") =>
-      text
-        .split("\n")
-        .flatMap((l) => (l.length > w - 4 ? [l.slice(0, w - 4), l.slice(w - 4)] : [l]))
-        .map((l) => indent + l);
+    // Display-width loop wrap (R5 finding 1): the old single-split leaked the
+    // remainder of every overlong line to pi-tui's hard clip. See wrap.ts.
+    const wrap = (text: string, indent = "  ") => wrapByColumn(text, w, indent);
     if (this.tab === "transcript") {
       const lines: string[] = [];
       let turn = 0;
@@ -1375,20 +1439,39 @@ export class App {
 
   private helpPanel(w: number, h: number): string[] {
     const width = Math.min(76, w - 4);
+    // Column-aligned by MEASURED visible width (R5 finding 6): the hand-spaced
+    // rows drifted every time a label changed — "↵"-style keys made raw
+    // padding lie, so pad on visibleWidth before styling.
+    const keys: { k1: string; d1: string; k2?: string; d2?: string; muted?: boolean }[] = [
+      { k1: "j k ↑ ↓", d1: "move/scroll", k2: "1-4", d2: "views: net/herd/agent/log" },
+      { k1: "↵", d1: "open", k2: "g N L", d2: "same views, aliases" },
+      { k1: "[ ] t", d1: "agent tabs", k2: "m", d2: "message (enter sends)" },
+      // esc is BACK only (R5 finding 7): it never interrupts (the 0.0.52/0.0.58
+      // invariant — interrupting a running turn is destructive and keeps its
+      // own key, `i`). The old "back/interrupt" label taught a key that does
+      // nothing and hid the one that does.
+      { k1: "esc", d1: "back", k2: "i", d2: "interrupt ≠ kill" },
+      { k1: "F", d1: "fork", k2: "c", d2: "compact context" },
+      { k1: "y", d1: "thinking level", k2: "x", d2: "reset (y/n confirm)" },
+      { k1: "alt+↵", d1: "send now, no steer", k2: "ctrl+l", d2: "model picker", muted: true },
+      { k1: "tab", d1: "complete /command", k2: "↑", d2: "recall sent", muted: true },
+      { k1: "ctrl+o", d1: "expand tool output", muted: true },
+      { k1: ":", d1: "palette", k2: "f", d2: "filter rows" },
+      { k1: "n", d1: "new session", k2: "/", d2: "message // commands" },
+    ];
+    const padCell = (s: string, n: number) => s + rep(" ", Math.max(0, n - visibleWidth(s)));
+    const k1w = Math.max(...keys.map((r) => visibleWidth(r.k1))) + 2;
+    const d1w = Math.max(...keys.map((r) => visibleWidth(r.d1))) + 3;
+    const k2w = Math.max(...keys.filter((r) => r.k2).map((r) => visibleWidth(r.k2!))) + 2;
+    const keyRow = (r: (typeof keys)[number]) => {
+      const key = r.muted ? c.muted : c.accent;
+      const desc = r.muted ? c.muted : (s: string) => s;
+      return key(padCell(r.k1, k1w)) + desc(padCell(r.d1, d1w)) + (r.k2 ? key(padCell(r.k2, k2w)) + desc(r.d2 ?? "") : "");
+    };
     const rows = [
       `${c.accent("▲")} ${c.bold("dpi keymap (herdr template)")}`,
       "",
-      `${c.accent("j k ↑ ↓")}  move/scroll     ${c.accent("1-4")}  views: net/herd/agent/log`,
-      `${c.accent("↵")}       open           ${c.accent("g N L")}  same views, aliases`,
-      `${c.accent("[ ] t")}   agent tabs     ${c.accent("m")}    message (enter sends)`,
-      `${c.accent("esc")}     back/interrupt ${c.accent("i")}    interrupt ≠ kill`,
-      `${c.accent("F")}       fork           ${c.accent("c")}    compact context`,
-      `${c.accent("y")}       thinking level ${c.accent("x")}    reset (y/n confirm)`,
-      `${c.muted("alt+↵")}     send now, no steer ${c.muted("ctrl+l")}  model picker`,
-      `${c.muted("tab")}     complete /command  ${c.muted("↑")}      recall sent`,
-      `${c.muted("ctrl+o")}    expand tool output`,
-      `${c.accent(":")}       palette        ${c.accent("f")}    filter rows`,
-      `${c.accent("n")}       new session    ${c.accent("/")}    message // commands`,
+      ...keys.map(keyRow),
       "",
       c.muted("Durability"),
       `${c.muted("·")} every turn is checkpointed on the device`,

@@ -4,6 +4,7 @@
 // unit-testable exactly like the reference's frame(w, h).
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { SessionSummary } from "../../dpi-sdk/src/api.ts";
+import type { GitStatus } from "../../dpi-sdk/src/client.ts";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
 import { c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 
@@ -55,6 +56,18 @@ export const ageOf = (createdAt: number, now = Date.now()) => {
 
 export const sessionState = (s: SessionSummary): RowState =>
   s.error ? "error" : s.busy ? "busy" : "idle";
+
+/**
+ * The state suffix the /git toast and the agent-header chip append after
+ * branch ±dirty (R5 finding 4): a merge in progress and a detached HEAD used
+ * to be invisible in the TUI while the backend already reported both — the
+ * web's GitPanel has carried a merge banner all along. Mirrors the FE text.
+ */
+export function gitStateSuffix(g: Pick<GitStatus, "merge" | "conflicts" | "detached">): string {
+  if (g.merge) return ` · merging (${g.conflicts ?? 0} conflicts)`;
+  if (g.detached) return " (detached)";
+  return "";
+}
 export const deviceState = (d: DeviceRow): RowState =>
   d.lastStatus === "online"
     ? "busy"
@@ -259,7 +272,9 @@ export function renderStatusbar(
     : opts.view === "agent"
       ? ["g herd", "N network", "L log", "[ ] tabs", "m message"]
       : ["j/k move", "↵ open", "1-4 views", "⇥ tabs", "esc agent"];
-  const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("—") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(opts.device, 18))}`;
+  // Catalog miss degrades to "?" (R5 finding 5): "—" read as "no usage yet",
+  // when it actually means the window is unknown — a different problem.
+  const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("?") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(opts.device, 18))}`;
   const left = `${chip} ${keys.map((k) => c.muted(k)).join(c.muted(" • "))}`;
   const gap = Math.max(1, w - visibleWidth(left) - visibleWidth(right));
   return c.inverse(padTo(fit(`${left}${rep(" ", gap)}${right}`, w), w));
@@ -338,7 +353,7 @@ export function renderHerdPanel(
     ` ${c.muted("agents")}  ${agents.length ? agents[0] : "—"}`,
     ...agents.slice(1, 8).map((a) => `          ${c.muted(a)}`),
     "",
-    ` ${c.muted("ctx")}     ${ctxLeft === undefined ? c.muted("—") : c.text(`${ctxLeft}% left`)}`,
+    ` ${c.muted("ctx")}     ${ctxLeft === undefined ? c.muted("?") : c.text(`${ctxLeft}% left`)}`,
     ` ${c.muted("age")}     ${c.muted(ageOf(s.createdAt))}`,
     ` ${c.muted("tokens")}  ${c.muted(compact(s.agents.reduce((n, a) => n + a.background, 0)) + " bg")}`,
   ];

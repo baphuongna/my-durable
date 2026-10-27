@@ -100,6 +100,10 @@ export class Picker extends Box {
     // arrow sequences it already understands.
     if (data === "j") return this.list.handleInput("\x1b[B");
     if (data === "k") return this.list.handleInput("\x1b[A");
+    // Enter on a ZERO-match list closes the picker (R5 finding 6): SelectList
+    // drops the key when nothing is selected — a silent no-op that stranded
+    // the user on a dead overlay with only esc as a way out.
+    if (matchesKey(data, "enter") && !this.list.getSelectedItem()) return this.onCancel();
     if (matchesKey(data, "up") || matchesKey(data, "down") || matchesKey(data, "enter") || matchesKey(data, "escape"))
       return this.list.handleInput(data);
     if (matchesKey(data, "backspace")) {

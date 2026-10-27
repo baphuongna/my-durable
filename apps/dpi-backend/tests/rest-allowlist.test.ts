@@ -150,7 +150,9 @@ test("GA-07: through the connector, no spelling of a local-only or streaming rou
 
     for (const attempt of BYPASS_ATTEMPTS) {
       const reply = await ask(r.hub, attempt.method, attempt.path, attempt.body);
-      assert.equal(reply.status, 404, `${attempt.method} ${JSON.stringify(attempt.path)} is refused`);
+      // R5: the device's tunnel dispatch answers 400 invalid like the hub's
+      // validateRestRequest — one verdict on both hops, never 404-vs-400.
+      assert.equal(reply.status, 400, `${attempt.method} ${JSON.stringify(attempt.path)} is refused`);
       assert.equal(reply.body.error.code, "invalid");
     }
     assert.deepEqual(reached, [], "nothing was requested from the device API");

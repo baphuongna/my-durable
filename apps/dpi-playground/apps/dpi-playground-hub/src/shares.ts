@@ -203,8 +203,14 @@ export class Shares {
 // Rendered server-side: the share page is public and must not load the app
 // shell (which holds credentials), any script, or any external asset.
 
+// Text nodes get the entity treatment for the HTML metacharacters, and C0/C1
+// controls are STRIPPED (except tab/newline/carriage-return, which transcript
+// text legitimately carries): a U+0001 or U+0007 in a markdown paste lands in
+// the page raw otherwise — layout damage a reader cannot see or edit.
 const escapeHtml = (text: string) =>
-  text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+  text
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
+    .replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 const PAGE_STYLE = `:root{color-scheme:dark}body{margin:0;background:#16181d;color:#e6e6e6;font:16px/1.6 ui-sans-serif,system-ui,sans-serif}
 main{max-width:52rem;margin:0 auto;padding:2rem 1rem}h1{font-size:1.3rem;margin:0 0 .25rem}

@@ -12,6 +12,7 @@ import { Picker } from "../src/pickers.ts";
 import { slashSuggestions } from "../src/app.ts";
 import {
   ageOf,
+  gitStateSuffix,
   herdRows,
   networkRows,
   renderHeader,
@@ -294,4 +295,45 @@ test("Picker: filters on the LABEL (substring), j/k move — never swallowed as 
   assert.equal(q.list.getSelectedItem()?.label, "project/");
   q.handleInput("k");
   assert.equal(q.list.getSelectedItem()?.label, "✓ Use /tmp/work");
+});
+
+test("Picker: enter on a ZERO-match list closes via onCancel — not a silent no-op (R5 finding 6)", () => {
+  const items = [
+    { value: "a", label: "alpha" },
+    { value: "b", label: "beta" },
+  ];
+  let closed = false;
+  let picked: string | undefined;
+  const p = new Picker("List", items, (i) => (picked = i.value), () => (closed = true));
+  p.handleInput("z"); // filter matches nothing
+  assert.doesNotMatch(p.render(60).join("\n"), /alpha/);
+  p.handleInput("\r"); // enter
+  assert.ok(closed, "enter on an empty result did not close the picker");
+  assert.equal(picked, undefined, "enter on an empty result picked an item");
+  // Non-empty lists still pick through the same key.
+  let okPick: string | undefined;
+  const q = new Picker("List", items, (i) => (okPick = i.value), () => {});
+  q.handleInput("\r");
+  assert.equal(okPick, "a");
+});
+
+test("gitStateSuffix: merge conflicts and detached HEAD surface in the toast/chip suffix (R5 finding 4)", () => {
+  assert.equal(gitStateSuffix({ merge: true, conflicts: 1 }), " · merging (1 conflicts)");
+  assert.equal(gitStateSuffix({ merge: true, conflicts: 3 }), " · merging (3 conflicts)");
+  assert.equal(gitStateSuffix({ merge: true }), " · merging (0 conflicts)", "missing count must not read undefined");
+  assert.equal(gitStateSuffix({ detached: true }), " (detached)");
+  assert.equal(gitStateSuffix({}), "", "a clean branch adds no suffix");
+  assert.equal(gitStateSuffix({ merge: false, detached: false }), "");
+});
+
+test("ctx degrade: an unknown catalog window renders '?' in the statusbar and panel, never '—' (R5 finding 5)", () => {
+  const bar = renderStatusbar(100, { view: "agent", device: "box-one" });
+  const plain = stripAnsi(bar);
+  assert.match(plain, /ctx \?/, `no '?' in the statusbar: ${plain}`);
+  assert.doesNotMatch(plain, /ctx —/);
+  // With a known window the percent still renders.
+  assert.match(stripAnsi(renderStatusbar(100, { view: "agent", device: "d", ctxLeft: 42 })), /ctx 42%/);
+  const s = sessions[0]!;
+  const panel = stripAnsi(renderHerdPanel(60, 24, s, undefined, "box-one").join("\n"));
+  assert.match(panel, /ctx\s+\?/, `no '?' in the OVERVIEW panel:\n${panel}`);
 });

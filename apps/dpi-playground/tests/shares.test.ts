@@ -117,3 +117,22 @@ test("list is newest first and remove kills the link", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("R5: escapeHtml strips C0/C1 controls from share text (formatting newlines survive)", () => {
+  const doc = {
+    meta: {
+      token: "t".repeat(24),
+      title: "bell\u0007and\u0001soh",
+      createdAt: "2026-10-25T00:00:00.000Z",
+      expiresAt: "2026-11-01T00:00:00.000Z",
+      bytes: 1,
+    },
+    agents: [{ name: "main", markdown: "one\u0001two\u0007three\n\nfour\tfive" }],
+  };
+  const html = renderSharePage(doc);
+  assert.ok(!html.includes("\u0001"), "SOH leaked into the page");
+  assert.ok(!html.includes("\u0007"), "BEL leaked into the page");
+  assert.ok(html.includes("onetwothree"), "controls stripped, text kept");
+  assert.ok(html.includes("four\tfive"), "a tab is formatting, kept");
+  assert.ok(html.includes("three\n\nfour"), "newlines are formatting, kept");
+});

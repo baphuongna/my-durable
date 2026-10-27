@@ -6,7 +6,7 @@
 // the same way it does in a user's hands. Run: node tests/ensure-ui.mjs
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { join, resolve } from "node:path";
@@ -15,6 +15,54 @@ import { tmpdir } from "node:os";
 const run = (cmd, args, opts) =>
   new Promise((res, rej) => execFile(cmd, args, opts, (e, out) => (e ? rej(e) : res(String(out)))));
 const root = await mkdtemp(join(tmpdir(), "dpi-ensure-pty-"));
+
+// A previous run killed by a timeout strands its detached backend (the
+// finally-block cleanup never ran, so its temp dir — and its device.pid —
+// survive), which redden unrelated runs. Reap them PID-EXACTLY, never by a
+// cmdline pattern: production and every other lane's device run the same
+// repo's entrypoints, so ANY substring match ("dpi", "node", "tsx",
+// "main.ts") can kill the wrong process. The mechanism:
+//
+//   1. a stale suite dir is <tmpdir>/dpi-ensure-pty-*/ holding home/device.pid
+//      (our OWN run's dir is skipped);
+//   2. the pid names a candidate process;
+//   3. the ONLY kill condition is /proc/<pid>/environ still carrying
+//      DPI_HOME pointing INSIDE that exact stale dir — a live pid from another
+//      run, a recycled pid, production (~/.dpi), any other rig: no match, no
+//      kill. A PID list is what dies, never a pattern.
+const reapStaleEnsureBackends = async () => {
+  const reaped = [];
+  for (const entry of await readdir(tmpdir()).catch(() => [])) {
+    if (!entry.startsWith("dpi-ensure-pty-")) continue;
+    const dir = join(tmpdir(), entry);
+    if (dir === root) continue; // never our own run
+    const pid = Number.parseInt(await readFile(join(dir, "home", "device.pid"), "utf8").catch(() => ""), 10);
+    if (Number.isInteger(pid) && pid >= 2 && pid !== process.pid) {
+      let home;
+      try {
+        home = (await readFile(`/proc/${pid}/environ`, "utf8"))
+          .split("\0")
+          .find((line) => line.startsWith("DPI_HOME="))
+          ?.slice("DPI_HOME=".length);
+      } catch {
+        home = undefined; // process gone (or not ours to inspect): no kill
+      }
+      const insideStaleDir = home === join(dir, "home") || home?.startsWith(`${dir}/`);
+      if (insideStaleDir) {
+        try {
+          process.kill(pid, "SIGKILL");
+          reaped.push(pid);
+        } catch {}
+      }
+    }
+    // The dir itself is stale either way (a killed run never cleaned up); a
+    // live-but-foreign pid behind its pidfile is a recycled number, not a
+    // reason to keep suite litter.
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+  if (reaped.length) console.log(`reaped stale dpi-ensure backend pid(s): ${reaped.join(", ")}`);
+};
+await reapStaleEnsureBackends();
 const session = `dpi-ensure-${Date.now()}`;
 const tui = (...args) => run("tuistory", ["-s", session, ...args], { cwd: resolve(import.meta.dirname, "..") }).then((r) => r.stdout);
 const waitMatch = async (pattern, timeout = 20000) => {

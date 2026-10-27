@@ -56,11 +56,17 @@ const KEY =
 
 const invalidKey = () => Object.assign(Error("Invalid subscription key"), { status: 400 });
 
+/** R5 cap mirror: the device's SUBSCRIBE_PATH_OK (dpi-backend/src/tunnel.ts) accepts at most 256
+ *  characters after `?`. A docs list longer than that would open a subscription the device refuses —
+ *  refuse it HERE (400 to the PUT caller) instead of signing the browser up for a silent starvation. */
+const SUB_QUERY_MAX_CHARS = 256;
+
 export function parseSubKey(key: string) {
   const m = key.match(KEY);
   if (!m) throw invalidKey();
   const [, deviceId, scope, a, b, docs] = m;
   const q = docs ? `?docs=${docs}` : "";
+  if (q.length - 1 > SUB_QUERY_MAX_CHARS) throw invalidKey();
   const enc = (part: string) => {
     try {
       return encodeURIComponent(decodeURIComponent(part));
@@ -182,6 +188,12 @@ export class StreamMux {
     const wanted = new Map(
       (keys as string[]).filter((k) => k !== "network").map((k) => [k, parseSubKey(k)]),
     );
+    // All-or-nothing like the parse above (R5): every device the PUT names must exist BEFORE
+    // anything is closed or opened, so an unknown device cannot leave upstreams opened and
+    // reader slots acquired by earlier keys in the same PUT dangling behind a 404.
+    for (const [key, sub] of wanted)
+      if (!stream.upstreams.has(key) && !this.registry.get(sub.deviceId))
+        throw Object.assign(Error(`No device ${sub.deviceId}`), { status: 404 });
     for (const [key, ctl] of stream.upstreams)
       if (!wanted.has(key)) {
         ctl.abort();
@@ -190,10 +202,9 @@ export class StreamMux {
       }
     for (const [key, sub] of wanted)
       if (!stream.upstreams.has(key)) {
-        if (!this.registry.get(sub.deviceId))
-          throw Object.assign(Error(`No device ${sub.deviceId}`), { status: 404 });
         // Reader caps (04 §8): 128/device incl. the monitor's reader, 1024
         // hub-wide. A rejected NEW reader must not disturb existing readers.
+        // (The registry check ran before any mutation — see above.)
         if (
           this.readerCount(sub.deviceId) >= READERS_PER_DEVICE ||
           this.hubReaderCount() >= READERS_PER_HUB

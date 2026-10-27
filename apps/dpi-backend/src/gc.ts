@@ -78,7 +78,9 @@ export async function archivedEntries(archiveDir: string): Promise<{ entries: Ar
 export async function gcPlan(archiveDir: string, options: { closedBeforeDays: number; now?: number }): Promise<GcPlan> {
   const now = options.now ?? Date.now();
   const days = options.closedBeforeDays;
-  if (!Number.isFinite(days) || days < 1) throw new Error(`closedBeforeDays must be at least 1, got ${String(days)}`);
+  // Sub-day cutoffs are legal (R5 finding 6): the CLI advertises 90m/12h and
+  // parseDuration delivers them as fractional days. Only non-positive values refuse.
+  if (!Number.isFinite(days) || days <= 0) throw new Error(`closedBeforeDays must be positive, got ${String(days)}`);
   const { entries, skipped } = await archivedEntries(archiveDir);
   const cutoff = now - days * 86_400_000;
   const candidates = entries

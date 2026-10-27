@@ -7,7 +7,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { Agent, request, type IncomingHttpHeaders } from "node:http";
-import { join } from "node:path";
+import { readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WebSocket as WsClient } from "ws";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
@@ -740,6 +741,110 @@ test("RR: the rotate route reports 404/400/202/409 to match what actually happen
     assert.equal((JSON.parse(again.text) as { error: { code: string } }).error.code, "conflict");
   } finally {
     devWs?.terminate();
+    await hub.cleanup();
+  }
+});
+
+// -------------------------------------------------------------------- Round 5
+
+test("R5: the /api mount is case-sensitive like the device, and the public surfaces still resolve", async () => {
+  const hub = await bootHub();
+  try {
+    const upper = await raw(hub.base, "GET", "/API/NETWORK", { headers: hub.adminHeaders });
+    assert.equal(upper.status, 404, "/API/NETWORK must not alias /api/network (uniformity with the device)");
+    assertClean(upper, "case variant");
+    assert.equal((JSON.parse(upper.text) as { error: { code: string } }).error.code, "not_found");
+
+    const lower = await raw(hub.base, "GET", "/api/network", { headers: hub.adminHeaders });
+    assert.equal(lower.status, 200, "the lowercase mount keeps working");
+
+    // Uniformity must not strand the public routes (every caller spells them
+    // lowercase on the wire): the pairing ingress reaches its handler, and the
+    // share page route still renders — an unknown token is the 404 PAGE, not
+    // the JSON API 404.
+    const pair = await raw(hub.base, "POST", "/api/pair/start", { body: "{}", headers: JSON_BODY });
+    assert.notEqual(pair.status, 404, "POST /api/pair/start must reach its handler");
+    assertClean(pair, "pair/start");
+    const gone = await raw(hub.base, "GET", `/share/${"z".repeat(24)}`);
+    assert.equal(gone.status, 404);
+    assert.match(gone.type, /text\/html/, "the share route still renders");
+  } finally {
+    await hub.cleanup();
+  }
+});
+
+test("R5: POST /api/shares is governed by the shares limits, not the chain's 256 KiB parser", async () => {
+  const hub = await bootHub();
+  try {
+    const body = JSON.stringify({
+      title: "R5 parser",
+      agents: [{ name: "main", markdown: "x".repeat(300 * 1024) }],
+    });
+    assert.ok(body.length > 256 * 1024, "payload must exceed the chain parser's limit");
+    const created = await raw(hub.base, "POST", "/api/shares", {
+      body,
+      headers: { ...JSON_BODY, ...hub.adminHeaders },
+    });
+    assert.equal(created.status, 201, created.text.slice(0, 200));
+    const share = JSON.parse(created.text) as { token: string; url: string };
+    assert.match(share.url, /^\/share\//);
+
+    // Over the per-agent limit: the SHARES answer (400 invalid with the bound
+    // in the message), not the chain parser's 413 and not a 500.
+    const over = await raw(hub.base, "POST", "/api/shares", {
+      body: JSON.stringify({ title: "t", agents: [{ name: "main", markdown: "y".repeat(2 * 1024 * 1024 + 64) }] }),
+      headers: { ...JSON_BODY, ...hub.adminHeaders },
+    });
+    assert.equal(over.status, 400, over.text.slice(0, 200));
+    assert.match(over.text, /larger than/);
+    assertClean(over, "share over limit");
+
+    // The small admin routes still resolve behind the chain.
+    const list = await raw(hub.base, "GET", "/api/shares", { headers: hub.adminHeaders });
+    assert.equal(list.status, 200);
+    const killed = await raw(hub.base, "DELETE", `/api/shares/${share.token}`, { headers: hub.adminHeaders });
+    assert.equal(killed.status, 200);
+  } finally {
+    await hub.cleanup();
+  }
+});
+
+test("R5: share pages refuse framing, on the 200 and the 404 shape", async () => {
+  const hub = await bootHub();
+  try {
+    const created = await raw(hub.base, "POST", "/api/shares", {
+      body: JSON.stringify({ title: "frame me", agents: [{ name: "main", markdown: "hello" }] }),
+      headers: { ...JSON_BODY, ...hub.adminHeaders },
+    });
+    assert.equal(created.status, 201, created.text.slice(0, 200));
+    const { url } = JSON.parse(created.text) as { url: string };
+    const page = await raw(hub.base, "GET", url);
+    assert.equal(page.status, 200);
+    assert.match(page.headers["content-security-policy"] ?? "", /frame-ancestors 'none'/);
+    assert.equal(page.headers["x-frame-options"], "DENY");
+
+    const missing = await raw(hub.base, "GET", `/share/${"q".repeat(24)}`);
+    assert.equal(missing.status, 404);
+    assert.match(missing.headers["content-security-policy"] ?? "", /frame-ancestors 'none'/);
+    assert.equal(missing.headers["x-frame-options"], "DENY");
+  } finally {
+    await hub.cleanup();
+  }
+});
+
+test("R5: hashed /assets cache immutable; the shell revalidates", async () => {
+  const hub = await bootHub();
+  try {
+    const assets = readdirSync(resolve(import.meta.dirname, "../apps/dpi-playground-fe/dist/assets"));
+    const js = assets.find((f) => f.endsWith(".js"));
+    assert.ok(js, "the built shell has a hashed asset");
+    const asset = await raw(hub.base, "GET", `/assets/${js}`);
+    assert.equal(asset.status, 200, `GET /assets/${js}`);
+    assert.match(asset.headers["cache-control"] ?? "", /max-age=31536000, immutable/);
+    const shell = await raw(hub.base, "GET", "/");
+    assert.equal(shell.status, 200);
+    assert.match(shell.headers["cache-control"] ?? "", /no-cache/);
+  } finally {
     await hub.cleanup();
   }
 });

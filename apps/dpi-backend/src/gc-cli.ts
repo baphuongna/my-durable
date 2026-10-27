@@ -90,24 +90,31 @@ export async function gcCli(args: GcArgs, io: GcIo = defaultGcIo()): Promise<num
   const archiveDir = join(resolveDataDir(argv, io), "archive");
   const options = { closedBeforeDays: days, now: io.now() };
 
-  if (!apply) {
-    const plan = await gcPlan(archiveDir, options);
-    io.print(`archive ${archiveDir}`);
-    io.print(`keep last ${days}d — ${plan.total.count} archived session(s), ${humanBytes(plan.total.bytes)}`);
-    if (!plan.candidates.length) {
-      io.print("nothing to delete.");
-    } else {
-      io.print(`would delete ${plan.candidates.length} session(s), ${humanBytes(plan.candidateBytes)}:`);
-      for (const candidate of plan.candidates.slice(0, 20))
-        io.print(`  ${candidate.sessionId.slice(0, 8)}  ${candidate.ageDays}d old  ${humanBytes(candidate.bytes)}`);
-      if (plan.candidates.length > 20) io.print(`  … and ${plan.candidates.length - 20} more`);
-      io.print("re-run with --yes to delete.");
+  // The plan/apply calls live inside the pretty-error path (R5 finding 6): a bad
+  // cutoff or unreadable archive used to escape as a raw stack trace.
+  try {
+    if (!apply) {
+      const plan = await gcPlan(archiveDir, options);
+      io.print(`archive ${archiveDir}`);
+      io.print(`keep last ${argv[at + 1]} — ${plan.total.count} archived session(s), ${humanBytes(plan.total.bytes)}`);
+      if (!plan.candidates.length) {
+        io.print("nothing to delete.");
+      } else {
+        io.print(`would delete ${plan.candidates.length} session(s), ${humanBytes(plan.candidateBytes)}:`);
+        for (const candidate of plan.candidates.slice(0, 20))
+          io.print(`  ${candidate.sessionId.slice(0, 8)}  ${candidate.ageDays}d old  ${humanBytes(candidate.bytes)}`);
+        if (plan.candidates.length > 20) io.print(`  … and ${plan.candidates.length - 20} more`);
+        io.print("re-run with --yes to delete.");
+      }
+      for (const skip of plan.skipped) io.printErr(`skipped ${skip.name}: ${skip.reason}`);
+      return 0;
     }
-    for (const skip of plan.skipped) io.printErr(`skipped ${skip.name}: ${skip.reason}`);
-    return 0;
-  }
 
-  const { removed, bytes } = await gcApply(archiveDir, options);
-  io.print(`deleted ${removed.length} archived session(s), ${humanBytes(bytes)} freed.`);
-  return 0;
+    const { removed, bytes } = await gcApply(archiveDir, options);
+    io.print(`deleted ${removed.length} archived session(s), ${humanBytes(bytes)} freed.`);
+    return 0;
+  } catch (e) {
+    io.printErr(`dpi gc: ${e instanceof Error ? e.message : String(e)}`);
+    return 2;
+  }
 }

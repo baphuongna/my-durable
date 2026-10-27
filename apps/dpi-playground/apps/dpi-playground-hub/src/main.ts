@@ -130,6 +130,14 @@ const app = express();
 // non-loopback direct connection is ignored (proxy-addr semantics).
 app.set("trust proxy", isTrustedProxy);
 app.disable("x-powered-by");
+// Case-sensitive routes, matching the device: "/API/NETWORK" is a miss, not a
+// silent alias of /api/network (route uniformity with the 0.0.58 device fix).
+// Every hub caller already spells the mount lowercase — FE client (/api/...),
+// TUI hub-feed/hub-mux (api/network, api/stream), and the public pairing
+// ingress below; a case variant never carried different auth (audit R5).
+// The app setting's name is Express's spelled-out form — "caseSensitive" is
+// the Router option, silently ignored here (caught by the R5 test).
+app.set("case sensitive routing", true);
 // Every answer is non-sniffable; the admin API is never cacheable (it carries pairing codes and, on the
 // pairing routes, a credential). Registered first so that refusals made further down carry them too.
 app.use((req, res, next) => {
@@ -343,6 +351,39 @@ app.post(
   },
 );
 
+// ------------------------------------------------ conversation shares
+// The shell (which holds the tunnel credentials) uploads prepared transcripts;
+// the hub mints a tokenized PUBLIC link. The token is the capability, every
+// share expires (retention is explicit — the checklist row demanded that
+// decision up front), and the admin routes can kill one early.
+//
+// Registered BEFORE the global /api chain (same pattern as the pairing
+// ingress): the chain's 256 KiB parser consumed the body first, so a 300 KB
+// share 413'd before this route's 10 MiB parser ever ran (the 2 MB/agent,
+// 8 MB/total limits in shares.ts were unreachable), and its apiRate bucket
+// was charged twice. The full guard stack travels with the route.
+const shares = await Shares.open(join(dpiHome(), "shares"));
+app.post(
+  "/api/shares",
+  denialLogging(audit),
+  guard(allowedHosts),
+  apiRate,
+  express.json({ limit: "10mb" }),
+  adminAuth,
+  (req, res) => {
+    const body = req.body ?? {};
+    void shares
+      .create({ title: String(body.title ?? ""), agents: Array.isArray(body.agents) ? body.agents : [] })
+      .then((meta) =>
+        res.status(201).json({ token: meta.token, url: `/share/${meta.token}`, expiresAt: meta.expiresAt }),
+      )
+      .catch((e: unknown) => {
+        if (e instanceof ShareError) return res.status(400).json(err("invalid", e.message));
+        throw e;
+      });
+  },
+);
+
 // Admin /api surface: guarded, rate-bucketed per real client IP, 256 KiB JSON,
 // and behind the admin credential (cookie or bearer).
 app.use(
@@ -456,46 +497,28 @@ app.put(
     res.json({ ok: true });
   }),
 );
-// ------------------------------------------------ conversation shares
-// The shell (which holds the tunnel credentials) uploads prepared transcripts;
-// the hub mints a tokenized PUBLIC link. The token is the capability, every
-// share expires (retention is explicit — the checklist row demanded that
-// decision up front), and the admin routes can kill one early.
-const shares = await Shares.open(join(dpiHome(), "shares"));
-app.post(
-  "/api/shares",
-  denialLogging(audit),
-  apiRate,
-  express.json({ limit: "10mb" }),
-  adminAuth,
-  (req, res) => {
-    const body = req.body ?? {};
-    void shares
-      .create({ title: String(body.title ?? ""), agents: Array.isArray(body.agents) ? body.agents : [] })
-      .then((meta) =>
-        res.status(201).json({ token: meta.token, url: `/share/${meta.token}`, expiresAt: meta.expiresAt }),
-      )
-      .catch((e: unknown) => {
-        if (e instanceof ShareError) return res.status(400).json(err("invalid", e.message));
-        throw e;
-      });
-  },
-);
+// Share admin reads/kill (the POST lives above the global chain — its body
+// needs the 10 MiB parser); the chain's adminAuth + 256 KiB parser cover these.
 app.get("/api/shares", adminAuth, (_req, res) => void shares.list().then((list) => res.json({ shares: list })));
 app.delete("/api/shares/:token", adminAuth, (req, res) =>
   void shares.remove(String(req.params.token ?? "")).then((removed) => res.json({ removed })),
 );
 // The public page: transcripts only, no app shell, no scripts, inline-styled.
+// Framing is refused explicitly: frame-ancestors is NOT a fetch directive, so
+// it does not fall back to default-src and must be spelled out (a share page
+// is public content — a frame is a clickjacking channel).
 app.get("/share/:token", (req, res) => {
   void shares.get(String(req.params.token ?? "")).then((doc) => {
     if (!doc) {
       res.status(404);
       res.set("Content-Type", "text/html; charset=utf-8");
-      res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+      res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
+      res.set("X-Frame-Options", "DENY");
       return res.send(renderShareNotFound());
     }
     res.set("Content-Type", "text/html; charset=utf-8");
-    res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+    res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
+    res.set("X-Frame-Options", "DENY");
     res.set("Cache-Control", "no-store");
     res.send(renderSharePage(doc));
   });
@@ -546,11 +569,26 @@ if (args.includes("--dev")) {
     });
     next();
   });
-  app.use(express.static(resolve(appDir, "apps/dpi-playground-fe/dist")));
+  const dist = resolve(appDir, "apps/dpi-playground-fe/dist");
+  // Vite content-addresses /assets/* filenames, so they can cache forever; the
+  // documents that reference them (index.html and the SPA shell) must
+  // revalidate or a deploy would serve stale HTML pointing at dead hashes.
+  app.use("/assets", express.static(join(dist, "assets"), { immutable: true, maxAge: "365d" }));
+  app.use(
+    express.static(dist, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(".html")) res.setHeader("Cache-Control", "no-cache");
+      },
+    }),
+  );
   app.get("/{*path}", (req, res, next) => {
     // A path that names a file is an asset that does not exist, not a page of the app.
     if (extname(req.path)) return void next();
-    res.sendFile(resolve(appDir, "apps/dpi-playground-fe/dist/index.html"));
+    // An /api-shaped path is never a page — not even case-mangled (uniformity
+    // with the device: /API/NETWORK is a 404 miss, not the app shell).
+    if (/^\/api(\/|$)/i.test(req.path)) return void next();
+    res.setHeader("Cache-Control", "no-cache");
+    res.sendFile(join(dist, "index.html"));
   });
 }
 app.use((_req, res) => res.status(404).json(err("not_found", "Not found")));

@@ -276,7 +276,9 @@ function assertProviderId(providerId: string): void {
     );
 }
 
-/** Read auth.json strictly: absent → {}, corrupt → REFUSE (pi owns the fix). */
+/** Read auth.json strictly: absent → {}, corrupt → REFUSE (pi owns the fix).
+ *  Typed PiConfigError: the device refusing to touch pi's broken file is a
+ *  caller-facing 4xx with the plain words, not a 500 with a stack. */
 function readAuthStrict(dir: string): Record<string, Credential> {
   const path = join(dir, "auth.json");
   if (!existsSync(path)) return {};
@@ -284,10 +286,10 @@ function readAuthStrict(dir: string): Record<string, Credential> {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    throw Error("auth.json is not valid JSON — fix it with pi, the device will not rewrite it");
+    throw new PiConfigError("invalid", "auth.json is not valid JSON — fix it with pi, the device will not rewrite it");
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw Error("auth.json has an unexpected shape — fix it with pi, the device will not rewrite it");
+    throw new PiConfigError("invalid", "auth.json has an unexpected shape — fix it with pi, the device will not rewrite it");
   return parsed as Record<string, Credential>;
 }
 
@@ -305,14 +307,18 @@ function writeAuthAtomic(dir: string, next: Record<string, Credential>): void {
   renameSync(tmp, path);
 }
 
-/** Set one api_key. Refuses invalid ids, oversized keys, and oauth entries. */
+/** Set one api_key. Refuses invalid ids, oversized keys, and oauth entries
+ *  (typed: an oauth conflict is caller error → 4xx, never a 500). */
 export function writePiApiKey(dir: string, providerId: string, key: string): PiAuthEntry {
   assertProviderId(providerId);
   if (!key.trim() || key.length > 4096) throw Error("key must be 1–4096 non-whitespace characters");
   const auth = readAuthStrict(dir);
   const existing = auth[providerId];
   if (existing && existing.type !== "api_key")
-    throw Error(`${providerId} uses an interactive pi login (${existing.type}) — edit it with pi, not here`);
+    throw new PiConfigError(
+      "invalid",
+      `${providerId} uses an interactive pi login (${existing.type}) — edit it with pi, not here`,
+    );
   const credential: ApiKeyCredential = { type: "api_key", key };
   writeAuthAtomic(dir, { ...auth, [providerId]: credential });
   return { providerId, type: "api_key", source: existing ? "auth.json" : "auth.json", masked: maskPiKey(key) };
@@ -324,7 +330,10 @@ export function removePiApiKey(dir: string, providerId: string): boolean {
   const auth = readAuthStrict(dir);
   const existing = auth[providerId];
   if (existing && existing.type !== "api_key")
-    throw Error(`${providerId} uses an interactive pi login (${existing.type}) — edit it with pi, not here`);
+    throw new PiConfigError(
+      "invalid",
+      `${providerId} uses an interactive pi login (${existing.type}) — edit it with pi, not here`,
+    );
   if (!existing) return false;
   const next = { ...auth };
   delete next[providerId];

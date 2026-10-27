@@ -53,7 +53,12 @@ test("gcPlan names exactly what a cutoff selects, and never touches the disk", a
 
     const none = await gcPlan(a.dir, { closedBeforeDays: 365, now: a.now });
     assert.deepEqual(none.candidates, []);
-    await assert.rejects(() => gcPlan(a.dir, { closedBeforeDays: 0 }), /at least 1/);
+    await assert.rejects(() => gcPlan(a.dir, { closedBeforeDays: 0 }), /positive/);
+    // Sub-day cutoffs work (R5 finding 6): the CLI's advertised 12h/90m arrive as fractional days.
+    const halfDay = await gcPlan(a.dir, { closedBeforeDays: 0.5, now: a.now });
+    assert.deepEqual(halfDay.candidates.map((c) => c.sessionId.slice(0, 4)), ["cccc", "bbbb", "aaaa"]);
+    const quarterDay = await gcPlan(a.dir, { closedBeforeDays: parseDuration("90m"), now: a.now });
+    assert.equal(quarterDay.candidates.length, 3);
   } finally {
     await rm(a.root, { recursive: true, force: true });
   }

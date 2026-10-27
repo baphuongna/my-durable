@@ -4,6 +4,7 @@ import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import type { App } from "./app.ts";
 import { Panel, pickAgent, pickDevice, pickModel, pickSession, pickThinking } from "./pickers.ts";
 import { parsePairArgs, runPairing } from "./pairing.ts";
+import { gitStateSuffix } from "./views.ts";
 import { c } from "./theme.ts";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
@@ -28,10 +29,10 @@ export const COMMANDS: SlashCommand[] = [
   { name: "pair", description: "pair THIS device with a hub", argumentHint: "<CODE|PAIR_URL> [--hub ORIGIN] [--force]" },
   {
     name: "git",
-    description: "git on the session's folder: status, diff, log, pull, fetch, branch, switch, commit, worktree",
-    argumentHint: "[status|diff|log|fetch|pull|branch|switch <b>|commit <msg>|worktree [new <b>|remove <path>]]",
+    description: "git on the session's folder: status, diff, log, pull, fetch, branch, switch, commit, worktree, merge-abort",
+    argumentHint: "[status|diff|log|fetch|pull|branch|switch <b>|commit <msg>|worktree [new <b>|remove <path>]|merge-abort]",
     getArgumentCompletions: (prefix) =>
-      ["status", "diff", "log", "fetch", "pull", "branch", "switch", "commit", "worktree"]
+      ["status", "diff", "log", "fetch", "pull", "branch", "switch", "commit", "worktree", "merge-abort"]
         .filter((s) => s.startsWith(prefix))
         .map((s) => ({ value: s, label: s })),
   },
@@ -39,7 +40,7 @@ export const COMMANDS: SlashCommand[] = [
   { name: "quit", description: "exit (the agent keeps running)" },
 ];
 
-const GIT_OPS = new Set(["diff", "log", "fetch", "pull", "branch", "switch", "commit", "worktree", "status", "wt"]);
+const GIT_OPS = new Set(["diff", "log", "fetch", "pull", "branch", "switch", "commit", "worktree", "status", "wt", "merge-abort"]);
 
 /** /git — the device's own git, spoken through its whitelisted API. */
 async function gitCommand(app: App, arg: string) {
@@ -52,8 +53,13 @@ async function gitCommand(app: App, arg: string) {
       const s = await app.client.gitStatus(cwd);
       if (!s.repo) return app.notify(`${cwd} is not a git repository`);
       const dirty = (s.staged ?? 0) + (s.unstaged ?? 0) + (s.untracked ?? 0);
-      app.notify(`⎇ ${s.branch ?? s.head} ±${dirty}${s.ahead ? ` ↑${s.ahead}` : ""}${s.behind ? ` ↓${s.behind}` : ""}`);
-      app.logEvent("git", `${cwd} · ${s.branch ?? s.head}${s.upstream ? ` → ${s.upstream}` : ""} · +${s.staged ?? 0}/~${s.unstaged ?? 0}/?${s.untracked ?? 0}${s.worktreeOf ? ` · worktree of ${s.worktreeOf}` : ""}`);
+      // Merge/detached ride the toast (R5 finding 4): a mid-merge repo with
+      // conflicts used to show a healthy branch line, same blind spot the
+      // header chip had — the web's GitPanel has banner'd this state all along.
+      app.notify(
+        `⎇ ${s.branch ?? s.head} ±${dirty}${s.ahead ? ` ↑${s.ahead}` : ""}${s.behind ? ` ↓${s.behind}` : ""}${gitStateSuffix(s)}`,
+      );
+      app.logEvent("git", `${cwd} · ${s.branch ?? s.head}${s.merge ? " · MERGING" : s.detached ? " · detached" : ""}${s.upstream ? ` → ${s.upstream}` : ""} · +${s.staged ?? 0}/~${s.unstaged ?? 0}/?${s.untracked ?? 0}${s.worktreeOf ? ` · worktree of ${s.worktreeOf}` : ""}`);
       for (const w of s.worktrees ?? []) app.logEvent("git", `  ${w.path} ${w.branch ? `⎇ ${w.branch}` : w.head}`);
       return;
     }
@@ -81,7 +87,8 @@ async function gitCommand(app: App, arg: string) {
       app.notify(`${s.worktrees?.length ?? 0} worktree${s.worktrees?.length === 1 ? "" : "s"} (log view)`);
       return;
     }
-    if (!GIT_OPS.has(op)) return app.notify(`unknown git op "${op}" — status diff log fetch pull branch switch commit worktree`);
+    if (!GIT_OPS.has(op))
+      return app.notify(`unknown git op "${op}" — status diff log fetch pull branch switch commit worktree merge-abort`);
     if (op === "switch" && !a1) return app.notify("usage: /git switch <branch>");
     if (op === "commit" && !rest.length) return app.notify("usage: /git commit <message>");
     const out = await app.client.gitOp(cwd, op as never, {
@@ -98,7 +105,8 @@ async function gitCommand(app: App, arg: string) {
 const KEYS: [string, string][] = [
   ["enter", "send; steers the agent while it works"],
   ["alt+enter", "queue as a follow-up"],
-  ["esc", "interrupt foreground work"],
+  ["esc", "back — it never interrupts"],
+  ["i", "interrupt the running turn"],
   ["shift+tab", "cycle thinking level"],
   ["ctrl+l", "model picker"],
   ["ctrl+o", "expand tool output and thinking"],

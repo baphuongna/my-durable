@@ -44,7 +44,7 @@ import {
   toTranscript,
   type UsageSummary,
 } from "../../dpi-sdk/src/transcript.js";
-import { ApiFault, invalid, notFound } from "./errors.js";
+import { ApiFault, invalid, isStorageBusy, isUnreadableStorage, notFound, storageBusyFault } from "./errors.js";
 import { git, gitDirtyMarks, gitStatus, onGitDirty } from "./git.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
@@ -78,7 +78,7 @@ import {
 } from "./archived.js";
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, type ZipEntry } from "./zip.js";
-import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, statSync } from "node:fs";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 import { join, dirname, relative, resolve, sep } from "node:path";
 import { homedir, hostname, platform } from "node:os";
@@ -217,6 +217,11 @@ const NOT_OPENED_README = [
   "",
 ].join("\n");
 
+/** Catalog schema version of the sessions catalog. The ladder in `prepareCatalog` owns upgrades;
+ * a HIGHER version than this build knows refuses cleanly (pi-durable's migrations behavior).
+ * Version 1: the R5 baseline — provider column mandatory, version row stamped in meta. */
+const CATALOG_SCHEMA_VERSION = 1;
+
 /** "My session #1" → "my-session-1" for the download name. */
 function slugName(input: string): string {
   const slug = input
@@ -247,7 +252,7 @@ export function lockFile(path: string) {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ESRCH") alive = true;
     }
-    if (alive && pid !== process.pid) throw Error(`Database already owned by process ${pid}: ${path}`);
+    if (alive && pid !== process.pid) throw new DeviceAlreadyRunningError(pid, path);
     unlinkSync(path);
     take();
   }
@@ -256,6 +261,21 @@ export function lockFile(path: string) {
       if (readFileSync(path, "utf8") === String(process.pid)) unlinkSync(path);
     } catch {}
   };
+}
+
+/**
+ * A second device on one home (R5 finding 7): the catalog lock is held by a live process.
+ * Typed so `Store.open` can turn it into a clean exit instead of an uncaught exception
+ * and a crash report that tells the operator to file an issue.
+ */
+export class DeviceAlreadyRunningError extends Error {
+  constructor(
+    readonly pid: number,
+    readonly path: string,
+  ) {
+    super(`Database already owned by process ${pid}: ${path}`);
+    this.name = "DeviceAlreadyRunningError";
+  }
 }
 
 type Opened = { harness: Harness; unlock: () => void; unsubscribe: () => void; jobs: Jobs; addons: Addons };
@@ -317,6 +337,30 @@ const decodeCursor = (cursor?: string) => {
     throw invalid("Invalid cursor");
   }
 };
+
+/**
+ * One name rule for Store.create and Store.rename, matching a schedule's name
+ * (`MAX_SCHEDULE_NAME_LENGTH`): a display name, not a description — the old
+ * create-side slice(0,100) silently swallowed a 10k paste where rename threw.
+ *
+ * "search" (ANY casing) is reserved: GET /v1/sessions/search is a literal
+ * route ahead of /sessions/:s, and resolveSession matches names
+ * case-insensitively, so a session named Search/search/SEARCH is unreachable
+ * through the name every client naturally types (TUI `client.session(name)`).
+ */
+const RESERVED_SESSION_NAME = "search";
+function assertSessionName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length > MAX_SCHEDULE_NAME_LENGTH)
+    throw invalid(`name is ${trimmed.length} characters; the limit is ${MAX_SCHEDULE_NAME_LENGTH}`);
+  if (trimmed.toLowerCase() === RESERVED_SESSION_NAME) throw invalid(`"${trimmed}" is a reserved session name`);
+  // Control characters never belong in a display name: reject rather than
+  // store verbatim (a newline) or silently truncate at a NUL. One rule for
+  // create AND rename — the old create path accepted \u0007 etc. and then
+  // dead-ended at a rename that refused what it had already stored.
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) throw invalid("name must not contain control characters");
+  return trimmed;
+}
 
 export class Store {
   /** pi's credentials + custom providers on THIS machine (auth.json / models.json). */
@@ -412,14 +456,7 @@ export class Store {
     }
     ensurePrivateDir(options.dataDir);
     this.unlockCatalog = lockFile(`${this.catalogPath}.lock`);
-    this.catalog = new DatabaseSync(this.catalogPath);
-    this.catalog.exec(`PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,name TEXT NOT NULL,cwd TEXT NOT NULL,dbPath TEXT NOT NULL UNIQUE,createdAt INTEGER NOT NULL,model TEXT NOT NULL,provider TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS conversation_names(sessionId TEXT NOT NULL,conversationId INTEGER NOT NULL,name TEXT NOT NULL,PRIMARY KEY(sessionId,conversationId));
-      CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,route TEXT NOT NULL,status INTEGER NOT NULL,body TEXT NOT NULL,createdAt INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS session_spawns(key TEXT PRIMARY KEY,sessionId TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS session_compaction(sessionId TEXT PRIMARY KEY,settings TEXT NOT NULL);`);
+    this.catalog = this.openCatalog();
     const uid = this.catalog.prepare("SELECT value FROM meta WHERE key='device_uid'").get() as
       | { value: string }
       | undefined;
@@ -428,8 +465,139 @@ export class Store {
     this.catalog.prepare("DELETE FROM requests WHERE createdAt < ?").run(Date.now() - 24 * 3600_000);
   }
 
+  // --------------------------------------- catalog: open, migrate, recover
+
+  /**
+   * Open the catalog with migration and corruption recovery (R5 findings 3+4).
+   *
+   * An unreadable catalog file used to crash-loop the whole device on every boot
+   * (all sessions and the tunnel down) — the JSON registries move corrupt files
+   * aside (`.corrupt-<ts>`) and rebuild, but the catalog got nothing. Now the same
+   * quarantine applies, a fresh catalog boots, and session rows are re-seeded from
+   * the sessions/ directory (per-session best-effort; a session whose db fails to
+   * open keeps its row with the failure message the boot loop records).
+   */
+  private openCatalog(): DatabaseSync {
+    try {
+      return this.prepareCatalog(new DatabaseSync(this.catalogPath));
+    } catch (e) {
+      // Anything else (a future schema version, a held lock) is NOT a corrupt file —
+      // a future version must refuse cleanly, never be quarantined away.
+      if (!isUnreadableStorage(e)) throw e;
+      this.quarantineCatalog();
+      const db = this.prepareCatalog(new DatabaseSync(this.catalogPath));
+      // Pass the handle: `this.catalog` is still undefined here (our caller is
+      // the `this.catalog = this.openCatalog()` assignment) — reading it from
+      // inside reseed was an uncaught TypeError that crashed the boot AFTER
+      // the quarantine warning (the R5 test caught exactly that sequence).
+      this.reseedCatalog(db);
+      return db;
+    }
+  }
+
+  /** Run the base DDL, then the schema-version check and the known-old-shape ladder. */
+  private prepareCatalog(db: DatabaseSync): DatabaseSync {
+    db.exec(`PRAGMA journal_mode=WAL;
+      CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,name TEXT NOT NULL,cwd TEXT NOT NULL,dbPath TEXT NOT NULL UNIQUE,createdAt INTEGER NOT NULL,model TEXT NOT NULL,provider TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS conversation_names(sessionId TEXT NOT NULL,conversationId INTEGER NOT NULL,name TEXT NOT NULL,PRIMARY KEY(sessionId,conversationId));
+      CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,route TEXT NOT NULL,status INTEGER NOT NULL,body TEXT NOT NULL,createdAt INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_spawns(key TEXT PRIMARY KEY,sessionId TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_compaction(sessionId TEXT PRIMARY KEY,settings TEXT NOT NULL);`);
+    const row = db.prepare("SELECT value FROM meta WHERE key='catalog_schema_version'").get() as
+      | { value: string }
+      | undefined;
+    if (row) {
+      const version = Number(row.value);
+      if (Number.isFinite(version) && version > CATALOG_SCHEMA_VERSION) {
+        db.close();
+        // pi-durable's migrations refusal, mirrored: clean bounded message, never a silent attempt.
+        throw Error(
+          `Catalog schema version ${version} is newer than supported version ${CATALOG_SCHEMA_VERSION}; upgrade my-durable to open this device home`,
+        );
+      }
+      return db;
+    }
+    // Pre-versioning catalog (every device before R5): run the ladder for known-old
+    // shapes, then stamp the version. A device already at the current shape just gets stamped.
+    const columns = new Set(
+      (db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
+    );
+    if (!columns.has("provider")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT ''");
+      process.emitWarning("catalog: migrated sessions table to schema version 1 (added provider)");
+    }
+    db.prepare("INSERT INTO meta(key,value) VALUES('catalog_schema_version',?)").run(String(CATALOG_SCHEMA_VERSION));
+    return db;
+  }
+
+  /** Rename an unreadable catalog out of the way instead of deleting it: it is the only copy of that data. */
+  private quarantineCatalog(): string {
+    const aside = `${this.catalogPath}.corrupt-${Date.now()}`;
+    for (const suffix of ["", "-wal", "-shm"] as const) {
+      try {
+        renameSync(`${this.catalogPath}${suffix}`, `${aside}${suffix}`);
+      } catch {}
+    }
+    process.emitWarning(`catalog.sqlite was unreadable; kept it as ${aside} and rebuilt a fresh catalog`);
+    return aside;
+  }
+
+  /**
+   * Re-seed session rows from sessions/ after a catalog quarantine. The catalog is the
+   * only place names/cwds/models live, so rows come back with best-effort identity:
+   * a placeholder name, the first start dir as cwd, the device default model, and the
+   * file mtime as createdAt. openAgent corrects model/provider from the session's own
+   * committed storage at boot; a session whose db fails to open keeps its row with the
+   * boot loop's failure message. Names are placeholders — the transcript is intact.
+   */
+  private reseedCatalog(db: DatabaseSync): void {
+    let entries;
+    try {
+      entries = readdirSync(this.sessionsDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const insert = db.prepare(
+      "INSERT OR IGNORE INTO sessions(id,name,cwd,dbPath,createdAt,model,provider) VALUES(?,?,?,?,?,?,?)",
+    );
+    const fallback = this.defaultModelRef();
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.name))
+        continue;
+      const dbPath = join(this.sessionsDir, entry.name, "agent.sqlite");
+      let createdAt = Date.now();
+      try {
+        createdAt = Math.round(statSync(dbPath).mtimeMs);
+      } catch {}
+      insert.run(
+        entry.name,
+        `Recovered session ${entry.name.slice(0, 8)}`,
+        this.options.startDirs[0] ?? homedir(),
+        dbPath,
+        createdAt,
+        fallback?.modelId ?? "unknown",
+        fallback?.provider ?? "unknown",
+      );
+    }
+  }
+
   static async open(options: StoreOptions) {
-    const store = new Store({ ...options, dataDir: resolve(options.dataDir) });
+    let store: Store;
+    try {
+      store = new Store({ ...options, dataDir: resolve(options.dataDir) });
+    } catch (e) {
+      // R5 finding 7: a second device start on one home used to die as an uncaught
+      // exception plus a crash report telling the operator to file an issue. It is
+      // not a crash: detect the own-lock case and exit cleanly, no report.
+      if (e instanceof DeviceAlreadyRunningError) {
+        process.stdout.write(`dpi: already running (pid ${e.pid}) — ${e.path} is owned by that process\n`);
+        // Exit 0: the operator's intent ("start the device") is already satisfied by
+        // the live process, so a supervisor's restart loop must not fight it.
+        process.exit(0);
+      }
+      throw e;
+    }
     // Start dirs are where new sessions begin; create any that do not exist yet.
     await Promise.all(options.startDirs.map((dir) => mkdir(dir, { recursive: true }).catch(() => {})));
     try {
@@ -1133,6 +1301,8 @@ export class Store {
   async create(body: CreateSessionBody, spawnKey?: string): Promise<SessionSummary> {
     if (typeof body?.name !== "string") throw invalid("name is required");
     if (typeof body.cwd !== "string" || !body.cwd.trim()) throw invalid("cwd is required");
+    // One name rule for create and rename (assertSessionName, module scope): the old
+    // slice(0,100) silently swallowed a 10k paste where rename threw.
     const path = body.cwd.trim();
     const expanded = path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
     let cwd: string;
@@ -1177,7 +1347,7 @@ export class Store {
     const id = randomUUID();
     const row: SessionRow = {
       id,
-      name: body.name.trim().slice(0, 100) || "Untitled session",
+      name: assertSessionName(body.name) || "Untitled session",
       cwd,
       dbPath: join(this.sessionsDir, id, "agent.sqlite"),
       createdAt: Date.now(),
@@ -1187,8 +1357,10 @@ export class Store {
     await this.openAgent(row, true, body.thinkingLevel ?? "medium");
     this.catalog.exec("BEGIN");
     try {
+      // Named columns (R5 finding 4): a catalog with an extra or missing future
+      // column fails loudly here instead of mis-binding positionally.
       this.catalog
-        .prepare("INSERT INTO sessions VALUES(?,?,?,?,?,?,?)")
+        .prepare("INSERT INTO sessions(id,name,cwd,dbPath,createdAt,model,provider) VALUES(?,?,?,?,?,?,?)")
         .run(id, row.name, cwd, row.dbPath, row.createdAt, row.model, row.provider);
       if (spawnKey) this.catalog.prepare("INSERT OR REPLACE INTO session_spawns VALUES(?,?)").run(spawnKey, id);
       this.catalog.exec("COMMIT");
@@ -1223,14 +1395,8 @@ export class Store {
 
   rename(row: SessionRow, name: unknown) {
     if (typeof name !== "string" || !name.trim()) throw invalid("A name is required");
-    const trimmed = name.trim();
-    // Same cap and phrasing as a schedule's name — a display name, not a
-    // description (the old slice(0,100) silently swallowed a 10k paste).
-    if (trimmed.length > MAX_SCHEDULE_NAME_LENGTH)
-      throw invalid(`name is ${trimmed.length} characters; the limit is ${MAX_SCHEDULE_NAME_LENGTH}`);
-    // Control characters never belong in a display name: reject rather than
-    // store verbatim (a newline) or silently truncate at a NUL.
-    if (/[\u0000-\u001f\u007f]/.test(trimmed)) throw invalid("name must not contain control characters");
+    // assertSessionName owns the whole rule: cap, reserved word, control characters.
+    const trimmed = assertSessionName(name);
     this.catalog.prepare("UPDATE sessions SET name=? WHERE id=?").run(trimmed, row.id);
     this.notify();
     return this.sessionSummary(this.row(row.id));
@@ -1315,8 +1481,9 @@ export class Store {
     };
     this.catalog.exec("BEGIN");
     try {
+      // Named columns, as in create (R5 finding 4).
       this.catalog
-        .prepare("INSERT INTO sessions VALUES(?,?,?,?,?,?,?)")
+        .prepare("INSERT INTO sessions(id,name,cwd,dbPath,createdAt,model,provider) VALUES(?,?,?,?,?,?,?)")
         .run(row.id, row.name, row.cwd, row.dbPath, row.createdAt, row.model, row.provider);
       this.catalog.exec("COMMIT");
     } catch (e) {
@@ -1696,10 +1863,41 @@ export class Store {
     };
   }
 
+  /** Reopens in flight (resolveAgent's one retry): concurrent requests share the attempt instead of stampeding the same db. */
+  private reopenInFlight = new Map<string, Promise<Harness>>();
+
+  /** ONE bounded reopen attempt per session at a time; removes itself when settled. */
+  private reopenOnce(row: SessionRow): Promise<Harness> {
+    const inFlight = this.reopenInFlight.get(row.id);
+    if (inFlight) return inFlight;
+    const attempt = this.openAgent(row).finally(() => this.reopenInFlight.delete(row.id));
+    this.reopenInFlight.set(row.id, attempt);
+    return attempt;
+  }
+
   /** Agent by numeric id, `main`, or unique name (custom or derived, case-insensitive). */
   async resolveAgent(sessionRef: string, agentRef: string): Promise<Resolved> {
     const row = this.resolveSession(sessionRef);
-    const h = this.harness(row);
+    let h: Harness;
+    try {
+      h = this.harness(row);
+    } catch (e) {
+      // R5 finding 1 (the availability brick): once a Session failed (failSession),
+      // EVERY agent route used to answer 503 "Session failed and is unavailable"
+      // for the process lifetime — the reopen path existed only in
+      // sessionTouchedFiles/sessionGitTurns, so a transient storage failure
+      // (another process holding the sqlite lock, a full disk) soft-bricked the
+      // session until the device restarted. The unavailable fault is exactly the
+      // "harness is not open" signal: attempt ONE fresh openAgent here, on the
+      // request path every client hits, before answering.
+      if (!(e instanceof ApiFault) || e.code !== "unavailable") throw e;
+      try {
+        h = await this.reopenOnce(row);
+      } catch (retryError) {
+        if (isStorageBusy(retryError)) throw storageBusyFault();
+        throw e; // the recorded, bounded reason — never the raw storage error
+      }
+    }
     let id: number | undefined;
     if (/^\d+$/.test(agentRef)) id = Number(agentRef);
     else if (agentRef.toLowerCase() === "main") id = 1;

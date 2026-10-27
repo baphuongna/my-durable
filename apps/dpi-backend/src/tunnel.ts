@@ -654,10 +654,13 @@ export class DeviceConnector {
       void (async () => {
         const check = validateRestRequest({ method: frame.method, path: frame.path });
         if (!check.ok) {
+          // Same validator the hub runs first (tunnel-transport request()): the
+          // verdict must read the same on both hops — 400 invalid with the
+          // validator's message (R5: the device used to answer 404 here).
           send({
             type: "rest-response",
             reqId: frame.reqId,
-            status: 404,
+            status: 400,
             body: { error: { code: "invalid", message: check.error } },
           });
           return;
@@ -758,7 +761,26 @@ export class DeviceConnector {
       // F07: the hub names the STREAM PATH; scope must reach the device API.
       // Allow-list the three SSE endpoints — a hub can never aim the reader
       // at REST-only or pairing routes.
-      if (!isSubscribePathOk(frame.sub)) return;
+      if (!isSubscribePathOk(frame.sub)) {
+        // R5: a refusal is never silent — the hub (and through it the browser
+        // key named in the envelope) gets a fault with its subscriptionId, so
+        // the key surfaces an error instead of starving without frames and
+        // without a timeout. The path rides the envelope's `sub` field, so the
+        // message stays short (the fault schema caps it at 512 chars).
+        send({
+          type: "tunnel-data",
+          frame: {
+            type: "fault",
+            error: {
+              code: "invalid",
+              message: "subscribe refused: the device does not serve this stream path",
+            },
+          },
+          subscriptionId: frame.subscriptionId,
+          sub: frame.sub,
+        });
+        return;
+      }
       const ctl = new AbortController();
       this.readers.set(frame.subscriptionId, ctl);
       void (async () => {
