@@ -21,8 +21,14 @@ export interface TransportRequest {
 export interface TransportResponse {
   status: number;
   contentType?: string;
-  /** Raw text for proxy passthrough, parsed JSON where the caller knows the shape. */
+  /** Raw text for proxy passthrough, parsed JSON where the caller knows the shape.
+   *  When bodyEncoding is "base64" this is the base64 of the device's raw bytes. */
   body?: unknown;
+  /** Present ("base64") only for non-textual device responses (R8 binary passthrough):
+   *  absent means body is plain UTF-8 text as before. */
+  bodyEncoding?: "base64";
+  /** Sanitized Content-Disposition from the device (binary responses); may be undefined. */
+  contentDisposition?: string;
   /** Diagnostics: assembled byte count for chunked responses. */
   rawBytes?: number;
 }
@@ -36,6 +42,15 @@ export interface DeviceTransport {
 }
 
 const REST_TIMEOUT_MS = 330_000;
+
+/** Wire-textual content types — matches the device-side classifier in dpi-backend/tunnel.ts. */
+const TEXTUAL_CT_RE = /^(?:text\/|application\/(?:json|javascript|xml|x-www-form-urlencoded)(?:;|$))/i;
+/** Device headers are untrusted at the ADMIN origin: printable ASCII only, bounded length. */
+const safeHeaderValue = (value: string | null | undefined): string | undefined => {
+  if (!value) return undefined;
+  const clean = value.replace(/[^\x20-\x7E]/g, "").slice(0, 200).trim();
+  return clean.length > 0 ? clean : undefined;
+};
 
 /** Direct LAN device: full token injection, exactly today's behavior. */
 export class LanTransport implements DeviceTransport {
@@ -77,11 +92,17 @@ export class LanTransport implements DeviceTransport {
       if (signal?.aborted) throw cause;
       throw new DpiError("offline", `Cannot reach ${this.client.baseUrl}`, 0, { cause });
     }
-    const text = await response.text();
+    const raw = Buffer.from(await response.arrayBuffer());
+    const ct = response.headers.get("content-type") ?? undefined;
+    // Textual responses keep the legacy plain-string shape; binaries are base64-flagged
+    // so the proxy can serve bytes byte-exact (R8 binary passthrough).
+    const textual = ct === undefined || TEXTUAL_CT_RE.test(ct);
     return {
       status: response.status,
-      contentType: response.headers.get("content-type") ?? undefined,
-      body: text,
+      contentType: ct,
+      body: textual ? raw.toString("utf8") : raw.toString("base64"),
+      ...(textual ? {} : { bodyEncoding: "base64" as const }),
+      ...(textual ? {} : { contentDisposition: safeHeaderValue(response.headers.get("content-disposition")) }),
     };
   }
 

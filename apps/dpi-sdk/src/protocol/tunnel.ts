@@ -222,6 +222,10 @@ export const TunnelFrame = Type.Union([
       status: Type.Integer({ minimum: 100, maximum: 599 }),
       contentType: Type.Optional(Type.String({ maxLength: 256 })),
       body: Type.Optional(Type.Unknown()),
+      // R8 binary passthrough: non-textual device responses carry base64 bytes plus a
+      // sanitized download filename. Absent on the legacy textual envelope.
+      bodyEncoding: Type.Optional(Type.Union([Type.Literal("base64")])),
+      contentDisposition: Type.Optional(Type.String({ maxLength: 200 })),
     },
     Strict,
   ),

@@ -13,7 +13,8 @@ test("host-checklist Wave 1b: vitals, search and export reach every layer", asyn
   const paramAt = routes.indexOf('r.get("/sessions/:s"');
   assert.ok(searchAt > 0, "session search route missing");
   assert.ok(paramAt > 0 && searchAt < paramAt, "/sessions/search must precede /sessions/:s");
-  assert.match(routes, /r\.get\("\/sessions\/:s\/export"/, "export route missing");
+  // R8: the export handler grew a streaming body, so the route is declared multiline.
+  assert.match(routes, /r\.get\(\s*"\/sessions\/:s\/export"/, "export route missing");
 
   // Tunnel allowlist: all three are remote-callable (they are safe reads).
   const allow = await R("../../dpi-sdk/src/protocol/rest-routes.ts");
@@ -25,7 +26,7 @@ test("host-checklist Wave 1b: vitals, search and export reach every layer", asyn
   const client = await R("../../dpi-sdk/src/client.ts");
   assert.match(client, /vitals\(\)/, "client vitals missing");
   assert.match(client, /searchSessions\(query: string\)/, "client search missing");
-  assert.match(client, /exportSession\(sessionId: string\)/, "client export missing");
+  assert.match(client, /exportSession\(sessionId: string, options: RequestOptions/, "client export missing");
 
   // FE: the host card, the search box, and the bundle button.
   const host = await R("../apps/dpi-playground-fe/src/components/HostPanel.vue");

@@ -4,9 +4,11 @@
  *
  * A schedule is a stored intent: "every N minutes" or "daily at HH:MM", plus the
  * cwd, model and prompt a *new* session should start with. The device owns
- * execution — nothing here starts a session; the device loop asks `due()` and,
- * after the session turn finishes, reports back with `markRun()`. The hub only
- * displays what this file says.
+ * execution — nothing here starts a session; the device loop asks `due()` and
+ * reports back with `markRun()`: once BEFORE the dispatch (the `started` intent
+ * marker, so a crash mid-run cannot silently re-fire after a restart) and once
+ * when the session turn settles, with the real outcome. The hub only displays
+ * what this file says.
  *
  * Modelled on orca's `automations/service.ts:186-211` (scheduled trigger +
  * precheck + completion watcher): a stored `nextRunAt`-style slot per record, an
@@ -47,6 +49,18 @@ export const MAX_EVERY_MINUTES = 1440;
 const DAILY_AT_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const MINUTE_MS = 60_000;
 
+/**
+ * Outcome of the last run. Terminal states: `ok` (the session turn finished)
+ * and `failed` (the dispatch or the turn errored). The intermediate states keep
+ * a run that has not landed *visible* instead of silent: `started` is the
+ * pre-dispatch intent marker (R8 2.4 — written before the session is created),
+ * `timeout` means the run outlived its budget and may still complete later,
+ * and `interrupted` is what a restart turns a pending `started` into
+ * (`recoverInterrupted`). Registries written before R8 only ever contain
+ * `ok`/`failed`; both still parse and render unchanged.
+ */
+export type ScheduleRunOutcome = "ok" | "failed" | "started" | "timeout" | "interrupted";
+
 /** The model a scheduled session starts on. Same shape the session API takes. */
 export interface ScheduleModel {
   provider: string;
@@ -75,12 +89,13 @@ export interface ScheduleRecord {
   dailyAt?: string;
   /** Disabled records are never due and `nextRunAt` answers `undefined`. */
   enabled: boolean;
-  /** When the last run *finished*, epoch ms — the base the next interval counts from. */
+  /** Epoch ms the next interval counts from: stamped by the pre-dispatch intent
+   *  marker (run start) and re-stamped when the outcome lands. */
   lastRunAt?: number;
   /** Session the last run created, so the UI can link to it. */
   lastSessionId?: string;
   /** Outcome of the last run; absent means "never run". */
-  lastOutcome?: "ok" | "failed";
+  lastOutcome?: ScheduleRunOutcome;
   /** Why the last run failed. Cleared by the next successful run. */
   lastError?: string;
   createdAt: number;
@@ -291,7 +306,9 @@ export function computeNextRun(record: ScheduleTiming, from: number = Date.now()
   return undefined;
 }
 
-const isOutcome = (value: unknown): value is "ok" | "failed" => value === "ok" || value === "failed";
+const RUN_OUTCOMES: readonly ScheduleRunOutcome[] = ["ok", "failed", "started", "timeout", "interrupted"];
+const isOutcome = (value: unknown): value is ScheduleRunOutcome =>
+  typeof value === "string" && (RUN_OUTCOMES as readonly string[]).includes(value);
 const finiteNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
@@ -547,13 +564,22 @@ export class ScheduleRegistry {
   }
 
   /**
-   * Record the outcome of one run (called by the device after the session turn).
+   * Record one run. Two call shapes:
+   *
+   * - BEFORE the dispatch, the intent marker `{ outcome: "started" }`: it stamps
+   *   `lastRunAt` immediately, so a crash in the create→outcome window cannot
+   *   re-fire the same minute after a restart (the next slot is a full interval
+   *   out) and the restart surfaces the gap via `recoverInterrupted` (R8 2.4).
+   * - when the run lands, `{ sessionId, outcome }` with the terminal state.
+   *
    * `lastRunAt` is the base the next interval counts from, so this is also what
-   * makes an offline catch-up land once instead of in a burst.
+   * makes an offline catch-up land once instead of in a burst. A non-`ok`
+   * outcome records `error`; `ok` (and a fresh intent) clears the previous
+   * failure reason.
    */
   async markRun(
     id: string,
-    result: { sessionId?: string; outcome: "ok" | "failed"; error?: string; at?: number },
+    result: { sessionId?: string; outcome: ScheduleRunOutcome; error?: string; at?: number },
   ): Promise<ScheduleRecord> {
     if (!isOutcome(result?.outcome)) throw invalid(`unknown run outcome ${String(result?.outcome)}`);
     const at = result.at ?? this.now();
@@ -570,11 +596,39 @@ export class ScheduleRegistry {
       if (sessionId) next.lastSessionId = sessionId;
       else delete next.lastSessionId;
       const error = nonEmptyString(result.error);
-      if (result.outcome === "failed" && error) next.lastError = error;
-      else delete next.lastError; // a success clears the reason the last one failed
+      if (result.outcome !== "ok" && error) next.lastError = error;
+      else delete next.lastError; // a success (or a fresh intent) clears the reason the last one failed
       staged.set(next.id, next);
       await this.commit(staged);
       return clone(next);
+    });
+  }
+
+  /**
+   * Boot-time recovery (R8 2.4): a run still marked `started` never recorded its
+   * outcome — the daemon died between the intent marker and the write-back. Flip
+   * it to `interrupted` so the gap is VISIBLE (the hub shows why the last run has
+   * no outcome) instead of silently re-firing: `lastRunAt` was already stamped
+   * by the intent marker, so `due()` holds the schedule until its next full
+   * slot. Deliberately at-most-once with a visible gap.
+   */
+  async recoverInterrupted(): Promise<ScheduleRecord[]> {
+    return this.run(async () => {
+      const staged = new Map(this.records);
+      const touched: ScheduleRecord[] = [];
+      const at = this.now();
+      for (const record of staged.values()) {
+        if (record.lastOutcome !== "started") continue;
+        const next = clone(record);
+        next.lastOutcome = "interrupted";
+        next.lastError =
+          nonEmptyString(next.lastError) ?? "run was interrupted by a device restart before it recorded an outcome";
+        next.updatedAt = at;
+        staged.set(next.id, next);
+        touched.push(next);
+      }
+      if (touched.length) await this.commit(staged);
+      return touched.map(clone);
     });
   }
 

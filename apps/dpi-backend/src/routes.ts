@@ -1,11 +1,14 @@
 // REST v1. Every route requires the device token (see auth.ts). Session refs are a UUID or a
 // unique name; agent refs are a numeric id, `main`, or a unique name.
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
 import { DEVICE_DOC_KINDS, type SessionRow, type Store } from "./store.js";
 import { agentStream, deviceStream, sessionStream } from "./streams.js";
 import { idempotent } from "./idempotency.js";
 import { invalid, notFound } from "./errors.js";
+import { streamSessionBundle } from "./zip.js";
 import type { DevicePairing } from "./pairing.js";
 
 type Async = (req: Request, res: Response) => Promise<unknown>;
@@ -332,7 +335,27 @@ export function v1(
     res.status(201).json(await store.restoreArchivedSession(param(req, "id"))),
   ));
   // One downloadable .zip: manifest + session record + every agent's transcript/config.
-  r.get("/sessions/:s/export", route(async (_req, res) => res.json(await store.exportSession(L(res).row))));
+  // R8: the bundle streams through a temp file (deflate piped to disk, never the
+  // whole archive in RAM) and the route pipes that file out, unlinks it in the
+  // finally, and speaks plain zip bytes — Content-Disposition names the download.
+  // Guards (256 MiB uncompressed ceiling, zip64-less limits) run during the temp
+  // write, so refusals surface as the usual JSON faults before any byte is sent.
+  r.get(
+    "/sessions/:s/export",
+    route(async (_req, res) => {
+      const bundle = await streamSessionBundle(store, L(res).row);
+      try {
+        res.set({
+          "Content-Type": bundle.mime,
+          "Content-Length": String(bundle.bytes),
+          "Content-Disposition": `attachment; filename="${bundle.filename}"`,
+        });
+        await pipeline(createReadStream(bundle.path), res);
+      } finally {
+        await bundle.cleanup();
+      }
+    }),
+  );
   r.get("/sessions/:s/events", route(async (_req, res) => sessionStream(store, L(res).row, res)));
   // The zcode flagship, adapted: which files has THIS session's agent touched?
   // Powers "commit session changes" in the git panel.

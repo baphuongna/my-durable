@@ -136,7 +136,7 @@ async function downloadTranscript() {
 }
 
 /** Whole-session bundle (Wave 1b): manifest + record + every agent's
- *  transcript and config, zipped on the device (base64 over the tunnel). The
+ *  transcript and config, zipped on the device (raw zip bytes since R8). The
  *  loop lives in client/export-bundle.ts: a failure stays inline here with a
  *  retry instead of living only in a vanishing toast. */
 const {

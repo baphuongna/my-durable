@@ -32,7 +32,11 @@ async function archive() {
 }
 
 test("parseArchivedName only accepts <sessionId>-<closedAtMs>", () => {
-  assert.deepEqual(parseArchivedName("abc-1790000000000"), { sessionId: "abc", closedAt: 1790000000000 });
+  assert.equal(
+    parseArchivedName("abc-1790000000000"),
+    undefined,
+    "non-uuid names are not bundles — GC never deletes what the browser cannot list (R8 3.1)",
+  );
   assert.equal(parseArchivedName("not-a-session"), undefined);
   assert.equal(parseArchivedName("abc-1"), undefined, "a short number is not a timestamp");
   assert.equal(parseArchivedName("abc-1790000000000.zip"), undefined);

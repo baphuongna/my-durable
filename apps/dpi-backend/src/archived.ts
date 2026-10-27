@@ -40,7 +40,7 @@ const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
 
 /** `<uuid>-<archivedAtMs>`: the only identity an old bundle has. 36 uuid chars + 13 ms digits. */
-const BUNDLE_DIR_PATTERN = /^([0-9a-f-]{36})-(\d{13})$/;
+export const BUNDLE_DIR_PATTERN = /^([0-9a-f-]{36})-(\d{13})$/;
 /** Full lowercase uuid, 8-4-4-4-12: a PREFIX of another uuid must never match a bundle. */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

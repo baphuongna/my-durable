@@ -39,7 +39,9 @@ test.after(async () => {
   await vite?.close();
 });
 
-const BUNDLE = { filename: "s1.zip", mime: "application/zip", bytes: 2048, base64: "" };
+// R8 binary contract: the bundle is raw zip bytes now (SessionExport) — the
+// fixture carries a Uint8Array instead of the old {bytes:number, base64} pair.
+const BUNDLE = { filename: "s1.zip", mime: "application/zip", bytes: new Uint8Array(2048) };
 
 test("export bundle: failure stays with a retry; a successful retry clears it", async () => {
   const { useExportBundle } = await vite.ssrLoadModule("/src/client/export-bundle.ts");
@@ -82,6 +84,51 @@ test("export bundle: the failure belongs to one session", async () => {
   target.value = { device: { id: "dev1" }, summary: { id: "s2" } }; // switch session
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(s.error.value, "", "switching sessions clears the stale failure");
+});
+
+test("downloadBundle: the Blob is built straight from the zip bytes (no base64 hop)", async () => {
+  const { downloadBundle } = await vite.ssrLoadModule("/src/client/export-bundle.ts");
+  const g = globalThis as Record<string, unknown> & typeof globalThis;
+  const realDocument = g.document;
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  const anchors: { href: string; download: string; click(): void }[] = [];
+  let blob: Blob | undefined;
+  let revoked: string[] = [];
+  g.document = {
+    createElement: () => {
+      const a: { href: string; download: string; click(): void } = {
+        href: "",
+        download: "",
+        click: () => {},
+      };
+      anchors.push(a);
+      return a;
+    },
+  };
+  URL.createObjectURL = (b: Blob) => {
+    blob = b;
+    return "blob:fixture";
+  };
+  URL.revokeObjectURL = (u: string) => revoked.push(u);
+  try {
+    // Bytes that are NOT valid UTF-8: a leftover base64/text round-trip would mojibake them.
+    const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0xfe, 0x00, 0x81]);
+    downloadBundle({ filename: "my-session.bundle.zip", mime: "application/zip", bytes });
+    assert.equal(anchors.length, 1, "one anchor");
+    assert.equal(anchors[0].download, "my-session.bundle.zip", "the download name survives");
+    assert.equal(anchors[0].href, "blob:fixture", "the anchor points at the object URL");
+    assert.deepEqual(revoked, ["blob:fixture"], "the object URL is revoked");
+    const got = new Uint8Array(await blob!.arrayBuffer());
+    assert.deepEqual([...got], [...bytes], "the Blob carries the exact bytes");
+  } finally {
+    if (realDocument === undefined) delete (g as Record<string, unknown>).document;
+    else g.document = realDocument;
+    if (realCreate === undefined) delete (URL as unknown as Record<string, unknown>).createObjectURL;
+    else URL.createObjectURL = realCreate;
+    if (realRevoke === undefined) delete (URL as unknown as Record<string, unknown>).revokeObjectURL;
+    else URL.revokeObjectURL = realRevoke;
+  }
 });
 
 test("Inspector: the Session heading carries the inline error with a retry", () => {

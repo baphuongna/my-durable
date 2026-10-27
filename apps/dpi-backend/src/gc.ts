@@ -7,11 +7,17 @@
  * explicitly. `--dry-run` is the default at the CLI, following piggery's
  * `gc --closed-before DURATION [--dry-run]` shape.
  *
- * An archived session directory is `<archiveDir>/<sessionId>-<closedAtMs>`, so
- * age and size are readable without opening any database.
+ * An archived session directory is `<archiveDir>/<uuid>-<closedAtMs>` — parsed
+ * with the SAME strict `BUNDLE_DIR_PATTERN` the archive browser and restore use
+ * (audit 3.1: the old loose `<name>-<10+ digits>` form let gc delete operator
+ * directories like `nas-backup-2025010112` that the UI never listed). Any
+ * directory in archive/ that does not parse strictly — or whose closedAt is out
+ * of range — is reported as skipped and never deleted, so age and size remain
+ * readable without opening any database.
  */
 import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { BUNDLE_DIR_PATTERN } from "./archived.js";
 
 export interface ArchivedEntry {
   /** Directory name inside archive/. */
@@ -49,16 +55,25 @@ async function dirBytes(path: string): Promise<number> {
   return total;
 }
 
-/** Parse `<sessionId>-<closedAtMs>`; anything else is reported as skipped, never guessed at. */
+/**
+ * Parse `<uuid>-<closedAtMs>` with the exact strict pattern the archive browser
+ * and restore use (`archived.ts` BUNDLE_DIR_PATTERN); anything else is reported
+ * as skipped, never guessed at. A shape-match with an out-of-range value (13
+ * zeros → closedAt 0) is refused too: skip, don't delete.
+ */
 export function parseArchivedName(name: string): { sessionId: string; closedAt: number } | undefined {
-  const match = /^(.+)-(\d{10,})$/u.exec(name);
+  const match = BUNDLE_DIR_PATTERN.exec(name);
   if (!match) return undefined;
   const closedAt = Number(match[2]);
   if (!Number.isFinite(closedAt) || closedAt <= 0) return undefined;
   return { sessionId: match[1], closedAt };
 }
 
-export async function archivedEntries(archiveDir: string): Promise<{ entries: ArchivedEntry[]; skipped: GcPlan["skipped"] }> {
+export async function archivedEntries(
+  archiveDir: string,
+  /** Clock for the future-closedAt guard; defaults to wall time. */
+  now: number = Date.now(),
+): Promise<{ entries: ArchivedEntry[]; skipped: GcPlan["skipped"] }> {
   const entries: ArchivedEntry[] = [];
   const skipped: GcPlan["skipped"] = [];
   for (const entry of await readdir(archiveDir, { withFileTypes: true }).catch(() => [])) {
@@ -66,6 +81,12 @@ export async function archivedEntries(archiveDir: string): Promise<{ entries: Ar
     const parsed = parseArchivedName(entry.name);
     if (!parsed) {
       skipped.push({ name: entry.name, reason: "not an archived-session directory" });
+      continue;
+    }
+    if (parsed.closedAt > now) {
+      // A bundle stamped in the future (bad clock, corrupted name) is reported
+      // and never considered for deletion.
+      skipped.push({ name: entry.name, reason: "closedAt is in the future — never auto-deleted" });
       continue;
     }
     const path = join(archiveDir, entry.name);
@@ -81,7 +102,7 @@ export async function gcPlan(archiveDir: string, options: { closedBeforeDays: nu
   // Sub-day cutoffs are legal (R5 finding 6): the CLI advertises 90m/12h and
   // parseDuration delivers them as fractional days. Only non-positive values refuse.
   if (!Number.isFinite(days) || days <= 0) throw new Error(`closedBeforeDays must be positive, got ${String(days)}`);
-  const { entries, skipped } = await archivedEntries(archiveDir);
+  const { entries, skipped } = await archivedEntries(archiveDir, now);
   const cutoff = now - days * 86_400_000;
   const candidates = entries
     .filter((entry) => entry.closedAt <= cutoff)

@@ -98,16 +98,16 @@ const BACKPRESSURE_CLOSE_GRACE_MS = 1_000;
  * cap is refused on the headers, an undeclared one is cut off as soon as the bytes read pass it, and in both
  * cases the loopback connection is abandoned.
  */
-async function readTextCapped(
+async function readBodyCapped(
   res: Response,
   cap: number,
-): Promise<{ ok: true; text: string } | { ok: false }> {
+): Promise<{ ok: true; bytes: Buffer } | { ok: false }> {
   const declared = Number(res.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > cap) {
     await res.body?.cancel().catch(() => {});
     return { ok: false };
   }
-  if (!res.body) return { ok: true, text: "" };
+  if (!res.body) return { ok: true, bytes: Buffer.alloc(0) };
   const reader = res.body.getReader();
   const parts: Uint8Array[] = [];
   let total = 0;
@@ -121,8 +121,22 @@ async function readTextCapped(
     }
     parts.push(value);
   }
-  return { ok: true, text: new TextDecoder().decode(Buffer.concat(parts, total)) };
+  return { ok: true, bytes: Buffer.concat(parts, total) };
 }
+
+/** Wire-textual content types ride the rest-response envelope as plain UTF-8 (as they always have);
+ *  anything else (zip, octet-stream, images...) is base64-flagged so the hub can pass bytes through
+ *  byte-exact. R8 binary passthrough — the envelope gains optional bodyEncoding/contentDisposition,
+ *  absent for textual responses so older hubs see an unchanged frame. */
+const TEXTUAL_CT_RE = /^(?:text\/|application\/(?:json|javascript|xml|x-www-form-urlencoded)(?:;|$))/i;
+/** base64 inflates by 4/3 and the serialized envelope must still fit the chunk budget
+ *  (CHUNK_RAW_BYTES × MAX_CHUNKS_PER_MESSAGE = 16 MiB), so binaries get their own headroom. */
+const BINARY_RESPONSE_MAX_BYTES = 12_000_000;
+const safeHeaderValue = (value: string | null | undefined): string | undefined => {
+  if (!value) return undefined;
+  const clean = value.replace(/[^\x20-\x7E]/g, "").slice(0, 200).trim();
+  return clean.length > 0 ? clean : undefined;
+};
 
 export type ConnectorState =
   | "stopped" // not started / stopped by operator or shutdown
@@ -718,19 +732,37 @@ export class DeviceConnector {
             });
             return;
           }
-          const read = await readTextCapped(res, LOGICAL_MESSAGE_MAX_BYTES);
+          const resCt = res.headers.get("content-type") ?? undefined;
+          const textual = resCt === undefined || TEXTUAL_CT_RE.test(resCt);
+          const read = await readBodyCapped(res, textual ? LOGICAL_MESSAGE_MAX_BYTES : BINARY_RESPONSE_MAX_BYTES);
           if (!read.ok) {
-            tooLarge(`Device response exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes`);
+            tooLarge(
+              textual
+                ? `Device response exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes`
+                : `Binary response exceeds the ${BINARY_RESPONSE_MAX_BYTES}-byte tunnel budget`,
+            );
             return;
           }
           // Small responses ride one frame; large ones chunk (hub reassembles).
-          const envelope = {
-            type: "rest-response",
-            reqId: frame.reqId,
-            status: res.status,
-            contentType: res.headers.get("content-type") ?? undefined,
-            body: read.text,
-          } as const;
+          // Textual bodies keep the legacy UTF-8 string envelope; binaries are
+          // base64-flagged so the hub can serve bytes byte-exact (R8 export).
+          const envelope = textual
+            ? ({
+                type: "rest-response",
+                reqId: frame.reqId,
+                status: res.status,
+                contentType: resCt,
+                body: read.bytes.toString("utf8"),
+              } as const)
+            : ({
+                type: "rest-response",
+                reqId: frame.reqId,
+                status: res.status,
+                contentType: resCt,
+                body: read.bytes.toString("base64"),
+                bodyEncoding: "base64",
+                contentDisposition: safeHeaderValue(res.headers.get("content-disposition")),
+              } as const);
           const serialized = JSON.stringify(envelope);
           if (Buffer.byteLength(serialized, "utf8") <= INLINE_FRAME_MAX_BYTES) {
             await sendPaced(serialized);

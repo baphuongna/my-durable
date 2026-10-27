@@ -93,11 +93,25 @@ export function proxy(
       res.status(status).set(LOCKED_DOWN_HEADERS);
       if (!contentType || mediaType(contentType) === "application/json")
         res.type("application/json").send(body);
-      else
-        res
-          .type("application/octet-stream")
-          .set("Content-Disposition", 'attachment; filename="device-response.bin"')
-          .send(Buffer.from(body, "utf8"));
+      else {
+        // R8 binary passthrough: base64-flagged device payloads are decoded byte-exact for
+        // EVERY type; the LABEL is controlled by the hub. Only application/zip (the export
+        // contract) keeps its type + the device's sanitized download filename — every other
+        // non-JSON type stays an inert octet-stream attachment (Gate A GA-01), so a hostile
+        // device cannot rebrand its bytes as html/svg/js at the ADMIN origin.
+        const payload =
+          upstream.bodyEncoding === "base64"
+            ? Buffer.from(String(upstream.body ?? ""), "base64")
+            : Buffer.from(body, "utf8");
+        const isZip = mediaType(contentType) === "application/zip";
+        const disposition =
+          isZip && typeof upstream.contentDisposition === "string"
+            ? upstream.contentDisposition
+            : 'attachment; filename="device-response.bin"';
+        res.type(isZip ? contentType : "application/octet-stream")
+          .set("Content-Disposition", disposition)
+          .send(payload);
+      }
     } catch (e) {
       if (closed.signal.aborted) return;
       // Status-carrying tunnel outcomes keep their semantics: 413 too-large,

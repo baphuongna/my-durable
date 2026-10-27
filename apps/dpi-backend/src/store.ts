@@ -182,6 +182,12 @@ export interface StoreOptions {
   envFile?: string;
   /** Bot token for the Telegram chat bridge; absent = the bridge stays idle. */
   telegramToken?: string;
+  /** R8 schedule-runner budgets, injectable so tests can exercise a wedged
+   *  dispatch in milliseconds instead of minutes. Defaults: dispatch 60 s,
+   *  settle cap 120 s, tick 30 s. */
+  scheduleDispatchTimeoutMs?: number;
+  scheduleSettleCapMs?: number;
+  scheduleTickMs?: number;
 }
 
 /** Agent documents a client may read or stream, by kind. */
@@ -194,6 +200,42 @@ const SEARCH_LIMIT = 50;
 /** Scheduler granularity. Schedules are minute-granular, so 30 s is enough and
  *  the timer is unref'd: it never holds the process open. */
 const SCHEDULE_TICK_MS = 30_000;
+
+/** Bound on one dispatch's SUBMISSION phase (create + agent resolve + submit —
+ *  the cwd realpath walk that wedges on a soft-dead mount lives here, R8 2.2).
+ *  A dispatch that outlives the bound is recorded `timeout` and the in-flight
+ *  slot is RELEASED: the abandoned attempt may still land its session later
+ *  (documented at-least-once cost), but no single wedged cwd may halt the loop.
+ *  The intent marker already stamped lastRunAt, so the next slot is a full
+ *  interval out — a timeout cannot cause a same-instant refire. */
+const SCHEDULE_DISPATCH_TIMEOUT_MS = 60_000;
+
+/** Bound on waiting for the session turn to settle after submit (R8 2.3): the
+ *  outcome comes from the turn, not from the enqueue, but a stuck provider must
+ *  not hold the schedule's slot forever. Past the cap the run is recorded
+ *  `timeout` — an explicit intermediate outcome, never a green "ok". */
+const SCHEDULE_SETTLE_CAP_MS = 120_000;
+
+/**
+ * Race `work` against a wall-clock budget. The loser is NOT cancelled: a create
+ * that timed out may still complete later (its session shows up in the tree);
+ * that is the documented at-least-once behaviour of the schedule dispatch.
+ * The catch-offshoot exists only so a loser that rejects after the race can
+ * never become an unhandled rejection.
+ */
+async function deadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ApiFault("timeout", message)), ms);
+    timer.unref?.();
+  });
+  work.catch(() => undefined);
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Starting point for a per-model usage accumulator. */
 const ZERO_USAGE: UsageSummary = {
@@ -498,7 +540,13 @@ export class Store {
 
   /** Run the base DDL, then the schema-version check and the known-old-shape ladder. */
   private prepareCatalog(db: DatabaseSync): DatabaseSync {
+    // WAL alone still fsyncs the WAL on EVERY commit (synchronous defaults to FULL);
+    // NORMAL only fsyncs at checkpoints — R8 measured catalog commits at 7ms p50
+    // under FULL vs 0.11ms under NORMAL on this box (scripts/bench-store.mjs,
+    // control.commit phases). The per-session transcript DBs already run
+    // NORMAL via pi-durable's openNodeSqliteStorage; this makes the catalog match.
     db.exec(`PRAGMA journal_mode=WAL;
+      PRAGMA synchronous=NORMAL;
       CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,name TEXT NOT NULL,cwd TEXT NOT NULL,dbPath TEXT NOT NULL UNIQUE,createdAt INTEGER NOT NULL,model TEXT NOT NULL,provider TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS conversation_names(sessionId TEXT NOT NULL,conversationId INTEGER NOT NULL,name TEXT NOT NULL,PRIMARY KEY(sessionId,conversationId));
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -616,6 +664,13 @@ export class Store {
       store.schedules = await ScheduleRegistry.open(store.schedulesPath, {
         warn: (m) => process.emitWarning(`schedules: ${m}`),
       });
+      // R8 2.4: runs left "started" by a crash become a visible "interrupted"
+      // gap. The intent marker already stamped lastRunAt, so due() holds the
+      // schedule until its next full slot — the run is not silently re-fired.
+      for (const record of await store.schedules.recoverInterrupted())
+        process.emitWarning(
+          `schedules: run of "${record.name}" was interrupted by a restart; run it again or wait for its next slot`,
+        );
       store.sinks = await NotifySinks.open(store.notifyPath, {
         warn: (m) => process.emitWarning(`notify: ${m}`),
         // ntfy often lives on the LAN; the operator opts in explicitly.
@@ -2486,12 +2541,7 @@ export class Store {
 
   /** Schedules with their computed next run, for any UI that displays them. */
   scheduleList(): ScheduleView[] {
-    const at = Date.now();
-    return this.schedules.list().map((record) => ({
-      ...record,
-      nextRunAt: this.schedules.nextRunAt(record, at) ?? null,
-      running: this.scheduleInFlight.has(record.id),
-    }));
+    return this.schedules.list().map((record) => this.scheduleView(record));
   }
 
   async createSchedule(input: ScheduleCreateInput): Promise<ScheduleView> {
@@ -2518,7 +2568,11 @@ export class Store {
     return { removed };
   }
 
-  /** Run one schedule now (the "run" button) — same path the timer takes. */
+  /** Run one schedule now (the "run" button) — same path the timer takes.
+   *  Throws ApiFault("busy") (HTTP 409, "already running") when the schedule
+   *  has a run in flight: the guard lives in the shared dispatch entry point
+   *  (R8 2.1), so a double-clicked Run button gets a typed fault instead of a
+   *  second concurrent run with duplicated side effects. */
   async runScheduleNow(id: string): Promise<ScheduleView> {
     const record = this.schedules.get(id);
     if (!record) throw notFound(`no schedule ${id}`);
@@ -2527,30 +2581,57 @@ export class Store {
   }
 
   private scheduleView(record: ScheduleRecord): ScheduleView {
+    // The SDK's ScheduleView union (dpi-sdk/src/api.ts) still lists only
+    // "ok" | "failed"; the intermediate outcomes are ordinary wire strings and
+    // dpi-sdk is not this fix's file, so carry the recorded value through with
+    // a narrowing cast. UIs treat the field as opaque text.
+    const { lastOutcome, ...rest } = record;
     return {
-      ...record,
+      ...rest,
+      ...(lastOutcome === undefined ? {} : { lastOutcome: lastOutcome as ScheduleView["lastOutcome"] }),
       nextRunAt: this.schedules.nextRunAt(record, Date.now()) ?? null,
       running: this.scheduleInFlight.has(record.id),
     };
   }
 
-  /** Ids with a turn in flight: `due()` keeps returning a record until `markRun`
-   *  lands, so the loop must not dispatch the same schedule twice. */
+  /** Ids with a run in flight. ONE guarded entry point (dispatchSchedule): the
+   *  timer loop and "Run now" both dispatch through it, so the guard cannot be
+   *  bypassed the way the old timer-only check was (R8 2.1). */
   private scheduleInFlight = new Set<string>();
   private scheduleTimer?: ReturnType<typeof setTimeout>;
+
+  /** R8 schedule budgets (StoreOptions-overridable so tests simulate wedged
+   *  dispatches in milliseconds instead of minutes). */
+  private get scheduleTickMs(): number {
+    return this.options.scheduleTickMs ?? SCHEDULE_TICK_MS;
+  }
+
+  private get dispatchTimeoutMs(): number {
+    return this.options.scheduleDispatchTimeoutMs ?? SCHEDULE_DISPATCH_TIMEOUT_MS;
+  }
+
+  private get settleCapMs(): number {
+    return this.options.scheduleSettleCapMs ?? SCHEDULE_SETTLE_CAP_MS;
+  }
 
   /** The device owns the clock (orca automations): a 30 s tick is plenty for a
    *  minute-granularity schedule and costs nothing when there is none. */
   private startScheduler() {
     if (this.scheduleTimer) return;
     const tick = () => {
-      this.scheduleTimer = setTimeout(() => {
-        void this.runDueSchedules().finally(tick);
-      }, SCHEDULE_TICK_MS);
+      // R8 2.2: re-arm BEFORE the pass runs. Chaining the next tick on run
+      // completion (`runDueSchedules().finally(tick)`) let ONE wedged dispatch
+      // — a cwd on a soft-dead NFS mount whose realpath never resolves — hold
+      // the chain open forever and silently halt every schedule on the device.
+      // Dispatches are individually bounded (dispatchSchedule), but the pass
+      // also awaits registry persists and settle waits; the timer must never
+      // depend on any of them. Overlapping passes are safe: the in-flight guard
+      // is per schedule id.
+      this.scheduleTimer = setTimeout(tick, this.scheduleTickMs);
       this.scheduleTimer.unref?.();
+      void this.runDueSchedules().catch(() => undefined);
     };
     tick();
-    void this.runDueSchedules();
   }
 
   private stopScheduler() {
@@ -2572,34 +2653,54 @@ export class Store {
   /**
    * A schedule run = a fresh session (so each run has its own transcript and
    * nothing overwrites yesterday's work), the prompt sent to its root agent,
-   * then the outcome recorded. Failures are recorded, never thrown: a broken
-   * schedule must not stop the loop or the daemon.
+   * then the outcome recorded from the session TURN (not from the enqueue).
+   * Failures are recorded, never thrown: a broken schedule must not stop the
+   * loop or the daemon — the one exception is the in-flight guard, which the
+   * caller sees as a typed busy fault.
+   *
+   * R8 2.1: this is the ONE guarded entry point; check and add have no await
+   * between them, so within the process they are atomic.
+   * R8 2.4: the intent marker (`lastRunAt` + outcome "started") is persisted
+   * BEFORE the session is created, so a crash in the create→outcome window
+   * leaves a visible "interrupted" record after restart instead of silently
+   * re-firing the same minute.
    */
-  private async dispatchSchedule(record: ScheduleRecord) {
+  private async dispatchSchedule(record: ScheduleRecord): Promise<void> {
+    if (this.scheduleInFlight.has(record.id)) {
+      throw new ApiFault("busy", `Schedule "${record.name}" is already running`);
+    }
     this.scheduleInFlight.add(record.id);
     this.notify();
-    let sessionId: string | undefined;
     try {
-      const session = await this.create({
-        name: `${record.name} · ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
-        cwd: record.cwd,
-        model: record.model,
-      });
-      sessionId = session.id;
-      const { c } = await this.resolveAgent(session.id, "main");
-      await this.send(c, { content: record.prompt, requestId: `schedule-${record.id}-${Date.now()}` });
-      await this.schedules.markRun(record.id, { sessionId, outcome: "ok" });
-      void this.notifyEvent({
-        kind: "schedule.ok",
-        title: `Schedule ran: ${record.name}`,
-        body: `${this.name} started a session for "${record.name}" in ${record.cwd}.`,
-        data: { scheduleId: record.id, sessionId },
-      });
-    } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
+      // Persist the intent before any await that can wedge. If this persist
+      // itself fails (disk full), the run still proceeds — it just loses the
+      // crash-safety guarantee, like every version before R8.
+      await this.schedules.markRun(record.id, { outcome: "started" }).catch(() => undefined);
+      await this.dispatchBounded(record);
+    } finally {
+      this.scheduleInFlight.delete(record.id);
+      this.notify();
+    }
+  }
+
+  /**
+   * The bounded body of one dispatch: submit, wait for the turn, record the
+   * outcome. Never throws — every path lands in a recorded outcome.
+   *
+   * R8 2.2: the submission phase (create + resolve + submit) races a wall-clock
+   * deadline, so a wedged cwd becomes a recorded `timeout` and the loop moves
+   * on; the abandoned attempt is NOT cancelled and may still complete later
+   * (at-least-once, visible as a stray session in the tree).
+   * R8 2.3: `send` only enqueues, so the outcome is taken from `settled()` —
+   * `done` → ok, `unanswered` → failed, still queued/pending at the cap →
+   * `timeout` (explicit intermediate, never a green "ok").
+   */
+  private async dispatchBounded(record: ScheduleRecord): Promise<void> {
+    let sessionId: string | undefined;
+    const recordFailure = async (outcome: "failed" | "timeout", detail: string) => {
       await this.schedules.markRun(record.id, {
         ...(sessionId ? { sessionId } : {}),
-        outcome: "failed",
+        outcome,
         error: detail.slice(0, 300),
       }).catch(() => undefined);
       void this.notifyEvent({
@@ -2608,9 +2709,60 @@ export class Store {
         body: detail.slice(0, 300),
         data: { scheduleId: record.id },
       });
-    } finally {
-      this.scheduleInFlight.delete(record.id);
-      this.notify();
+    };
+    try {
+      const submitted = await deadline(
+        (async () => {
+          const session = await this.create({
+            name: `${record.name} · ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
+            cwd: record.cwd,
+            model: record.model,
+          });
+          sessionId = session.id;
+          const { c, h } = await this.resolveAgent(session.id, "main");
+          const submission = await this.send(c, {
+            content: record.prompt,
+            requestId: `schedule-${record.id}-${Date.now()}`,
+          });
+          return { h, submission };
+        })(),
+        this.dispatchTimeoutMs,
+        `dispatch timed out after ${this.dispatchTimeoutMs / 1000}s`,
+      );
+      let result: SendResult;
+      try {
+        // The settle phase: wait (bounded) for the TURN's terminal state.
+        result = await this.settled(submitted.h, submitted.submission.id as number, this.settleCapMs);
+      } catch (e) {
+        await recordFailure("failed", e instanceof Error ? e.message : String(e));
+        return;
+      }
+      if (result.status === "done") {
+        await this.schedules.markRun(record.id, { sessionId, outcome: "ok" }).catch(() => undefined);
+        void this.notifyEvent({
+          kind: "schedule.ok",
+          title: `Schedule ran: ${record.name}`,
+          body: `${this.name} finished a run of "${record.name}" in ${record.cwd} (session ${sessionId}).`,
+          data: { scheduleId: record.id, sessionId },
+        });
+        return;
+      }
+      if (result.status === "unanswered") {
+        await recordFailure(
+          "failed",
+          `schedule turn ended without an answer${result.reason ? `: ${result.reason}` : ""}`,
+        );
+        return;
+      }
+      await recordFailure(
+        "timeout",
+        `turn did not finish within ${this.settleCapMs / 1000}s; it may still complete in session ${sessionId}`,
+      );
+    } catch (e) {
+      // The submission-phase deadline lands here as a typed timeout fault;
+      // everything else is a dispatch error. Both are recorded, never thrown.
+      const timedOut = e instanceof ApiFault && e.code === "timeout";
+      await recordFailure(timedOut ? "timeout" : "failed", e instanceof Error ? e.message : String(e));
     }
   }
 

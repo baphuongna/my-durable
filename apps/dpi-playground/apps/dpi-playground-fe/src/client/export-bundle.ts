@@ -2,30 +2,27 @@
 // surface only as a ≤120-char toast that vanished before the user could act;
 // it now also stays inline in the Session heading (Git tab's error-banner
 // pattern) until a successful retry — or a session switch — clears it.
+// R8: the device streams raw zip bytes (the SDK's SessionExport — bytes, no
+// base64 hop), so the Blob is built straight from the payload.
 import { ref, watch, type Ref } from "vue";
 import type { NetworkDevice, SessionSummary } from "@sdk/api";
+import type { SessionExport } from "@sdk/client";
 import { deviceClient, message } from "./hub";
 
-export interface BundleFile {
-  filename: string;
-  mime: string;
-  bytes: number;
-  base64: string;
-}
+/** The device's zipped session bundle: raw zip bytes plus the download name. */
+export type BundleFile = SessionExport;
 export type BundleTarget = Ref<{
   device?: Pick<NetworkDevice, "id">;
   summary?: Pick<SessionSummary, "id">;
 }>;
 
 /** Browser-only: turn a bundle into a download. Separate so tests can drive
- *  the retry logic without the DOM. */
+ *  the retry logic without the DOM. The Blob wraps the zip bytes directly —
+ *  no base64 decode since the R8 binary contract. */
 export function downloadBundle(r: BundleFile) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(
-    new Blob([Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0))], {
-      type: r.mime || "application/zip",
-    }),
-  );
+  // slice() normalizes the buffer to a plain ArrayBuffer (BlobPart typing, TS 5.7).
+  a.href = URL.createObjectURL(new Blob([r.bytes.slice()], { type: r.mime || "application/zip" }));
   a.download = r.filename;
   a.click();
   URL.revokeObjectURL(a.href);
@@ -53,7 +50,7 @@ export function useExportBundle(
     try {
       const r = await fetchBundle(device.id, summary.id);
       download(r);
-      notify(`Bundle downloaded (${Math.max(1, Math.round(r.bytes / 1024))} KiB).`);
+      notify(`Bundle downloaded (${Math.max(1, Math.round(r.bytes.length / 1024))} KiB).`);
     } catch (e) {
       error.value = `bundle export failed: ${message(e).slice(0, 300)}`;
       notify(error.value.slice(0, 120));

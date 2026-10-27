@@ -52,6 +52,15 @@ const enc = encodeURIComponent;
 const newId = (): string =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+/** "My session #1" → "my-session-1" — mirrors the device's download slug (zip.ts). */
+const slugName = (input: string): string =>
+  input
+    .normalize("NFKD")
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .toLowerCase() || "session";
+
 /**
  * Typed client for one dpi-backend. Works in browsers and Node (fetch + streams).
  * `token` is optional: the playground hub injects it, so browsers never hold one.
@@ -112,6 +121,20 @@ export type GitOpName =
   | "pr-merge"
   | "pr-checks"
   | "pr-comment";
+
+/** One zipped session bundle, downloaded as raw bytes (R8 binary contract):
+ *  the device streams plain `application/zip` bytes, so there is no base64
+ *  hop. Hand `bytes` straight to `new Blob(...)` in the browser or to
+ *  `fs.writeFile` in Node. */
+export interface SessionExport {
+  /** The device's download name (`${slug}.bundle.zip`), from Content-Disposition
+   *  — a slug of the session ref when the peer sends no usable header. */
+  filename: string;
+  /** The response's media type; `application/zip` from the device route. */
+  mime: string;
+  /** The zip payload, byte-for-byte as the device streamed it. */
+  bytes: Uint8Array;
+}
 
 /** Everything a git op may return; most carry only text. */
 export interface GitOpResult {
@@ -358,12 +381,56 @@ export class DpiClient {
     return this.request<GitOpResult>("POST", "/v1/git", { path, op, ...opts });
   }
   /** Paths this session's agents wrote/edited — the session-changelist. */
-  /** One zipped bundle of a session (manifest + record + agent transcripts/configs). */
-  exportSession(sessionId: string) {
-    return this.request<{ filename: string; mime: string; bytes: number; base64: string }>(
-      "GET",
-      `/v1/sessions/${enc(sessionId)}/export`,
-    );
+  /** One zipped bundle of a session (manifest + record + agent transcripts/configs),
+   *  downloaded as RAW zip bytes since R8 — the route streams `application/zip` with
+   *  Content-Length + Content-Disposition instead of the old base64 JSON envelope.
+   *  Returns { filename, mime, bytes }: `filename` parsed from Content-Disposition
+   *  (slug-of-ref fallback), `mime` from Content-Type, `bytes` the zip payload —
+   *  Blob-able in the browser, fs.writeFile-able in Node. Refusal faults keep their
+   *  JSON error bodies and throw the usual DpiError. Bundles can be large — pass a
+   *  longer timeoutMs on slow links (default 60s). */
+  async exportSession(sessionId: string, options: RequestOptions = {}): Promise<SessionExport> {
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? 60_000);
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+    let response: Response;
+    try {
+      response = await fetch(this.baseUrl + `/v1/sessions/${enc(sessionId)}/export`, {
+        headers: this.headers(false),
+        signal,
+      });
+    } catch (cause) {
+      if (options.signal?.aborted) throw cause;
+      throw new DpiError("offline", `Cannot reach ${this.baseUrl}`, 0, { cause });
+    }
+    if (!response.ok) {
+      // Refusals keep speaking JSON faults even on this binary route.
+      const text = await response.text().catch(() => "");
+      let data: { error?: { code?: ErrorCode; message?: string } } | undefined;
+      try {
+        data = text ? (JSON.parse(text) as typeof data) : undefined;
+      } catch {
+        data = undefined;
+      }
+      const code: ErrorCode =
+        data?.error?.code ??
+        (response.status === 401 ? "unauthorized" : response.status === 404 ? "not_found" : "internal");
+      throw new DpiError(
+        code,
+        data?.error?.message ?? `${response.status} ${response.statusText}`,
+        response.status,
+      );
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    // `filename="quoted"` (the device's form) or a bare token, per RFC 6266.
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const quoted = /filename="((?:[^"\\]|\\.)*)"/i.exec(disposition)?.[1];
+    const bare = /filename=([^;\s]+)/i.exec(disposition)?.[1];
+    const named = quoted !== undefined ? quoted.replace(/\\(.)/g, "$1") : bare;
+    return {
+      filename: named || `${slugName(sessionId)}.bundle.zip`,
+      mime: response.headers.get("content-type") ?? "application/zip",
+      bytes,
+    };
   }
   sessionGitFiles(sessionId: string) {
     return this.request<{ files: string[] }>("GET", `/v1/sessions/${enc(sessionId)}/git-files`);

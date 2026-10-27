@@ -27,6 +27,14 @@ import {
 } from "../../../../dpi-sdk/src/protocol/limits.js";
 import { ByteBudget, ChunkReassembler } from "../../../../dpi-sdk/src/node/chunk.js";
 import type { DeviceTransport, TransportRequest, TransportResponse } from "./transport.js";
+
+/** Device frames are untrusted at the ADMIN origin: printable ASCII only, bounded length
+ *  (defense in depth — the device already sanitizes before putting it on the wire). */
+const safeHeaderValue = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const clean = value.replace(/[^\x20-\x7E]/g, "").slice(0, 200).trim();
+  return clean.length > 0 ? clean : undefined;
+};
 import type { TunnelConnection, TunnelServer } from "./tunnel.js";
 import type { Audit } from "./audit.js";
 
@@ -179,6 +187,10 @@ export class TunnelDispatcher {
         status: frame.status as number,
         contentType: frame.contentType as string | undefined,
         body: frame.body,
+        ...(frame.bodyEncoding === "base64" ? { bodyEncoding: "base64" as const } : {}),
+        ...(frame.bodyEncoding === "base64"
+          ? { contentDisposition: safeHeaderValue(frame.contentDisposition) }
+          : {}),
       });
       return;
     }
@@ -220,7 +232,13 @@ export class TunnelDispatcher {
           // inside chunk data with no schema. A missing or non-numeric status is the device
           // breaking contract: answer a bad gateway, never a silently defaulted 200.
           const env = out.value as
-            | { status?: unknown; contentType?: unknown; body?: unknown }
+            | {
+                status?: unknown;
+                contentType?: unknown;
+                body?: unknown;
+                bodyEncoding?: unknown;
+                contentDisposition?: unknown;
+              }
             | undefined;
           if (typeof env?.status !== "number" || !Number.isFinite(env.status)) {
             p?.resolve({
@@ -235,6 +253,10 @@ export class TunnelDispatcher {
             status: env.status,
             contentType: typeof env.contentType === "string" ? env.contentType : undefined,
             body: env.body,
+            ...(env.bodyEncoding === "base64" ? { bodyEncoding: "base64" as const } : {}),
+            ...(env.bodyEncoding === "base64"
+              ? { contentDisposition: safeHeaderValue(env.contentDisposition) }
+              : {}),
             rawBytes: out.rawBytes,
           });
         }
