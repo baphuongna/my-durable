@@ -8,8 +8,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { gcApply, gcPlan, humanBytes, parseDuration } from "./gc.js";
+import { gcApply, gcPlan, humanBytes, parseDuration, removedSessionIds } from "./gc.js";
 import { expand, readEnvFile } from "./doctor.js";
+import { lockFile, DeviceAlreadyRunningError } from "./store.js";
+import { ScheduleRegistry } from "./schedules.js";
+import { GraphRegistry } from "./graphs.js";
 
 export interface GcArgs {
   argv: readonly string[];
@@ -133,14 +136,97 @@ export async function gcCli(args: GcArgs, io: GcIo = defaultGcIo()): Promise<num
         io.print("re-run with --yes to delete.");
       }
       for (const skip of plan.skipped) io.printErr(`skipped ${skip.name}: ${skip.reason}`);
+      if (plan.danglingRefs.schedules > 0 || plan.danglingRefs.graphRuns > 0) {
+        io.print(
+          `sweep would clear ${plan.danglingRefs.schedules} schedule ref(s) and ${plan.danglingRefs.graphRuns} graph-run ref(s) pointing at the deletions.`,
+        );
+      }
       return 0;
     }
 
     const { removed, bytes } = await gcApply(archiveDir, options);
     io.print(`deleted ${removed.length} archived session(s), ${humanBytes(bytes)} freed.`);
+
+    // R10 Design B: sweep refs pointing at what we just removed. Daemon-first
+    // (registry mutations happen in-process, no file race); offline falls back
+    // to the same advisory lock Store.open takes.
+    const ids = removedSessionIds(removed);
+    if (ids.length > 0) {
+      try {
+        await sweepRefs(dataDirOf(archiveDir), ids, io, deviceToken(io));
+      } catch (e) {
+        io.printErr(
+          `dpi gc: deleted ${ids.length} session(s) but the ref sweep failed: ${
+            e instanceof Error ? e.message : String(e)
+          } (re-run later — the sweep is idempotent)`,
+        );
+      }
+    }
     return 0;
   } catch (e) {
     io.printErr(`dpi gc: ${e instanceof Error ? e.message : String(e)}`);
     return 2;
+  }
+}
+
+const dataDirOf = (archiveDir: string) => archiveDir.slice(0, archiveDir.length - "/archive".length);
+
+/** The device token, from the process env or the env file (DPI_ENV_FILE) —
+ *  only needed for the daemon-first sweep route. */
+function deviceToken(io: GcIo): string | undefined {
+  if (io.env.DPI_TOKEN) return io.env.DPI_TOKEN;
+  const envFile = io.env.DPI_ENV_FILE;
+  if (!envFile) return undefined;
+  try {
+    return readEnvFile(io.readFile(envFile)).DPI_TOKEN;
+  } catch {
+    return undefined; // unreadable env file already failed loudly in resolveDataDir
+  }
+}
+
+/** Daemon-first dangling-ref sweep: POST /v1/gc/sweep-refs when the device
+ *  answers locally, else the offline lock-guarded registry sweep. Reports what
+ *  was cleared either way. Throws on failure (the caller prints and exits
+ *  non-zero — the DELETE already happened; the sweep is idempotent, retryable). */
+async function sweepRefs(dataDir: string, ids: string[], io: GcIo, token?: string): Promise<void> {
+  const port = Number(io.env.DPI_PORT ?? "4780");
+  if (token && Number.isInteger(port)) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/v1/gc/sweep-refs`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-dpi-token": token },
+        body: JSON.stringify({ sessionIds: ids }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.ok) {
+        const cleared = (await res.json()) as { schedules: number; graphRuns: number };
+        if (cleared.schedules || cleared.graphRuns)
+          io.print(`swept ${cleared.schedules} schedule ref(s), ${cleared.graphRuns} graph-run ref(s).`);
+        return;
+      }
+      // A non-OK from a LIVE device is a real fault — fall through to the
+      // offline path would race the daemon; surface it instead.
+      throw new Error(`device answered ${res.status} to the sweep route`);
+    } catch (e) {
+      if (e instanceof TypeError || (e instanceof Error && /fetch|network|ECONN/i.test(e.message))) {
+        /* device not reachable locally — offline path below */
+      } else throw e;
+    }
+  }
+  // Offline: the same advisory lock Store.open takes, so a live (but
+  // unreachable) daemon refuses instead of racing us on the registry files.
+  const unlock = lockFile(join(dataDir, "app-state.sqlite.lock"));
+  try {
+    const schedules = await ScheduleRegistry.open(join(dataDir, "schedules.json"));
+    const graphs = await GraphRegistry.open(join(dataDir, "graphs.json"));
+    const s = await schedules.clearSessionRefs(new Set(ids));
+    const g = await graphs.clearSessionRefs(new Set(ids));
+    if (s || g) io.print(`swept ${s} schedule ref(s), ${g} graph-run ref(s).`);
+  } catch (e) {
+    if (e instanceof DeviceAlreadyRunningError)
+      throw new Error("device is running — retry via the API route (dpi gc after the device answers, or restart it)");
+    throw e;
+  } finally {
+    unlock();
   }
 }

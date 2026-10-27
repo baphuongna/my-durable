@@ -45,6 +45,19 @@ export const MIN_EVERY_MINUTES = 5;
 /** A day: longer than this and `dailyAt` is the better trigger anyway. */
 export const MAX_EVERY_MINUTES = 1440;
 
+/** R10 Design A: bounds for per-schedule session retention. 1 = keep only the
+ *  latest run live; 100 x 5-min runs ≈ 8h of live transcripts — enough for any
+ *  "recent context" use, small enough that a fat-finger cannot pin 100k sessions. */
+export const MIN_KEEP_RUNS = 1;
+export const MAX_KEEP_RUNS = 100;
+
+/** Throws unless v is a legal keepRuns (integer 1..100). Shared by create/patch. */
+function normaliseKeepRuns(v: unknown): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < MIN_KEEP_RUNS || v > MAX_KEEP_RUNS)
+    throw invalid(`keepRuns must be an integer between ${MIN_KEEP_RUNS} and ${MAX_KEEP_RUNS}`);
+  return v;
+}
+
 /** `HH:MM`, 24-hour, local time. Strict two digits so the file has one spelling per time. */
 const DAILY_AT_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const MINUTE_MS = 60_000;
@@ -98,6 +111,13 @@ export interface ScheduleRecord {
   lastOutcome?: ScheduleRunOutcome;
   /** Why the last run failed. Cleared by the next successful run. */
   lastError?: string;
+  /** R10 Design A: keep the last N runs' sessions live; archive older ones at
+   *  the end of a successful dispatch. Absent = never auto-archive. */
+  keepRuns?: number;
+  /** R10 Design A: bounded ring of the newest keepRuns run session ids — the
+   *  retention window. Pushed by markRun, trimmed to keepRuns; the ONLY
+   *  registry growth this feature adds, bounded by construction. */
+  recentSessionIds?: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -113,10 +133,11 @@ export interface ScheduleInput {
 }
 
 /** `create` also takes the initial `enabled` bit, so a schedule can be staged switched-off. */
-export type ScheduleCreateInput = ScheduleInput & { enabled?: boolean };
+export type ScheduleCreateInput = ScheduleInput & { enabled?: boolean; keepRuns?: number };
 
-/** What `update` accepts: everything a user owns, plus the switch. */
-export type SchedulePatch = Partial<ScheduleInput> & { enabled?: boolean };
+/** What `update` accepts: everything a user owns, plus the switch. `keepRuns:
+ *  null` CLEARS retention (R10 Design A). */
+export type SchedulePatch = Partial<ScheduleInput> & { enabled?: boolean; keepRuns?: number | null };
 
 /** The fields `computeNextRun` reads. Narrowed so callers can pass a bare object in tests. */
 export type ScheduleTiming = Pick<
@@ -364,6 +385,18 @@ function coerceRecord(raw: unknown, now: number): ScheduleRecord {
   if (isOutcome(source.lastOutcome)) record.lastOutcome = source.lastOutcome;
   const lastError = nonEmptyString(source.lastError);
   if (lastError) record.lastError = lastError;
+  // R10 Design A: retention window — defensive parse (bounds enforced, ring
+  // trimmed, junk entries dropped) so a hand-edited or future file cannot
+  // unbound the registry.
+  if (typeof source.keepRuns === "number" && Number.isInteger(source.keepRuns)) {
+    const keepRuns = Math.min(Math.max(source.keepRuns, MIN_KEEP_RUNS), MAX_KEEP_RUNS);
+    record.keepRuns = keepRuns;
+    if (Array.isArray(source.recentSessionIds)) {
+      const ring = source.recentSessionIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+      const unique = [...new Set(ring)].slice(-keepRuns);
+      if (unique.length > 0) record.recentSessionIds = unique;
+    }
+  }
   return record;
 }
 
@@ -477,6 +510,7 @@ export class ScheduleRegistry {
       throw invalid("enabled must be a boolean");
     }
     const enabled = input?.enabled ?? true;
+    const keepRuns = input?.keepRuns !== undefined ? normaliseKeepRuns(input.keepRuns) : undefined;
     return this.run(async () => {
       const staged = new Map(this.records);
       let id = newScheduleId();
@@ -485,6 +519,7 @@ export class ScheduleRegistry {
       const created: ScheduleRecord = { id, name, cwd, model, prompt, enabled, createdAt: now, updatedAt: now };
       if (trigger.everyMinutes !== undefined) created.everyMinutes = trigger.everyMinutes;
       if (trigger.dailyAt !== undefined) created.dailyAt = trigger.dailyAt;
+      if (keepRuns !== undefined) created.keepRuns = keepRuns;
       staged.set(created.id, created);
       await this.commit(staged);
       return clone(created);
@@ -501,6 +536,7 @@ export class ScheduleRegistry {
     if (patch?.enabled !== undefined && typeof patch.enabled !== "boolean") {
       throw invalid("enabled must be a boolean");
     }
+    if (patch?.keepRuns !== undefined && patch.keepRuns !== null) normaliseKeepRuns(patch.keepRuns);
     return this.run(async () => {
       const staged = new Map(this.records);
       const existing = staged.get(id);
@@ -511,6 +547,22 @@ export class ScheduleRegistry {
       if ("model" in patch) next.model = normaliseModel(patch.model);
       if ("prompt" in patch) next.prompt = normalisePrompt(patch.prompt);
       if ("enabled" in patch) next.enabled = patch.enabled as boolean;
+      if ("keepRuns" in patch) {
+        if (patch.keepRuns === null) {
+          // Clearing retention: the ring goes with it (the sessions stay live
+          // forever, exactly as before this feature existed).
+          delete next.keepRuns;
+          delete next.recentSessionIds;
+        } else if (patch.keepRuns === undefined) {
+          /* explicit undefined = no change */
+        } else {
+          next.keepRuns = normaliseKeepRuns(patch.keepRuns);
+          const ring = next.recentSessionIds ?? [];
+          const trimmed = ring.slice(-next.keepRuns);
+          if (trimmed.length > 0) next.recentSessionIds = trimmed;
+          else delete next.recentSessionIds;
+        }
+      }
       if ("everyMinutes" in patch || "dailyAt" in patch) {
         const trigger = normaliseTrigger({
           everyMinutes: "everyMinutes" in patch ? patch.everyMinutes : existing.everyMinutes,
@@ -595,12 +647,55 @@ export class ScheduleRegistry {
       const sessionId = nonEmptyString(result.sessionId);
       if (sessionId) next.lastSessionId = sessionId;
       else delete next.lastSessionId;
+      // R10 Design A: the retention window ring — push the run's session, trim
+      // to keepRuns. The ids that FALL OFF the window (evicted) are the prune
+      // candidates; the caller snapshots the ring before this call and diffs.
+      if (sessionId && typeof next.keepRuns === "number") {
+        const ring = [...(next.recentSessionIds ?? []).filter((id) => id !== sessionId), sessionId];
+        next.recentSessionIds = ring.slice(-next.keepRuns);
+      }
       const error = nonEmptyString(result.error);
       if (result.outcome !== "ok" && error) next.lastError = error;
       else delete next.lastError; // a success (or a fresh intent) clears the reason the last one failed
       staged.set(next.id, next);
       await this.commit(staged);
       return clone(next);
+    });
+  }
+
+  /** R10 Design B: clear `lastSessionId` (and retention-ring entries) pointing
+   *  at sessions a gc pass removed. The run outcome/error/history STAY — only
+   *  the link goes. Idempotent; returns how many records were touched. */
+  async clearSessionRefs(ids: Set<string>): Promise<number> {
+    if (ids.size === 0) return 0;
+    return this.run(async () => {
+      let touched = 0;
+      const staged = new Map(this.records);
+      for (const [id, existing] of staged) {
+        let next = existing;
+        let changed = false;
+        if (existing.lastSessionId !== undefined && ids.has(existing.lastSessionId)) {
+          const { lastSessionId, ...rest } = existing;
+          void lastSessionId;
+          next = rest as ScheduleRecord;
+          changed = true;
+        }
+        // Design A interplay: ring ids pointing at removed sessions are dangling
+        // too — drop them so archivedRuns does not count ghosts forever.
+        if (next.recentSessionIds?.some((sid) => ids.has(sid))) {
+          const kept = next.recentSessionIds.filter((sid) => !ids.has(sid));
+          next = { ...next, recentSessionIds: kept.length > 0 ? kept : undefined } as ScheduleRecord;
+          if (kept.length === 0) delete next.recentSessionIds;
+          changed = true;
+        }
+        if (changed) {
+          next.updatedAt = this.now();
+          staged.set(id, next);
+          touched += 1;
+        }
+      }
+      if (touched > 0) await this.commit(staged);
+      return touched;
     });
   }
 

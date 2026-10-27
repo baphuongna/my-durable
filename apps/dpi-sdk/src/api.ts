@@ -390,6 +390,10 @@ export interface ScheduleRecord {
   lastSessionId?: string;
   lastOutcome?: "ok" | "failed";
   lastError?: string;
+  /** R10: keep the last N runs' sessions live, archive older ones. Absent = never. */
+  keepRuns?: number;
+  /** R10: the retention window (newest keepRuns run session ids). */
+  recentSessionIds?: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -399,6 +403,8 @@ export interface ScheduleView extends ScheduleRecord {
   nextRunAt: number | null;
   /** A turn is in flight for this schedule right now. */
   running: boolean;
+  /** R10: count of retention-ring ids no longer live (so "keeping last N" renders truthfully). */
+  archivedRuns?: number;
 }
 
 export interface SchedulePatchBody {
@@ -409,6 +415,8 @@ export interface SchedulePatchBody {
   everyMinutes?: number;
   dailyAt?: string;
   enabled?: boolean;
+  /** R10: set retention (1–100) or null to clear it. */
+  keepRuns?: number | null;
 }
 
 /** Device usage rollup over the sessions it still holds (archived are closed). */

@@ -307,6 +307,12 @@ export function v1(
   // The device owns execution (systemd/cron are deliberately rejected by config);
   // these routes only read and edit the schedule records.
   r.get("/schedules", (_req, res) => res.json({ schedules: store.scheduleList() }));
+  // R10 Design B: the daemon-side dangling-ref sweep. Deliberately NOT in the
+  // tunnel REST allowlist (apps/dpi-sdk/src/protocol/rest-routes.ts): this is
+  // device-LOCAL operator maintenance (the gc CLI calls it when the device is
+  // up, so registry mutations happen in-process with no file race) — the same
+  // operator-only surface as `dpi gc` itself.
+  r.post("/gc/sweep-refs", route(async (req, res) => res.json(await store.gcSweepRefs((req.body ?? {}).sessionIds))));
   r.post("/schedules", route(async (req, res) => res.status(201).json(await store.createSchedule(req.body ?? {}))));
   r.patch("/schedules/:id", route(async (req, res) => res.json(await store.updateSchedule(param(req, "id"), req.body ?? {}))));
   r.delete("/schedules/:id", route(async (req, res) => res.json(await store.removeSchedule(param(req, "id")))));

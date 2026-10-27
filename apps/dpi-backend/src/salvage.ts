@@ -34,7 +34,8 @@
  * are removed and the original is left byte-identical.
  */
 import { Worker } from "node:worker_threads";
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { existsSync, linkSync, renameSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 /** The open path must never hang on salvage: everything above this ceiling is abandoned. */
 export const SALVAGE_CEILING_MS = 5_000;
@@ -61,7 +62,7 @@ const { parentPort, workerData } = require("node:worker_threads");
 const { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { DatabaseSync } = require("node:sqlite");
 const main = workerData.dbPath;
-const copy = main + ".salvage";
+const copy = workerData.copyPath; // R10 5.2: unique per attempt — two workers never share scratch files
 const fail = (reason) => parentPort.postMessage({ ok: false, reason: String(reason).slice(0, 80) });
 function run() {
 try {
@@ -118,17 +119,36 @@ try {
 run();
 `;
 
-const rmCopyFiles = (dbPath: string) => {
-  for (const suffix of [".salvage", ".salvage-wal", ".salvage-shm"]) rmSync(dbPath + suffix, { force: true });
+const rmCopyFiles = (copyPath: string) => {
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(copyPath + suffix, { force: true });
 };
 
-/** Promote the verified copy: original aside (kept), copy atomically into place. */
-const promote = (dbPath: string): string => {
+/** R10 5.2: a scratch name unique per attempt, so a second salvage on the same
+ *  session (two routes opening one corrupt db concurrently) can never eat the
+ *  first attempt's in-flight copy — the audit's strand-the-db scenario. */
+const scratchPath = (dbPath: string): string =>
+  `${dbPath}.salvage-${process.pid.toString(36)}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+
+/** Promote the verified copy (R10 5.1: crash-window free). The ORIGINAL and its
+ *  sidecars are hardlink-kept aside FIRST (link(2) — same bytes, no copy), the
+ *  stale live sidecars are then removed, and ONE atomic rename puts the copy in
+ *  place. At every crash point either the original or the promoted copy sits at
+ *  the db path — never neither:
+ *   - before the sidecar rm: retry sees the untouched original (+ its sidecars).
+ *   - after it, before the rename: the original main is still in place (its
+ *     sidecars live on via the aside links; a retry re-salvages to the last
+ *     checkpoint — the honest-stale case, disclosed in the promote warning). */
+const promote = (dbPath: string, copyPath: string): string => {
   const aside = `${dbPath}.corrupt-${Date.now()}`;
-  renameSync(dbPath, aside);
-  for (const suffix of ["-wal", "-shm"]) if (existsSync(dbPath + suffix)) renameSync(dbPath + suffix, `${aside}${suffix}`);
-  renameSync(`${dbPath}.salvage`, dbPath);
-  rmCopyFiles(dbPath); // the copy's own sidecars were checkpointed away; drop leftovers
+  linkSync(dbPath, aside);
+  for (const suffix of ["-wal", "-shm"]) {
+    if (existsSync(dbPath + suffix)) {
+      linkSync(dbPath + suffix, `${aside}${suffix}`);
+      rmSync(dbPath + suffix, { force: true }); // stale against the promoted main
+    }
+  }
+  renameSync(copyPath, dbPath); // POSIX rename: atomic replace
+  rmCopyFiles(copyPath); // the copy's own sidecars were checkpointed away; drop leftovers
   return aside;
 };
 
@@ -140,8 +160,9 @@ const promote = (dbPath: string): string => {
 export function salvageSessionDb(dbPath: string, ceilingMs: number = SALVAGE_CEILING_MS): Promise<SalvageOutcome> {
   return new Promise((resolve) => {
     let worker: Worker;
+    const copyPath = scratchPath(dbPath); // R10 5.2: unique scratch per attempt
     try {
-      worker = new Worker(WORKER_SRC, { eval: true, workerData: { dbPath } });
+      worker = new Worker(WORKER_SRC, { eval: true, workerData: { dbPath, copyPath } });
     } catch {
       resolve({ attempted: false, recovered: false, reason: "salvage worker unavailable" });
       return;
@@ -155,12 +176,12 @@ export function salvageSessionDb(dbPath: string, ceilingMs: number = SALVAGE_CEI
       let outcome = result;
       if (outcome.recovered) {
         try {
-          outcome = { ...outcome, keptAs: promote(dbPath) };
+          outcome = { ...outcome, keptAs: promote(dbPath, copyPath) };
         } catch {
           outcome = { attempted: true, recovered: false, reason: "promotion failed" };
         }
       }
-      if (!outcome.recovered) rmCopyFiles(dbPath);
+      if (!outcome.recovered) rmCopyFiles(copyPath);
       resolve(outcome);
     };
     const timer = setTimeout(() => {

@@ -16,7 +16,8 @@
  * readable without opening any database.
  */
 import { readdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { BUNDLE_DIR_PATTERN } from "./archived.js";
 
 export interface ArchivedEntry {
@@ -43,6 +44,10 @@ export interface GcPlan {
   candidateBytes: number;
   /** Directories we could not read (kept, never deleted). */
   skipped: { name: string; reason: string }[];
+  /** R10 Design B: refs that WOULD dangle if the candidates were deleted —
+   *  schedule `lastSessionId`s and graph `TaskRunState.sessionId`s pointing at
+   *  candidate session ids. The operator sees the referential cost of --yes. */
+  danglingRefs: { schedules: number; graphRuns: number };
 }
 
 async function dirBytes(path: string): Promise<number> {
@@ -95,6 +100,39 @@ export async function archivedEntries(
   return { entries: entries.sort((a, b) => b.closedAt - a.closedAt), skipped };
 }
 
+/** R10 Design B: count refs that would dangle if `ids` were removed. Tolerant
+ *  raw reads — the registries may not exist yet, and a corrupt file must never
+ *  stop a gc plan (the sweep itself runs through the registries' own safe
+ *  commit paths). */
+export function danglingRefCounts(
+  dataDir: string,
+  ids: ReadonlySet<string>,
+  readFile: (p: string) => string = (p) => readFileSync(p, "utf8"),
+): { schedules: number; graphRuns: number } {
+  if (ids.size === 0) return { schedules: 0, graphRuns: 0 };
+  let schedules = 0;
+  let graphRuns = 0;
+  try {
+    const doc = JSON.parse(readFile(join(dataDir, "schedules.json"))) as {
+      schedules?: Array<{ lastSessionId?: string }>;
+    };
+    for (const s of doc.schedules ?? []) if (s.lastSessionId && ids.has(s.lastSessionId)) schedules += 1;
+  } catch {
+    /* absent or unreadable — nothing countable */
+  }
+  try {
+    const doc = JSON.parse(readFile(join(dataDir, "graphs.json"))) as {
+      runs?: Array<{ tasks?: Record<string, { sessionId?: string }> }>;
+    };
+    for (const run of doc.runs ?? [])
+      for (const task of Object.values(run.tasks ?? {}))
+        if (task.sessionId && ids.has(task.sessionId)) graphRuns += 1;
+  } catch {
+    /* absent or unreadable — nothing countable */
+  }
+  return { schedules, graphRuns };
+}
+
 /** What a retention policy would delete. Pure read: nothing is touched. */
 export async function gcPlan(archiveDir: string, options: { closedBeforeDays: number; now?: number }): Promise<GcPlan> {
   const now = options.now ?? Date.now();
@@ -107,11 +145,13 @@ export async function gcPlan(archiveDir: string, options: { closedBeforeDays: nu
   const candidates = entries
     .filter((entry) => entry.closedAt <= cutoff)
     .map((entry) => ({ ...entry, ageDays: Math.floor((now - entry.closedAt) / 86_400_000) }));
+  const candidateIds = new Set(candidates.map((c) => c.sessionId));
   return {
     total: { count: entries.length, bytes: entries.reduce((n, e) => n + e.bytes, 0) },
     candidates,
     candidateBytes: candidates.reduce((n, e) => n + e.bytes, 0),
     skipped,
+    danglingRefs: danglingRefCounts(dirname(archiveDir), candidateIds),
   };
 }
 
@@ -136,6 +176,13 @@ export async function gcApply(
     }
   }
   return { removed, bytes: removed.reduce((n, e) => n + e.bytes, 0) };
+}
+
+/** R10 Design B: the removed ids a ref-sweep should target (gcApply callers
+ *  pass these on — to the daemon route when it answers, else the offline
+ *  sweep). Derived from what gcApply actually removed. */
+export function removedSessionIds(removed: readonly GcCandidate[]): string[] {
+  return removed.map((c) => c.sessionId);
 }
 
 /**

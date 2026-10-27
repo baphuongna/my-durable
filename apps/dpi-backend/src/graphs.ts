@@ -682,6 +682,34 @@ export class GraphRegistry {
     });
   }
 
+  /** R10 Design B: clear TaskRunState.sessionId links pointing at sessions a gc
+   *  pass removed — the run's status/error/timestamps stay (history is true,
+   *  the link is gone). Idempotent by construction; returns how many links
+   *  were cleared (for the CLI report and the dry-run parity check). */
+  async clearSessionRefs(ids: Set<string>): Promise<number> {
+    if (ids.size === 0) return 0;
+    let cleared = 0;
+    await this.run(async () => {
+      const runs = this.runRecords.map((run) => {
+        if (!run.tasks) return run;
+        let touched = false;
+        const tasks: Record<string, TaskRunState> = {};
+        for (const [taskId, task] of Object.entries(run.tasks)) {
+          if (task.sessionId !== undefined && ids.has(task.sessionId)) {
+            const { sessionId, ...rest } = task;
+            void sessionId;
+            tasks[taskId] = rest as TaskRunState;
+            cleared += 1;
+            touched = true;
+          } else tasks[taskId] = task;
+        }
+        return touched ? { ...run, tasks } : run;
+      });
+      await this.commit(new Map(this.graphs), runs);
+    });
+    return cleared;
+  }
+
   /**
    * Soft delete. Archiving an already-archived graph keeps the original stamp —
    * the first archive is the fact, a second one is a double click.

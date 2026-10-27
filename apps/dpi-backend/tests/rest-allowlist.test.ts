@@ -23,6 +23,9 @@ import { until, rig, type Hub } from "./connector-rig.js";
 const NOT_TUNNELED = new Set([
   // Model health probe: local control plane, spawns throwaway sessions.
   "POST /device/probe-model",
+  // R10 Design B: the gc dangling-ref sweep — device-LOCAL operator maintenance
+  // (the gc CLI routes here when the device is up); same surface as `dpi gc`.
+  "POST /gc/sweep-refs",
   "GET /tunnel",
   "GET /pairing",
   "POST /pairing/start",

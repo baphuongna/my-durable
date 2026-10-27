@@ -1593,7 +1593,15 @@ export class Store {
         storage = await openNodeSqliteStorage(row.dbPath);
       } catch (error) {
         if (create || !isUnreadableStorage(error)) throw error;
-        const outcome = await salvageSessionDb(row.dbPath);
+        // R10 5.2: single-flight per session — two routes opening one corrupt db
+        // (UI refresh fetching git-files + agents) used to spawn two salvage
+        // workers racing on shared scratch; both attempts now share ONE outcome.
+        const inFlight = this.salvageInFlight.get(row.id) ?? salvageSessionDb(row.dbPath).then((outcome) => {
+          this.salvageInFlight.delete(row.id);
+          return outcome;
+        });
+        this.salvageInFlight.set(row.id, inFlight);
+        const outcome = await inFlight;
         if (!outcome.recovered) {
           const note = salvageFailureNote(outcome);
           const previous = this.errors.get(row.id);
@@ -1611,7 +1619,8 @@ export class Store {
           throw new ApiFault("unavailable", note);
         }
         process.emitWarning(
-          `[dpi-backend] session ${row.id}'s database was unreadable; salvaged a copy (original kept as ${outcome.keptAs})`,
+          `[dpi-backend] session ${row.id}'s database was unreadable; salvaged a copy (original kept as ${outcome.keptAs}). ` +
+            `The copy reflects the database's last consistent state — if its write-ahead log was lost in the crash, the final turns may be missing (the quarantined original retains every byte).`,
         );
         storage = await openNodeSqliteStorage(row.dbPath); // the ONE retry, on the promoted copy
       }
@@ -2570,6 +2579,22 @@ export class Store {
     return this.scheduleView(record);
   }
 
+  /** R10 Design B: clear schedule/graph refs pointing at sessions a gc pass
+   *  removed (the daemon-side sweep — the CLI routes here when the device is
+   *  up, so registry mutations happen in-process with no file race). The
+   *  registries keep outcome/error history; only the links go. Cap 10k ids. */
+  async gcSweepRefs(sessionIds: unknown): Promise<{ schedules: number; graphRuns: number }> {
+    if (!Array.isArray(sessionIds)) throw new ApiFault("invalid", "sessionIds must be an array");
+    if (sessionIds.length > 10_000) throw new ApiFault("invalid", "sessionIds capped at 10000");
+    const ids = new Set(
+      sessionIds.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 64),
+    );
+    const schedules = await this.schedules.clearSessionRefs(ids);
+    const graphRuns = await this.graphs.clearSessionRefs(ids);
+    if (schedules > 0 || graphRuns > 0) this.notify();
+    return { schedules, graphRuns };
+  }
+
   async removeSchedule(id: string): Promise<{ removed: boolean }> {
     const removed = await this.schedules.remove(id);
     this.notify();
@@ -2594,9 +2619,18 @@ export class Store {
     // dpi-sdk is not this fix's file, so carry the recorded value through with
     // a narrowing cast. UIs treat the field as opaque text.
     const { lastOutcome, ...rest } = record;
+    // R10 Design A: derived count of ring ids no longer live (archived or gone)
+    // so the UI can render "keeping last N" truthfully. Bounded: ring ≤ 100.
+    let archivedRuns: number | undefined;
+    if (record.keepRuns !== undefined && record.recentSessionIds?.length) {
+      archivedRuns = record.recentSessionIds.filter(
+        (id) => !this.catalog.prepare("SELECT 1 FROM sessions WHERE id=?").get(id),
+      ).length;
+    }
     return {
       ...rest,
       ...(lastOutcome === undefined ? {} : { lastOutcome: lastOutcome as ScheduleView["lastOutcome"] }),
+      ...(archivedRuns !== undefined ? { archivedRuns } : {}),
       nextRunAt: this.schedules.nextRunAt(record, Date.now()) ?? null,
       running: this.scheduleInFlight.has(record.id),
     };
@@ -2607,6 +2641,10 @@ export class Store {
    *  bypassed the way the old timer-only check was (R8 2.1). */
   private scheduleInFlight = new Set<string>();
   private scheduleTimer?: ReturnType<typeof setTimeout>;
+
+  /** R10 5.2: per-session salvage single-flight — concurrent openers of one
+   *  corrupt session share ONE bounded attempt instead of racing scratch files. */
+  private salvageInFlight = new Map<string, Promise<import("./salvage.js").SalvageOutcome>>();
 
   /** R8 schedule budgets (StoreOptions-overridable so tests simulate wedged
    *  dispatches in milliseconds instead of minutes). */
@@ -2754,11 +2792,16 @@ export class Store {
         return;
       }
       if (result.status === "done") {
-        await deadline(
+        // R10 Design A: snapshot the retention ring BEFORE markRun pushes+trims,
+        // then prune whatever fell out of the window (void: never blocks the
+        // guard release, no new timers — best-effort archive with retry next run).
+        const ringBefore = [...(record.recentSessionIds ?? [])];
+        const okRecord = await deadline(
           this.schedules.markRun(record.id, { sessionId, outcome: "ok" }),
           SCHEDULE_REGISTRY_IO_MS,
           "schedule registry write timed out (ok)",
         ).catch(() => undefined);
+        if (okRecord?.keepRuns) void this.pruneScheduleSessions(okRecord, ringBefore).catch(() => undefined);
         void this.notifyEvent({
           kind: "schedule.ok",
           title: `Schedule ran: ${record.name}`,
@@ -2783,6 +2826,26 @@ export class Store {
       // everything else is a dispatch error. Both are recorded, never thrown.
       const timedOut = e instanceof ApiFault && e.code === "timeout";
       await recordFailure(timedOut ? "timeout" : "failed", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** R10 Design A: archive run sessions that fell out of the schedule's
+   *  keepRuns window. Called (void, best-effort) only from the ok-path of a
+   *  successful dispatch, with the ring as it was BEFORE markRun trimmed it.
+   *  `ringBefore \ ringAfter` = evicted ids; each LIVE evicted session is
+   *  archived via the existing store.archive path (abort-open → atomic rename
+   *  to archive/ → catalog row deleted — nothing deleted, restorable, ages into
+   *  the gc plan). Archive failure leaves the session live; the id is already
+   *  gone from the ring, but the session stays restorable and the operator can
+   *  archive it manually — at most keepRuns stragglers can overstay (bounded). */
+  private async pruneScheduleSessions(record: ScheduleRecord, ringBefore: string[]): Promise<void> {
+    if (typeof record.keepRuns !== "number") return;
+    const ringNow = new Set(record.recentSessionIds ?? []);
+    const evicted = [...new Set(ringBefore)].filter((id) => !ringNow.has(id));
+    for (const id of evicted) {
+      const row = this.catalog.prepare("SELECT * FROM sessions WHERE id=?").get(id) as SessionRow | undefined;
+      if (!row) continue; // already gone (archived/corrupt-removed) — nothing to do
+      await this.archive(row);
     }
   }
 
