@@ -130,7 +130,12 @@ async function readBodyCapped(
  *  absent for textual responses so older hubs see an unchanged frame. */
 const TEXTUAL_CT_RE = /^(?:text\/|application\/(?:json|javascript|xml|x-www-form-urlencoded)(?:;|$))/i;
 /** base64 inflates by 4/3 and the serialized envelope must still fit the chunk budget
- *  (CHUNK_RAW_BYTES × MAX_CHUNKS_PER_MESSAGE = 16 MiB), so binaries get their own headroom. */
+ *  (CHUNK_RAW_BYTES × MAX_CHUNKS_PER_MESSAGE = 16 MiB), so binaries get their own headroom.
+ *  R11 3.2 (doc): this 12 MB is the ceiling for EVERY tunnelled binary — an export
+ *  larger than this refuses with response_too_large (deflate ≈ 3-5× on transcripts,
+ *  so most sessions fit; the LOCAL device ceiling is the 256 MiB streaming one in
+ *  zip.ts). The asymmetry is physics: textual frames get 16 MiB logical because
+ *  they never carry the 4/3 inflation; binaries pay it, so they get 12 MB pre-base64. */
 const BINARY_RESPONSE_MAX_BYTES = 12_000_000;
 const safeHeaderValue = (value: string | null | undefined): string | undefined => {
   if (!value) return undefined;
@@ -739,7 +744,13 @@ export class DeviceConnector {
             tooLarge(
               textual
                 ? `Device response exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes`
-                : `Binary response exceeds the ${BINARY_RESPONSE_MAX_BYTES}-byte tunnel budget`,
+                : `Binary response exceeds the ${BINARY_RESPONSE_MAX_BYTES}-byte tunnel budget` +
+                    // R11 1.3: the two export ceilings must tell ONE story — the
+                    // tunnel cap is 12 MB compressed, the local one 256 MiB raw;
+                    // name the remedies instead of a bare byte count.
+                    (frame.path.endsWith("/export")
+                      ? " — compact the session (archive old agents), or export it directly from the device"
+                      : ""),
             );
             return;
           }

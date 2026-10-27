@@ -98,14 +98,14 @@ test("a prefix that matches several schedules is refused, not guessed", async ()
   assert.match(lines.join("\n"), /matches 2 schedules/);
 });
 
-test("run reports the outcome and exits 1 on failure", async () => {
-  const okRun = io({ respond: (init) => (init.url.endsWith("/run") ? record({ lastOutcome: "ok" }) : { schedules: [record()] }) });
+test("run arms the run and reports where the outcome lands (R11 2.3)", async () => {
+  const okRun = io({ respond: (init) => (init.url.endsWith("/run") ? record({ running: true }) : { schedules: [record()] }) });
   assert.equal(await scheduleCli(["run", "sch_abc"], okRun.io), 0);
-  assert.match(okRun.lines.join("\n"), /ok; next in/);
+  assert.match(okRun.lines.join("\n"), /run started/);
 
-  const failed = io({ respond: (init) => (init.url.endsWith("/run") ? record({ lastOutcome: "failed", lastError: "model_error" }) : { schedules: [record()] }) });
-  assert.equal(await scheduleCli(["run", "sch_abc"], failed.io), 1);
-  assert.match(failed.lines.join("\n"), /failed — model_error/);
+  const armed = io({ respond: (init) => (init.url.endsWith("/run") ? record({ running: false }) : { schedules: [record()] }) });
+  assert.equal(await scheduleCli(["run", "sch_abc"], armed.io), 0);
+  assert.match(armed.lines.join("\n"), /armed/);
 });
 
 test("enable/disable PATCH the flag; remove DELETEs; no token is a clear error", async () => {

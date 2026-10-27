@@ -188,14 +188,21 @@ export async function scheduleCli(argv: readonly string[], io: ScheduleIo = defa
     return 0;
   }
   if (sub === "run") {
-    io.print(`${target.name}: running…`);
+    io.print(`${target.name}: starting…`);
+    // R11 2.3: the route answers 202 as soon as the run is ARMED — the turn
+    // itself is bounded by the dispatch deadlines and lands in the record and
+    // the schedule.ok/failed events. `dpi schedule list` shows the outcome.
     const ran = await call<ScheduleView>(io, "POST", `/v1/schedules/${target.id}/run`, {});
     if (!ran.ok) {
       io.printErr(`dpi schedule: ${ran.error}`);
       return 1;
     }
-    io.print(`${ran.data.lastOutcome ?? "ok"}${ran.data.lastError ? ` — ${ran.data.lastError}` : ""}; next ${when(ran.data.nextRunAt)}`);
-    return ran.data.lastOutcome === "failed" ? 1 : 0;
+    io.print(
+      ran.data.running
+        ? `run started (watch \`dpi schedule list\` for the outcome); next ${when(ran.data.nextRunAt)}`
+        : `armed; next ${when(ran.data.nextRunAt)}`,
+    );
+    return 0;
   }
   if (sub === "remove") {
     const removed = await call<{ removed: boolean }>(io, "DELETE", `/v1/schedules/${target.id}`);

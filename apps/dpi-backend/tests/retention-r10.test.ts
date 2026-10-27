@@ -100,12 +100,20 @@ test("the prune: a run past the window archives the evicted session; the newest 
       "the newest run's session is live",
     );
 
-    // Run 2 with a second real session: runScheduleNow completes a real turn
-    // (faux provider answers), the ring trims to the new session, and the
-    // prune (void, best-effort) archives the evicted one. Wait for it.
-    const ran = await store.runScheduleNow(s.id);
-    assert.equal(ran.lastOutcome, "ok", "the real dispatch completed");
-    const second = ran.lastSessionId!;
+    // Run 2 with a second real session: runScheduleNow ARMS the run (R11 2.3)
+    // and the real turn (faux provider answers) completes afterwards — the ring
+    // trims to the new session and the prune (void, best-effort) archives the
+    // evicted one. Wait for both.
+    await store.runScheduleNow(s.id);
+    await until(
+      () => {
+        const v = store.scheduleList().find((x) => x.id === s.id);
+        return v?.lastOutcome === "ok" && v.lastSessionId !== undefined && v.lastSessionId !== first;
+      },
+      5000,
+      "the real dispatch completed (a NEW session id recorded)",
+    );
+    const second = store.scheduleList().find((v) => v.id === s.id)!.lastSessionId!;
     assert.notEqual(second, first);
     await until(
       () => !store.catalog.prepare("SELECT 1 FROM sessions WHERE id=?").get(first),
@@ -116,8 +124,16 @@ test("the prune: a run past the window archives the evicted session; the newest 
       store.catalog.prepare("SELECT 1 FROM sessions WHERE id=?").get(second),
       "the newest run's session stays live",
     );
-    // The archive bundle is on disk under archive/ (nothing deleted).
+    // The archive bundle is on disk under archive/ (nothing deleted). Wait for
+    // the MOVE to finish — R11 2.3 armed the run asynchronously, and the prune
+    // (void) can still be copying when the catalog row is already gone; ending
+    // the test mid-copy would race teardown (ENOTEMPTY).
     const archived = join(t.options.dataDir, "archive");
+    await until(
+      () => existsSync(archived) && existsSync(join(t.options.dataDir, "sessions", first)) === false,
+      5000,
+      "the archived session's directory finished moving out of sessions/",
+    );
     assert.ok(existsSync(archived), "archive dir exists");
   } finally {
     await store.close();

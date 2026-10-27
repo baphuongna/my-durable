@@ -40,6 +40,16 @@ test("parseArchivedName only accepts <sessionId>-<closedAtMs>", () => {
   assert.equal(parseArchivedName("not-a-session"), undefined);
   assert.equal(parseArchivedName("abc-1"), undefined, "a short number is not a timestamp");
   assert.equal(parseArchivedName("abc-1790000000000.zip"), undefined);
+  assert.equal(
+    parseArchivedName("------------------------------------1790000000000"),
+    undefined,
+    "R11 4.1: 36 dashes are not a uuid — lookalikes are skipped by BOTH gc and the browser",
+  );
+  assert.deepEqual(
+    parseArchivedName("aaaa1111-0000-0000-0000-000000000000-1790000000000"),
+    { sessionId: "aaaa1111-0000-0000-0000-000000000000", closedAt: 1790000000000 },
+    "R11 4.1: canonical 8-4-4-4-12 shape still parses (real bundles)",
+  );
 });
 
 test("gcPlan names exactly what a cutoff selects, and never touches the disk", async () => {
@@ -51,7 +61,13 @@ test("gcPlan names exactly what a cutoff selects, and never touches the disk", a
     assert.deepEqual(plan.candidates.map((c) => c.sessionId.slice(0, 4)), ["aaaa"]);
     assert.equal(plan.candidates[0].ageDays, 40);
     assert.equal(plan.candidateBytes, 100);
-    assert.deepEqual(plan.skipped, [{ name: "not-a-session", reason: "not an archived-session directory" }]);
+    const skipped = [...plan.skipped].sort((a, b) => a.name.localeCompare(b.name));
+    // R11 4.2: the stray FILE is now reported (was silently invisible),
+    // alongside the alien directory.
+    assert.deepEqual(skipped, [
+      { name: "not-a-session", reason: "not an archived-session directory" },
+      { name: "stray.txt", reason: "not a directory (file or symlink) — left untouched" },
+    ]);
     // Nothing was deleted by planning.
     assert.equal((await readdir(a.dir)).length, 5);
 

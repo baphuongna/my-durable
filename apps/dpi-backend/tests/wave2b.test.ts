@@ -4,7 +4,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { faux, tempStore } from "./helpers.js";
+import { faux, tempStore, until } from "./helpers.js";
 
 const input = (over: Record<string, unknown> = {}) => ({
   name: "Nightly check",
@@ -25,7 +25,14 @@ test("a schedule run creates its own session, sends the prompt and records the o
     assert.equal(created.running, false);
     assert.deepEqual(store.scheduleList().map((s) => s.name), ["Nightly check"]);
 
-    const ran = await store.runScheduleNow(created.id);
+    await store.runScheduleNow(created.id);
+    // R11 2.3: the run is armed async — the outcome lands in the record.
+    await until(
+      () => store.scheduleList().find((s) => s.id === created.id)?.lastOutcome === "ok",
+      5000,
+      "the faux run completes",
+    );
+    const ran = store.scheduleList().find((s) => s.id === created.id)!;
     assert.equal(ran.lastOutcome, "ok", "the faux provider answers, so the run succeeds");
     assert.ok(ran.lastSessionId, "the run is attached to the session it created");
     assert.equal(ran.lastRunAt !== undefined, true);
@@ -80,7 +87,13 @@ test("a failing schedule records the error instead of breaking the loop", async 
   try {
     // An unknown model makes session creation fail inside the dispatch.
     const bad = await store.createSchedule(input({ name: "Broken", model: { provider: "nope", modelId: "nope" } }));
-    const ran = await store.runScheduleNow(bad.id);
+    await store.runScheduleNow(bad.id);
+    await until(
+      () => store.scheduleList().find((s) => s.id === bad.id)?.lastOutcome === "failed",
+      5000,
+      "the broken run records its failure",
+    );
+    const ran = store.scheduleList().find((s) => s.id === bad.id)!;
     assert.equal(ran.lastOutcome, "failed");
     assert.ok(ran.lastError, "the reason is recorded for the UI");
     assert.equal(store.list().length, 0, "no session was left behind");

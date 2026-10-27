@@ -103,9 +103,12 @@ test("2.1 running a schedule while a run is in flight answers 409 busy, never a 
     assert.equal(creates, 1, "the loop did not double-fire either");
 
     release();
-    const ran = await first;
-    assert.equal(ran.lastOutcome, "ok", "the released run completes normally");
-    assert.equal(ran.running, false);
+    // R11 2.3: run-now returns as soon as the run is ARMED; the outcome lands
+    // in the record afterwards — wait for it there.
+    await until(() => store.scheduleList()[0]?.lastOutcome === "ok", 5000, "the released run completes");
+    const view = store.scheduleList()[0]!;
+    assert.equal(view.lastOutcome, "ok", "the released run completes normally");
+    assert.equal(view.running, false);
   } finally {
     stopKeepAlive();
     await store.close();
@@ -223,20 +226,32 @@ test("2.3 the recorded outcome comes from the turn: unanswered fails, unfinished
           : realSettled(...args);
 
     const a = await store.createSchedule(input({ name: "Unanswered" }));
-    const ranA = await store.runScheduleNow(a.id);
+    // R11 2.3: run-now arms the run; outcomes land in the record afterwards.
+    const untilOutcome = async (id: string, outcome: string) => {
+      await until(
+        () => store.scheduleList().find((v) => v.id === id)?.lastOutcome === outcome,
+        5000,
+        `${id} → ${outcome}`,
+      );
+      return store.scheduleList().find((v) => v.id === id)!;
+    };
+    await store.runScheduleNow(a.id);
+    const ranA = await untilOutcome(a.id, "failed");
     assert.equal(ranA.lastOutcome, "failed", "an unanswered turn is never a green ok");
     assert.match(ranA.lastError ?? "", /without an answer.*provider outage/);
 
     mode = "pending";
     const b = await store.createSchedule(input({ name: "Unfinished" }));
-    const ranB = await store.runScheduleNow(b.id);
+    await store.runScheduleNow(b.id);
+    const ranB = await untilOutcome(b.id, "timeout");
     assert.equal(ranB.lastOutcome, "timeout", "an unfinished turn records the explicit intermediate state");
     assert.match(ranB.lastError ?? "", /did not finish within 1s/);
     assert.ok(ranB.lastSessionId, "the turn's session stays linked while the outcome is pending");
 
     mode = "real";
     const c = await store.createSchedule(input({ name: "Settled" }));
-    const ranC = await store.runScheduleNow(c.id);
+    await store.runScheduleNow(c.id);
+    const ranC = await untilOutcome(c.id, "ok");
     assert.equal(ranC.lastOutcome, "ok", "only the real settle path records ok");
     assert.equal(ranC.lastError, undefined);
 
@@ -339,9 +354,13 @@ test("pre-R8 registries (ok/failed outcomes only) still boot, run and record", a
     assert.ok(view.nextRunAt !== null, "the legacy record still schedules");
 
     // And it flows through the new pipeline to a real post-turn outcome.
-    const ran = await store.runScheduleNow(view.id);
-    assert.equal(ran.lastOutcome, "ok");
-    assert.equal(ran.lastError, undefined, "a real run clears the stale failure reason");
+    await store.runScheduleNow(view.id);
+    await until(
+      () => store.scheduleList().find((v) => v.id === view.id)?.lastOutcome === "ok",
+      5000,
+      "the legacy schedule runs",
+    );
+    assert.equal(store.scheduleList().find((v) => v.id === view.id)?.lastError, undefined, "a real run clears the stale failure reason");
     const onDisk = await onDiskSchedules(t.options.dataDir);
     assert.equal(onDisk[0].lastOutcome, "ok");
   } finally {

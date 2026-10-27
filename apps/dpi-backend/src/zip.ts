@@ -13,13 +13,20 @@
  * whole bundle (raw texts + deflate + base64 ≈ 2-3× transcript size, the R5
  * audit's scale cliff) — `streamSessionBundle` composes the same entries from
  * the store's public APIs, deflates each one through a pipe while writing a
- * temp file under `os.tmpdir()`, and the route pipes that file to the HTTP
- * response before unlinking it. Entries keep today's paths/payloads; the only
- * layout difference is the streaming form's data descriptor (spec bit 3) so
- * entry sizes can be written after the deflated body without buffering it.
+ * temp file, and the route pipes that file to the HTTP response before
+ * unlinking it. Entries keep today's paths/payloads; the only layout
+ * difference is the streaming form's data descriptor (spec bit 3) so entry
+ * sizes can be written after the deflated body without buffering it.
+ *
+ * R11 1.1: the temp file lives BESIDE THE DATA DIR (same volume as the store,
+ * DPI_EXPORT_TMPDIR overrides), not `os.tmpdir()` — a tmpfs-backed /tmp is
+ * RAM, and the R5 cliff would return through the back door (or ENOSPC at
+ * tmpfs size while the real disk sits empty). "Streaming lifted the RAM
+ * cliff" is volume-dependent: the deflate WINDOW is always RAM-bounded, the
+ * spill file is disk-bounded only where the data dir lives on real disk.
  */
 import { randomUUID } from "node:crypto";
-import { open, rm } from "node:fs/promises";
+import { open, rm, stat } from "node:fs/promises";
 import { tmpdir, hostname, platform } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -218,10 +225,20 @@ const FLAG_DESCRIPTOR = 0x0008;
 const DATA_DESCRIPTOR_SIG = 0x08074b50;
 
 /**
- * A temp file under the OS temp dir (never a hardcoded path — Windows-safe),
- * written 0600 like every other transcript-bearing file on the device.
+ * A temp file (never a hardcoded path — Windows-safe), written 0600 like
+ * every other transcript-bearing file on the device. R11 1.1: the SPILL
+ * volume is the data dir (real disk, same filesystem the store already
+ * writes), `DPI_EXPORT_TMPDIR` overrides, `os.tmpdir()` is the last resort —
+ * tmpfs-backed /tmp is RAM and would silently reintroduce the R5 cliff.
  */
-const tempZipPath = () => join(tmpdir(), `dpi-export-${process.pid}-${randomUUID()}.zip`);
+const tempZipPath = (baseDir: string) => join(baseDir, `.dpi-export-${process.pid}-${randomUUID()}.zip`);
+
+/** Where the export spill file goes: explicit operator override → the store's
+ *  own data dir (R11 1.1) → the OS temp dir. Dot-prefixed so a casual `ls`
+ * of the data dir does not read as a session artifact. */
+export function exportTempDir(dataDir: string): string {
+  return process.env.DPI_EXPORT_TMPDIR || dataDir || tmpdir();
+}
 
 /**
  * The streaming half of the zip writer. Entries are deflated through a pipe and
@@ -252,8 +269,8 @@ class ZipStreamWriter {
   }
 
   /** Create the temp file exclusively, so two exports never share one archive. */
-  static async create(): Promise<ZipStreamWriter> {
-    const path = tempZipPath();
+  static async create(baseDir: string): Promise<ZipStreamWriter> {
+    const path = tempZipPath(baseDir);
     const handle = await open(path, "wx", 0o600);
     return new ZipStreamWriter(path, handle);
   }
@@ -416,7 +433,38 @@ export async function streamSessionBundle(
   opts: { ceilingBytes?: number } = {},
 ): Promise<StreamedBundle> {
   const ceilingBytes = opts.ceilingBytes ?? EXPORT_TOTAL_LIMIT_BYTES;
-  const writer = await ZipStreamWriter.create();
+  // R11 1.2: refuse MONSTROUS sessions BEFORE the first stringify. The store db
+  // holds every entry the bundle re-serializes, so a db over the ceiling can
+  // only refuse later — after a ~2-4× transient (entries clone + pretty JSON)
+  // that OOMs instead of answering. A cheap stat converts heap death into the
+  // polite, remedy-naming refusal. (A db under the ceiling can still overflow
+  // mid-write — json+md ≈ 2× content — and the streaming `add()` guard catches
+  // that gracefully, as it always has.)
+  const dbBytes = await stat(row.dbPath).then(
+    (s) => s.size,
+    () => 0,
+  );
+  if (dbBytes > ceilingBytes) {
+    throw invalid(
+      `Export refused: this session's store is ${mb(dbBytes)} of data, over the ${mb(ceilingBytes)} export ceiling. ` +
+        `Compact the session first (archive old agents), or export it directly from the device`,
+    );
+  }
+  const tempDir = exportTempDir(store.options.dataDir);
+  let writer: ZipStreamWriter;
+  try {
+    writer = await ZipStreamWriter.create(tempDir);
+  } catch (e) {
+    // R11 1.4: disk-full surfaces as a typed invalid fault naming the remedy
+    // (which volume, which knob), not a raw ENOSPC string on a 500.
+    if ((e as NodeJS.ErrnoException).code === "ENOSPC") {
+      throw invalid(
+        `disk full while creating the export temp file under ${tempDir} — free space on that volume ` +
+          `(or point DPI_EXPORT_TMPDIR at one with room) and retry`,
+      );
+    }
+    throw e;
+  }
   try {
     for await (const entry of sessionBundleEntries(store, row)) await writer.add(entry, ceilingBytes);
     const bytes = await writer.finish();
@@ -430,6 +478,13 @@ export async function streamSessionBundle(
     };
   } catch (cause) {
     await writer.dispose();
+    if ((cause as NodeJS.ErrnoException).code === "ENOSPC") {
+      // R11 1.4: mid-write disk-full gets the same typed refusal as create-time.
+      throw invalid(
+        `disk full while writing the export under ${tempDir} — free space on that volume ` +
+          `(or point DPI_EXPORT_TMPDIR at one with room) and retry`,
+      );
+    }
     throw cause;
   }
 }

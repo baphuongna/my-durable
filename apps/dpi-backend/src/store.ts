@@ -2605,11 +2605,23 @@ export class Store {
    *  Throws ApiFault("busy") (HTTP 409, "already running") when the schedule
    *  has a run in flight: the guard lives in the shared dispatch entry point
    *  (R8 2.1), so a double-clicked Run button gets a typed fault instead of a
-   *  second concurrent run with duplicated side effects. */
+   *  second concurrent run with duplicated side effects.
+   *
+   *  R11 2.3: returns AS SOON AS the run is armed, not when the turn finishes —
+   *  a slow turn used to hold the HTTP request (and the hub tunnel) hostage
+   *  for up to the full 60 s dispatch deadline + 120 s settle cap; browsers
+   *  and proxies time out long before that. No awaits sit between the busy
+   *  pre-check and the dispatch (whose guard-add also runs synchronously), so
+   *  two Run clicks in one turn cannot both pass. The outcome lands in the
+   *  record (scheduleList/view) and the schedule.ok/failed events, exactly as
+   *  the timer path's outcomes always have. The route answers 202. */
   async runScheduleNow(id: string): Promise<ScheduleView> {
     const record = this.schedules.get(id);
     if (!record) throw notFound(`no schedule ${id}`);
-    await this.dispatchSchedule(record);
+    if (this.scheduleInFlight.has(record.id)) {
+      throw new ApiFault("busy", `Schedule "${record.name}" is already running`);
+    }
+    void this.dispatchSchedule(record).catch(() => undefined);
     return this.scheduleView(this.schedules.get(id) ?? record);
   }
 
@@ -2641,6 +2653,10 @@ export class Store {
    *  bypassed the way the old timer-only check was (R8 2.1). */
   private scheduleInFlight = new Set<string>();
   private scheduleTimer?: ReturnType<typeof setTimeout>;
+
+  /** R11 2.2: schedules whose registry (schedules.json) is currently
+   *  unwritable — each is reported ONCE per degraded episode, not per tick. */
+  private scheduleRegistryDegraded = new Set<string>();
 
   /** R10 5.2: per-session salvage single-flight — concurrent openers of one
    *  corrupt session share ONE bounded attempt instead of racing scratch files. */
@@ -2718,14 +2734,42 @@ export class Store {
     this.scheduleInFlight.add(record.id);
     this.notify();
     try {
-      // Persist the intent before any await that can wedge. If this persist
-      // itself fails (disk full), the run still proceeds — it just loses the
-      // crash-safety guarantee, like every version before R8.
-      await deadline(
+      // R11 2.2: the intent marker is the at-most-once anchor. Without it,
+      // `due()` re-offers this slot on EVERY tick while the registry is
+      // unwritable (disk full, AV lock) and the prompt would re-fire at tick
+      // rate — up to 2,880 duplicate real runs/day, each with a notify event.
+      // So a failed intent persist now SKIPS the dispatch (the run has not
+      // started, so not running it is correct) and surfaces the degraded
+      // state ONCE per episode; the next successful write ends the episode.
+      // Outcome persists inside dispatchBounded stay best-effort.
+      const intentOk = await deadline(
         this.schedules.markRun(record.id, { outcome: "started" }),
         SCHEDULE_REGISTRY_IO_MS,
         "schedule registry write timed out (started)",
-      ).catch(() => undefined);
+      ).then(
+        () => true,
+        () => false,
+      );
+      if (!intentOk) {
+        if (!this.scheduleRegistryDegraded.has(record.id)) {
+          this.scheduleRegistryDegraded.add(record.id);
+          void this.notifyEvent({
+            kind: "schedule.failed",
+            title: `Schedule paused: ${record.name}`,
+            body: "its registry is unwritable (disk full or locked) — the run was skipped so it cannot re-fire every tick; it resumes when the registry is writable again",
+            data: { scheduleId: record.id },
+          });
+        }
+        return;
+      }
+      if (this.scheduleRegistryDegraded.delete(record.id)) {
+        void this.notifyEvent({
+          kind: "schedule.ok",
+          title: `Schedule resumed: ${record.name}`,
+          body: "registry writes recovered; scheduled runs continue",
+          data: { scheduleId: record.id },
+        });
+      }
       await this.dispatchBounded(record);
     } finally {
       this.scheduleInFlight.delete(record.id);

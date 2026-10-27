@@ -82,7 +82,13 @@ export async function archivedEntries(
   const entries: ArchivedEntry[] = [];
   const skipped: GcPlan["skipped"] = [];
   for (const entry of await readdir(archiveDir, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory()) {
+      // R11 4.2: files and SYMLINKED dirs at archive/ root used to be silently
+      // invisible (not in total, not in skipped, never explained). Now the plan
+      // says what it ignored and why — an honest plan is auditable.
+      skipped.push({ name: entry.name, reason: "not a directory (file or symlink) — left untouched" });
+      continue;
+    }
     const parsed = parseArchivedName(entry.name);
     if (!parsed) {
       skipped.push({ name: entry.name, reason: "not an archived-session directory" });

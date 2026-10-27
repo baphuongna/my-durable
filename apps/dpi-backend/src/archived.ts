@@ -39,8 +39,14 @@ const DB_NAME = "agent.sqlite";
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
 
-/** `<uuid>-<archivedAtMs>`: the only identity an old bundle has. 36 uuid chars + 13 ms digits. */
-export const BUNDLE_DIR_PATTERN = /^([0-9a-f-]{36})-(\d{13})$/;
+/** `<uuid>-<archivedAtMs>`: the only identity an old bundle has. R11 4.1:
+ *  CANONICAL uuid shape (8-4-4-4-12 lowercase hex) — the old `[0-9a-f-]{36}`
+ *  character class also matched 36 dashes, hex-without-dashes and other
+ *  lookalikes an operator might drop in archive/ from another tool; those are
+ *  now skipped+reported by BOTH gc and the browser (this ONE pattern is the
+ *  shared source — real bundles are canonical-uuid session ids by
+ *  construction, so nothing legitimate is lost). */
+export const BUNDLE_DIR_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(\d{13})$/;
 /** Full lowercase uuid, 8-4-4-4-12: a PREFIX of another uuid must never match a bundle. */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

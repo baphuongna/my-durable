@@ -50,6 +50,12 @@ export function v1(
   // (/V1/DEVICE used to answer 200 over loopback and 404 through the tunnel).
   // Every client (sdk/TUI/web) speaks lowercase — verified against sdk client.ts.
   const r = Router({ caseSensitive: true });
+  // R11 6.3 (doc): `create` auto-keys un-keyed mutations (sha256 of method+path+body,
+  // 24 h retention) — a deliberate second identical create (same body) within 24 h
+  //  REPLAYS the first response instead of creating again. That collapse is the
+  //  accepted retry-safety tradeoff; clients that need deliberate repeats must send
+  //  their own Idempotency-Key (which always wins over the auto-key), and replays
+  //  are visible in the Idempotent-Replay: true response header.
   const create = idempotent(store);
   // `dpi device stop`: graceful local shutdown (token-authed like every /v1
   // route). The response flushes BEFORE the daemon tears down so the caller
@@ -316,7 +322,10 @@ export function v1(
   r.post("/schedules", route(async (req, res) => res.status(201).json(await store.createSchedule(req.body ?? {}))));
   r.patch("/schedules/:id", route(async (req, res) => res.json(await store.updateSchedule(param(req, "id"), req.body ?? {}))));
   r.delete("/schedules/:id", route(async (req, res) => res.json(await store.removeSchedule(param(req, "id")))));
-  r.post("/schedules/:id/run", route(async (req, res) => res.json(await store.runScheduleNow(param(req, "id")))));
+  // R11 2.3: 202 Accepted — the run is ARMED, not finished; the turn is bounded
+  // by the dispatch deadlines (60 s submit + 120 s settle) and its outcome lands
+  // in the schedule record (GET /schedules) and the schedule.ok/failed events.
+  r.post("/schedules/:id/run", route(async (_req, res) => res.status(202).json(await store.runScheduleNow(param(_req, "id")))));
 
   // ---------------------------------------------------------- sessions
   r.get("/sessions", route(async (_req, res) => res.json((await store.tree()).sessions)));

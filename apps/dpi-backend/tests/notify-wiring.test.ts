@@ -5,7 +5,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { faux, tempStore } from "./helpers.js";
+import { faux, tempStore, until } from "./helpers.js";
 import { classifyProviderError } from "../src/store.js";
 import { NotifySinks } from "../src/notify-sinks.js";
 
@@ -81,6 +81,9 @@ test("a failed schedule emits schedule.failed to the sink", async () => {
       everyMinutes: 30,
     });
     await store.runScheduleNow(bad.id);
+    // R11 2.3: the run is armed, not finished — the failure event lands when
+    // the turn actually fails.
+    await until(() => delivered.some((d) => d.kind === "schedule.failed"), 5000, "the broken run fails");
     const kinds = delivered.map((d) => d.kind);
     assert.ok(kinds.includes("schedule.failed"), `expected schedule.failed, got ${kinds.join(",")}`);
     assert.match(delivered.find((d) => d.kind === "schedule.failed")!.title, /Broken/);
@@ -108,6 +111,7 @@ test("a successful schedule emits schedule.ok", async () => {
       everyMinutes: 30,
     });
     await store.runScheduleNow(ok.id);
+    await until(() => delivered.length === 1, 5000, "the healthy run's schedule.ok lands");
     assert.deepEqual(delivered, ["schedule.ok"]);
   } finally {
     await store.close();

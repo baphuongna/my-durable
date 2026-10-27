@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import { createServer } from "node:http";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, type SessionRow } from "../src/store.js";
@@ -145,10 +145,29 @@ test("the streaming ceiling refuses with the R7 style, size named, temp file cle
       (e: unknown) =>
         e instanceof ApiFault &&
         e.code === "invalid" &&
-        /Export refused/.test(e.message) &&
+        // R11 1.2: the db-size PRE-CHECK fires first (a real session's store is
+        // already over a 512-byte ceiling) — same "Export refused" family,
+        // size named, remedy named, as the streaming guard below.
+        /Export refused: this session's store is/.test(e.message) &&
+        /over the 0\.0 MiB export ceiling/.test(e.message) &&
+        /Compact the session first/.test(e.message),
+      "the pre-check refusal names the size and the remedy",
+    );
+    // The STREAMING guard still exists for dbs that fit the ceiling but whose
+    // rendered entries do not — exercise it with a stub row whose dbPath is
+    // tiny (the manifest alone busts a 512-byte ceiling).
+    const tiny = join(t.options.dataDir, "tiny.db");
+    await writeFile(tiny, "x");
+    const stubRow = { ...row, dbPath: tiny } as typeof row;
+    await assert.rejects(
+      () => streamSessionBundle(store, stubRow, { ceilingBytes: 512 }),
+      (e: unknown) =>
+        e instanceof ApiFault &&
+        e.code === "invalid" &&
+        /Export refused: transcripts are/.test(e.message) &&
         /over the 0\.0 MiB streaming ceiling/.test(e.message) &&
         /Compact the session first/.test(e.message),
-      "the refusal names the size and the remedy",
+      "the streaming refusal names the size and the remedy",
     );
     await assertNoNewExports(before, "the failed export left no temp file");
   } finally {
