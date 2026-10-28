@@ -9,13 +9,17 @@ import {
 } from "@earendil-works/pi-tui";
 import type { ToolCallView, TranscriptItem } from "../../dpi-sdk/src/transcript.ts";
 import { c, markdownTheme } from "./theme.ts";
+import { sanitizeTerminal } from "./sanitize.ts";
 
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /** Advanced by the app while a tool runs; running tool rows read it at render time. */
 export const spinner = { frame: 0 };
 const TAIL = 6;
 
-/** One styled line, cut to the width. */
+/** One styled line, cut to the width. A STYLED primitive (R14 cold review):
+ * inputs are usually pre-styled with the theme's own SGR, so this class must
+ * NOT strip escapes — callers sanitize the untrusted PAYLOAD before styling
+ * (same data-boundary rule as views.ts). */
 export class Line implements Component {
   constructor(public text: string) {}
   render(width: number) {
@@ -31,7 +35,9 @@ class Wrapped implements Component {
     private prefix: string,
     private style: (s: string) => string,
     private indent = "  ",
-  ) {}
+  ) {
+    this.text = sanitizeTerminal(text);
+  }
   render(width: number) {
     const inner = Math.max(1, width - 2);
     const lines = this.text.split("\n").flatMap((l) => (l ? wrapTextWithAnsi(l, inner) : [""]));
@@ -59,8 +65,11 @@ export class ToolRow implements Component {
     const s = this.call.status;
     const icon =
       s === "running" ? c.warn(SPIN[spinner.frame % SPIN.length]) : s === "done" ? c.ok("✓") : s === "error" ? c.err("✗") : c.muted("○");
-    const head = truncateToWidth(`${icon} ${c.bold(this.call.name)} ${c.muted(argsPreview(this.call))}`, width);
-    const body = (this.call.result ?? this.call.output ?? "").replace(/\s+$/, "");
+    const head = truncateToWidth(
+      `${icon} ${c.bold(sanitizeTerminal(this.call.name))} ${c.muted(sanitizeTerminal(argsPreview(this.call)))}`,
+      width,
+    );
+    const body = sanitizeTerminal(this.call.result ?? this.call.output ?? "").replace(/\s+$/, "");
     if (!body) return [head];
     const all = body.split("\n");
     const shown = this.expand ? all : all.slice(-TAIL);
@@ -93,22 +102,23 @@ class AssistantView extends Stack {
     const parts: Component[] = [new Line("")];
     item.blocks.forEach((block, i) => {
       if (block.type === "text") {
+        const safe = sanitizeTerminal(block.text);
         let md = this.markdown.get(i);
         if (!md) {
-          md = new Markdown(block.text, 0, 0, markdownTheme);
+          md = new Markdown(safe, 0, 0, markdownTheme);
           this.markdown.set(i, md);
-        } else md.setText(block.text);
+        } else md.setText(safe);
         parts.push(md);
       } else if (block.type === "thinking") {
         parts.push(
           expand
             ? new Wrapped(block.text, c.muted("∴ "), (s) => c.italic(c.muted(s)))
-            : new Line(c.italic(c.muted(`∴ ${block.text.replace(/\s+/g, " ")}`))),
+            : new Line(c.italic(c.muted(`∴ ${sanitizeTerminal(block.text).replace(/\s+/g, " ")}`))),
         );
       } else parts.push(new ToolRow(block.call, expand));
     });
     if (item.streaming && !item.blocks.length) parts.push(new Line(c.muted("…")));
-    if (item.error) parts.push(new Line(c.err(`! ${item.error}`)));
+    if (item.error) parts.push(new Line(c.err(`! ${sanitizeTerminal(item.error)}`)));
     this.parts = parts;
   }
 }
@@ -130,7 +140,7 @@ export function itemComponent(item: TranscriptItem, expand: boolean): Component 
     case "tool":
       return new ToolRow(item.call, expand);
     default:
-      return new Line(c.muted(`── ${item.text} `));
+      return new Line(c.muted(`── ${sanitizeTerminal(item.text)} `));
   }
 }
 

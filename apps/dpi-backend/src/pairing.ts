@@ -468,6 +468,29 @@ export class DevicePairing {
     // Offer v3: challenge the hub to prove it owns the pinned identity key.
     const hubNonce = kfp ? randomBytes(32).toString("base64url") : undefined;
 
+    // Synchronous slot reservation (audit run-1 HIGH, pairing TOCTOU): the busy
+    // gate and status() must hold from HERE — before the first await — not from
+    // the tail of completeChallenge, or a concurrent start() slips through the
+    // window between the check above and that assignment and hijacks the
+    // enrollment. completeChallenge upgrades the reservation in place (same
+    // operationId); any throw below clears it; cancel() in the window wins
+    // (completeChallenge refuses to resurrect a cancelled slot).
+    this.pending = {
+      operationId,
+      hubOrigin: origin,
+      code,
+      requestId,
+      deviceUid,
+      deviceName: this.deviceName,
+      keyFingerprint: keypair.fingerprint,
+      proof: { type: "pair.response", v: 1, enrollmentId: "", nonce: "", signature: "" },
+      hubId: "",
+      ...(kfp ? { kfp } : {}),
+      expiresAt: this.now() + 300_000,
+      startedAt: this.now(),
+      abort: new AbortController(),
+    };
+
     // Device-initiated enrollment (code-less): the hub mints the code and answers
     // with its challenge in ONE round trip, so the request carries the machine's
     // full identity — the shape the operator approves against.
@@ -482,18 +505,37 @@ export class DevicePairing {
       clientTime: this.now(),
       ...(hubNonce ? { hubNonce } : {}),
     };
-    if (!code) {
-      const ack = (await this.hubFetch(origin, "/api/pair/request", {
-        type: "pair.device-request",
+    try {
+      if (!code) {
+        const ack = (await this.hubFetch(origin, "/api/pair/request", {
+          type: "pair.device-request",
+          v: 1,
+          ...body,
+        })) as { code?: string; challenge?: unknown };
+        if (typeof ack.code !== "string" || !ack.challenge)
+          throw err("invalid", `Unexpected hub response: ${JSON.stringify(ack).slice(0, 200)}`);
+        code = ack.code;
+        return this.completeChallenge(
+          origin,
+          ack.challenge as Challenge,
+          code,
+          kfp,
+          hubNonce,
+          operationId,
+          requestId,
+          deviceUid,
+          keypair,
+        );
+      }
+      const challenge = (await this.hubFetch(origin, "/api/pair/start", {
+        type: "pair.request",
         v: 1,
         ...body,
-      })) as { code?: string; challenge?: unknown };
-      if (typeof ack.code !== "string" || !ack.challenge)
-        throw err("invalid", `Unexpected hub response: ${JSON.stringify(ack).slice(0, 200)}`);
-      code = ack.code;
+        code,
+      })) as Challenge;
       return this.completeChallenge(
         origin,
-        ack.challenge as Challenge,
+        challenge,
         code,
         kfp,
         hubNonce,
@@ -502,24 +544,15 @@ export class DevicePairing {
         deviceUid,
         keypair,
       );
+    } catch (e) {
+      // The reservation dies with this attempt unless cancel()/a rival already
+      // replaced it (operationId mismatch → leave the survivor alone).
+      if (this.pending?.operationId === operationId) {
+        this.pending.abort.abort();
+        this.pending = undefined;
+      }
+      throw e;
     }
-    const challenge = (await this.hubFetch(origin, "/api/pair/start", {
-      type: "pair.request",
-      v: 1,
-      ...body,
-      code,
-    })) as Challenge;
-    return this.completeChallenge(
-      origin,
-      challenge,
-      code,
-      kfp,
-      hubNonce,
-      operationId,
-      requestId,
-      deviceUid,
-      keypair,
-    );
   }
 
   /**
@@ -597,6 +630,13 @@ export class DevicePairing {
       startedAt: this.now(),
       abort: new AbortController(),
     };
+    // cancel() may have aborted the reservation while the hub challenge was in
+    // flight — cancel promised to stop the LOCAL operation, so never resurrect
+    // the slot: abort this attempt and report the (no longer pairing) state.
+    if (this.pending?.operationId !== operationId) {
+      pending.abort.abort();
+      return this.status();
+    }
     this.pending = pending;
     void this.pollLoop(pending).catch(() => undefined);
     return this.status();

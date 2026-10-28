@@ -117,6 +117,9 @@ interface CodeEntry {
   expiresAt: number;
   cancelled: boolean;
   enrollmentId?: string;
+  /** Audit run-1: minted by the UNAUTHENTICATED device-initiated flow — counts
+   * against the deviceMintedCodes sub-cap, not the operator's reserve. */
+  deviceMinted?: true;
 }
 
 /** One live pairing request as the admin list renders it (no secrets). */
@@ -199,6 +202,12 @@ export class PairingService {
         maxKeys: IP_BUCKET_MAX_KEYS,
       },
       this.now,
+      // Audit run-1: only counters AT/ABOVE the enforcement threshold are
+      // protected from eviction when the table is full; a sub-threshold entry
+      // blocks nobody, so a fresh key is admitted instead of inheriting a 429
+      // created by other keys' failures (a zero-failure source must never be
+      // blocked by table pressure).
+      PAIR_RATE_LIMITS.verifyFails.perWindow,
     );
   }
 
@@ -279,6 +288,7 @@ export class PairingService {
       code,
       expiresAt: now + CODE_TTL_MS,
       cancelled: false,
+      ...(actor === "device" ? { deviceMinted: true as const } : {}),
     };
     this.deps.audit.append({
       actor,
@@ -327,6 +337,11 @@ export class PairingService {
       return this.fail(429, "rate_limited", "Too many pairing failures; slow down", 60_000);
     const taken = this.createLimiter.take(ip);
     if (!taken.ok) return this.rateLimited(taken, "Too many pairing requests; slow down");
+    // Audit run-1: the UNAUTH mint draws from its own sub-cap — the operator's
+    // reserve (codes − deviceMintedCodes slots) can never be exhausted by
+    // anonymous visitors, so admin minting stays available under attack.
+    if (this.deviceMintedCount() >= PAIR_RAM_CAPS.deviceMintedCodes)
+      return this.fail(429, "rate_limited", "Too many device-initiated requests; retry later", 60_000);
     if (this.codes.size >= PAIR_RAM_CAPS.codes)
       return this.fail(429, "rate_limited", "Pairing capacity reached; retry later", 60_000);
     const request = body as { type?: unknown } | null;
@@ -950,7 +965,12 @@ export class PairingService {
     const code = this.codes.get(codeId);
     if (!code) return this.fail(404, "code_invalid", "Unknown code");
     const enrollment = code.enrollmentId ? this.enrollments.get(code.enrollmentId) : undefined;
-    if (enrollment?.issued)
+    // R14 cold review: an IN-FLIGHT issuance is already committing a credential
+    // (registry row + tunnel token) — cancelling mid-flight would delete the
+    // bookkeeping while the device still receives a live pair.token, stranding
+    // a ghost credential no sweep can ever see. Treat in-flight as issued:
+    // the operator revokes the resulting credential instead.
+    if (enrollment?.issued || enrollment?.issuing)
       return this.fail(409, "already_issued", "Credential already issued; revoke it instead");
     // Audit row first (as for approve): a cancel that cannot be audited does not take effect.
     this.deps.audit.append({
@@ -966,7 +986,15 @@ export class PairingService {
       enrollment.invalidated = true;
     }
     const s = this.status(codeId);
-    return s.ok ? this.ok(s.value) : s;
+    if (!s.ok) return s;
+    // Audit run-1 (capacity reclaim): an UNISSUED code holds a RAM slot for
+    // nothing — cancel now frees it immediately instead of waiting out
+    // TTL+grace+sweep, so the operator's own remediation actually restores
+    // minting capacity (nothing was issued; no receipt can exist).
+    this.byCode.delete(code.code);
+    this.codes.delete(codeId);
+    if (enrollment) this.enrollments.delete(code.enrollmentId!);
+    return s;
   }
 
   /** GET /api/pair/codes/:codeId (admin) — phase metadata, never a token. */
@@ -1027,6 +1055,14 @@ export class PairingService {
     return checkPairingDto(PairCodeStateSchema, state)
       ? { ok: true, value: state }
       : this.fail(500, "internal", "status serialization failed");
+  }
+
+  /** Audit run-1: live device-minted codes (derived from the map — it cannot
+   * drift from mint/delete/sweep/cancel paths). */
+  private deviceMintedCount(): number {
+    let n = 0;
+    for (const entry of this.codes.values()) if (entry.deviceMinted) n += 1;
+    return n;
   }
 
   /** Drop expired entries (hub housekeeping). F15: past expiry+grace the

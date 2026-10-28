@@ -49,6 +49,7 @@ import { HubMux, type MuxState } from "./hub-mux.ts";
 import { FOLLOW_TAIL, scrollBy, viewportTop, type ScrollState } from "./scroll.ts";
 import { wrapByColumn } from "./wrap.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
+import { sanitizeTerminal } from "./sanitize.ts";
 
 export interface DeviceRef {
   id: string;
@@ -1021,7 +1022,9 @@ export class App {
   }
 
   notify(message: string, error = false) {
-    this.toast = (error ? "✗ " : "") + message;
+    // Audit run-1: toast text often carries device/hub error messages —
+    // strip control sequences before the toast renders to the terminal.
+    this.toast = (error ? "✗ " : "") + sanitizeTerminal(message);
     this.toastTicks = 50;
     this.requestRender();
   }
@@ -1050,10 +1053,13 @@ export class App {
     if (ref) {
       const adhoc = this.device.id === "adhoc";
       const target = adhoc
-        ? `--url ${this.device.url} --token <token> -s ${shellWord(ref.session)} -a ${shellWord(ref.agent)}`
-        : shellWord(`${this.device.id}:${ref.session}:${ref.agent}`);
+        ? `--url ${this.device.url} --token <token> -s ${shellWord(sanitizeTerminal(ref.session))} -a ${shellWord(sanitizeTerminal(ref.agent))}`
+        : shellWord(`${sanitizeTerminal(this.device.id)}:${sanitizeTerminal(ref.session)}:${sanitizeTerminal(ref.agent)}`);
+      // Audit run-1: the device name/id is hub-supplied — never write it raw to stdout.
       process.stdout.write(
-        `\n${c.muted("The agent keeps running on")} ${adhoc ? this.device.name : this.device.id}${c.muted(". Reattach:")}\n  just tui attach ${target}\n\n`,
+        `\n${c.muted("The agent keeps running on")} ${sanitizeTerminal(
+          adhoc ? this.device.name : this.device.id,
+        )}${c.muted(". Reattach:")}\n  just tui attach ${target}\n\n`,
       );
     }
     process.exit(0);

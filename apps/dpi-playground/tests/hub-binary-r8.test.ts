@@ -162,6 +162,38 @@ test("proxy: binary passthrough is byte-exact, keeps device type+filename, stays
         res.headers.get("content-disposition"),
         'attachment; filename="r8-live.bundle.zip"',
       );
+      // Audit run-1 (GA-01 saved-file residual): even a ZIP answer's LABEL is
+      // hub-authored — a hostile device filename is stripped and re-issued with
+      // a forced .zip suffix, so the operator's download name is never chosen
+      // by the device. (The honest *.bundle.zip contract is lossless here.)
+      const rebrand = await stubDevice(
+        { "content-type": "application/zip", "content-disposition": 'attachment; filename="session-notes.bundle.html"' },
+        ZIP,
+      );
+      try {
+        const registryR = { get: () => lanRow(rebrand.url) } as never;
+        const appR = express();
+        appR.use("/api/devices/:id/v1", proxy(registryR, monitor));
+        const lr = appR.listen(0, "127.0.0.1");
+        await new Promise<void>((done) => lr.once("listening", done));
+        try {
+          const resR = await fetch(
+            `http://127.0.0.1:${(lr.address() as { port: number }).port}/api/devices/dev-a/v1/sessions/x/export`,
+          );
+          assert.equal(resR.status, 200);
+          assert.equal(resR.headers.get("content-type"), "application/zip");
+          const dispR = resR.headers.get("content-disposition") ?? "";
+          assert.match(dispR, /\.zip"$/, "the download label always ends .zip");
+          assert.doesNotMatch(dispR, /\.html/, "the device's html rebrand is gone");
+          const bytesR = Buffer.from(await resR.arrayBuffer());
+          assert.ok(bytesR.equals(ZIP), "bytes stay byte-exact through the relabel");
+        } finally {
+          lr.closeAllConnections?.();
+          await new Promise<void>((done) => lr.close(() => done()));
+        }
+      } finally {
+        await rebrand.close();
+      }
       assert.equal(res.headers.get("x-content-type-options"), "nosniff");
       const bytes = Buffer.from(await res.arrayBuffer());
       assert.ok(bytes.equals(ZIP), "proxy serves the zip byte-exact");

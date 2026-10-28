@@ -350,14 +350,18 @@ test("P-12: cancel before issue invalidates everything; after issue → 409 alre
     await fx.service.verify(proof(fx, e), "10.0.0.2");
     const c = fx.service.cancel(e.codeId);
     assert.ok(c.ok && c.value.phase === "cancelled");
+    // Audit run-1 (capacity reclaim): cancel of an UNISSUED code now frees the
+    // slot immediately — the code AND enrollment leave RAM, so later calls see
+    // the STRONGER gone-forever contract (enrollment_lost / code_invalid), not
+    // the old cancelled-but-lingering states.
     const afterCancel = await fx.service.verify(proof(fx, e), "10.0.0.2");
-    assert.ok(!afterCancel.ok && afterCancel.error.code === "enrollment_cancelled");
+    assert.ok(!afterCancel.ok && afterCancel.error.code === "enrollment_lost");
     const approveAfter = fx.service.approve(e.codeId, {
       enrollmentId: e.challenge.enrollmentId,
       deviceUid: uuid(),
       keyFingerprint: fingerprintOf(e.kp),
     });
-    assert.ok(!approveAfter.ok && approveAfter.error.status === 410);
+    assert.ok(!approveAfter.ok && approveAfter.error.status === 404);
 
     // after issue → already_issued
     const e2 = await enroll(fx);

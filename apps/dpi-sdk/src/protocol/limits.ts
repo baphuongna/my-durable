@@ -120,8 +120,11 @@ export const PAIR_RATE_LIMITS = {
   verifyTotal: { perMinute: 300, capacity: 300 },
 } as const;
 
-/** RAM caps for pending pairing state. */
-export const PAIR_RAM_CAPS = { codes: 1_000, enrollments: 1_000 } as const;
+/** RAM caps for pending pairing state. `deviceMintedCodes` is the sub-cap for
+ * UNAUTHENTICATED device-initiated mints (audit run-1): it keeps ≥ codes −
+ * deviceMintedCodes slots reserved for the operator's admin mints, so an
+ * anonymous visitor can never 429-lock the operator's own pairing flow. */
+export const PAIR_RAM_CAPS = { codes: 1_000, enrollments: 1_000, deviceMintedCodes: 100 } as const;
 /** Pairing endpoint body cap. 16 KiB. */
 export const PAIRING_BODY_MAX_BYTES = 16_384;
 /** HTTP pairing operation timeout / retry budget. */

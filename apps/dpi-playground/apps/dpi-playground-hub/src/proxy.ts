@@ -99,19 +99,31 @@ export function proxy(
         res.type("application/json").send(body);
       else {
         // R8 binary passthrough: base64-flagged device payloads are decoded byte-exact for
-        // EVERY type; the LABEL is controlled by the hub. Only application/zip (the export
-        // contract) keeps its type + the device's sanitized download filename — every other
-        // non-JSON type stays an inert octet-stream attachment (Gate A GA-01), so a hostile
-        // device cannot rebrand its bytes as html/svg/js at the ADMIN origin.
+        // EVERY type; the LABEL is authored by the hub. Only application/zip (the export
+        // contract) keeps its type — every other non-JSON type stays an inert octet-stream
+        // attachment (Gate A GA-01), and since audit run-1 the zip LABEL is hub-authored
+        // too: the device's filename is parsed for convenience, stripped of any extension
+        // and charset risk, and ALWAYS re-issued with a forced .zip suffix — a hostile
+        // device may not choose the operator's download name (the saved-file rebrand
+        // residual of GA-01; the honest device contract is already *.bundle.zip).
         const payload =
           upstream.bodyEncoding === "base64"
             ? Buffer.from(String(upstream.body ?? ""), "base64")
             : Buffer.from(body, "utf8");
         const isZip = mediaType(contentType) === "application/zip";
-        const disposition =
+        const m =
           isZip && typeof upstream.contentDisposition === "string"
-            ? upstream.contentDisposition
-            : 'attachment; filename="device-response.bin"';
+            ? /filename\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;\s]+))/i.exec(upstream.contentDisposition)
+            : null;
+        const stem =
+          ((m?.[1]?.replace(/\\(.)/g, "$1") ?? m?.[2] ?? "")
+            .replace(/\.[^./\\]*$/, "")
+            .replace(/[^A-Za-z0-9._-]/g, "_")
+            .replace(/^\.+/, "")
+            .slice(0, 80)) || "device-response";
+        const disposition = isZip
+          ? `attachment; filename="${stem}.zip"`
+          : 'attachment; filename="device-response.bin"';
         res.type(isZip ? contentType : "application/octet-stream")
           .set("Content-Disposition", disposition)
           .send(payload);

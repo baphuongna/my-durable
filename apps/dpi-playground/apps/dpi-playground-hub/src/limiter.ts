@@ -109,6 +109,12 @@ export class SlidingWindows {
   constructor(
     private readonly policy: WindowPolicy,
     private readonly now: () => number = Date.now,
+    /** Audit run-1: per-key live count at/above this floor ENFORCES a block for
+     * the caller (GA-06 — never forgotten while anything weaker could go). A
+     * sub-threshold entry blocks nobody, so when the table is full it is
+     * evicted to admit a fresh key instead of refusing it. 0 = every entry is
+     * evictable. */
+    private readonly enforcingFloor = 0,
   ) {}
 
   size(): number {
@@ -130,6 +136,7 @@ export class SlidingWindows {
     const list = known ? this.prune(key, known, t) : [];
     if (!this.map.has(key)) {
       if (this.map.size >= this.policy.maxKeys) this.reclaim(t);
+      if (this.map.size >= this.policy.maxKeys) this.evictNonEnforcing(t);
       if (this.map.size >= this.policy.maxKeys) return false;
     }
     // Past the cap the oldest entries are kept: the key stays over any sane threshold until they expire.
@@ -142,6 +149,7 @@ export class SlidingWindows {
   saturatedFor(key: string): boolean {
     if (this.map.has(key) || this.map.size < this.policy.maxKeys) return false;
     this.reclaim(this.now());
+    if (this.map.size >= this.policy.maxKeys) this.evictNonEnforcing(this.now());
     return this.map.size >= this.policy.maxKeys;
   }
 
@@ -161,5 +169,19 @@ export class SlidingWindows {
     if (t - this.lastReclaim < RECLAIM_MIN_INTERVAL_MS) return;
     this.lastReclaim = t;
     for (const [key, list] of this.map) this.prune(key, list, t);
+  }
+
+  /** Audit run-1: make room for a fresh key by dropping the OLDEST-inserted
+   * entry whose live count is below the enforcing floor (Map iterates in
+   * insertion order). GA-06 intact: an enforced counter is only ever evicted
+   * when nothing weaker remains. */
+  private evictNonEnforcing(t: number): void {
+    for (const [key, list] of this.map) {
+      const live = list.filter((ts) => t - ts < this.policy.windowMs);
+      if (live.length < this.enforcingFloor) {
+        this.map.delete(key);
+        return;
+      }
+    }
   }
 }

@@ -54,6 +54,7 @@ const hreq = async (
               headers: {
                 hsts: res.headers["strict-transport-security"],
                 "set-cookie": res.headers["set-cookie"]?.[0],
+                "www-authenticate": res.headers["www-authenticate"],
               },
             }),
           );
@@ -109,6 +110,40 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
       body: "{}",
     });
     assert.notEqual(verify.status, 401, "pair/verify must be exempt");
+
+    // Audit run-1 (exemption drift): device-initiated enrollment + the public
+    // share page are code/token-scoped BY DESIGN — their principals hold no
+    // Basic credential, so the edge must exempt them too (not 401 at Caddy).
+    const pairReq = await hreq(`${base}/api/pair/request`, {
+      agent,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.notEqual(pairReq.status, 401, "pair/request must be exempt (device-initiated flow)");
+    const share = await hreq(`${base}/share/ab12cd34ef56gh78ij`, { agent });
+    assert.notEqual(share.status, 401, "share links must be exempt (token is the boundary)");
+
+    // Audit run-1 (method-gap fallthrough): a WRONG METHOD on an exempt path
+    // matches no exemption handle and must land in the catch-all (401 Basic) —
+    // never Caddy's anonymous empty-200 default.
+    for (const [path, method] of [
+      ["/api/pair/start", "GET"],
+      ["/api/pair/verify", "GET"],
+      ["/healthz", "POST"],
+      ["/healthz", "HEAD"],
+      ["/api/tunnel", "POST"],
+      ["/share/ab12cd34ef56gh78ij", "POST"],
+      ["/api/pair/request", "GET"],
+    ] as const) {
+      const r = await hreq(`${base}${path}`, { agent, method });
+      assert.equal(
+        r.status,
+        401,
+        `${method} ${path} (wrong method on an exempt path) must get the Basic challenge`,
+      );
+      assert.match(r.headers["www-authenticate"] ?? "", /Basic/, `${method} ${path} challenge header`);
+    }
 
     // Admin matrix: no auth → 401 from Caddy (hub never consulted)
     for (const path of [

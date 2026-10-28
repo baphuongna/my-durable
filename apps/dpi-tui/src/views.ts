@@ -7,6 +7,7 @@ import type { SessionSummary } from "../../dpi-sdk/src/api.ts";
 import type { GitStatus } from "../../dpi-sdk/src/client.ts";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
 import { c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
+import { sanitizeTerminal } from "./sanitize.ts";
 
 export type View = "herd" | "network" | "agent" | "log";
 
@@ -40,6 +41,9 @@ export class DynamicBlock implements Component {
   invalidate() {}
 }
 const padTo = (s: string, w: number) => s + rep(" ", Math.max(0, w - visibleWidth(s)));
+// NOTE (audit run-1): untrusted row DATA is sanitized at the data boundary
+// (herdRows/networkRows/… builders), NOT here — styled composites pass through
+// fit() and would lose the theme's own SGR colors to the strip.
 const fit = (s: string, w: number) =>
   padTo(truncateToWidth(s, Math.max(0, w), "…"), Math.max(0, w));
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
@@ -104,9 +108,14 @@ export function herdRows(sessions: SessionSummary[], filter = "", branchOf?: (cw
     groups.set(key, list);
   }
   for (const [dir, list] of groups) {
-    out.push({ kind: "group", label: dir });
+    out.push({ kind: "group", label: sanitizeTerminal(dir) });
     for (const s of list)
-      out.push({ kind: "session", label: s.name, sessionId: s.id, branch: branchOf?.(s.cwd) });
+      out.push({
+        kind: "session",
+        label: sanitizeTerminal(s.name),
+        sessionId: s.id,
+        branch: branchOf ? sanitizeTerminal(branchOf(s.cwd) ?? "") || undefined : undefined,
+      });
   }
   return out;
 }
@@ -138,7 +147,7 @@ export function renderHerd(
   const cursorRow = rows[opts.cursor ?? 0];
   for (const row of rows) {
     if (row.kind === "group") {
-      const group = sessions.filter((s) => basename(s.cwd) === row.label);
+      const group = sessions.filter((s) => sanitizeTerminal(basename(s.cwd)) === row.label);
       const busy = group.filter((s) => s.busy).length;
       const header = `${c.muted("~/")}${c.text(row.label)}${c.muted("/")}  ${c.muted(`· ${group.length} agent${group.length === 1 ? "" : "s"} · ${busy} busy`)}`;
       // The cursor is drawn on headers too: a keypress must always be visible,
@@ -157,8 +166,8 @@ export function renderHerd(
     const agents = `${s.agents.length}${forks ? `⑂${forks}` : ""}${subs ? `↳${subs}` : ""}`;
     const branch = row.branch ? ` ${c.muted(`⎇ ${fit(row.branch, 10)}`)}` : "";
     let line =
-      `${marker}${fit(selected ? c.bold(s.name) : s.name, cols.name - visibleWidth(branch))}${branch}  ${fit(state, cols.state)}` +
-      (showModel ? `  ${fit(c.muted(basename(s.model) || s.model), cols.model)}` : "") +
+      `${marker}${fit(selected ? c.bold(row.label) : row.label, cols.name - visibleWidth(branch))}${branch}  ${fit(state, cols.state)}` +
+      (showModel ? `  ${fit(c.muted(sanitizeTerminal(basename(s.model) || s.model)), cols.model)}` : "") +
       `  ${fit(c.muted(agents), cols.agents)}`;
     if (showAge) line += `  ${fit(c.muted(ageOf(s.createdAt)), cols.age)}`;
     lines.push(atCursor && !selected ? c.inverse(fit(line, w)) : fit(line, w));
@@ -199,12 +208,12 @@ export function networkRows(devices: DeviceRow[], currentDeviceId: string, filte
       continue;
     out.push({
       kind: "device",
-      label: d.name || d.id,
+      label: sanitizeTerminal(d.name || d.id),
       deviceId: d.id,
       current: d.id === currentDeviceId,
     });
     for (const s of d.lastTree?.sessions ?? [])
-      out.push({ kind: "session", label: s.name, deviceId: d.id, sessionId: s.id });
+      out.push({ kind: "session", label: sanitizeTerminal(s.name), deviceId: d.id, sessionId: s.id });
   }
   return out;
 }
@@ -274,7 +283,7 @@ export function renderStatusbar(
       : ["j/k move", "↵ open", "1-4 views", "⇥ tabs", "esc agent"];
   // Catalog miss degrades to "?" (R5 finding 5): "—" read as "no usage yet",
   // when it actually means the window is unknown — a different problem.
-  const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("?") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(opts.device, 18))}`;
+  const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("?") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(sanitizeTerminal(opts.device), 18))}`;
   const left = `${chip} ${keys.map((k) => c.muted(k)).join(c.muted(" • "))}`;
   const gap = Math.max(1, w - visibleWidth(left) - visibleWidth(right));
   return c.inverse(padTo(fit(`${left}${rep(" ", gap)}${right}`, w), w));
@@ -325,7 +334,7 @@ export function renderHerdPanel(
   if (!s) {
     const lines = [
       c.muted(" OVERVIEW"),
-      ` ${c.bold(device ?? "device")}`,
+      ` ${c.bold(sanitizeTerminal(device ?? "device"))}`,
       ` ${c.muted("no session selected")}`,
       "",
       ` ${c.muted("n")}        ${c.text("new session")}`,
@@ -335,18 +344,21 @@ export function renderHerdPanel(
     ];
     return lines.slice(0, h).map((l) => fit(l, w));
   }
+  // R14 cold review: the panel renders the SAME device-sourced fields as the
+  // table — name, cwd basename, model, agent names — so it sanitizes them at
+  // the data boundary exactly like herdRows/renderHerd do.
   const agents = s.agents.map((a) =>
-    a.kind === "fork" ? `⑂ ${a.name}` : a.kind === "subagent" ? `↳ ${a.name}` : `● ${a.name}`,
+    a.kind === "fork" ? `⑂ ${sanitizeTerminal(a.name)}` : a.kind === "subagent" ? `↳ ${sanitizeTerminal(a.name)}` : `● ${sanitizeTerminal(a.name)}`,
   );
   // A session on exactly the device's default model says so, muted — the same
   // signal the web dialog's "(device default)" row carries.
   const onDefault = defaultModel !== undefined && s.model === defaultModel;
   const lines = [
     c.muted(" OVERVIEW"),
-    ` ${c.bold(s.name)}`,
-    ` ${c.muted(basename(s.cwd))} ${c.muted("·")} ${c.text(basename(s.model) || s.model)}${onDefault ? c.muted(" (default)") : ""}`,
+    ` ${c.bold(sanitizeTerminal(s.name))}`,
+    ` ${c.muted(sanitizeTerminal(basename(s.cwd)))} ${c.muted("·")} ${c.text(sanitizeTerminal(basename(s.model) || s.model))}${onDefault ? c.muted(" (default)") : ""}`,
     git?.repo
-      ? ` ${c.muted("⎇")} ${c.text(git.branch ?? git.head ?? "?")}${c.muted("±")}${c.text(String((git.staged ?? 0) + (git.unstaged ?? 0) + (git.untracked ?? 0)))}${git.ahead ? c.text(` ↑${git.ahead}`) : ""}${git.behind ? c.text(` ↓${git.behind}`) : ""}${git.worktreeOf ? c.muted(" · worktree") : ""}`
+      ? ` ${c.muted("⎇")} ${c.text(sanitizeTerminal(git.branch ?? git.head ?? "?"))}${c.muted("±")}${c.text(String((git.staged ?? 0) + (git.unstaged ?? 0) + (git.untracked ?? 0)))}${git.ahead ? c.text(` ↑${git.ahead}`) : ""}${git.behind ? c.text(` ↓${git.behind}`) : ""}${git.worktreeOf ? c.muted(" · worktree") : ""}`
       : "",
     "",
     ` ${c.muted("state")}   ${STATE_COLOR[sessionState(s)](sessionState(s))}`,

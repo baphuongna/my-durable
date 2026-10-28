@@ -71,7 +71,15 @@ const CODE_PATTERN = /^[0-9a-f]{8}$/;
  */
 export interface TelegramUpdate {
   updateId: number;
-  message?: { chatId: number; text: string; from?: string };
+  message?: {
+    chatId: number;
+    text: string;
+    from?: string;
+    /** Audit run-1: the sender's STABLE Telegram id (usernames are mutable). */
+    fromId?: number;
+    /** Audit run-1: chat.type from the wire — "private" vs group/supergroup/channel. */
+    chatType?: string;
+  };
 }
 
 /**
@@ -150,6 +158,9 @@ export interface TelegramChatBinding {
   sessionId: string;
   /** ISO. When this binding was made. */
   createdAt: string;
+  /** Audit run-1: the /start sender's stable Telegram id — only that sender may
+   * act on this binding. Absent on legacy rows (treated as chat-wide until re-bound). */
+  boundFromId?: number;
 }
 
 /** One minted `/start` code. `sessionId` is the session the code grants (the CLI's default is the first session). */
@@ -237,6 +248,7 @@ export function flattenUpdates(rows: readonly unknown[]): TelegramUpdate[] {
       if (typeof msg.text === "string" && typeof chatId === "number" && Number.isFinite(chatId)) {
         const from = msg.from;
         let fromName: string | undefined;
+        let fromId: number | undefined;
         if (from !== null && typeof from === "object") {
           const f = from as Record<string, unknown>;
           fromName =
@@ -245,8 +257,19 @@ export function flattenUpdates(rows: readonly unknown[]): TelegramUpdate[] {
               : typeof f.first_name === "string" && f.first_name
                 ? f.first_name
                 : undefined;
+          if (typeof f.id === "number" && Number.isFinite(f.id)) fromId = Math.trunc(f.id);
         }
-        message = { chatId: Math.trunc(chatId), text: msg.text, ...(fromName ? { from: fromName } : {}) };
+        const chatType =
+          chat !== null && typeof chat === "object" && typeof (chat as Record<string, unknown>).type === "string"
+            ? ((chat as Record<string, unknown>).type as string)
+            : undefined;
+        message = {
+          chatId: Math.trunc(chatId),
+          text: msg.text,
+          ...(fromName ? { from: fromName } : {}),
+          ...(fromId !== undefined ? { fromId } : {}),
+          ...(chatType ? { chatType } : {}),
+        };
       }
     }
     out.push({ updateId: Math.trunc(updateId), ...(message ? { message } : {}) });
@@ -277,7 +300,16 @@ function coerceRegistry(raw: unknown, now: number): TelegramRegistryFile {
         typeof source.createdAt === "string" && Number.isFinite(Date.parse(source.createdAt))
           ? source.createdAt
           : isoTime(now);
-      chats.push({ chatId: Math.trunc(source.chatId), sessionId: source.sessionId, createdAt });
+      const boundFromId =
+        typeof source.boundFromId === "number" && Number.isFinite(source.boundFromId)
+          ? Math.trunc(source.boundFromId)
+          : undefined;
+      chats.push({
+        chatId: Math.trunc(source.chatId),
+        sessionId: source.sessionId,
+        createdAt,
+        ...(boundFromId !== undefined ? { boundFromId } : {}),
+      });
     }
   }
 
@@ -663,7 +695,13 @@ export class TelegramBridge {
       draft.offset = Math.max(draft.offset, update.updateId + 1);
     });
     if (!update.message) return; // non-message or non-text: acknowledged, ignored
-    await this.dispatch(update.message.chatId, update.message.from, update.message.text);
+    await this.dispatch(
+      update.message.chatId,
+      update.message.from,
+      update.message.text,
+      update.message.fromId,
+      update.message.chatType,
+    );
   }
 
   /**
@@ -671,7 +709,13 @@ export class TelegramBridge {
    * is plain text — including unknown `/words`, which the bound agent can
    * answer better than a canned "unknown command".
    */
-  private async dispatch(chatId: number, _from: string | undefined, rawText: string): Promise<void> {
+  private async dispatch(
+    chatId: number,
+    _from: string | undefined,
+    rawText: string,
+    fromId?: number,
+    chatType?: string,
+  ): Promise<void> {
     const text = rawText.trim();
     const lower = text.toLowerCase();
 
@@ -679,20 +723,27 @@ export class TelegramBridge {
       await this.reply(chatId, CHAT_HELP);
       return;
     }
+    const binding = this.bindingOf(chatId);
+    // Audit run-1 (sender binding): a chat container is not a principal — every
+    // member of a group shares one chatId, including members added after the
+    // bind. When the binding pinned the /start sender's stable id, only that
+    // sender may act on it; anyone else's messages are dropped like a
+    // stranger's (they learn nothing and change nothing).
+    const senderAllowed = binding?.boundFromId === undefined || binding.boundFromId === fromId;
+    if (!senderAllowed) return;
     if (lower === "/stop") {
       await this.commit((draft) => {
-        draft.chats = draft.chats.filter((binding) => binding.chatId !== chatId);
+        draft.chats = draft.chats.filter((row) => row.chatId !== chatId);
       });
       await this.reply(chatId, "unbound");
       return;
     }
     if (lower === "/status") {
-      const binding = this.bindingOf(chatId);
       await this.reply(chatId, binding ? this.sessionNameOf(binding.sessionId) : "not bound");
       return;
     }
     if (lower === "/start" || lower.startsWith("/start ")) {
-      await this.cmdStart(chatId, text);
+      await this.cmdStart(chatId, text, fromId, chatType);
       return;
     }
     if (lower === "/session" || lower.startsWith("/session ")) {
@@ -700,7 +751,6 @@ export class TelegramBridge {
       return;
     }
 
-    const binding = this.bindingOf(chatId);
     if (!binding) return; // unbound chat: drop silently — a stranger learns nothing
     try {
       const { submissionId } = await this.broker.sendToSession(binding.sessionId, text);
@@ -712,7 +762,23 @@ export class TelegramBridge {
   }
 
   /** `/start <code>`: single-use, 10-minute code → bind this chat to the code's session. */
-  private async cmdStart(chatId: number, text: string): Promise<void> {
+  private async cmdStart(
+    chatId: number,
+    text: string,
+    fromId: number | undefined,
+    chatType: string | undefined,
+  ): Promise<void> {
+    // Audit run-1 (chat-type gate): a non-private chat id is shared by every
+    // current and future member — binding it would hand all of them the
+    // operator's agent authority. Refuse; the operator binds from their own
+    // private chat with the bot.
+    if (chatType && chatType !== "private") {
+      await this.reply(
+        chatId,
+        "this is not a private chat — every member would inherit the binding; run /start from a private chat with the bot",
+      );
+      return;
+    }
     const code = text.slice("/start".length).trim().toLowerCase();
     const now = this.now();
     const hit = CODE_PATTERN.test(code) ? this.codes.find((row) => row.code === code && Date.parse(row.expiresAt) > now) : undefined;
@@ -725,7 +791,13 @@ export class TelegramBridge {
       draft.codes = draft.codes.filter((row) => row.code !== code); // single use, spent now
       draft.chats = [
         ...draft.chats.filter((binding) => binding.chatId !== chatId),
-        { chatId, sessionId, createdAt: isoTime(now) },
+        {
+          chatId,
+          sessionId,
+          createdAt: isoTime(now),
+          // Pin the ceremony sender (audit run-1): stable id, not the mutable username.
+          ...(fromId !== undefined ? { boundFromId: fromId } : {}),
+        },
       ];
     });
     await this.reply(chatId, `bound to ${this.sessionNameOf(sessionId)}`);

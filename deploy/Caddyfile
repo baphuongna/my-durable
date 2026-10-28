@@ -8,12 +8,18 @@
 #   DPI_ADMIN_HASH   bcrypt hash for the single admin user (caddy hash-password;
 #                    the PLAINTEXT never lives in this repo or in env logs)
 #
-# Auth matrix (05):
-#   exempt (exact path/method): GET /healthz · POST /api/pair/start ·
-#   POST /api/pair/verify · GET /api/tunnel (WS) — everything else requires
-#   HTTP Basic auth, and the Authorization header is STRIPPED before the hub
-#   so device tokens and admin credentials can never mix. Client-supplied
-#   XFF/XFP are overwritten from the real connection.
+# Auth matrix (05) — the exemption set is EXACT and EXHAUSTIVE:
+#   exempt (exact path+method): GET /healthz · POST /api/pair/start ·
+#   POST /api/pair/verify · POST /api/pair/request (device-initiated
+#   enrollment — the device holds no Basic credential by design) ·
+#   GET /share/* (public capability page — the 18-byte token IS the boundary) ·
+#   GET /api/tunnel (WS upgrade) — everything else — including WRONG METHODS
+#   on the exempt paths — requires HTTP Basic auth, and the Authorization
+#   header is STRIPPED before the hub so device tokens and admin credentials
+#   can never mix. The final handle is a matcher-less CATCH-ALL so no request
+#   class falls through to Caddy's anonymous empty-200 default (audit run-1:
+#   admin-matcher method-gap). Client-supplied XFF/XFP are overwritten from
+#   the real connection.
 {
 	admin off
 	auto_https off
@@ -50,11 +56,13 @@ https://{$DPI_PUBLIC_HOST} {
 	# Do not "harden" this file by adding one; the harness also runs without
 	# Caddy, so the hub must be correct on its own either way.
 
-	# Admin surface = everything except the four exact exemptions below.
-	@admin {
-		not path /api/tunnel /api/pair/start /api/pair/verify /healthz
+	# Admin surface = everything except the exact exemptions below. The final
+	# handle is a matcher-less catch-all: wrong-method requests on exempt paths
+	# land here (Basic challenge), never in Caddy's empty-200 default.
+	@tunnel {
+		method GET
+		path /api/tunnel
 	}
-	@tunnel path /api/tunnel
 	@pairstart {
 		method POST
 		path /api/pair/start
@@ -62,6 +70,14 @@ https://{$DPI_PUBLIC_HOST} {
 	@pairverify {
 		method POST
 		path /api/pair/verify
+	}
+	@pairrequest {
+		method POST
+		path /api/pair/request
+	}
+	@share {
+		method GET
+		path /share/*
 	}
 	@healthz {
 		method GET
@@ -97,6 +113,29 @@ https://{$DPI_PUBLIC_HOST} {
 		}
 	}
 
+	# Device-initiated enrollment (audit run-1: exemption drift): the machine
+	# running `dpi pair --hub` holds no Basic credential BY DESIGN — the hub
+	# guards this route with per-IP limits, failure windows and the device-mint
+	# sub-cap; approval stays the only issuance gate.
+	handle @pairrequest {
+		reverse_proxy {$DPI_HUB_ADDR} {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up -Authorization
+			flush_interval -1
+		}
+	}
+
+	# Public share page (audit run-1: exemption drift): the tokenized link is
+	# the designed boundary; the page is server-side rendered with zero scripts.
+	handle @share {
+		reverse_proxy {$DPI_HUB_ADDR} {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up -Authorization
+		}
+	}
+
 	handle @healthz {
 		reverse_proxy {$DPI_HUB_ADDR} {
 			header_up X-Forwarded-For {remote_host}
@@ -105,8 +144,10 @@ https://{$DPI_PUBLIC_HOST} {
 		}
 	}
 
-	# Everything else: basic auth, then STRIP Authorization before the hub.
-	handle @admin {
+	# Everything else — every non-exempt path AND every wrong-method request
+	# on an exempt path: basic auth, then STRIP Authorization before the hub.
+	# Matcher-less = exhaustive (audit run-1: method-gap fallthrough).
+	handle {
 		basic_auth {
 			admin {$DPI_ADMIN_HASH}
 		}

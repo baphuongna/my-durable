@@ -1,6 +1,7 @@
 // REST v1. Every route requires the device token (see auth.ts). Session refs are a UUID or a
 // unique name; agent refs are a numeric id, `main`, or a unique name.
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { isAbsolute, resolve } from "node:path";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
@@ -191,12 +192,29 @@ export function v1(
     const op = String(body.op ?? "") as GitOp;
     if (!GIT_OPS.includes(op)) throw invalid(`Unknown git op ${String(body.op ?? "")}`);
     const path = await gitPath(body.path);
+    // Audit run-1 (worktree-target containment): the worktree DESTINATION is an
+    // fs path like any other — it must pass the same start-dir choke point as
+    // `path` above, or worktree-add/remove plants/deletes checkouts anywhere
+    // the daemon user can write (routes.ts is the enforcing layer; git.ts has
+    // no store/start-dir context).
+    const rawTarget =
+      (op === "worktree-add" || op === "worktree-remove") && typeof body.target === "string"
+        ? // Relative targets keep git's own semantics — resolved against the
+          // REPO, not the daemon cwd — before the containment choke point.
+          isAbsolute(body.target)
+          ? body.target
+          : resolve(path, body.target)
+        : body.target;
+    const target =
+      typeof rawTarget === "string" && (op === "worktree-add" || op === "worktree-remove")
+        ? await store.containedPath(rawTarget)
+        : rawTarget;
     try {
       const out = await gitOp(path, op, {
       ref: body.ref,
       branch: body.branch,
       message: body.message,
-      target: body.target,
+      target,
       files: Array.isArray(body.files) ? body.files.map(String).slice(0, 500) : undefined,
       // booleans stay booleans: gitOp validates names/refs itself.
       create: body.create === true,
