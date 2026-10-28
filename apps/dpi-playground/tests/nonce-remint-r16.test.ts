@@ -91,18 +91,8 @@ test("R16 h2: stale unverified enrollment re-mints its nonce on same-identity re
     assert.notEqual(second.value.nonce, originalNonce, "nonce must be re-minted");
     assert.equal(second.value.issuedAt, t.clock.now);
     assert.equal(second.value.enrollmentId, first.value.enrollmentId, "same ceremony");
+    // (the fresh nonce's actual VERIFY is pinned by test 3 below)
 
-    // And the FRESH nonce verifies: a proof signed over it pairs cleanly.
-    const payload = pairingSigningPayload({
-      hubOrigin: HUB_ORIGIN,
-      hubId: HUB_ID,
-      enrollmentId: second.value.enrollmentId,
-      nonce: second.value.nonce,
-      issuedAt: second.value.issuedAt,
-      deviceUid: (second.value as unknown as { deviceUid?: string }).deviceUid ?? uuid(),
-      keyFingerprint: fingerprintOf(kp),
-    });
-    void payload; // full verify exercised in pairing.test.ts; here the mint is the contract
   } finally {
     await t.cleanup();
   }

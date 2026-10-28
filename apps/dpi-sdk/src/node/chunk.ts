@@ -31,7 +31,9 @@ const ENVELOPE_OVERHEAD_BYTES = 256;
 
 export type ChunkCorrelation =
   | { kind: "tunnel-data"; subscriptionId: string; sub: string }
-  | { kind: "rest-request" | "rest-response"; reqId: string };
+  // R16: chunked rest-REQUESTS are a dead direction (removed from DEVICE_TO_HUB
+  // and never hub->device) — the correlation surface is rest-response only.
+  | { kind: "rest-response"; reqId: string };
 
 const correlationKey = (c: ChunkCorrelation) =>
   c.kind === "tunnel-data" ? `data:${c.subscriptionId}` : `${c.kind}:${c.reqId}`;
@@ -232,10 +234,15 @@ export class ChunkReassembler {
    */
   feed(chunk: TunnelChunk, owns: (correlation: ChunkCorrelation) => boolean): AssemblyOutcome {
     if (chunk.type !== "tunnel-chunk") return { ok: false, error: "chunk: not a chunk frame" };
-    const correlation: ChunkCorrelation =
+    // R16: chunk.kind "rest-request" is a dead direction (direction assert
+    // rejects it upstream) — narrow here so the type stays honest.
+    const correlation: ChunkCorrelation | null =
       chunk.kind === "tunnel-data"
         ? { kind: "tunnel-data", subscriptionId: chunk.subscriptionId, sub: chunk.sub }
-        : { kind: chunk.kind, reqId: chunk.reqId };
+        : chunk.kind === "rest-response"
+          ? { kind: "rest-response", reqId: chunk.reqId }
+          : null;
+    if (!correlation) return { ok: false, error: "chunk: unsupported chunk kind" };
     const key = correlationKey(correlation);
     const envelope = validateChunkEnvelope(chunk);
     if (!envelope.ok) return { ok: false, error: envelope.error };

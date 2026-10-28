@@ -26,7 +26,8 @@ export function downloadBundle(r: BundleFile) {
   // authors the label itself (mirrors hub delta-6): zip MIME is a literal and
   // the filename is charset-folded, extension-stripped is unnecessary (the
   // honest device contract is *.bundle.zip) but the cap keeps it sane.
-  const stem = (r.filename || "device-response").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "device-response";
+  let stem = (r.filename || "device-response").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "device-response";
+  if (/\.zip$/i.test(r.filename) && !/\.zip$/i.test(stem)) stem = `${stem.slice(0, 76)}.zip`;
   a.href = URL.createObjectURL(new Blob([r.bytes.slice()], { type: "application/zip" }));
   a.download = stem;
   a.click();

@@ -110,6 +110,9 @@ async function writeEnv(device: NetDevice, ctx: DriverContext, rotate = false) {
   const local = localEnv(ctx.config);
   const missing = device.envKeys.filter((k) => !(local[k] ?? process.env[k]));
   if (missing.length) ctx.log(`warning: ${missing.join(", ")} not found in ${join(ctx.config.root, ".env")} or the environment`);
+  for (const [k, v] of Object.entries(device.env))
+    if (typeof v !== "string" || !v || /[\n\r]/.test(v))
+      ctx.log(`warning: device ${device.id} env ${k} has no value or contains a newline — skipped`);
   const home = shPath(device.homeDir);
   const body = [
     `DPI_DEVICE_NAME=${device.id}`,

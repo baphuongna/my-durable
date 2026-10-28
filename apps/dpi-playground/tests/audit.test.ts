@@ -220,6 +220,13 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
     assert.ok(!scrubSecrets(`see ${dpi} later`).includes(dpi));
     // a 12-char minted code is redacted as one token, wherever it stands alone
     assert.ok(!scrubSecrets(`see ABCD2345EF67 later`).includes("ABCD2345EF67"));
+    // R16 h7: a share capability token in a /share/<token> path is the secret
+    // itself (requireTls-denied GETs land it in audit path samples) — redact the
+    // 20-32-char token shape, keep ordinary /share/ words readable.
+    const shareTok = "abcdefghijklmnopqrstuvwx"; // 24 chars, real token shape
+    assert.ok(scrubSecrets(`GET /share/${shareTok}`).includes("/share/<redacted>"));
+    assert.ok(!scrubSecrets(`GET /share/${shareTok}`).includes(shareTok));
+    assert.equal(scrubSecrets("GET /share/intro"), "GET /share/intro");
     assert.ok(!scrubSecrets('{"code":"ABCD2345EF67"}').includes("ABCD2345EF67"));
     assert.ok(scrubSecrets('{"code":"ABCD2345EF67"}').includes("<code-redacted>"));
     assert.ok(

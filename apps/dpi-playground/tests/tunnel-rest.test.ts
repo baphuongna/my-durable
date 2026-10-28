@@ -355,7 +355,9 @@ test("foreign rest-response (unknown reqId) → sender closed 1008 + audited; ho
         body: { pwned: true },
       }),
     );
-    await new Promise((r) => setTimeout(r, 200));
+    // Poll for the close (fixed sleeps flake under load): up to 2s.
+    for (let i = 0; i < 40 && f.script.ws.readyState === f.script.ws.OPEN; i++)
+      await new Promise((r) => setTimeout(r, 50));
     const denied = f.registry.db
       .prepare("SELECT detail_json FROM events WHERE action='auth.denied'")
       .all() as { detail_json: string }[];
