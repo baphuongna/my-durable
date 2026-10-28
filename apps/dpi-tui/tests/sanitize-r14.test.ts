@@ -172,7 +172,9 @@ test("R17 h5: pending notes are sanitized at the setPending chokepoint", async (
   );
   try {
     app.setPending(`listing ${OSC8} on dev…`);
-    const line = app.messageLine(120).replace(/\u001b\[[0-9;]*m/g, ""); // theme SGR is trusted
+    // messageLine is private — structural cast like the siblings above.
+    const raw = (app as unknown as { messageLine(w: number): string }).messageLine(120);
+    const line = raw.replace(/\u001b\[[0-9;]*m/g, ""); // theme SGR is trusted
     assert.ok(!line.includes("\u001b"), "OSC hyperlink payload must not reach the frame");
     assert.ok(!line.includes("evil.example"), "the hyperlink target must not survive");
     app.setPending(null);

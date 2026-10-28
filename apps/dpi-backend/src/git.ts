@@ -67,8 +67,19 @@ const gitPaths = (paths: string[]): string[] => paths.map(gitPath);
  * never rides into repo-controlled hook environments.
  */
 const CHILD_ENV_ALLOWLIST = ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "TERM", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK"];
-const childEnv = (): NodeJS.ProcessEnv =>
-  Object.fromEntries(CHILD_ENV_ALLOWLIST.flatMap((k) => (process.env[k] ? [[k, process.env[k]]] : [])));
+// execFile `env` REPLACES the whole environment, and on win32 git/gh resolve
+// home (USERPROFILE chain), config (APPDATA), temp (TEMP/TMP) and TLS
+// (SystemRoot) from these — without them commit identity and gh auth break.
+const WIN32_CHILD_ENV_ALLOWLIST = [
+  ...CHILD_ENV_ALLOWLIST,
+  "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT",
+  "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+  "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMDATA",
+];
+const childEnv = (): NodeJS.ProcessEnv => {
+  const allow = process.platform === "win32" ? WIN32_CHILD_ENV_ALLOWLIST : CHILD_ENV_ALLOWLIST;
+  return Object.fromEntries(allow.flatMap((k) => (process.env[k] ? [[k, process.env[k]]] : [])));
+}
 export const GIT_EXEC_OPTS = (timeout: number) => ({
   timeout,
   maxBuffer: 8 * 1024 * 1024,

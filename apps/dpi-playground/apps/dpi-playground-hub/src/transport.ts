@@ -160,8 +160,12 @@ export function transportFor(
   return new LanTransport(row);
 }
 
-/** R17 (run-3 h8): the binary cap mirrors the device connector's own reader. */
-const BINARY_RESPONSE_MAX_BYTES = 12 * 1024 * 1024;
+/**
+ * R17 (run-3 h8): the binary cap mirrors the device connector's own reader
+ * (tunnel.ts uses 12_000_000 — aligned exactly so a binary that passes one
+ * leg never surprises the other).
+ */
+const BINARY_RESPONSE_MAX_BYTES = 12_000_000;
 
 async function readBodyCapped(
   res: Response,
