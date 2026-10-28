@@ -78,6 +78,11 @@ test("R15 h6: worktree target under an escaping symlink is refused (no lexical p
     // Unit level: containedPath itself now rejects the symlink-spelled
     // not-yet-existing path (the old lexical fallback returned it as-is).
     await assert.rejects(() => b.store.containedPath(join(repo, "link", "wt2")), /path must live under a start dir/);
+    // And a DEEP not-yet-existing chain (>64 missing components) under the
+    // same symlink must fail CLOSED — the first fix's iteration cap silently
+    // fell back to the lexical spelling (cold review P1-2).
+    const deep = join(repo, "link", ...Array<string>(70).fill("d"));
+    await assert.rejects(() => b.store.containedPath(deep), /path must live under a start dir/);
     // And a genuinely new path INSIDE the start dir still resolves.
     const inside = await b.store.containedPath(join(b.t.work, "brand-new-dir", "sub"));
     assert.equal(inside, join(b.t.work, "brand-new-dir", "sub"));

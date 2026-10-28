@@ -12,7 +12,7 @@
 #   exempt (exact path+method): GET /healthz · POST /api/pair/start ·
 #   POST /api/pair/verify · POST /api/pair/request (device-initiated
 #   enrollment — the device holds no Basic credential by design) ·
-#   GET /share/* (public capability page — the 18-byte token IS the boundary) ·
+#   GET /share/<token> (public capability page — the 20-32-char token IS the boundary; R15 narrowed the matcher to the token shape) ·
 #   GET /api/tunnel (WS upgrade) — everything else — including WRONG METHODS
 #   on the exempt paths — requires HTTP Basic auth, and the Authorization
 #   header is STRIPPED before the hub so device tokens and admin credentials

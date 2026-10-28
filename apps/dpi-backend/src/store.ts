@@ -1012,7 +1012,11 @@ export class Store {
           break;
         } catch {}
       }
-      candidate = resolvedAncestor !== undefined ? join(resolvedAncestor, ...tail) : absolute;
+      // Fail CLOSED on exhaustion (R15 cold review P1-2): when no existing
+      // ancestor was found at all, judging the raw spelling lexically would
+      // resurrect the exact symlink escape this walk exists to close.
+      if (resolvedAncestor === undefined) throw invalid("path must live under a start dir");
+      candidate = join(resolvedAncestor, ...tail);
     }
     if (!this.underRoots(candidate, await this.startDirRoots())) throw invalid("path must live under a start dir");
     return candidate;

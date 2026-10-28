@@ -609,7 +609,13 @@ if (args.includes("--dev")) {
   // the share 404 page — NOT fall through to the SPA fallback, which serves
   // the operator app shell to anyone the edge exempted for /share/*.
   app.get("/share/{*rest}", (_req, res) => {
-    res.setHeader("Cache-Control", "no-cache");
+    res.status(404);
+    res.set("Cache-Control", "no-cache");
+    res.set("Content-Type", "text/html; charset=utf-8");
+    // Same lockdown as the /share/:token 404 — renderShareNotFound is
+    // inline-styled, so the shell CSP (style-src 'self') must not apply.
+    res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
+    res.set("X-Frame-Options", "DENY");
     res.send(renderShareNotFound());
   });
   app.get("/{*path}", (req, res, next) => {

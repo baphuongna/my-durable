@@ -395,9 +395,10 @@ export class TelegramBridge {
     return bridge;
   }
 
-  /** True while the poll loop is scheduled or in flight. */
   /** Last registry text this process loaded or wrote (R15 h14 foreign-writer sync). */
   private registryText: string | null = null;
+
+  /** True while the poll loop is scheduled or in flight. */
   get running(): boolean {
     return this.runningValue;
   }
@@ -595,17 +596,21 @@ export class TelegramBridge {
    * a revocation takes effect on the live bridge and is never resurrected by
    * the next offset persist. The ack offset only ever moves forward.
    */
-  private async syncForeign(): Promise<void> {
+  private async syncForeign(): Promise<boolean> {
     try {
-      if (!(await this.io.exists(this.filePath))) return;
+      if (!(await this.io.exists(this.filePath))) return true;
       const text = await this.io.readFile(this.filePath);
-      if (text === this.registryText) return; // still our own last write
+      if (text === this.registryText) return true; // still our own last write
       const file = coerceRegistry(JSON.parse(text), this.now());
       this.adopt({ ...file, offset: Math.max(this.offset, file.offset) });
       this.registryText = text;
+      return true;
     } catch (error) {
-      // Best-effort: an unreadable/unparseable file keeps the in-memory state.
-      this.warn(`could not re-read ${this.filePath} before dispatch`, error);
+      // Fail CLOSED (R15 cold review P3-1): with an unreadable/unparseable
+      // registry the in-memory bindings cannot be trusted to reflect the
+      // operator's intent — authorize nothing until the file is healthy.
+      this.warn(`could not re-read ${this.filePath} before dispatch; skipping the update`, error);
+      return false;
     }
   }
 
@@ -718,10 +723,11 @@ export class TelegramBridge {
 
   /** Acknowledge first (persist the new offset), then handle. Never both-half-heartedly. */
   private async handle(update: TelegramUpdate): Promise<void> {
-    await this.syncForeign();
+    const synced = await this.syncForeign();
     await this.commit((draft) => {
       draft.offset = Math.max(draft.offset, update.updateId + 1);
     });
+    if (!synced) return; // acknowledged, but NOT authorized on stale state
     if (!update.message) return; // non-message or non-text: acknowledged, ignored
     await this.dispatch(
       update.message.chatId,

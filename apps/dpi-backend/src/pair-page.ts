@@ -81,7 +81,7 @@ export const PAIR_PAGE_HTML = `<!doctype html>
       .then(function (r) { return r.json(); })
       .then(function (s) {
         render(s);
-        if (s.state === "pairing") { say("⠿ waiting for approval on the hub…", "warn"); setTimeout(poll, 2000); }
+        if (s.state === "pairing") { say("⠿ waiting for approval on the hub…", "spin warn"); setTimeout(poll, 2000); }
         else if (s.state === "paired") say("paired — credential saved. You can close this page and open dpi tui.", "ok");
       })
       .catch(function () { setTimeout(poll, 3000); });

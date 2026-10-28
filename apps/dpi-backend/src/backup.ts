@@ -381,8 +381,10 @@ export function readZipEntries(data: Uint8Array): ZipArchiveEntry[] {
     validateEntryName(name);
     // R15 (run-2 h8): the WHOLE archive may never promise more than the
     // backup ceiling — a pile of individually-legal entries must not add up
-    // to an unbounded restore either.
-    totalDeclared += uncompressedSize;
+    // to an unbounded restore either. Entry 0 is the writer's own manifest,
+    // which the write-side budget (walkHome) never counts, so a ceiling-sized
+    // home must stay restorable (R15 cold review P2-1).
+    if (i > 0 || name !== "manifest.json") totalDeclared += uncompressedSize;
     if (totalDeclared > MAX_BACKUP_BYTES) {
       throw bad(`archive declares more than ${MAX_BACKUP_BYTES} bytes of entries`);
     }

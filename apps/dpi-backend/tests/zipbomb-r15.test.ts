@@ -16,46 +16,6 @@ import { MAX_BACKUP_BYTES, readZipEntries } from "../src/backup.ts";
 import { crc32 } from "../src/zip.ts";
 
 /** Minimal zip writer for exactly one stored-or-deflated entry. */
-function zipOne(name: string, data: Buffer, method: 0 | 8, declareUncompressed: number): Buffer {
-  const comp = method === 8 ? deflateRawSync(data) : data;
-  const crc = crc32(data);
-  const local = Buffer.alloc(30);
-  local.writeUInt32LE(0x04034b50, 0);
-  local.writeUInt16LE(20, 4);
-  local.writeUInt16LE(0, 6);
-  local.writeUInt16LE(method, 8);
-  local.writeUInt16LE(0, 10);
-  local.writeUInt16LE(0x2821, 12);
-  local.writeUInt32LE(crc, 14);
-  local.writeUInt32LE(comp.length, 18);
-  local.writeUInt32LE(declareUncompressed, 22);
-  local.writeUInt16LE(name.length, 26);
-  local.writeUInt16LE(0, 28);
-  const central = Buffer.alloc(46);
-  central.writeUInt32LE(0x02014b50, 0);
-  central.writeUInt16LE(20, 4);
-  central.writeUInt16LE(20, 6);
-  central.writeUInt16LE(method, 10);
-  central.writeUInt32LE(crc, 16);
-  central.writeUInt32LE(comp.length, 20);
-  central.writeUInt32LE(declareUncompressed, 24);
-  central.writeUInt16LE(name.length, 28);
-  central.writeUInt32LE(30 + name.length, 42);
-  const body = Buffer.concat([local, Buffer.from(name, "utf8"), comp]);
-  const off = body.length;
-  const centralFull = Buffer.concat([central, Buffer.from(name, "utf8")]);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(1, 8);
-  eocd.writeUInt16LE(1, 10);
-  eocd.writeUInt32LE(centralFull.length, 12);
-  eocd.writeUInt32LE(0, 16);
-  return Buffer.concat([body, centralFull, eocd]).subarray(0, off) !== null
-    ? Buffer.concat([body, centralFull.subarray(0, centralFull.length), eocd, Buffer.alloc(0)])
-    : Buffer.alloc(0);
-}
-
-// Fix the writer: local header offset in central dir must point at the LOCAL header (0).
 function zipOneFixed(name: string, data: Buffer, method: 0 | 8, declareUncompressed: number): Buffer {
   const comp = method === 8 ? deflateRawSync(data) : data;
   const crc = crc32(data);
@@ -87,7 +47,6 @@ function zipOneFixed(name: string, data: Buffer, method: 0 | 8, declareUncompres
   eocd.writeUInt32LE(body.length, 16); // central directory starts after the body
   return Buffer.concat([body, centralFull, eocd]);
 }
-void zipOne;
 
 test("R15 h8: zip-bomb entries are refused by the inflate cap, not after allocation", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dpi-zipbomb-"));
@@ -108,6 +67,13 @@ test("R15 h8: zip-bomb entries are refused by the inflate cap, not after allocat
     // Declared-total guard: one 256 MiB+1 declared entry (never inflated).
     const huge = zipOneFixed("big.bin", Buffer.alloc(0), 0, MAX_BACKUP_BYTES + 1);
     assert.throws(() => readZipEntries(huge), /declares more than/);
+
+    // Boundary control (R15 cold review P2-1/P3-3): an entry declaring EXACTLY
+    // the ceiling must pass the TOTAL guard (it then fails the honest size
+    // check with empty data — proof the refusal comes from the size check,
+    // not the total). MAX+1 fails the total guard itself.
+    const single = zipOneFixed("f.bin", Buffer.alloc(0), 0, MAX_BACKUP_BYTES);
+    assert.throws(() => readZipEntries(single), /decompressed to 0 bytes/, "exactly-MAX passes the total guard");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

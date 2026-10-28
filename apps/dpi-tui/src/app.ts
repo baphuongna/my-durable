@@ -1062,7 +1062,9 @@ export class App {
         )}${c.muted(". Reattach:")}\n  just tui attach ${target}\n\n`,
       );
     }
-    process.exit(0);
+    // Under `node --test` a process.exit(0) in teardown would swallow assertion
+    // failures of the very tests that drive this class (R15 cold review P1-1).
+    if (!process.env.NODE_TEST_CONTEXT) process.exit(0);
   }
 
   private reattachRef() {
@@ -1327,7 +1329,7 @@ export class App {
       for (const [name, n] of [...counts.entries()].sort((a, b) => b[1] - a[1])) {
         const barW = 16;
         const filled = Math.round((n / max) * barW);
-        lines.push(` ${c.text(name.padEnd(14))} ${c.muted(rep("▮", filled))}${c.muted(rep("▯", barW - filled))} ${c.muted(String(n))}`);
+        lines.push(` ${c.text(sanitizeTerminal(name).padEnd(14))} ${c.muted(rep("▮", filled))}${c.muted(rep("▯", barW - filled))} ${c.muted(String(n))}`);
       }
       if (!counts.size) lines.push(c.muted("  no tool calls yet"));
       return lines;

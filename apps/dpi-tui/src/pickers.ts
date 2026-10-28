@@ -264,11 +264,11 @@ export async function pickSession(app: App) {
     ...tree.sessions.map((s) => ({
       value: s.id,
       label: sanitizeTerminal(s.name),
-      description: `${s.cwd.split("/").slice(-2).join("/")} │ ${s.agents.length} agent${s.agents.length === 1 ? "" : "s"}${s.busy ? " │ working" : ""}`,
+      description: `${sanitizeTerminal(s.cwd.split("/").slice(-2).join("/"))} │ ${s.agents.length} agent${s.agents.length === 1 ? "" : "s"}${s.busy ? " │ working" : ""}`,
     })),
   ];
   app.overlay(
-    new Picker(`Sessions on ${app.device.id}`, items, (item) => {
+    new Picker(`Sessions on ${sanitizeTerminal(app.device.id)}`, items, (item) => {
       app.closeOverlay();
       if (item.value === "+new") return void newSession(app);
       const s = tree.sessions.find((x) => x.id === item.value)!;
@@ -368,7 +368,7 @@ function chooseModel(app: App, current?: string) {
     const models = app.info.models;
     const picker = new Picker(
       `Model (${sanitizeTerminal(app.device.name)})`,
-      models.map((m) => ({ value: `${m.provider}/${m.id}`, label: sanitizeTerminal(m.name), description: `${m.tier} │ ${m.provider}` })),
+      models.map((m) => ({ value: `${m.provider}/${m.id}`, label: sanitizeTerminal(m.name), description: `${sanitizeTerminal(m.tier)} │ ${sanitizeTerminal(m.provider)}` })),
       (item) => {
         app.closeOverlay();
         done(models.find((m) => `${m.provider}/${m.id}` === item.value));
@@ -446,7 +446,7 @@ export function pickAgent(app: App) {
     }
   };
   walk(agentTree(app.device.id, summary, false), 0);
-  const picker = new Picker(`Agents in ${summary.name}`, rows, (item) => {
+  const picker = new Picker(`Agents in ${sanitizeTerminal(summary.name)}`, rows, (item) => {
     app.closeOverlay();
     void app.attach(summary.id, Number(item.value));
   }, () => app.closeOverlay());
