@@ -361,6 +361,7 @@ export function readZipEntries(data: Uint8Array): ZipArchiveEntry[] {
   }
 
   const entries: ZipArchiveEntry[] = [];
+  let totalDeclared = 0;
   let p = centralOffset;
   for (let i = 0; i < count; i += 1) {
     if (p + 46 > eocd) throw bad(`central directory entry ${i} overruns the archive`);
@@ -378,6 +379,13 @@ export function readZipEntries(data: Uint8Array): ZipArchiveEntry[] {
     }
     const name = buf.toString("utf8", p + 46, p + 46 + nameLength);
     validateEntryName(name);
+    // R15 (run-2 h8): the WHOLE archive may never promise more than the
+    // backup ceiling — a pile of individually-legal entries must not add up
+    // to an unbounded restore either.
+    totalDeclared += uncompressedSize;
+    if (totalDeclared > MAX_BACKUP_BYTES) {
+      throw bad(`archive declares more than ${MAX_BACKUP_BYTES} bytes of entries`);
+    }
 
     if (localOffset + 30 > buf.length || buf.readUInt32LE(localOffset) !== LOCAL_SIG) {
       throw bad(`local header for ${name} is corrupt`);
@@ -390,8 +398,14 @@ export function readZipEntries(data: Uint8Array): ZipArchiveEntry[] {
     let out: Buffer;
     if (method === 0) out = buf.subarray(start, start + compressedSize);
     else if (method === 8) {
+      // R15 (run-2 h8): a hostile "backup" can declare a tiny uncompressedSize
+      // while the deflate stream expands ~1000x — the old check ran only AFTER
+      // the full allocation. Cap the inflate itself: the entry may never
+      // produce more than the smaller of its declared size (cross-checked
+      // right below anyway) and the backup ceiling.
+      const declaredCap = Math.min(Math.max(uncompressedSize, 1), MAX_BACKUP_BYTES);
       try {
-        out = inflateRawSync(buf.subarray(start, start + compressedSize));
+        out = inflateRawSync(buf.subarray(start, start + compressedSize), { maxOutputLength: declaredCap });
       } catch (error) {
         throw bad(`cannot inflate ${name} (${describeError(error)})`);
       }

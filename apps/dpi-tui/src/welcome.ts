@@ -21,6 +21,7 @@ import type { App, DeviceRef } from "./app.ts";
 import { Picker } from "./pickers.ts";
 import { parsePairArgs, runPairing, type PairArgs } from "./pairing.ts";
 import { c } from "./theme.ts";
+import { sanitizeTerminal } from "./sanitize.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -277,7 +278,7 @@ export class WelcomePicker extends Picker {
 export function showWelcome(app: App, opts: { notice?: string } = {}) {
   const devices = app.registry?.list() ?? [];
   const subtitle = opts.notice
-    ? c.err(opts.notice)
+    ? c.err(sanitizeTerminal(opts.notice))
     : c.muted("This is the app — connect a device to get started:");
   let picked = false; // an action was chosen: closing the overlay is a step, not a quit
   app.overlay(

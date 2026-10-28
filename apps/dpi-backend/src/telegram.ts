@@ -396,6 +396,8 @@ export class TelegramBridge {
   }
 
   /** True while the poll loop is scheduled or in flight. */
+  /** Last registry text this process loaded or wrote (R15 h14 foreign-writer sync). */
+  private registryText: string | null = null;
   get running(): boolean {
     return this.runningValue;
   }
@@ -509,6 +511,7 @@ export class TelegramBridge {
     const main = await this.readRegistry(this.filePath);
     if (main.ok) {
       this.adopt(main.file);
+      this.registryText = main.text ?? null;
       this.mainIsGood = true;
       return;
     }
@@ -539,7 +542,9 @@ export class TelegramBridge {
 
   private async readRegistry(
     path: string,
-  ): Promise<{ ok: true; file: TelegramRegistryFile } | { ok: false; missing: boolean; text?: string; error?: unknown }> {
+  ): Promise<
+    { ok: true; file: TelegramRegistryFile; text?: string } | { ok: false; missing: boolean; text?: string; error?: unknown }
+  > {
     if (!(await this.io.exists(path))) return { ok: false, missing: true };
     let text: string;
     try {
@@ -548,7 +553,7 @@ export class TelegramBridge {
       return { ok: false, missing: false, error };
     }
     try {
-      return { ok: true, file: coerceRegistry(JSON.parse(text), this.now()) };
+      return { ok: true, file: coerceRegistry(JSON.parse(text), this.now()), text };
     } catch (error) {
       return { ok: false, missing: false, text, error };
     }
@@ -581,6 +586,27 @@ export class TelegramBridge {
     this.offset = file.offset;
     this.chats = file.chats.map((binding) => ({ ...binding }));
     this.codes = file.codes.map((code) => ({ ...code }));
+  }
+
+  /**
+   * R15 (run-2 h14): the `dpi telegram` CLI is a designed second writer of the
+   * registry file. Before authorizing ANY update, re-read the file and adopt
+   * foreign changes (bindings removed/added by the CLI, its minted codes), so
+   * a revocation takes effect on the live bridge and is never resurrected by
+   * the next offset persist. The ack offset only ever moves forward.
+   */
+  private async syncForeign(): Promise<void> {
+    try {
+      if (!(await this.io.exists(this.filePath))) return;
+      const text = await this.io.readFile(this.filePath);
+      if (text === this.registryText) return; // still our own last write
+      const file = coerceRegistry(JSON.parse(text), this.now());
+      this.adopt({ ...file, offset: Math.max(this.offset, file.offset) });
+      this.registryText = text;
+    } catch (error) {
+      // Best-effort: an unreadable/unparseable file keeps the in-memory state.
+      this.warn(`could not re-read ${this.filePath} before dispatch`, error);
+    }
   }
 
   /** Stage → persist → swap. A failed write leaves memory exactly as it was. */
@@ -620,6 +646,7 @@ export class TelegramBridge {
     const payload = `${JSON.stringify(draft satisfies TelegramRegistryFile, null, 2)}\n`;
     await this.io.writeFile(this.filePath, payload);
     await this.io.chmod(this.filePath, 0o600);
+    this.registryText = payload;
     this.mainIsGood = true;
   }
 
@@ -691,6 +718,7 @@ export class TelegramBridge {
 
   /** Acknowledge first (persist the new offset), then handle. Never both-half-heartedly. */
   private async handle(update: TelegramUpdate): Promise<void> {
+    await this.syncForeign();
     await this.commit((draft) => {
       draft.offset = Math.max(draft.offset, update.updateId + 1);
     });

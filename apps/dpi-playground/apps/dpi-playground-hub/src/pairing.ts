@@ -275,7 +275,7 @@ export class PairingService {
   }
 
   /** Mint a single-use code entry (shared by the admin and device-initiated flows). */
-  private mintEntry(actor: "admin" | "device"): CodeEntry {
+  private mintEntry(actor: "admin" | "device", audit = true): CodeEntry {
     const now = this.now();
     let code = "";
     do {
@@ -290,15 +290,25 @@ export class PairingService {
       cancelled: false,
       ...(actor === "device" ? { deviceMinted: true as const } : {}),
     };
+    // R15 (run-2 h11b): for the UNAUTH device surface the persistent audit row
+    // is written only when the mint SURVIVES — a failed anonymous attempt
+    // already leaves an aggregated denial record (failWindows) and its RAM
+    // slot is recycled instantly, so appending here let an anonymous flood
+    // persist one append-only row per request at per-IP rates only. Successful
+    // mints stay bounded by the RAM caps (100 live device codes, 5-7 min TTL).
+    if (audit) this.auditCodeCreated(entry, actor);
+    this.codes.set(entry.codeId, entry);
+    this.byCode.set(code, entry.codeId);
+    return entry;
+  }
+
+  private auditCodeCreated(entry: CodeEntry, actor: "admin" | "device"): void {
     this.deps.audit.append({
       actor,
       action: "pair.code_created",
       outcome: "ok",
       detail: { codeId: entry.codeId, expiresAt: entry.expiresAt, ...(actor === "device" ? { initiated: "device" } : {}) },
     });
-    this.codes.set(entry.codeId, entry);
-    this.byCode.set(code, entry.codeId);
-    return entry;
   }
 
   /** POST /api/pair/code (admin) — mint a fresh single-use code. */
@@ -348,7 +358,7 @@ export class PairingService {
     if (request?.type !== "pair.device-request" || !checkPairingDto(PairDeviceRequestSchema, request))
       return this.fail(400, "invalid", "pair.device-request body failed schema validation");
 
-    const entry = this.mintEntry("device");
+    const entry = this.mintEntry("device", false);
     const started = this.start({ ...(request as object), type: "pair.request", v: 1, code: entry.code }, address);
     if (!started.ok) {
       // The enrollment never existed: drop the code so a failed request leaves nothing behind.
@@ -356,6 +366,7 @@ export class PairingService {
       this.byCode.delete(entry.code);
       return started;
     }
+    this.auditCodeCreated(entry, "device");
     return this.ok({
       type: "pair.device-ack",
       v: 1,

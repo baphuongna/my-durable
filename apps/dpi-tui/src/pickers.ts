@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import { agentTree, type TreeNode } from "../../dpi-sdk/src/models.ts";
+import { sanitizeTerminal } from "./sanitize.ts";
 import type { App } from "./app.ts";
 import { c, selectTheme } from "./theme.ts";
 
@@ -259,10 +260,10 @@ export class Panel extends Box {
 export async function pickSession(app: App) {
   const tree = await app.client.tree();
   const items: SelectItem[] = [
-    { value: "+new", label: "＋ New session", description: `choose a directory on ${app.device.id}` },
+    { value: "+new", label: "＋ New session", description: `choose a directory on ${sanitizeTerminal(app.device.id)}` },
     ...tree.sessions.map((s) => ({
       value: s.id,
-      label: s.name,
+      label: sanitizeTerminal(s.name),
       description: `${s.cwd.split("/").slice(-2).join("/")} │ ${s.agents.length} agent${s.agents.length === 1 ? "" : "s"}${s.busy ? " │ working" : ""}`,
     })),
   ];
@@ -343,12 +344,12 @@ export function walkDirs(app: App, path: string): Promise<string | undefined | n
       app.setPending(null);
       if (!listing) return done(null);
       const items: SelectItem[] = [
-        ...(listing.path ? [{ value: `use:${listing.path}`, label: `✓ Use ${listing.path}` }] : []),
+        ...(listing.path ? [{ value: `use:${listing.path}`, label: `✓ Use ${sanitizeTerminal(listing.path)}` }] : []),
         ...(listing.path ? [{ value: listing.parent ?? "", label: listing.parent ? ".." : "⌂ start dirs" }] : []),
-        ...listing.dirs.map((d) => ({ value: d.path, label: `${d.name}/` })),
+        ...listing.dirs.map((d) => ({ value: d.path, label: `${sanitizeTerminal(d.name)}/` })),
       ];
       app.overlay(
-        new Picker(`Working directory on ${app.device.name}`, items, (item) => {
+        new Picker(`Working directory on ${sanitizeTerminal(app.device.name)}`, items, (item) => {
           app.closeOverlay();
           if (item.value.startsWith("use:")) done(item.value.slice(4));
           else void step(item.value);
@@ -366,8 +367,8 @@ function chooseModel(app: App, current?: string) {
   return new Promise<(typeof app.info.models)[number] | undefined>((done) => {
     const models = app.info.models;
     const picker = new Picker(
-      `Model (${app.device.name})`,
-      models.map((m) => ({ value: `${m.provider}/${m.id}`, label: m.name, description: `${m.tier} │ ${m.provider}` })),
+      `Model (${sanitizeTerminal(app.device.name)})`,
+      models.map((m) => ({ value: `${m.provider}/${m.id}`, label: sanitizeTerminal(m.name), description: `${m.tier} │ ${m.provider}` })),
       (item) => {
         app.closeOverlay();
         done(models.find((m) => `${m.provider}/${m.id}` === item.value));
@@ -436,7 +437,7 @@ export function pickAgent(app: App) {
       const icon = a.kind === "fork" ? "⑂" : a.kind === "subagent" ? "↳" : "◆";
       rows.push({
         value: String(a.id),
-        label: `${"  ".repeat(depth)}${icon} ${a.name}${a.busy ? " ●" : ""}`,
+        label: `${"  ".repeat(depth)}${icon} ${sanitizeTerminal(a.name)}${a.busy ? " ●" : ""}`,
         description: [a.kind === "fork" ? `fork @ #${a.forkedAt}` : a.kind, a.background ? `${a.background} bg` : ""]
           .filter(Boolean)
           .join(" │ "),

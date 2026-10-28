@@ -77,7 +77,10 @@ https://{$DPI_PUBLIC_HOST} {
 	}
 	@share {
 		method GET
-		path /share/*
+		# R15 (run-2 h12): exempt ONLY the token-shaped share page (mirrors
+		# shares.ts isToken) — a bare /share/* wildcard also exempted the hub's
+		# SPA fallback, serving the operator app shell anonymously.
+		path_regexp ^/share/[A-Za-z0-9_-]{20,32}$
 	}
 	@healthz {
 		method GET

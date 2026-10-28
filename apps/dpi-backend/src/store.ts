@@ -984,14 +984,35 @@ export class Store {
 
   /** A caller-supplied path that must stay inside the start dirs: `~` expands,
    *  symlinks resolve, and anything outside answers 400 `invalid`. A path that
-   *  does not exist is judged lexically (git then reports "not a repository"). */
+   *  does not exist is judged by its deepest EXISTING ancestor (R15, run-2 h6):
+   *  a not-yet-existing tail spelled under an in-start-dir symlink must not
+   *  pass a lexical prefix check — walk dirname until realpath succeeds,
+   *  re-append the missing tail, then judge that (git worktree-add targets
+   *  never exist, so the old lexical fallback was the branch every
+   *  worktree-add took). */
   async containedPath(input: string): Promise<string> {
     const expanded = input === "~" ? homedir() : input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
     let candidate: string;
     try {
       candidate = await realpath(resolve(expanded));
     } catch {
-      candidate = resolve(expanded);
+      // Not yet existing: resolve the deepest existing ancestor so symlink
+      // components are honored, then re-append the missing tail verbatim.
+      const absolute = resolve(expanded);
+      const tail: string[] = [];
+      let current = absolute;
+      let resolvedAncestor: string | undefined;
+      for (let depth = 0; depth < 64; depth++) {
+        const parent = dirname(current);
+        if (parent === current) break;
+        tail.unshift(current.slice(parent.length + 1));
+        current = parent;
+        try {
+          resolvedAncestor = await realpath(current);
+          break;
+        } catch {}
+      }
+      candidate = resolvedAncestor !== undefined ? join(resolvedAncestor, ...tail) : absolute;
     }
     if (!this.underRoots(candidate, await this.startDirRoots())) throw invalid("path must live under a start dir");
     return candidate;

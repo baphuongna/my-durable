@@ -117,3 +117,48 @@ test("the overview panel sanitizes its device-sourced strings (R14 review)", () 
   // The styled primitive keeps the theme's own SGR (no over-stripping).
   assert.match(new Line("\u001b[1mbold\u001b[22m").render(20).join(""), /\u001b\[1m/, "Line preserves pre-styled SGR");
 });
+
+test("the live transcript renderer sanitizes model/tool payloads (R15 run-2 h15)", async () => {
+  // The delta-8 fix sanitized render.ts components that App.frame() never
+  // uses — the real conversation is App.agentContent. This drives the REAL
+  // method with a hostile transcript and asserts no escape bytes survive.
+  const { App } = await import("../src/app.ts");
+  const app = new App(
+    { id: `dev-${OSC52}`, name: "n", url: "http://127.0.0.1:9", token: "t" },
+    { stream: () => ({ abort() {} }), on: () => () => {} } as never,
+    { models: [], startDirs: [] } as never,
+  );
+  try {
+    const s = app.model.state as { items: unknown[] };
+    s.items = [
+      { kind: "user", text: `user ${OSC8} text` },
+      {
+        kind: "assistant",
+        blocks: [
+          { type: "thinking", text: `think ${DCS}` },
+          { type: "text", text: `answer ${OSC52}` },
+          {
+            type: "tool",
+            call: {
+              id: "1",
+              name: `bash${EXIT_ALT}`,
+              status: "ok",
+              args: { command: `echo ${OSC8}` },
+              result: `out ${TITLE}\rline`,
+            },
+          },
+        ],
+        error: `boom ${EXIT_ALT}`,
+      },
+    ];
+    const raw = (app as unknown as { agentContent(w: number): string[] }).agentContent(80).join("\n");
+    // Theme SGR (`ESC[...m`) is trusted; strip it, then NO escape/control byte
+    // of any payload class may survive — OSC/DCS/CSI?/CR all gone, and the OSC8
+    // link TARGET may not remain as a rendered link (inert label text is fine).
+    const inert = raw.replace(/\x1b\[[0-9;]*m/g, "");
+    assert.equal(/\x1b/.test(inert), false, `escape byte survived: ${JSON.stringify(inert.slice(0, 300))}`);
+    assert.equal(inert.includes("\r"), false, "CR survived");
+  } finally {
+    (app as unknown as { exit(): void }).exit();
+  }
+});

@@ -62,7 +62,18 @@ export const PAIR_PAGE_HTML = `<!doctype html>
   var statusEl = document.getElementById("status");
   var meta = document.getElementById("meta");
   var H = { "content-type": "application/json", "x-dpi-pair": "1" };
-  function say(text, cls) { statusEl.innerHTML = text ? '<span class="' + (cls || "") + '">' + text + "</span>" : ""; }
+  // R15 (run-2 h1): the enrollment page renders HUB-CONTROLLED text here
+  // (lastError, error.message from the offer the operator pasted) — that is a
+  // remote principal, so the status line must be text-only. The page's own
+  // static strings stopped needing markup at the same time.
+  function say(text, cls) {
+    statusEl.textContent = "";
+    if (!text) return;
+    var span = document.createElement("span");
+    if (cls) span.className = cls;
+    span.textContent = text;
+    statusEl.appendChild(span);
+  }
   // The hub handoff link put the offer in THIS page's fragment.
   if (location.hash.indexOf("#offer=") === 0) offerEl.value = location.href;
   function poll() {
@@ -70,8 +81,8 @@ export const PAIR_PAGE_HTML = `<!doctype html>
       .then(function (r) { return r.json(); })
       .then(function (s) {
         render(s);
-        if (s.state === "pairing") { say('<span class="spin">&#9696;</span> waiting for approval on the hub…', "warn"); setTimeout(poll, 2000); }
-        else if (s.state === "paired") say("paired — credential saved. You can close this page and open <b>dpi tui</b>.", "ok");
+        if (s.state === "pairing") { say("⠿ waiting for approval on the hub…", "warn"); setTimeout(poll, 2000); }
+        else if (s.state === "paired") say("paired — credential saved. You can close this page and open dpi tui.", "ok");
       })
       .catch(function () { setTimeout(poll, 3000); });
   }
@@ -101,7 +112,7 @@ export const PAIR_PAGE_HTML = `<!doctype html>
         if (!o.ok) { say((o.b && o.b.error && o.b.error.message) || "refused", "err"); go.disabled = false; return; }
         poll();
       })
-      .catch(function () { say("cannot reach the local backend — is <b>dpi device</b> running?", "err"); go.disabled = false; });
+      .catch(function () { say("cannot reach the local backend — is dpi device running?", "err"); go.disabled = false; });
   });
   load();
 })();

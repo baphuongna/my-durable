@@ -121,8 +121,16 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
       body: "{}",
     });
     assert.notEqual(pairReq.status, 401, "pair/request must be exempt (device-initiated flow)");
-    const share = await hreq(`${base}/share/ab12cd34ef56gh78ij`, { agent });
+    const share = await hreq(`${base}/share/ab12cd34ef56gh78ijkl`, { agent });
     assert.notEqual(share.status, 401, "share links must be exempt (token is the boundary)");
+
+    // R15 (run-2 h12): only the TOKEN-SHAPED share page is exempt. Unmatched
+    // /share/ paths (empty or multi-segment) used to ride the wildcard into
+    // the hub's SPA fallback and served the operator app shell anonymously.
+    for (const drift of ["/share/", "/share/a/b", "/share/a/b/c"]) {
+      const r = await hreq(`${base}${drift}`, { agent });
+      assert.equal(r.status, 401, `${drift} must not be exempt`);
+    }
 
     // Audit run-1 (method-gap fallthrough): a WRONG METHOD on an exempt path
     // matches no exemption handle and must land in the catch-all (401 Basic) —
@@ -133,7 +141,7 @@ test("P2-21 reference Caddyfile: auth matrix, tunnel exemption, XFF overwrite, H
       ["/healthz", "POST"],
       ["/healthz", "HEAD"],
       ["/api/tunnel", "POST"],
-      ["/share/ab12cd34ef56gh78ij", "POST"],
+      ["/share/ab12cd34ef56gh78ijkl", "POST"],
       ["/api/pair/request", "GET"],
     ] as const) {
       const r = await hreq(`${base}${path}`, { agent, method });

@@ -2,6 +2,7 @@
 import type { SlashCommand } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import type { App } from "./app.ts";
+import { sanitizeTerminal } from "./sanitize.ts";
 import { Panel, pickAgent, pickDevice, pickModel, pickSession, pickThinking } from "./pickers.ts";
 import { parsePairArgs, runPairing } from "./pairing.ts";
 import { gitStateSuffix } from "./views.ts";
@@ -242,7 +243,7 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
         new Panel(
           () => [
             c.bold(c.accent("dpi-tui")),
-            c.muted(`${app.device.id} │ ${app.device.url}`),
+            c.muted(`${sanitizeTerminal(app.device.id)} │ ${sanitizeTerminal(app.device.url)}`),
             "",
             ...KEYS.map(([k, d]) => `${c.secondary(k.padEnd(11))} ${d}`),
             "",

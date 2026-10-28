@@ -708,7 +708,7 @@ export class App {
       this.input!.value = "/";
     } else if (data === "f") this.beginInput("filter", "filter ❯ ");
     else if (data === "n") this.beginInput("new", "new session › ");
-    else if (data === "x") this.beginInput("kill", `reset ${this.sessionSummary()?.name ?? "context"}? y/n`);
+    else if (data === "x") this.beginInput("kill", `reset ${sanitizeTerminal(this.sessionSummary()?.name ?? "context")}? y/n`);
     else if (data === "g") this.setView("herd");
     else if (data === "N") this.setView("network");
     else if (data === "L") this.setView("log");
@@ -1153,7 +1153,7 @@ export class App {
     const session = this.sessions.find((x) => x.id === this.sessionId);
     const right =
       this.view === "agent" && session
-        ? `${this.device.id}:${session.name}:${this.agentId ?? 1}`
+        ? `${sanitizeTerminal(this.device.id)}:${sanitizeTerminal(session.name)}:${this.agentId ?? 1}`
         : this.view === "agent"
           ? "no workspace"
           : "j/k move · ↵ open";
@@ -1218,10 +1218,10 @@ export class App {
     // the web shows a banner — the TUI used to show a healthy branch chip
     // while the repo was mid-merge with conflicts.
     const gitChip = g?.repo
-      ? `  ${c.muted("⎇")} ${c.text(g.branch ?? g.head ?? "")}${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0) ? c.warn(` ±${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0)}`) : ""}${g.merge ? c.err(gitStateSuffix(g)) : g.detached ? c.warn(gitStateSuffix(g)) : ""}`
+      ? `  ${c.muted("⎇")} ${c.text(sanitizeTerminal(g.branch ?? g.head ?? ""))}${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0) ? c.warn(` ±${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0)}`) : ""}${g.merge ? c.err(gitStateSuffix(g)) : g.detached ? c.warn(gitStateSuffix(g)) : ""}`
       : "";
     lines.push(
-      `${c.muted(this.device.id)} ${c.muted("›")} ${c.text(session?.name ?? "—")} ${c.muted("›")} ${c.bold(`#${this.agentId ?? 1}`)}${gitChip}  ` +
+      `${c.muted(sanitizeTerminal(this.device.id))} ${c.muted("›")} ${c.text(sanitizeTerminal(session?.name ?? "—"))} ${c.muted("›")} ${c.bold(`#${this.agentId ?? 1}`)}${gitChip}  ` +
         `${STATE_COLOR[state](STATE_GLYPH[state] + " " + (this.busy() ? "working" : "idle"))}  ` +
         // Catalog miss renders "?" not "—" (R5 finding 5): unknown window ≠ no usage.
         `${c.muted("ctx")} ${ctx === undefined ? c.muted("?") : c.accent(rep("█", filled)) + c.muted(rep("░", barW - filled)) + " " + c.muted(`${ctx}%`)}`,
@@ -1271,7 +1271,9 @@ export class App {
     const s = this.model.state;
     // Display-width loop wrap (R5 finding 1): the old single-split leaked the
     // remainder of every overlong line to pi-tui's hard clip. See wrap.ts.
-    const wrap = (text: string, indent = "  ") => wrapByColumn(text, w, indent);
+    // R15 (run-2 h15): transcript payloads are model/tool-controlled — the
+    // sanitize happens HERE, at the data boundary, before any styling/wrap.
+    const wrap = (text: string, indent = "  ") => wrapByColumn(sanitizeTerminal(text), w, indent);
     if (this.tab === "transcript") {
       const lines: string[] = [];
       let turn = 0;
@@ -1288,15 +1290,15 @@ export class App {
             else if (b.type === "text") lines.push(...wrap(b.text));
             else if (b.type === "tool") {
               const glyph = b.call.status === "error" ? c.err("✗") : b.call.status === "running" ? c.warn("◐") : c.ok("✓");
-              const args = JSON.stringify(b.call.args ?? {}) || "";
-              lines.push(`  ${glyph} ${c.bold(b.call.name)} ${c.muted(this.expand ? args.slice(0, w - 8) : args.slice(0, Math.max(10, w - 20)))}`);
+              const args = sanitizeTerminal(JSON.stringify(b.call.args ?? {}) || "");
+              lines.push(`  ${glyph} ${c.bold(sanitizeTerminal(b.call.name))} ${c.muted(this.expand ? args.slice(0, w - 8) : args.slice(0, Math.max(10, w - 20)))}`);
               const out = b.call.output ?? b.call.result ?? "";
               if (typeof out === "string" && out)
                 for (const l of (this.expand ? out.split("\n") : out.split("\n").slice(0, 6)))
-                  lines.push(`    ${c.muted(l.slice(0, w - 6))}`);
+                  lines.push(`    ${c.muted(sanitizeTerminal(l).slice(0, w - 6))}`);
             }
           }
-          if (item.error) lines.push(`  ${c.err(item.error.slice(0, w - 4))}`);
+          if (item.error) lines.push(`  ${c.err(sanitizeTerminal(item.error).slice(0, w - 4))}`);
           lines.push("");
         }
       }
@@ -1307,7 +1309,7 @@ export class App {
       const lines: string[] = [];
       for (const item of s.inbox)
         lines.push(
-          ` ${c.warn("◆")} ${c.text(`${item.mode === "steer" ? "steer" : "queued"}: ${(item.content ?? "context update").replace(/\s+/g, " ").slice(0, w - 20)}`)}`,
+          ` ${c.warn("◆")} ${c.text(`${item.mode === "steer" ? "steer" : "queued"}: ${sanitizeTerminal(item.content ?? "context update").replace(/\s+/g, " ").slice(0, w - 20)}`)}`,
         );
       const bg = this.agentId === undefined ? [] : this.session.backgroundTasks(this.agentId);
       for (const t of bg) lines.push(` ${c.accent("◐")} ${c.text(String(t).slice(0, w - 6))}`);
@@ -1371,7 +1373,7 @@ export class App {
     if (this.filter)
       lines.push(c.warn(` filter: ${this.filter} · ${rows.length}/${this.events.length} shown — esc clears`));
     const visible = h - lines.length;
-    for (const e of rows.slice(-visible)) lines.push(` ${c.muted(e.at)} ${c.accent(e.glyph)} ${c.text(e.text.slice(0, w - 18))}`);
+    for (const e of rows.slice(-visible)) lines.push(` ${c.muted(e.at)} ${c.accent(e.glyph)} ${c.text(sanitizeTerminal(e.text).slice(0, w - 18))}`);
     return lines;
   }
 

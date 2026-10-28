@@ -13,6 +13,7 @@ import { syncConfigToRegistry, tryLoadNetworkConfig } from "../../dpi-sdk/src/no
 import { App, type DeviceRef } from "./app.ts";
 import { pickDevice } from "./pickers.ts";
 import { emptyDeviceInfo, resolveStartupAction, showWelcome, WELCOME_DEVICE } from "./welcome.ts";
+import { sanitizeTerminal } from "./sanitize.ts";
 
 const USAGE = `usage: dpi-tui [device[:session[:agent]]] [options]
        dpi-tui --url <url> --token <token> [--save <id>]
@@ -213,10 +214,11 @@ if (startup.kind === "welcome") {
         hubEnv,
       ),
       {
-      notice:
+      notice: sanitizeTerminal(
         isDpiError(e) && e.code === "unauthorized"
           ? `${device.id}: token rejected by ${device.url}`
           : `${device.id} is offline at ${device.url} (${(e as Error).message})`,
+      ),
       },
     );
     }
