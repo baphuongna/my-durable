@@ -9,7 +9,10 @@
 import { DpiClient } from "../../../../dpi-sdk/src/client.js";
 import { DpiError } from "../../../../dpi-sdk/src/errors.js";
 import { validateRestRequest } from "../../../../dpi-sdk/src/protocol/tunnel.js";
-import { REST_PATH_PREFIX } from "../../../../dpi-sdk/src/protocol/limits.js";
+import {
+  LOGICAL_MESSAGE_MAX_BYTES,
+  REST_PATH_PREFIX,
+} from "../../../../dpi-sdk/src/protocol/limits.js";
 import type { Frame } from "../../../../dpi-sdk/src/api.js";
 import type { DeviceRow } from "../../../../dpi-sdk/src/node/registry.js";
 
@@ -110,11 +113,19 @@ export class LanTransport implements DeviceTransport {
       if (signal?.aborted) throw cause;
       throw new DpiError("offline", `Cannot reach ${this.client.baseUrl}`, 0, { cause });
     }
-    const raw = Buffer.from(await response.arrayBuffer());
+    // R17 (run-3 h8): size parity with the tunnel leg — the device connector
+    // caps its own fetches (16 MiB textual / binary cap) and reassembly
+    // budgets bound the tunnel; this leg used to buffer arrayBuffer() with NO
+    // cap, so a hostile LAN peer (or compromised device) could OOM the whole
+    // hub process. Mirror the connector's capped reader.
     const ct = response.headers.get("content-type") ?? undefined;
+    const textual = ct === undefined || TEXTUAL_CT_RE.test(ct);
+    const capped = await readBodyCapped(response, textual ? LOGICAL_MESSAGE_MAX_BYTES : BINARY_RESPONSE_MAX_BYTES);
+    if (!capped.ok)
+      throw new DpiError("invalid", `device answer exceeds ${textual ? "16 MiB" : "12 MB"}`, 413);
+    const raw = capped.bytes;
     // Textual responses keep the legacy plain-string shape; binaries are base64-flagged
     // so the proxy can serve bytes byte-exact (R8 binary passthrough).
-    const textual = ct === undefined || TEXTUAL_CT_RE.test(ct);
     return {
       status: response.status,
       contentType: ct,
@@ -147,4 +158,33 @@ export function transportFor(
 ): DeviceTransport | undefined {
   if (row.transport === "tunnel") return tunnel ? tunnel.dispatcherFor(row) : undefined;
   return new LanTransport(row);
+}
+
+/** R17 (run-3 h8): the binary cap mirrors the device connector's own reader. */
+const BINARY_RESPONSE_MAX_BYTES = 12 * 1024 * 1024;
+
+async function readBodyCapped(
+  res: Response,
+  cap: number,
+): Promise<{ ok: true; bytes: Buffer } | { ok: false }> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > cap) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false };
+  }
+  if (!res.body) return { ok: true, bytes: Buffer.alloc(0) };
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      await reader.cancel().catch(() => {});
+      return { ok: false };
+    }
+    parts.push(value);
+  }
+  return { ok: true, bytes: Buffer.concat(parts) };
 }

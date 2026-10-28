@@ -245,3 +245,34 @@ test("proxy: binary passthrough is byte-exact, keeps device type+filename, stays
     await device.close();
   }
 });
+
+test("R17 h8: an over-cap LAN answer is refused 413, never buffered to the hub heap", async () => {
+  // Declared content-length over the textual cap: the capped reader refuses
+  // BEFORE reading the body (the stub would otherwise stream 16 MiB+1).
+  const huge = Buffer.alloc(0); // body never actually sent — declared length refuses first
+  const device = await stubDeviceHuge();
+  try {
+    const transport = new LanTransport(lanRow(device.url));
+    await assert.rejects(
+      () => transport.request({ method: "GET", path: "/v1/device" }, new AbortController().signal),
+      (e: Error & { code?: string; status?: number }) => e.code === "invalid" && e.status === 413,
+    );
+  } finally {
+    await device.close();
+  }
+  async function stubDeviceHuge() {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json", "content-length": String(17 * 1024 * 1024) });
+      res.end(huge);
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const port = (server.address() as { port: number }).port;
+    return {
+      url: `http://127.0.0.1:${port}`,
+      async close() {
+        server.closeAllConnections();
+        await new Promise<void>((done) => server.close(() => done()));
+      },
+    };
+  }
+});

@@ -80,6 +80,7 @@ import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } fro
 import { zipSync, EXPORT_RAW_LIMIT_BYTES, type ZipEntry } from "./zip.js";
 import { salvageFailureNote, salvageSessionDb } from "./salvage.js";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, statSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 import { join, dirname, relative, resolve, sep } from "node:path";
 import { homedir, hostname, platform } from "node:os";
@@ -1016,7 +1017,29 @@ export class Store {
       // ancestor was found at all, judging the raw spelling lexically would
       // resurrect the exact symlink escape this walk exists to close.
       if (resolvedAncestor === undefined) throw invalid("path must live under a start dir");
-      candidate = join(resolvedAncestor, ...tail);
+      // R17 (run-3 h1): lstat every re-appended tail component. The walk only
+      // calls realpath, which cannot see a DANGLING symlink — a link component
+      // pointing at a nonexistent path would ride the tail verbatim and be
+      // judged lexically. Any symlink in the tail is resolved-and-rejudged;
+      // a dangling one is refused (fail closed on what the walk cannot see).
+      let walked = resolvedAncestor;
+      for (const part of tail) {
+        const next = join(walked, part);
+        let isLink = false;
+        try {
+          isLink = (await lstat(next)).isSymbolicLink();
+        } catch {
+          isLink = false; // plain missing component: fine, the path is new
+        }
+        if (isLink) {
+          const linked = await realpath(next).catch(() => undefined);
+          if (linked === undefined) throw invalid("path must live under a start dir"); // dangling link: refuse
+          walked = linked; // existing link target: continue the walk from truth
+        } else {
+          walked = next;
+        }
+      }
+      candidate = walked;
     }
     if (!this.underRoots(candidate, await this.startDirRoots())) throw invalid("path must live under a start dir");
     return candidate;

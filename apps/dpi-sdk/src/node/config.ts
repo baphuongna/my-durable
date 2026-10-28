@@ -99,6 +99,16 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
     if (!DEVICE_KINDS.includes(kind)) throw Error(`${where}.kind must be one of ${DEVICE_KINDS.join(", ")}`);
     const port = Number(d.port ?? 4780);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error(`${where}.port is invalid`);
+    // R17 (run-3 h12): these scalars reach generated shell scripts, backend.env
+    // lines and unit/plist content — a newline injected env lines (duplicate
+    // DPI_TOKEN/DPI_START_DIRS, last-wins at daemon boot) and quote/$/backtick
+    // executed command substitution inside the double-quoted script segments.
+    // Refuse control characters and shell metacharacters at parse time.
+    const pathish = (v: string, field: string) => {
+      if (/[\n\r\0]/.test(v)) throw Error(`${where}.${field} must be a single line`);
+      if (/["'`$\\]/.test(v)) throw Error(`${where}.${field} must not contain quotes, $ or backslash`);
+      return v;
+    };
     const device: NetDevice = {
       id,
       name: typeof d.name === "string" ? d.name : id,
@@ -106,10 +116,10 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
       url: "",
       port,
       node: Number(d.node ?? 24),
-      codeDir: typeof d.code_dir === "string" ? d.code_dir : "~/dpi",
-      homeDir: typeof d.home_dir === "string" ? d.home_dir : "~/.dpi",
-      startDirs: d.start_dirs === undefined ? [DEFAULT_START_DIR] : strList(d.start_dirs, `${where}.start_dirs`),
-      host: d.host === undefined ? (kind === "local" ? "127.0.0.1" : "0.0.0.0") : str(d.host, `${where}.host`),
+      codeDir: pathish(typeof d.code_dir === "string" ? d.code_dir : "~/dpi", "code_dir"),
+      homeDir: pathish(typeof d.home_dir === "string" ? d.home_dir : "~/.dpi", "home_dir"),
+      startDirs: d.start_dirs === undefined ? [DEFAULT_START_DIR] : strList(d.start_dirs, `${where}.start_dirs`).map((r: string) => pathish(r, "start_dirs")),
+      host: d.host === undefined ? (kind === "local" ? "127.0.0.1" : "0.0.0.0") : pathish(str(d.host, `${where}.host`), "host"),
       envKeys: d.env_keys === undefined ? [] : strList(d.env_keys, `${where}.env_keys`),
       env: {},
       ...(typeof d.token_env === "string" ? { tokenEnv: d.token_env } : {}),
@@ -119,7 +129,15 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
       if (d.service !== "launchd" && d.service !== "systemd") throw Error(`${where}.service must be launchd or systemd`);
       device.service = d.service;
     }
-    if (kind === "ssh") device.ssh = str(d.ssh, `${where}.ssh`);
+    if (kind === "ssh") {
+      const target = str(d.ssh, `${where}.ssh`);
+      // R17 (run-3 h12): the ssh scalar is a leading argv element — a leading
+      // dash would be parsed as an ssh OPTION (e.g. -oProxyCommand=…). Accept
+      // only a user@host[:port] shape.
+      if (!/^[A-Za-z0-9._%-]+@[A-Za-z0-9.-]+(:\d+)?$/.test(target))
+        throw Error(`${where}.ssh must be user@host[:port] (no options, no metacharacters)`);
+      device.ssh = target;
+    }
     if (kind === "exe-dev") {
       device.vm = str(d.vm, `${where}.vm`);
       if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(device.vm)) throw Error(`${where}.vm is not a valid exe.dev name`);

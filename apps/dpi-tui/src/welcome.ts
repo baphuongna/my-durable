@@ -426,7 +426,7 @@ async function welcomeLocal(app: App) {
   const id = suggestDeviceId(probe.info.hostname, probe.info.name);
   stepPicker(
     app,
-    `Local backend: ${probe.info.name || probe.info.hostname || url}`,
+    `Local backend: ${sanitizeTerminal(probe.info.name || probe.info.hostname || url)}`,
     [{ value: "open", label: `Save as "${id}" and open`, description: `${url} │ token from DPI_TOKEN / backend.env` }],
     // local.token was read BEFORE a first boot may have written backend.env —
     // re-resolve, the file exists now.

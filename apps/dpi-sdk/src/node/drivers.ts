@@ -113,6 +113,11 @@ async function writeEnv(device: NetDevice, ctx: DriverContext, rotate = false) {
   for (const [k, v] of Object.entries(device.env))
     if (typeof v !== "string" || !v || /[\n\r]/.test(v))
       ctx.log(`warning: device ${device.id} env ${k} has no value or contains a newline — skipped`);
+  // R17 (run-3 h12): config.ts rejects CR/LF in these at parse; the sink
+  // guards too so a future field can never reintroduce the line-injection.
+  for (const [k, v] of [["DPI_HOST", device.host], ["DPI_START_DIRS", device.startDirs.join(":")]] as const)
+    if (/[\n\r]/.test(v))
+      throw Error(`device ${device.id}: ${k} value contains a newline — refusing to write backend.env`);
   const home = shPath(device.homeDir);
   const body = [
     `DPI_DEVICE_NAME=${device.id}`,
@@ -182,7 +187,12 @@ async function installService(device: NetDevice, ctx: DriverContext) {
   };
   const deployDir = join(ctx.config.root, "apps/dpi-backend/deploy");
   if (device.service === "launchd") {
-    const plist = fill(readFileSync(join(deployDir, "dpi-backend.plist"), "utf8"), values);
+    // R17 (run-3 h12): plist is XML — escape & and < in the values (mirrors
+    // daemon.ts launchdPlist) so no new element can be forged.
+    const xmlValues = Object.fromEntries(
+      Object.entries(values).map(([k, v]) => [k, v.replaceAll("&", "&amp;").replaceAll("<", "&lt;")]),
+    );
+    const plist = fill(readFileSync(join(deployDir, "dpi-backend.plist"), "utf8"), xmlValues);
     await exec(
       device,
       `P="$HOME/Library/LaunchAgents/${SERVICE_LABEL}.plist"

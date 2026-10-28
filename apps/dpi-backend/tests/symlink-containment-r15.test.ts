@@ -83,6 +83,15 @@ test("R15 h6: worktree target under an escaping symlink is refused (no lexical p
     // fell back to the lexical spelling (cold review P1-2).
     const deep = join(repo, "link", ...Array<string>(70).fill("d"));
     await assert.rejects(() => b.store.containedPath(deep), /path must live under a start dir/);
+    // R17 (run-3 h1): a DANGLING symlink component in the missing tail was
+    // re-appended verbatim and judged lexically (probe: containedPath accepted
+    // <repo>/danglink/wt). The walk now lstats tail components: a dangling
+    // link is refused; git itself also refuses to follow it, so this is
+    // belt-and-suspenders for the walk's own fail-closed contract.
+    const absentVault = join(tmpdir(), `dpi-absent-vault-${Date.now()}`); // outside start dirs by construction (nonexistent)
+    symlinkSync(absentVault, join(repo, "danglink"));
+    await assert.rejects(() => b.store.containedPath(join(repo, "danglink", "wt")), /path must live under a start dir/);
+    await assert.rejects(() => b.store.containedPath(join(repo, "danglink")), /path must live under a start dir/);
     // And a genuinely new path INSIDE the start dir still resolves.
     const inside = await b.store.containedPath(join(b.t.work, "brand-new-dir", "sub"));
     assert.equal(inside, join(b.t.work, "brand-new-dir", "sub"));

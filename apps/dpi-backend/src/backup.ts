@@ -53,6 +53,8 @@ const describeError = (error: unknown) => (error instanceof Error ? error.messag
 
 /** The in-memory zip build is capped so `createBackup` cannot balloon the device's RAM. */
 export const MAX_BACKUP_BYTES = 256 * 1024 * 1024;
+/** R17: how much of an entry-0 manifest may ride free of the total cap (real manifests are ~150 bytes). */
+const MANIFEST_ALLOWANCE_BYTES = 64 * 1024;
 /** `ensurePrivateDir` (dpi-sdk) is synchronous and not injectable; the io carries the same 0700/0600 rule instead. */
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -383,8 +385,12 @@ export function readZipEntries(data: Uint8Array): ZipArchiveEntry[] {
     // backup ceiling — a pile of individually-legal entries must not add up
     // to an unbounded restore either. Entry 0 is the writer's own manifest,
     // which the write-side budget (walkHome) never counts, so a ceiling-sized
-    // home must stay restorable (R15 cold review P2-1).
+    // home must stay restorable (R15 cold review P2-1). R17 (run-3 h2): the
+    // exemption is now BOUNDED to a manifest-plausible allowance (the real
+    // manifest is a fixed ~150-byte shape) — a hostile entry-0 declaring the
+    // full 256 MiB used to ride free and double the retained ceiling.
     if (i > 0 || name !== "manifest.json") totalDeclared += uncompressedSize;
+    else totalDeclared += Math.max(0, uncompressedSize - MANIFEST_ALLOWANCE_BYTES);
     if (totalDeclared > MAX_BACKUP_BYTES) {
       throw bad(`archive declares more than ${MAX_BACKUP_BYTES} bytes of entries`);
     }

@@ -194,7 +194,7 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       // not skip that gate (R4 finding 4: the palette entry used to wipe the
       // context unconditionally). A typed handoff note carries its own intent.
       if (!arg) {
-        const ok = await app.prompt(`Reset ${app.sessionSummary()?.name ?? "context"}? y/n`, "");
+        const ok = await app.prompt(`Reset ${sanitizeTerminal(app.sessionSummary()?.name ?? "context")}? y/n`, "");
         if (ok === undefined || !ok.trim().toLowerCase().startsWith("y"))
           return app.flash("reset cancelled"), true;
       }
@@ -227,11 +227,11 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       app.overlay(
         new Panel(() => {
           const tasks = app.session.state.tasks;
-          const lines = [c.bold(c.accent(`Live tasks in ${app.sessionSummary()?.name ?? "session"}`)), ""];
+          const lines = [c.bold(c.accent(`Live tasks in ${sanitizeTerminal(app.sessionSummary()?.name ?? "session")}`)), ""];
           if (!tasks.length) lines.push(c.muted("No live tasks."));
           for (const t of tasks)
             lines.push(
-              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${t.id} ${t.kind} ${c.muted(`agent #${t.conversationId} │ ${t.state.status}${t.state.phase ? `/${t.state.phase}` : ""}`)}`,
+              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${t.id} ${sanitizeTerminal(t.kind)} ${c.muted(sanitizeTerminal(`agent #${t.conversationId} │ ${t.state.status}${t.state.phase ? `/${t.state.phase}` : ""}`))}`,
             );
           lines.push("", c.muted("esc close"));
           return lines;

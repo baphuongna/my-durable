@@ -105,9 +105,24 @@ export function scrubSecrets(value: string): string {
   out = out.replace(/([?&]code=)[A-Za-z0-9_-]+/g, "$1<redacted>");
   // v2 offer links: the secret IS the #offer= fragment payload — redact it wherever a URL shows up.
   out = out.replace(/(#offer=)[A-Za-z0-9_-]+/g, "$1<redacted>");
-  // R16 (run-2 h7): a requireTls-denied GET /share/<token> lands the FULL
-  // capability token in audit path samples — the token IS the share secret.
-  out = out.replace(/(\/share\/)[A-Za-z0-9_-]{20,32}(?![A-Za-z0-9_-])/g, "$1<redacted>");
+  // R16 (run-2 h7) + R17 (run-3 h10): a denied request lands the FULL share
+  // capability token in audit path samples — the token IS the secret. The
+  // prefix spelling is ATTACKER-CONTROLLED (/share/, /api/shares/, /Share/,
+  // /%73hare/...), so anchor on a *share-shaped* path segment (case-blind,
+  // percent-encoding tolerated) followed by the 20-32-char token run — not on
+  // any one literal prefix. Bare 20-32-char values elsewhere (audit enums
+  // like "foreign_subscription") stay readable.
+  out = out.replace(
+    /(\/[a-z0-9%]*shares?\/)[A-Za-z0-9_-]{20,32}(?![A-Za-z0-9_-])/gi,
+    "$1<redacted>",
+  );
+  // Encoded spellings (/%73hare/) hide the literal "share" — any
+  // percent-bearing path segment followed by a token-shaped run is treated
+  // the same.
+  out = out.replace(
+    /(\/[^\s"']*%[^\s"']*\/)[A-Za-z0-9_-]{20,32}(?![A-Za-z0-9_-])/gi,
+    "$1<redacted>",
+  );
   // Credential material without its prefix (slices, echo): 43-char base64url runs.
   out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
   // Pairing codes as standalone values ("code":"AB2C7DEF" / "ABCD2345EF67") but not ordinary words.

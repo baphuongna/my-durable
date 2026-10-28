@@ -226,10 +226,20 @@ export class DeviceMonitor {
         continue;
       }
       try {
+        // R17 (run-3 h8): abort the losing probe — a timed-out fetch keeps
+        // buffering (up to REST_TIMEOUT_MS) while the backoff loop starts the
+        // next one, multiplying an unbounded read. The per-probe controller
+        // also stops reading the moment the race is lost.
+        const probeCtl = new AbortController();
+        const onOuterAbort = () => probeCtl.abort();
+        signal?.addEventListener("abort", onOuterAbort, { once: true });
         const probe = await Promise.race([
-          transport.request({ method: "GET", path: "/v1/device" }, signal),
+          transport.request({ method: "GET", path: "/v1/device" }, probeCtl.signal),
           sleep(6_000, signal).then(() => null),
-        ]);
+        ]).finally(() => {
+          signal?.removeEventListener("abort", onOuterAbort);
+          probeCtl.abort();
+        });
         if (probe === null) throw new DpiError("offline", `Probe timeout for ${device.url}`);
         if (probe.status === 401)
           throw new DpiError("unauthorized", "Device rejected the token", 401);

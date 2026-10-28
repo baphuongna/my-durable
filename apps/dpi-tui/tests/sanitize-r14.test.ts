@@ -162,3 +162,21 @@ test("the live transcript renderer sanitizes model/tool payloads (R15 run-2 h15)
     (app as unknown as { exit(): void }).exit();
   }
 });
+
+test("R17 h5: pending notes are sanitized at the setPending chokepoint", async () => {
+  const { App } = await import("../src/app.ts");
+  const app = new App(
+    { id: "d", name: "n", url: "http://127.0.0.1:9", token: "t" },
+    { stream: () => ({ abort() {} }), on: () => () => {} } as never,
+    { models: [], startDirs: [] } as never,
+  );
+  try {
+    app.setPending(`listing ${OSC8} on dev…`);
+    const line = app.messageLine(120).replace(/\u001b\[[0-9;]*m/g, ""); // theme SGR is trusted
+    assert.ok(!line.includes("\u001b"), "OSC hyperlink payload must not reach the frame");
+    assert.ok(!line.includes("evil.example"), "the hyperlink target must not survive");
+    app.setPending(null);
+  } finally {
+    await app.exit();
+  }
+});

@@ -16,6 +16,7 @@ import type { App } from "./app.ts";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Panel } from "./pickers.ts";
 import { c } from "./theme.ts";
+import { sanitizeTerminal } from "./sanitize.ts";
 
 export interface PairArgs {
   code?: string;
@@ -151,25 +152,25 @@ export function pairingViewLines(
   hubOrigin?: string,
 ): string[] {
   const lines: string[] = [c.bold(c.accent("Pair this device"))];
-  if (hubOrigin) lines.push(c.muted(`hub: ${hubOrigin}`));
+  if (hubOrigin) lines.push(c.muted(`hub: ${sanitizeTerminal(hubOrigin)}`));
   if (!status) {
-    lines.push(c.muted(note));
+    lines.push(c.muted(sanitizeTerminal(note)));
     return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
   }
-  lines.push(c.muted(`device: ${status.deviceName ?? status.deviceUid ?? "?"} · uid ${status.deviceUid ?? "?"}`));
+  lines.push(c.muted(sanitizeTerminal(`device: ${status.deviceName ?? status.deviceUid ?? "?"} · uid ${status.deviceUid ?? "?"}`)));
   lines.push("");
   lines.push(c.bold("key fingerprint (compare with the hub wizard):"));
-  for (const line of wrapFingerprint(status.fingerprint, width)) lines.push(`  ${c.secondary(line)}`);
+  for (const line of wrapFingerprint(status.fingerprint, width)) lines.push(`  ${c.secondary(sanitizeTerminal(line))}`);
   lines.push("");
   if (status.pending) {
     lines.push(c.warn("Awaiting approval on the hub…"));
-    if (status.pending.note) lines.push(c.muted(`  ${status.pending.note}`));
+    if (status.pending.note) lines.push(c.muted(`  ${sanitizeTerminal(status.pending.note)}`));
   } else if (status.lastError) {
-    lines.push(c.err(describePairingError(status.lastError)));
+    lines.push(c.err(sanitizeTerminal(describePairingError(status.lastError))));
     if (status.state === "paired")
-      lines.push(c.muted(`Existing pairing to ${status.hubOrigin} is unchanged.`));
+      lines.push(c.muted(sanitizeTerminal(`Existing pairing to ${status.hubOrigin} is unchanged.`)));
   } else if (status.state === "paired") {
-    lines.push(c.ok(`Paired to ${status.hubOrigin} (generation ${status.generation}).`));
+    lines.push(c.ok(sanitizeTerminal(`Paired to ${status.hubOrigin} (generation ${status.generation}).`)));
     lines.push(c.muted("The connector keeps the tunnel up; /pair again to re-pair."));
   } else if (status.state === "revoked") {
     lines.push(c.warn("Revoked on the hub. /pair CODE to pair again."));

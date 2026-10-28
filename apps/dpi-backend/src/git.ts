@@ -59,8 +59,29 @@ const gitPaths = (paths: string[]): string[] => paths.map(gitPath);
 
 /** Child-process options, exported so a test can assert the Windows console
  *  window stays hidden: a daemon that polls git must never flash a terminal. */
-export const GIT_EXEC_OPTS = (timeout: number) => ({ timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
-export const GH_EXEC_OPTS = (cwd: string, timeout: number) => ({ cwd, timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+/**
+ * R17 (run-3 h1 hardening): git/gh children run -C agent-writable repos where
+ * hooks/config are plantable. The daemon's process.env carries DPI_TOKEN
+ * (loadEnvFile) which shellEnv deliberately strips from agent processes —
+ * mirror that allowlist here so the token (and any future backend.env secret)
+ * never rides into repo-controlled hook environments.
+ */
+const CHILD_ENV_ALLOWLIST = ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "TERM", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK"];
+const childEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(CHILD_ENV_ALLOWLIST.flatMap((k) => (process.env[k] ? [[k, process.env[k]]] : [])));
+export const GIT_EXEC_OPTS = (timeout: number) => ({
+  timeout,
+  maxBuffer: 8 * 1024 * 1024,
+  windowsHide: true,
+  env: childEnv(),
+});
+export const GH_EXEC_OPTS = (cwd: string, timeout: number) => ({
+  cwd,
+  timeout,
+  maxBuffer: 4 * 1024 * 1024,
+  windowsHide: true,
+  env: childEnv(),
+});
 
 /** Test seam for counting/driving spawns: `node:child_process`'s ESM namespace
  *  is not redefinable, so `mock.method` cannot reach `execFile`. Pass nothing

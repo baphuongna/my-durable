@@ -182,7 +182,7 @@ export interface TelegramRegistryFile {
   codes: TelegramBindCode[];
 }
 
-export type TelegramBridgeErrorCode = "invalid";
+export type TelegramBridgeErrorCode = "invalid" | "registry_changed";
 
 /** Typed failure for the mutation paths (`bind`) so a UI can answer without string matching. */
 export class TelegramBridgeError extends Error {
@@ -465,6 +465,11 @@ export class TelegramBridge {
       targetId = sessionId;
     }
     return this.run(async () => {
+      // R17 (run-3 h4): the CLI is the SECOND writer — re-read the registry
+      // (adopt foreign state) before snapshotting, so a daemon commit that
+      // landed since open() is not clobbered by our persist CAS.
+      if (!(await this.syncForeign()))
+        throw new TelegramBridgeError("registry_changed", `registry ${this.filePath} is missing/unreadable; refusing to bind`);
       const now = this.now();
       const draft = this.snapshot();
       draft.codes = draft.codes.filter((code) => Date.parse(code.expiresAt) > now); // prune the dead ones
@@ -486,6 +491,8 @@ export class TelegramBridge {
   /** Remove the first binding whose chat id starts with `chatPrefix`; returns the chat id, or undefined when none matched. */
   async unbind(chatPrefix: string): Promise<number | undefined> {
     return this.run(async () => {
+      // R17 (run-3 h4): same second-writer discipline as bind().
+      if (!(await this.syncForeign())) return undefined;
       const draft = this.snapshot();
       const hit = draft.chats.find((binding) => String(binding.chatId).startsWith(chatPrefix));
       if (hit === undefined) return undefined;
@@ -598,7 +605,23 @@ export class TelegramBridge {
    */
   private async syncForeign(): Promise<boolean> {
     try {
-      if (!(await this.io.exists(this.filePath))) return true;
+      // R17 (run-3 h4): an ABSENT registry is either a FRESH device (we have
+      // never known a registry: registryText null — load()'s "fresh device"
+      // semantics) or the operator revoking by removal while the daemon runs
+      // (or an unreadable file: exists() maps every stat failure to absent).
+      // Fresh → adopt the empty state and continue (bind works, no bindings
+      // exist to authorize anything). Known-then-gone → fail CLOSED: no
+      // dispatch on stale memory, and no persist either — a commit would
+      // resurrect the deleted file with the revoked bindings.
+      if (!(await this.io.exists(this.filePath))) {
+        if (this.registryText === null) {
+          this.adopt({ version: TELEGRAM_REGISTRY_VERSION, offset: this.offset, chats: [], codes: [] });
+          return true; // fresh: nothing to adopt, nothing to clobber
+        }
+        this.mainIsGood = false; // an absent main must not be "refreshed" into .bak
+        this.warn(`registry ${this.filePath} vanished; skipping the update (no dispatch, no persist)`);
+        return false;
+      }
       const text = await this.io.readFile(this.filePath);
       if (text === this.registryText) return true; // still our own last write
       const file = coerceRegistry(JSON.parse(text), this.now());
@@ -609,6 +632,7 @@ export class TelegramBridge {
       // Fail CLOSED (R15 cold review P3-1): with an unreadable/unparseable
       // registry the in-memory bindings cannot be trusted to reflect the
       // operator's intent — authorize nothing until the file is healthy.
+      this.mainIsGood = false; // the next persist must NOT bake these bytes into .bak
       this.warn(`could not re-read ${this.filePath} before dispatch; skipping the update`, error);
       return false;
     }
@@ -639,6 +663,22 @@ export class TelegramBridge {
    * new bytes through the io's atomic write, then 0600.
    */
   private async persist(draft: TelegramRegistryFile): Promise<void> {
+    // R17 (run-3 h4): the registry has TWO writers (daemon + dpi telegram
+    // CLI). Write-after-read validation: if the file's bytes changed since we
+    // last saw them, our snapshot is stale — writing it would clobber the
+    // foreign commit (un-spend a code, revert a /stop). Fail loudly instead.
+    if (this.registryText !== null && (await this.io.exists(this.filePath))) {
+      const current = await this.io.readFile(this.filePath);
+      if (current !== this.registryText) {
+        this.mainIsGood = false;
+        throw new TelegramBridgeError(
+          "registry_changed",
+          `registry changed under us (foreign write); re-open or retry — refusing to clobber ${this.filePath}`,
+        );
+      }
+    }
+    // registryText === null means no known baseline (fresh device or the
+    // load()-time recovery rewrite) — those writes are legitimate.
     if (this.mainIsGood && (await this.io.exists(this.filePath))) {
       try {
         const previous = await this.io.readFile(this.filePath);
@@ -724,10 +764,10 @@ export class TelegramBridge {
   /** Acknowledge first (persist the new offset), then handle. Never both-half-heartedly. */
   private async handle(update: TelegramUpdate): Promise<void> {
     const synced = await this.syncForeign();
+    if (!synced) return; // acknowledged (Telegram will redeliver), NOT authorized and NOT persisted — a stale snapshot must never become file truth again
     await this.commit((draft) => {
       draft.offset = Math.max(draft.offset, update.updateId + 1);
     });
-    if (!synced) return; // acknowledged, but NOT authorized on stale state
     if (!update.message) return; // non-message or non-text: acknowledged, ignored
     await this.dispatch(
       update.message.chatId,

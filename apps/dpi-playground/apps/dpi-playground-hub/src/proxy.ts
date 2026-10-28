@@ -72,6 +72,11 @@ export function proxy(
           idempotencyKey: (() => {
             const k = req.get("idempotency-key");
             if (k === undefined) return undefined;
+            // R17 (run-3 h8): an EMPTY key would suppress the R9 auto-key
+            // derivation and then drop as falsy at frame build — the mutation
+            // goes out with NO dedup key at all. Refuse it like the over-long.
+            if (k.trim() === "")
+              throw new DpiError("invalid", "idempotency-key must not be empty", 400);
             if (k.length > 256)
               throw new DpiError("invalid", "idempotency-key longer than 256 chars", 400);
             return k;

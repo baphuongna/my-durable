@@ -653,7 +653,9 @@ export class App {
 
   /** A long fetch (dirs on a cold tunnel) holds the message line with a ◌ note. */
   setPending(text: string | null) {
-    this.pendingNote = text;
+    // R17 (run-3 h5): pending notes interpolate device-sourced paths/names
+    // (walkDirs/newSession feed them) — sanitize at the chokepoint.
+    this.pendingNote = text === null ? null : sanitizeTerminal(text);
     this.requestRender();
   }
 
@@ -1231,7 +1233,7 @@ export class App {
     lines.push(
       AGENT_TABS.map((t) => (t.id === this.tab ? c.inverse(c.bold(` ${t.label} `)) : c.muted(` ${t.label} `))).join(
         c.muted("│"),
-      ) + c.muted(rep(" ", Math.max(0, w - 62))) + c.muted(this.model.state.agent.model?.modelId?.split("/").pop() ?? ""),
+      ) + c.muted(rep(" ", Math.max(0, w - 62))) + c.muted(sanitizeTerminal(this.model.state.agent.model?.modelId?.split("/").pop() ?? "")),
     );
     lines.push(c.muted(rep(box.h, w)));
     const inner = h - 3;
@@ -1355,12 +1357,12 @@ export class App {
     // config tab
     const model = this.model.state.agent.model;
     const lines = [
-      ` ${c.muted("model")}     ${c.text(model?.modelId ?? "—")}`,
-      ` ${c.muted("provider")}  ${c.muted(model?.provider ?? "—")}`,
+      ` ${c.muted("model")}     ${c.text(sanitizeTerminal(model?.modelId ?? "—"))}`,
+      ` ${c.muted("provider")}  ${c.muted(sanitizeTerminal(model?.provider ?? "—"))}`,
       ` ${c.muted("thinking")}  ${c.text(String(this.model.state.agent.thinkingLevel ?? "low"))} ${c.muted("(y cycles)")}`,
       "",
-      ` ${c.muted("device")}    ${c.text(this.device.id)} ${c.muted(this.device.url)}`,
-      ` ${c.muted("start dirs")} ${c.muted(this.info.startDirs.join(", ").slice(0, w - 18) || "—")}`,
+      ` ${c.muted("device")}    ${c.text(sanitizeTerminal(this.device.id))} ${c.muted(sanitizeTerminal(this.device.url))}`,
+      ` ${c.muted("start dirs")} ${c.muted(sanitizeTerminal(this.info.startDirs.join(", ")).slice(0, w - 18) || "—")}`,
     ];
     return lines;
   }

@@ -55,7 +55,9 @@ export function isValidConnectUrl(candidate: string): boolean {
 }
 
 function fail(message: string): never {
-  process.stderr.write(`${message}\n`);
+  // R17 (run-3 h5): device-supplied strings (catalog lists, DpiError text)
+  // reach stderr here — sanitize for consistency with the frame boundaries.
+  process.stderr.write(`${sanitizeTerminal(message)}\n`);
   process.exit(1);
 }
 
