@@ -211,14 +211,25 @@ test("proxy: binary passthrough is byte-exact, keeps device type+filename, stays
         const l2 = app2.listen(0, "127.0.0.1");
         await new Promise<void>((done) => l2.once("listening", done));
         try {
+          // R16 (run-2 h4 parity): the LAN leg now runs the same REST allowlist
+          // as the tunnel dispatcher — use an allowlisted route for the hostile
+          // relabel assertion...
           const res2 = await fetch(
-            `http://127.0.0.1:${(l2.address() as { port: number }).port}/api/devices/dev-a/v1/x`,
+            `http://127.0.0.1:${(l2.address() as { port: number }).port}/api/devices/dev-a/v1/sessions/x/export`,
           );
+          assert.equal(res2.status, 200);
           assert.equal(res2.headers.get("content-type"), "application/octet-stream");
           assert.equal(
             res2.headers.get("content-disposition"),
             'attachment; filename="device-response.bin"',
           );
+          // ...and an unknown route is refused at the hub edge on BOTH legs —
+          // never forwarded for the device to 404 on.
+          const resUnknown = await fetch(
+            `http://127.0.0.1:${(l2.address() as { port: number }).port}/api/devices/dev-a/v1/x`,
+          );
+          assert.equal(resUnknown.status, 400);
+          assert.equal(((await resUnknown.json()) as { error: { code: string } }).error.code, "invalid");
         } finally {
           l2.closeAllConnections?.();
           await new Promise<void>((done) => l2.close(() => done()));

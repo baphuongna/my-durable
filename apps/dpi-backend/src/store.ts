@@ -1279,12 +1279,18 @@ export class Store {
   }
 
   async createGraph(body: Record<string, unknown>): Promise<GraphRecord> {
+    // R16 (run-2 h6 parity): sessions refuse a bad cwd up-front; graphs ran
+    // confined only at run time. Same rule at mutation time.
+    if (typeof body?.cwd === "string" && body.cwd.trim())
+      await this.assertSessionCwdAllowed(normaliseCwd(body.cwd));
     const created = await this.graphs.create(body as never);
     this.notify();
     return created;
   }
 
   async updateGraph(id: string, body: Record<string, unknown>): Promise<GraphRecord> {
+    if (typeof body?.cwd === "string" && body.cwd.trim())
+      await this.assertSessionCwdAllowed(normaliseCwd(body.cwd));
     const updated = await this.graphs.update(id, body as never);
     this.notify();
     return updated;

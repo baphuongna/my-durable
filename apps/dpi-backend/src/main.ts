@@ -9,6 +9,7 @@ import { loadConfig, deviceHome } from "./config.js";
 import { Store, PACKAGE_VERSION } from "./store.js";
 import { installCrashHandlers } from "./crash.js";
 import { bearerAuth } from "./auth.js";
+import { hostAllowlist, hostGuard } from "./host-guard.js";
 import { errorMiddleware } from "./errors.js";
 import { v1 } from "./routes.js";
 import { DevicePairing } from "./pairing.js";
@@ -73,10 +74,15 @@ crashStore = store;
 
 const app = express();
 app.disable("x-powered-by");
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
+// R16 (run-2 h1): DNS rebinding makes the enrollment surface same-origin from
+// the browser's view, defeating the x-dpi-pair preflight guard. Only hosts
+// this device serves (loopback + own interfaces, all with our port) may talk
+// to anything unauthenticated; everything else is misdirected.
+const unauthHostGuard = hostGuard(hostAllowlist(config.port));
+app.get("/healthz", unauthHostGuard, (_req, res) => res.json({ ok: true }));
 // The base URL is what people type first; a JSON 404 reads like a broken
 // daemon. Land them on the one real page (unpaired: enroll; paired: status).
-app.get("/", (_req, res) => res.redirect("/pair"));
+app.get("/", unauthHostGuard, (_req, res) => res.redirect("/pair"));
 const pairing = new DevicePairing(store, config.home, config.name, process.env.DPI_HUB_URL, {
   // Forced hub change (P-5): once the new pairing is persisted the OLD
   // connector is stopped — never two live tunnels for one device, and the old
@@ -115,8 +121,8 @@ const pairEnrollGuard = (req: Request, res: Response, next: NextFunction) => {
       .json({ error: { code: "forbidden", message: "missing x-dpi-pair header" } });
   next();
 };
-app.get("/pair", (_req, res) => res.type("html").send(PAIR_PAGE_HTML));
-app.get("/v1/pair-enroll", pairEnrollGuard, (_req, res) => {
+app.get("/pair", unauthHostGuard, (_req, res) => res.type("html").send(PAIR_PAGE_HTML));
+app.get("/v1/pair-enroll", unauthHostGuard, pairEnrollGuard, (_req, res) => {
   const s = pairing.status();
   res.json({
     state: s.state,
@@ -126,7 +132,7 @@ app.get("/v1/pair-enroll", pairEnrollGuard, (_req, res) => {
     lastError: s.lastError,
   });
 });
-app.post("/v1/pair-enroll", pairEnrollGuard, express.json({ limit: "8kb" }), (req, res) => {
+app.post("/v1/pair-enroll", unauthHostGuard, pairEnrollGuard, express.json({ limit: "8kb" }), (req, res) => {
   void (async () => {
     const s = pairing.status();
     if (s.state === "paired")

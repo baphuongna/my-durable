@@ -339,7 +339,17 @@ export class TunnelDispatcher {
                 idempotentReplay?: unknown;
               }
             | undefined;
-          if (typeof env?.status !== "number" || !Number.isFinite(env.status)) {
+          // R16 (run-2 h3): mirror the inline plain-frame schema caps here — the
+          // chunked envelope carries no TypeBox schema, so without this a
+          // device could deliver a 1xx/300-599-fractional status or an
+          // unbounded contentType string (proxy would reflect it verbatim into
+          // a response header).
+          if (
+            typeof env?.status !== "number" ||
+            !Number.isInteger(env.status) ||
+            env.status < 200 ||
+            env.status > 599
+          ) {
             p?.resolve({
               status: 502,
               body: {
@@ -350,7 +360,10 @@ export class TunnelDispatcher {
           }
           p?.resolve({
             status: env.status,
-            contentType: typeof env.contentType === "string" ? env.contentType : undefined,
+            contentType:
+              typeof env.contentType === "string" && env.contentType.length <= 256
+                ? env.contentType
+                : undefined,
             body: env.body,
             ...(env.bodyEncoding === "base64" ? { bodyEncoding: "base64" as const } : {}),
             ...(env.bodyEncoding === "base64"

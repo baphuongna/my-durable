@@ -24,7 +24,7 @@
  *
  * No express, no Store import: the leader wires routes and store calls.
  */
-import { chmodSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { mkdir, rename, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -179,19 +179,23 @@ function bundleStats(bundleDir: string): { turns: number; lastMessageAt: number 
 }
 
 /** Recursive size of a bundle dir; 0 when unreadable. Symlinks are not followed (lstat-free stat on entries we can read). */
-function dirBytes(dir: string): number {
+function dirBytes(dir: string, depth = 0): number {
+  // R16 (run-2 h8): listArchived must never throw — statSync FOLLOWS symlinks,
+  // so a planted symlink loop (a->b, b->a) blew the stack. Lstat never
+  // follows; the depth cap bounds hostile deep trees. Symlinked entries are
+  // skipped (not sizeable), matching gc.ts.
   let total = 0;
-  let names: string[];
+  let entries: Dirent[];
   try {
-    names = readdirSync(dir);
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return 0;
   }
-  for (const name of names) {
+  if (depth >= 64) return total;
+  for (const e of entries) {
     try {
-      const s = statSync(join(dir, name));
-      if (s.isDirectory()) total += dirBytes(join(dir, name));
-      else if (s.isFile()) total += s.size;
+      if (e.isDirectory()) total += dirBytes(join(dir, e.name), depth + 1);
+      else if (e.isFile()) total += lstatSync(join(dir, e.name)).size;
     } catch {
       // broken symlink / vanished entry: not sizeable, not fatal
     }

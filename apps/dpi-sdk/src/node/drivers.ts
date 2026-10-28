@@ -120,7 +120,13 @@ async function writeEnv(device: NetDevice, ctx: DriverContext, rotate = false) {
       const v = local[k] ?? process.env[k];
       return v && !/[\n\r]/.test(v) ? [`${k}=${v}`] : [];
     }),
-    ...Object.entries(device.env).map(([k, v]) => `${k}=${v}`),
+    // R16 (run-2 h12): env_keys secrets already refuse [\n\r]; plain env:
+    // entries get the same guard — a multiline YAML value would inject extra
+    // KEY=VALUE lines into backend.env (incl. a duplicate DPI_TOKEN, last
+    // wins). Misconfigured values are skipped, mirroring the env_keys branch.
+    ...Object.entries(device.env).flatMap(([k, v]) =>
+      typeof v === "string" && v && !/[\n\r]/.test(v) ? [`${k}=${v}`] : [],
+    ),
   ].join("\n");
   const mkStartDirs = device.startDirs.map((r) => `mkdir -p "${shPath(r)}"`).join("\n");
   await exec(
@@ -145,6 +151,10 @@ echo "env ok"`,
 function fill(template: string, values: Record<string, string>) {
   return template.replace(/__([A-Z_]+)__/g, (m, key: string) => {
     if (!(key in values)) throw Error(`Template placeholder ${m} has no value`);
+    // R16 (run-2 h12): these values land in a root-owned systemd unit / a
+    // LaunchAgent plist — a newline would inject whole new directives.
+    if (/[\n\r]/.test(values[key]))
+      throw Error(`Template value for ${key} contains a newline`);
     return values[key];
   });
 }

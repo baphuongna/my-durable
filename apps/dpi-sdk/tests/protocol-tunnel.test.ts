@@ -63,7 +63,7 @@ test("W-2: direction guards — hub-only, device-only, violations throw", () => 
   assert.doesNotThrow(() => assertDirection({ type: "tunnel-chunk", kind: "tunnel-data" }, "device->hub"));
   assert.throws(() => assertDirection({ type: "tunnel-chunk", kind: "tunnel-data" }, "hub->device"));
   assert.doesNotThrow(() => assertDirection({ type: "tunnel-chunk", kind: "rest-response" }, "device->hub"));
-  assert.doesNotThrow(() => assertDirection({ type: "tunnel-chunk", kind: "rest-request" }, "device->hub"));
+  assert.throws(() => assertDirection({ type: "tunnel-chunk", kind: "rest-request" }, "device->hub")); // R16: dead surface removed
   // unknown type
   assert.throws(() => assertDirection({ type: "mystery" }, "hub->device"));
 });

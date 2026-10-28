@@ -66,7 +66,16 @@ export function proxy(
         {
           method: req.method,
           path,
-          idempotencyKey: req.get("idempotency-key") ?? undefined,
+          // R16 (run-2 h4): bound the forwarded key to the device schema cap —
+          // an over-long key would be schema-rejected on the device and drop
+          // the tunnel into reconnect churn. Refuse it cleanly at the edge.
+          idempotencyKey: (() => {
+            const k = req.get("idempotency-key");
+            if (k === undefined) return undefined;
+            if (k.length > 256)
+              throw new DpiError("invalid", "idempotency-key longer than 256 chars", 400);
+            return k;
+          })(),
           body: req.body ?? {},
         },
         closed.signal,
@@ -124,7 +133,9 @@ export function proxy(
         const disposition = isZip
           ? `attachment; filename="${stem}.zip"`
           : 'attachment; filename="device-response.bin"';
-        res.type(isZip ? contentType : "application/octet-stream")
+        // R16 (run-2 h4): the zip LABEL is hub-authored — a chunk-sourced
+        // contentType has no length bound, so never reflect it verbatim.
+        res.type(isZip ? "application/zip" : "application/octet-stream")
           .set("Content-Disposition", disposition)
           .send(payload);
       }

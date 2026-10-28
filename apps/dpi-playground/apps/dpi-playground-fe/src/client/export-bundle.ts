@@ -22,8 +22,13 @@ export type BundleTarget = Ref<{
 export function downloadBundle(r: BundleFile) {
   const a = document.createElement("a");
   // slice() normalizes the buffer to a plain ArrayBuffer (BlobPart typing, TS 5.7).
-  a.href = URL.createObjectURL(new Blob([r.bytes.slice()], { type: r.mime || "application/zip" }));
-  a.download = r.filename;
+  // R16 (run-2 h13): the device is untrusted at the operator origin — the FE
+  // authors the label itself (mirrors hub delta-6): zip MIME is a literal and
+  // the filename is charset-folded, extension-stripped is unnecessary (the
+  // honest device contract is *.bundle.zip) but the cap keeps it sane.
+  const stem = (r.filename || "device-response").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "device-response";
+  a.href = URL.createObjectURL(new Blob([r.bytes.slice()], { type: "application/zip" }));
+  a.download = stem;
   a.click();
   URL.revokeObjectURL(a.href);
 }

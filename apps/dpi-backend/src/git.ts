@@ -428,7 +428,9 @@ export type GitOp =
   | "pr-comment";
 
 /** Plain string an arg may never contain — we build argv ourselves anyway. */
-const safeRef = (s: string) => /^[\w./@+-]+$/.test(s) && !s.includes("..");
+// R16 (run-2 h6): a leading dash would turn the ref into a git OPTION
+// (`push -u origin --mirror`); refuse the whole ref instead.
+const safeRef = (s: string) => /^[\w./@+-]+$/.test(s) && !s.startsWith("-") && !s.includes("..");
 
 /** Run one whitelisted git operation. Every arg is ours; callers only pick names. */
 export async function gitOp(

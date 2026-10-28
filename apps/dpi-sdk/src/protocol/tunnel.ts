@@ -306,7 +306,9 @@ const DEVICE_TO_HUB = new Set([
   "tunnel-chunk:tunnel-data",
   "rest-response",
   "tunnel-chunk:rest-response",
-  "tunnel-chunk:rest-request",
+  // R16 (run-2 h3): no producer exists for a chunked rest-request device->hub
+  // (route() ignored it silently). Removed instead of dead-allowed: a future
+  // device sending one is now an audited direction violation, not drift.
 ]);
 
 function messageKey(msg: { type: string; action?: string; kind?: string }): string {

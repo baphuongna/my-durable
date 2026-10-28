@@ -527,6 +527,21 @@ export class PairingService {
         return this.fail(409, "code_in_use", "This code is reserved for another enrollment");
       if (existing.cancelled) return this.fail(410, "enrollment_cancelled", "Enrollment cancelled");
       if (now >= live.expiresAt) return this.fail(410, "code_expired", "Pairing code expired");
+      // R16 (run-2 h2 hardening): the dead window. A proof that arrives after
+      // NONCE_TTL is refused forever (verify() re-checks the TTL against the
+      // ORIGINAL nonceIssuedAt) while the code stays live for minutes — an
+      // unverified enrollment could never complete. Same-identity re-entry is
+      // exactly the retry signal: mint a fresh nonce for an unverified,
+      // unconsumed, stale ceremony. Verified/consumed enrollments keep their
+      // nonce (idempotent answer; a consumed nonce is terminal by design).
+      if (
+        existing.verifiedAt === undefined &&
+        !existing.nonceConsumed &&
+        now - existing.nonceIssuedAt > NONCE_TTL_MS
+      ) {
+        existing.nonce = randomBytes(32).toString("base64url");
+        existing.nonceIssuedAt = now;
+      }
       return this.ok({
         type: "pair.challenge",
         v: 1,

@@ -548,9 +548,10 @@ test("RR: a device answer whose status is outside 200-599 is a prompt 502, never
     assert.equal(interim.status, 502, "a 1xx device status is not passed through");
     assert.equal((await interim.json()).error.code, "invalid");
 
-    // The chunked envelope carries no schema: a status that is not even a finite number is refused
-    // by the transport, and an out-of-range number by the proxy clamp. Either way it is a 502 and
-    // never the device's own status line; the message pins which layer refused.
+    // The chunked envelope carries no schema: R16 mirrors the inline plain-frame
+    // caps at reassembly (transport), so non-integer AND out-of-range statuses are
+    // both refused there; the proxy clamp stays as the backstop. Either way it is
+    // a 502 and never the device's own status line; the message pins which layer.
     const chunked =
       (envelope: Record<string, unknown>) => (req: { reqId: string }, _send: unknown) =>
         sendChunked(envelope, { kind: "rest-response", reqId: req.reqId }, (chunk) =>
@@ -559,12 +560,12 @@ test("RR: a device answer whose status is outside 200-599 is a prompt 502, never
     for (const [bad, layer] of [
       ["200", /envelope out of contract/],
       [Number.NaN, /envelope out of contract/],
-      [99, /answered out of contract/],
-      [600, /answered out of contract/],
-      [700, /answered out of contract/],
-      [-1, /answered out of contract/],
-      [3.5, /answered out of contract/],
-      [150, /answered out of contract/],
+      [99, /envelope out of contract/],
+      [600, /envelope out of contract/],
+      [700, /envelope out of contract/],
+      [-1, /envelope out of contract/],
+      [3.5, /envelope out of contract/],
+      [150, /envelope out of contract/],
     ] as const) {
       f.script.respond = chunked({
         status: bad,

@@ -8,6 +8,8 @@
  */
 import { DpiClient } from "../../../../dpi-sdk/src/client.js";
 import { DpiError } from "../../../../dpi-sdk/src/errors.js";
+import { validateRestRequest } from "../../../../dpi-sdk/src/protocol/tunnel.js";
+import { REST_PATH_PREFIX } from "../../../../dpi-sdk/src/protocol/limits.js";
 import type { Frame } from "../../../../dpi-sdk/src/api.js";
 import type { DeviceRow } from "../../../../dpi-sdk/src/node/registry.js";
 
@@ -77,6 +79,18 @@ export class LanTransport implements DeviceTransport {
 
   async request(input: TransportRequest, signal: AbortSignal): Promise<TransportResponse> {
     if (!this.available) throw new DpiError("unauthorized", "LAN device has no URL/token", 0);
+    // R16 (run-2 h4 parity): the tunnel dispatcher runs the REST allowlist on
+    // every request; the LAN leg must not be the weaker twin — same principal
+    // today, but drift here would surface as a hub-frontend-only capability.
+    // The tunnel contract carries the /v1 prefix; this leg's paths are already
+    // prefix-stripped, so re-attach it for the shared validator.
+    const allow = validateRestRequest({
+      method: input.method,
+      path: input.path.startsWith(REST_PATH_PREFIX)
+        ? input.path
+        : `${REST_PATH_PREFIX}${input.path}`,
+    });
+    if (!allow.ok) throw new DpiError("invalid", allow.error ?? "path not allowed", 400);
     const timeout = AbortSignal.timeout(REST_TIMEOUT_MS);
     const effective = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const hasBody = !["GET", "HEAD", "DELETE"].includes(input.method);

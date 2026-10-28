@@ -94,8 +94,11 @@ export function cleanChildEnv(env: Record<string, string | undefined>): NodeJS.P
 const q = (s: string) => `"${s.replaceAll('"', "")}"`;
 
 export function systemdUnit(o: { node: string; dpi: string; env: Record<string, string> }): string {
+  // R16 (run-2 h12): a CR/LF inside a value would start a new unit directive;
+  // collapse to spaces (the daemon writes its own managed values, but the unit
+  // file is the trust boundary — sanitize at the sink).
   const envLines = Object.entries(o.env)
-    .map(([k, v]) => `Environment="${k}=${v.replaceAll('"', "")}"`)
+    .map(([k, v]) => `Environment="${k}=${v.replaceAll('"', "").replace(/[\r\n]+/g, " ")}"`)
     .join("\n");
   return `[Unit]
 Description=Durable Pi device daemon
