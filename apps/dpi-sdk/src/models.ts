@@ -72,7 +72,18 @@ const emptyAgentState = (): AgentViewState => ({
   ready: false,
 });
 
+/** Wire-controlled path elements that must never be walked or written:
+ * reading node["__proto__"] returns Object.prototype and the walk descends
+ * onto it silently, and "constructor" reaches the inherited Function — both
+ * end in process-wide prototype pollution from a hostile/corrupt delta
+ * (R15: run-1 NV v3-13). A delta carrying any of these is dropped whole
+ * rather than partially applied. */
+const FORBIDDEN_PATH_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 function setPath(target: Record<string | number, unknown>, path: readonly (string | number)[], delta: string) {
+  for (const key of path) {
+    if (typeof key === "string" && FORBIDDEN_PATH_KEYS.has(key)) return;
+  }
   let node = target;
   for (let i = 0; i < path.length - 1; i++) {
     const key = path[i];

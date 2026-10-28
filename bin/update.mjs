@@ -12,6 +12,8 @@
 // Everything here is dependency-injected so it can be tested without npm, a
 // network, or a real daemon.
 import { spawn } from "node:child_process";
+import { dirname, isAbsolute, join } from "node:path";
+import { accessSync, constants } from "node:fs";
 
 /** Numeric triple + prerelease flag. A prerelease counts as older. */
 export function rank(version) {
@@ -152,15 +154,52 @@ export async function runUpdate(deps) {
 
 // ------------------------------------------------------------------ real deps
 
-/** Spawn npm correctly on every platform (npm is npm.cmd on Windows). */
-export function spawnNpm(args) {
+function readableFile(p) {
+  try {
+    accessSync(p, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve npm's cli script to an ABSOLUTE .js path (R15: run-1 NV v3-06).
+ * cmd.exe resolves a bare `npm.cmd` CURRENT-DIRECTORY-FIRST unless
+ * NoDefaultCurrentDirectoryInExePath is set, so a planted npm.cmd in the
+ * operator's invoking cwd would execute as the operator during self-update.
+ * Spawning node + npm-cli.js with shell:false removes cmd.exe — and therefore
+ * any cwd/PATH .cmd search — from the resolution path entirely. Returns null
+ * when no known layout matches; the caller then uses the hardened fallback.
+ */
+export function resolveNpmCli(nodePath = process.execPath, env = process.env) {
+  const binDir = dirname(nodePath);
+  const rootDir = dirname(binDir);
+  const candidates = [
+    env.npm_execpath, // npm itself exports its cli path
+    join(binDir, "node_modules", "npm", "bin", "npm-cli.js"), // nodejs.org / nvm4windows layout
+    join(rootDir, "lib", "node_modules", "npm", "bin", "npm-cli.js"), // POSIX nvm/prefix layout
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && isAbsolute(c) && c.endsWith(".js") && readableFile(c)) return c;
+  }
+  return null;
+}
+
+/** Hardened fallback env for the (unusual) no-npm-cli.js layouts: suppress
+ * cmd.exe's current-directory-first .cmd resolution in the child. */
+export function windowsFallbackEnv(env = process.env) {
+  return { ...env, NoDefaultCurrentDirectoryInExePath: "1" };
+}
+
+/** The fallback child cwd is pinned to a trusted directory — never the
+ * operator's invoking cwd, where a planted npm.cmd could live. */
+export function windowsFallbackCwd(env = process.env, nodePath = process.execPath) {
+  return env.SystemRoot || dirname(nodePath);
+}
+
+function settle(child) {
   return new Promise((resolve) => {
-    const onWindows = process.platform === "win32";
-    const child = spawn(onWindows ? "npm.cmd" : "npm", args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: onWindows,
-      windowsHide: true,
-    });
     let output = "";
     child.stdout?.on("data", (x) => {
       output += x;
@@ -173,6 +212,29 @@ export function spawnNpm(args) {
     child.on("error", (error) => resolve({ code: 1, output: `${output}${error.message}` }));
     child.on("exit", (code) => resolve({ code: code ?? 1, output }));
   });
+}
+
+/** Spawn npm correctly on every platform (npm is npm.cmd on Windows).
+ * win32 NEVER spawns a bare `npm.cmd` through a cwd-searching shell when an
+ * absolute npm-cli.js can be resolved (R15). */
+export function spawnNpm(args) {
+  const onWindows = process.platform === "win32";
+  if (!onWindows) {
+    return settle(spawn("npm", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
+  }
+  const cli = resolveNpmCli();
+  if (cli) {
+    return settle(spawn(process.execPath, [cli, ...args], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
+  }
+  return settle(
+    spawn("npm.cmd", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: true,
+      windowsHide: true,
+      env: windowsFallbackEnv(),
+      cwd: windowsFallbackCwd(),
+    }),
+  );
 }
 
 export async function fetchLatestVersion() {
