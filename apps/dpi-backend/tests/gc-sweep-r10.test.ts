@@ -91,7 +91,12 @@ test("GraphRegistry.clearSessionRefs: sessionId goes, status/error stay, idempot
     ).runRecords[0];
     assert.equal(after.tasks.t1.sessionId, undefined, "the link is gone");
     assert.equal(after.tasks.t1.error, "provider down", "error history STAYS");
+    // R12 P3-7: the no-op sweep must not churn the registry file — bytes
+    // unchanged after the second (idempotent) call.
+    const { readFile } = await import("node:fs/promises");
+    const before = await readFile(join(dir, "graphs.json"), "utf8");
     assert.equal(await reg.clearSessionRefs(new Set([SID])), 0, "idempotent");
+    assert.equal(await readFile(join(dir, "graphs.json"), "utf8"), before, "no-op sweep does not rewrite graphs.json");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -123,6 +128,20 @@ test("gcPlan reports danglingRefs (the referential cost of --yes)", async () => 
       danglingRefCounts(dir, new Set([OTHER])),
       { schedules: 0, graphRuns: 0 },
       "a kept session's refs are not dangling",
+    );
+    // R12 P3-11: ring refs count too — the sweep clears them, so the dry-run
+    // must not under-promise.
+    await writeFile(
+      join(dir, "schedules.json"),
+      JSON.stringify({
+        version: 1,
+        schedules: [{ id: "sch_ring", keepRuns: 5, recentSessionIds: [SID] }],
+      }),
+    );
+    assert.deepEqual(
+      danglingRefCounts(dir, new Set([SID])),
+      { schedules: 1, graphRuns: 1 },
+      "a retention-ring entry counts as a dangling ref",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

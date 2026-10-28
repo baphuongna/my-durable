@@ -237,6 +237,11 @@ const tempZipPath = (baseDir: string) => join(baseDir, `.dpi-export-${process.pi
  *  own data dir (R11 1.1) → the OS temp dir. Dot-prefixed so a casual `ls`
  * of the data dir does not read as a session artifact. */
 export function exportTempDir(dataDir: string): string {
+  // R12 P3-12 (known coupling): the spill shares the data volume with the
+  // registries — a 12-256 MB export on a nearly-full disk can push registry
+  // writes into ENOSPC (schedules degrade gracefully: R11 2.2 skips runs and
+  // reports once) until the export finishes and unlinks. Self-healing by
+  // design; noted here so nobody "fixes" it back to tmpfs.
   return process.env.DPI_EXPORT_TMPDIR || dataDir || tmpdir();
 }
 

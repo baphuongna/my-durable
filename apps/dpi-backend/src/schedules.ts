@@ -385,15 +385,22 @@ function coerceRecord(raw: unknown, now: number): ScheduleRecord {
   if (isOutcome(source.lastOutcome)) record.lastOutcome = source.lastOutcome;
   const lastError = nonEmptyString(source.lastError);
   if (lastError) record.lastError = lastError;
-  // R10 Design A: retention window — defensive parse (bounds enforced, ring
-  // trimmed, junk entries dropped) so a hand-edited or future file cannot
-  // unbound the registry.
-  if (typeof source.keepRuns === "number" && Number.isInteger(source.keepRuns)) {
-    const keepRuns = Math.min(Math.max(source.keepRuns, MIN_KEEP_RUNS), MAX_KEEP_RUNS);
-    record.keepRuns = keepRuns;
+  // R10 Design A: retention window — defensive parse (junk dropped, ring
+  // trimmed) so a hand-edited or future file cannot unbound the registry.
+  // R12 P3-8: out-of-range keepRuns is DROPPED, not clamped — create/patch
+  // reject those values at the API, so the parse path must not silently ARM
+  // (or sharpen) auto-archive from garbage; dropped reads as "no retention",
+  // the safe direction.
+  if (
+    typeof source.keepRuns === "number" &&
+    Number.isInteger(source.keepRuns) &&
+    source.keepRuns >= MIN_KEEP_RUNS &&
+    source.keepRuns <= MAX_KEEP_RUNS
+  ) {
+    record.keepRuns = source.keepRuns;
     if (Array.isArray(source.recentSessionIds)) {
       const ring = source.recentSessionIds.filter((id): id is string => typeof id === "string" && id.length > 0);
-      const unique = [...new Set(ring)].slice(-keepRuns);
+      const unique = [...new Set(ring)].slice(-source.keepRuns);
       if (unique.length > 0) record.recentSessionIds = unique;
     }
   }

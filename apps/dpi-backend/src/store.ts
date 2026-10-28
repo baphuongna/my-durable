@@ -1596,10 +1596,20 @@ export class Store {
         // R10 5.2: single-flight per session — two routes opening one corrupt db
         // (UI refresh fetching git-files + agents) used to spawn two salvage
         // workers racing on shared scratch; both attempts now share ONE outcome.
-        const inFlight = this.salvageInFlight.get(row.id) ?? salvageSessionDb(row.dbPath).then((outcome) => {
-          this.salvageInFlight.delete(row.id);
-          return outcome;
-        });
+        const inFlight = this.salvageInFlight.get(row.id) ?? salvageSessionDb(row.dbPath).then(
+          (outcome) => {
+            this.salvageInFlight.delete(row.id);
+            return outcome;
+          },
+          // R12 P3-10: clear on rejection too — a cached rejected promise would
+          // permanently disable salvage for this session. (Unreachable today:
+          // salvageSessionDb resolves on every path — but the map must not
+          // depend on that staying true.)
+          (error: unknown) => {
+            this.salvageInFlight.delete(row.id);
+            throw error;
+          },
+        );
         this.salvageInFlight.set(row.id, inFlight);
         const outcome = await inFlight;
         if (!outcome.recovered) {
@@ -2597,6 +2607,10 @@ export class Store {
 
   async removeSchedule(id: string): Promise<{ removed: boolean }> {
     const removed = await this.schedules.remove(id);
+    // R12 P3-4: the schedule is gone — its degraded-episode markers must not
+    // linger in the sets forever (random ids, never reused).
+    this.scheduleRegistryDegraded.delete(id);
+    this.schedulePruneDegraded.delete(id);
     this.notify();
     return { removed };
   }
@@ -2658,6 +2672,10 @@ export class Store {
    *  unwritable — each is reported ONCE per degraded episode, not per tick. */
   private scheduleRegistryDegraded = new Set<string>();
 
+  /** R12 P2-1: schedules whose retention prune could not archive an evicted
+   *  run — reported once per episode; a later successful prune ends it. */
+  private schedulePruneDegraded = new Set<string>();
+
   /** R10 5.2: per-session salvage single-flight — concurrent openers of one
    *  corrupt session share ONE bounded attempt instead of racing scratch files. */
   private salvageInFlight = new Map<string, Promise<import("./salvage.js").SalvageOutcome>>();
@@ -2706,8 +2724,10 @@ export class Store {
     const started: string[] = [];
     for (const record of this.schedules.due(at)) {
       if (this.scheduleInFlight.has(record.id)) continue;
-      started.push(record.id);
-      await this.dispatchSchedule(record).catch(() => undefined);
+      // R12 P3-5: only ids that actually DISPATCHED are reported — an
+      // intent-marker skip (degraded registry) must not read as "started".
+      const ran = await this.dispatchSchedule(record).catch(() => false);
+      if (ran) started.push(record.id);
     }
     return started;
   }
@@ -2726,8 +2746,11 @@ export class Store {
    * BEFORE the session is created, so a crash in the create→outcome window
    * leaves a visible "interrupted" record after restart instead of silently
    * re-firing the same minute.
+   *
+   * R12 P3-5: returns true when the dispatch ran (attempted past the intent
+   * marker), false when skipped — runDueSchedules reports only the true ones.
    */
-  private async dispatchSchedule(record: ScheduleRecord): Promise<void> {
+  private async dispatchSchedule(record: ScheduleRecord): Promise<boolean> {
     if (this.scheduleInFlight.has(record.id)) {
       throw new ApiFault("busy", `Schedule "${record.name}" is already running`);
     }
@@ -2760,7 +2783,7 @@ export class Store {
             data: { scheduleId: record.id },
           });
         }
-        return;
+        return false;
       }
       if (this.scheduleRegistryDegraded.delete(record.id)) {
         void this.notifyEvent({
@@ -2771,6 +2794,7 @@ export class Store {
         });
       }
       await this.dispatchBounded(record);
+      return true;
     } finally {
       this.scheduleInFlight.delete(record.id);
       this.notify();
@@ -2845,7 +2869,8 @@ export class Store {
           SCHEDULE_REGISTRY_IO_MS,
           "schedule registry write timed out (ok)",
         ).catch(() => undefined);
-        if (okRecord?.keepRuns) void this.pruneScheduleSessions(okRecord, ringBefore).catch(() => undefined);
+        if (okRecord?.keepRuns)
+          void this.pruneScheduleSessions(okRecord, ringBefore).catch(() => this.markPruneDegraded(okRecord));
         void this.notifyEvent({
           kind: "schedule.ok",
           title: `Schedule ran: ${record.name}`,
@@ -2882,14 +2907,48 @@ export class Store {
    *  the gc plan). Archive failure leaves the session live; the id is already
    *  gone from the ring, but the session stays restorable and the operator can
    *  archive it manually — at most keepRuns stragglers can overstay (bounded). */
+  /** R12 P2-1: the once-per-episode signal for a retention prune that could
+   *  not archive an evicted run — shared by the prune's own failure path and
+   *  the void-caller's outer catch. */
+  private markPruneDegraded(record: ScheduleRecord): void {
+    if (this.schedulePruneDegraded.has(record.id)) return;
+    this.schedulePruneDegraded.add(record.id);
+    void this.notifyEvent({
+      kind: "schedule.failed",
+      title: `Retention paused: ${record.name}`,
+      body: `an evicted run's session could not be archived (archive/ unwritable or disk full?) — it stays live; ` +
+        `retention resumes when archiving works again`,
+      data: { scheduleId: record.id },
+    });
+  }
+
   private async pruneScheduleSessions(record: ScheduleRecord, ringBefore: string[]): Promise<void> {
     if (typeof record.keepRuns !== "number") return;
     const ringNow = new Set(record.recentSessionIds ?? []);
     const evicted = [...new Set(ringBefore)].filter((id) => !ringNow.has(id));
-    for (const id of evicted) {
-      const row = this.catalog.prepare("SELECT * FROM sessions WHERE id=?").get(id) as SessionRow | undefined;
-      if (!row) continue; // already gone (archived/corrupt-removed) — nothing to do
-      await this.archive(row);
+    let archived = 0;
+    try {
+      for (const id of evicted) {
+        const row = this.catalog.prepare("SELECT * FROM sessions WHERE id=?").get(id) as SessionRow | undefined;
+        if (!row) continue; // already gone (archived/corrupt-removed) — nothing to do
+        await this.archive(row);
+        archived += 1;
+      }
+    } catch {
+      // R12 P2-1: a persistent archive failure (archive/ unwritable, disk full)
+      // used to be swallowed silently — and since markRun already trimmed the
+      // ring, every later run left one more live session behind FOREVER, the
+      // exact growth this feature exists to prevent, with zero signal.
+      this.markPruneDegraded(record);
+      return;
+    }
+    if (evicted.length > 0 && this.schedulePruneDegraded.delete(record.id)) {
+      void this.notifyEvent({
+        kind: "schedule.ok",
+        title: `Retention resumed: ${record.name}`,
+        body: `archived ${archived} evicted run(s); the window is healthy again`,
+        data: { scheduleId: record.id },
+      });
     }
   }
 

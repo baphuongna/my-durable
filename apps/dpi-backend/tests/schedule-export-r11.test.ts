@@ -102,8 +102,10 @@ test("2.2 a failed intent-marker persist skips the dispatch and reports the degr
 
     // Two due passes while degraded: zero real runs, exactly ONE pause event.
     // (everyMinutes: 30 — a pass is "due" only past the next slot.)
-    await store.runDueSchedules(Date.now() + 31 * 60_000);
-    await store.runDueSchedules(Date.now() + 61 * 60_000);
+    // R12 P3-5: the passes report NOTHING started — an intent-skip must not
+    // read as a dispatched run.
+    assert.deepEqual(await store.runDueSchedules(Date.now() + 31 * 60_000), [], "degraded passes report no starts");
+    assert.deepEqual(await store.runDueSchedules(Date.now() + 61 * 60_000), [], "still degraded, still no starts");
     assert.equal(creates, 0, "no session is created while the registry is unwritable");
     await until(() => delivered.some((d) => d.title.includes("Paused")), 3000, "the pause event lands");
     assert.equal(
@@ -117,7 +119,11 @@ test("2.2 a failed intent-marker persist skips the dispatch and reports the degr
     // Recovery: the registry writes again — the next due pass RUNS, the episode
     // ends, and a resume event is followed by the run's own ok.
     registry.markRun = realMarkRun;
-    await store.runDueSchedules(Date.now() + 91 * 60_000);
+    assert.deepEqual(
+      await store.runDueSchedules(Date.now() + 91 * 60_000),
+      [s.id],
+      "the recovered pass reports its start",
+    );
     await until(() => store.scheduleList()[0]?.lastOutcome === "ok", 5000, "the recovered run completes");
     assert.equal(creates, 1, "exactly one real run after recovery");
     const titles = delivered.map((d) => d.title).join("\n");

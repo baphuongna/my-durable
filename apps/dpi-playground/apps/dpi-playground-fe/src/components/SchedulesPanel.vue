@@ -66,7 +66,7 @@ const toggle = (s: ScheduleView) =>
   withBusy(s.id, () => client().updateSchedule(s.id, { enabled: !s.enabled }), s.enabled ? "Schedule paused." : "Schedule resumed.");
 
 const runNow = (s: ScheduleView) =>
-  withBusy(s.id, () => client().runSchedule(s.id), `${s.name}: run finished.`);
+  withBusy(s.id, () => client().runSchedule(s.id), `${s.name}: run started.`);
 
 const remove = (s: ScheduleView) =>
   (ui.dialog = {

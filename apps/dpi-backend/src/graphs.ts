@@ -705,7 +705,9 @@ export class GraphRegistry {
         }
         return touched ? { ...run, tasks } : run;
       });
-      await this.commit(new Map(this.graphs), runs);
+      // R12 P3-7: no-op sweeps skip the commit — the schedules twin guards the
+      // same way; a no-op must not churn graphs.json (+ its .bak) forever.
+      if (cleared > 0) await this.commit(new Map(this.graphs), runs);
     });
     return cleared;
   }

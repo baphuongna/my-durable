@@ -160,6 +160,10 @@ export async function gcCli(args: GcArgs, io: GcIo = defaultGcIo()): Promise<num
             e instanceof Error ? e.message : String(e)
           } (re-run later — the sweep is idempotent)`,
         );
+        // R12 P2-3: cron/scripts gate on the exit code — a failed sweep after
+        // a real delete must not read as success (nothing retries it
+        // otherwise; a later no-delete gc pass never sweeps).
+        return 1;
       }
     }
     return 0;
@@ -204,8 +208,13 @@ async function sweepRefs(dataDir: string, ids: string[], io: GcIo, token?: strin
           io.print(`swept ${cleared.schedules} schedule ref(s), ${cleared.graphRuns} graph-run ref(s).`);
         return;
       }
-      // A non-OK from a LIVE device is a real fault — fall through to the
-      // offline path would race the daemon; surface it instead.
+      // R12 P3-6: name the two skew shapes an operator can actually hit —
+      // anything else is a real fault; falling through to the offline path
+      // would race the daemon, so surface it instead.
+      if (res.status === 404)
+        throw new Error("device predates the sweep route — upgrade it (npm i -g my-durable) and re-run dpi gc");
+      if (res.status === 401)
+        throw new Error("device refused the sweep token — stale DPI_TOKEN in the env file; refresh it and re-run dpi gc");
       throw new Error(`device answered ${res.status} to the sweep route`);
     } catch (e) {
       if (e instanceof TypeError || (e instanceof Error && /fetch|network|ECONN/i.test(e.message))) {

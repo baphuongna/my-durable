@@ -197,11 +197,9 @@ export async function scheduleCli(argv: readonly string[], io: ScheduleIo = defa
       io.printErr(`dpi schedule: ${ran.error}`);
       return 1;
     }
-    io.print(
-      ran.data.running
-        ? `run started (watch \`dpi schedule list\` for the outcome); next ${when(ran.data.nextRunAt)}`
-        : `armed; next ${when(ran.data.nextRunAt)}`,
-    );
+    // R12 P3-9: `running` is always true here — the guard-add runs
+    // synchronously before the 202 is built — so no ternary.
+    io.print(`run started (watch \`dpi schedule list\` for the outcome); next ${when(ran.data.nextRunAt)}`);
     return 0;
   }
   if (sub === "remove") {

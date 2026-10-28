@@ -102,10 +102,9 @@ test("run arms the run and reports where the outcome lands (R11 2.3)", async () 
   const okRun = io({ respond: (init) => (init.url.endsWith("/run") ? record({ running: true }) : { schedules: [record()] }) });
   assert.equal(await scheduleCli(["run", "sch_abc"], okRun.io), 0);
   assert.match(okRun.lines.join("\n"), /run started/);
-
-  const armed = io({ respond: (init) => (init.url.endsWith("/run") ? record({ running: false }) : { schedules: [record()] }) });
-  assert.equal(await scheduleCli(["run", "sch_abc"], armed.io), 0);
-  assert.match(armed.lines.join("\n"), /armed/);
+  // R12 P3-9: the `armed` alternative is dead code — the guard-add runs
+  // synchronously before the 202 is built, so `running` is always true.
+  assert.doesNotMatch(okRun.lines.join("\n"), /armed/);
 });
 
 test("enable/disable PATCH the flag; remove DELETEs; no token is a clear error", async () => {

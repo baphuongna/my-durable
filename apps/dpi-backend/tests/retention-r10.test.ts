@@ -23,6 +23,11 @@ import { faux, tempStore, until } from "./helpers.js";
 import { Store } from "../src/store.js";
 import { MAX_KEEP_RUNS, MIN_KEEP_RUNS } from "../src/schedules.js";
 
+const keepAlive = () => {
+  const keep = setInterval(() => {}, 50);
+  return () => clearInterval(keep);
+};
+
 const input = (over: Record<string, unknown> = {}) => ({
   name: "R10 retention",
   cwd: "project",
@@ -174,5 +179,124 @@ test("ScheduleView carries keepRuns and a truthful archivedRuns", async () => {
   } finally {
     await store.close();
     await t.cleanup();
+  }
+});
+
+test("R12 P2-1: a failing prune reports the degraded episode once; recovery resumes it", async () => {
+  const t = await tempStore();
+  const store = await t.open();
+  const stopKeepAlive = keepAlive();
+  const delivered: { kind: string; title: string }[] = [];
+  try {
+    (store.sinks as unknown as { deliver: unknown }).deliver = async (event: { kind: string; title: string }) => {
+      delivered.push({ kind: event.kind, title: event.title });
+      return [];
+    };
+    await store.createNotifySink({ kind: "webhook", url: "https://example.com/hook" });
+    const s = await store.createSchedule(input({ name: "Retention", keepRuns: 1 }));
+    const view = async () => store.scheduleList().find((x) => x.id === s.id)!;
+
+    // Run 1 fills the window (ring=[A]).
+    await store.runScheduleNow(s.id);
+    await until(async () => (await view()).lastSessionId !== undefined && (await view()).lastOutcome === "ok", 5000, "run 1");
+    const a = (await view()).lastSessionId!;
+
+    // The archive path starts failing (read-only archive/, ENOSPC, …).
+    const realArchive = store.archive.bind(store);
+    (store as unknown as { archive: unknown }).archive = async () => {
+      throw new Error("EROFS: archive is read-only");
+    };
+
+    // Run 2 evicts A; the prune fails and reports the episode ONCE.
+    await store.runScheduleNow(s.id);
+    await until(
+      () => delivered.some((d) => d.title.includes("Retention paused")),
+      5000,
+      "the paused episode is reported",
+    );
+    await until(async () => (await view()).lastSessionId !== a, 5000, "run 2 settles");
+    const b = (await view()).lastSessionId!;
+    assert.ok(store.catalog.prepare("SELECT 1 FROM sessions WHERE id=?").get(a), "the evicted session stays live");
+
+    // Run 3 fails the prune AGAIN — same episode, no second event.
+    await store.runScheduleNow(s.id);
+    await until(
+      async () => {
+        const v = await view();
+        return v.lastSessionId !== undefined && v.lastSessionId !== b && v.lastOutcome === "ok";
+      },
+      8000,
+      "run 3 settles",
+    );
+    // Give the (failing) void prune a beat to run, then assert once-ness.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(
+      delivered.filter((d) => d.title.includes("Retention paused")).length,
+      1,
+      "ONE paused event per episode, not one per run",
+    );
+    const c = (await view()).lastSessionId!;
+
+    // Recovery: archiving works again; the next eviction reports the resume.
+    (store as unknown as { archive: unknown }).archive = realArchive;
+    await store.runScheduleNow(s.id);
+    await until(
+      async () => {
+        const v = await view();
+        return v.lastSessionId !== undefined && v.lastSessionId !== c && v.lastOutcome === "ok";
+      },
+      8000,
+      "the recovery run settles",
+    );
+    await until(
+      () => delivered.some((d) => d.title.includes("Retention resumed")),
+      5000,
+      "the resumed episode is reported",
+    );
+  } finally {
+    stopKeepAlive();
+    await store.close();
+    await t.cleanup();
+  }
+});
+
+test("R12 P3-4: removing a schedule drops its degraded-episode markers; P3-8: junk keepRuns parses to absent", async () => {
+  const t = await tempStore();
+  const store = await t.open();
+  try {
+    const s = await store.createSchedule(input());
+    const sets = store as unknown as {
+      scheduleRegistryDegraded: Set<string>;
+      schedulePruneDegraded: Set<string>;
+    };
+    sets.scheduleRegistryDegraded.add(s.id);
+    sets.schedulePruneDegraded.add(s.id);
+    await store.removeSchedule(s.id);
+    assert.equal(sets.scheduleRegistryDegraded.has(s.id), false, "registry marker dropped");
+    assert.equal(sets.schedulePruneDegraded.has(s.id), false, "prune marker dropped");
+  } finally {
+    await store.close();
+    await t.cleanup();
+  }
+
+  // P3-8: a hand-edited registry with garbage keepRuns drops it (no silent
+  // arming via clamp) — create/patch reject these values at the API.
+  const { ScheduleRegistry } = await import("../src/schedules.js");
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "r12-parse-"));
+  try {
+    await writeFile(
+      join(dir, "schedules.json"),
+      JSON.stringify({
+        version: 1,
+        schedules: [{ id: "sch_junk", name: "j", cwd: "/x", model: { provider: "faux", modelId: "echo" }, prompt: "p", everyMinutes: 5, keepRuns: -5 }],
+      }),
+    );
+    const reg = await ScheduleRegistry.open(join(dir, "schedules.json"));
+    assert.equal(reg.get("sch_junk")?.keepRuns, undefined, "negative keepRuns is DROPPED, not clamped to 1");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

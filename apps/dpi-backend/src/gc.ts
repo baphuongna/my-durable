@@ -120,9 +120,15 @@ export function danglingRefCounts(
   let graphRuns = 0;
   try {
     const doc = JSON.parse(readFile(join(dataDir, "schedules.json"))) as {
-      schedules?: Array<{ lastSessionId?: string }>;
+      schedules?: Array<{ lastSessionId?: string; recentSessionIds?: string[] }>;
     };
-    for (const s of doc.schedules ?? []) if (s.lastSessionId && ids.has(s.lastSessionId)) schedules += 1;
+    // R12 P3-11: count what the sweep actually clears — the retention ring
+    // too (clearSessionRefs deletes ring entries alongside lastSessionId), so
+    // the dry-run's "would clear N" stops under-promising.
+    for (const s of doc.schedules ?? []) {
+      if (s.lastSessionId && ids.has(s.lastSessionId)) schedules += 1;
+      else if ((s.recentSessionIds ?? []).some((id) => ids.has(id))) schedules += 1;
+    }
   } catch {
     /* absent or unreadable — nothing countable */
   }
