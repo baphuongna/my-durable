@@ -152,6 +152,11 @@ export class DpiClient {
   constructor(
     baseUrl: string,
     private readonly token?: string,
+    /** R13 (R9-6.3 FE): fired when a request's response carried
+     *  Idempotent-Replay: true — the answer is a REPLAY of an earlier
+     *  identical request, not a fresh effect. UIs use it to tell the user;
+     *  clients that need deliberate repeats send their own idempotencyKey. */
+    private readonly hooks: { onIdempotentReplay?: (path: string) => void } = {},
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
@@ -201,6 +206,7 @@ export class DpiClient {
         (response.status === 401 ? "unauthorized" : response.status === 404 ? "not_found" : "internal");
       throw new DpiError(code, error?.message ?? `${response.status} ${response.statusText}`, response.status);
     }
+    if (response.headers.get("idempotent-replay") === "true") this.hooks.onIdempotentReplay?.(path);
     return data as T;
   }
 

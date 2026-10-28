@@ -2905,8 +2905,9 @@ export class Store {
    *  archived via the existing store.archive path (abort-open → atomic rename
    *  to archive/ → catalog row deleted — nothing deleted, restorable, ages into
    *  the gc plan). Archive failure leaves the session live; the id is already
-   *  gone from the ring, but the session stays restorable and the operator can
-   *  archive it manually — at most keepRuns stragglers can overstay (bounded). */
+   *  gone from the ring, so a PERSISTENT failure accumulates one straggler
+   *  per run until recovery — unbounded while the fault lasts, which is why
+   *  R12 P2-1 reports the degraded episode instead of swallowing it. */
   /** R12 P2-1: the once-per-episode signal for a retention prune that could
    *  not archive an evicted run — shared by the prune's own failure path and
    *  the void-caller's outer catch. */
@@ -2946,7 +2947,10 @@ export class Store {
       void this.notifyEvent({
         kind: "schedule.ok",
         title: `Retention resumed: ${record.name}`,
-        body: `archived ${archived} evicted run(s); the window is healthy again`,
+        body:
+          archived > 0
+            ? `archived ${archived} evicted run(s); the window is healthy again`
+            : `archiving works again (the evicted run(s) were already gone); the window is healthy`,
         data: { scheduleId: record.id },
       });
     }

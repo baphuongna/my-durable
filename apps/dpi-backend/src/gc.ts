@@ -120,14 +120,20 @@ export function danglingRefCounts(
   let graphRuns = 0;
   try {
     const doc = JSON.parse(readFile(join(dataDir, "schedules.json"))) as {
-      schedules?: Array<{ lastSessionId?: string; recentSessionIds?: string[] }>;
+      schedules?: Array<{ lastSessionId?: string; keepRuns?: unknown; recentSessionIds?: string[] }>;
     };
     // R12 P3-11: count what the sweep actually clears — the retention ring
     // too (clearSessionRefs deletes ring entries alongside lastSessionId), so
-    // the dry-run's "would clear N" stops under-promising.
+    // the dry-run's "would clear N" stops under-promising. R13 P3-2: ring
+    // refs count ONLY when keepRuns parses in-range — the registry coercion
+    // DROPS junk keepRuns together with its ring (schedules.ts), so counting
+    // a doomed ring here would dry-run-promise what the sweep never clears.
+    const keepRunsParses = (v: unknown) =>
+      typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 100;
     for (const s of doc.schedules ?? []) {
       if (s.lastSessionId && ids.has(s.lastSessionId)) schedules += 1;
-      else if ((s.recentSessionIds ?? []).some((id) => ids.has(id))) schedules += 1;
+      else if (keepRunsParses(s.keepRuns) && (s.recentSessionIds ?? []).some((id) => ids.has(id)))
+        schedules += 1;
     }
   } catch {
     /* absent or unreadable — nothing countable */

@@ -89,6 +89,55 @@ test("LanTransport: binary zip → base64 flag + sanitized disposition; JSON →
   }
 });
 
+test("R13 (R9-6.3 FE): the proxy surfaces the device's replay verdict as the Idempotent-Replay header", async () => {
+  // Both transport legs mark TransportResponse.idempotentReplay; the LAN leg
+  // is exercised here (the tunnel envelope carries the same literal — proven
+  // in the backend three-legs test), and the proxy maps it to the standard
+  // header so FE clients can tell a replay from a fresh create.
+  const device = await stubDevice(
+    { "content-type": "application/json", "idempotent-replay": "true" },
+    '{"ok":true}',
+  );
+  try {
+    const registry = { get: () => lanRow(device.url) } as never;
+    const monitor = { state: () => ({ status: "online" }) } as never;
+    const app = express();
+    app.use("/api/devices/:id/v1", proxy(registry, monitor));
+    const listener = app.listen(0, "127.0.0.1");
+    await new Promise<void>((done) => listener.once("listening", done));
+    const port = (listener.address() as { port: number }).port;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/devices/dev-a/v1/sessions`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("idempotent-replay"), "true", "the replay verdict surfaces");
+    } finally {
+      listener.closeAllConnections?.();
+      await new Promise<void>((done) => listener.close(() => done()));
+    }
+    // Without the verdict, the header is absent (never a false positive).
+    const fresh = await stubDevice({ "content-type": "application/json" }, '{"ok":true}');
+    try {
+      const registry2 = { get: () => lanRow(fresh.url) } as never;
+      const app2 = express();
+      app2.use("/api/devices/:id/v1", proxy(registry2, monitor));
+      const l2 = app2.listen(0, "127.0.0.1");
+      await new Promise<void>((done) => l2.once("listening", done));
+      const p2 = (l2.address() as { port: number }).port;
+      try {
+        const res = await fetch(`http://127.0.0.1:${p2}/api/devices/dev-a/v1/sessions`);
+        assert.equal(res.headers.get("idempotent-replay"), null, "no header without a replay");
+      } finally {
+        l2.closeAllConnections?.();
+        await new Promise<void>((done) => l2.close(() => done()));
+      }
+    } finally {
+      await fresh.close();
+    }
+  } finally {
+    await device.close();
+  }
+});
+
 test("proxy: binary passthrough is byte-exact, keeps device type+filename, stays a locked-down download", async () => {
   const device = await stubDevice(
     {

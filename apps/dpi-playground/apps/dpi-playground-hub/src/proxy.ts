@@ -91,6 +91,10 @@ export function proxy(
       const contentType =
         typeof upstream.contentType === "string" ? upstream.contentType : undefined;
       res.status(status).set(LOCKED_DOWN_HEADERS);
+      // R13 (R9-6.3 FE): the device's replay verdict surfaces as the standard
+      // header — a hub-controlled literal (never a passthrough of arbitrary
+      // device header names/values), same trust boundary as the zip label.
+      if (upstream.idempotentReplay === true) res.set("Idempotent-Replay", "true");
       if (!contentType || mediaType(contentType) === "application/json")
         res.type("application/json").send(body);
       else {

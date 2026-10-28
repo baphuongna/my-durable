@@ -73,6 +73,32 @@ test("R8: a non-textual device response rides the envelope as base64 with its di
   }
 });
 
+test("R13: the device's idempotency replay verdict rides the envelope as an optional literal", async () => {
+  // Old wire unchanged: a plain 200 carries NO idempotentReplay field.
+  const plain = await rig((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end('{}');
+  });
+  try {
+    const reply = await restReply(plain.hub, "POST", "/v1/sessions");
+    assert.equal(reply.idempotentReplay, undefined, "no field when the device did not replay");
+  } finally {
+    await plain.cleanup();
+  }
+  // A replayed mutation (device answers 200 + Idempotent-Replay: true) marks the
+  // envelope — hubs surface it as the header, old hubs ignore it (de-Strict).
+  const replayed = await rig((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "idempotent-replay": "true" });
+    res.end('{}');
+  });
+  try {
+    const reply = await restReply(replayed.hub, "POST", "/v1/sessions");
+    assert.equal(reply.idempotentReplay, true, "the replay verdict rides the envelope");
+  } finally {
+    await replayed.cleanup();
+  }
+});
+
 test("R8: textual responses keep the legacy envelope (no bodyEncoding) — old hubs unaffected", async () => {
   const r = await rig((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" });

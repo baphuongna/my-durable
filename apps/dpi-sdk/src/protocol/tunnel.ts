@@ -232,6 +232,10 @@ export const TunnelFrame = Type.Union([
     // sanitized download filename. Absent on the legacy textual envelope.
     bodyEncoding: Type.Optional(Type.Union([Type.Literal("base64")])),
     contentDisposition: Type.Optional(Type.String({ maxLength: 200 })),
+    // R13 (R9-6.3 FE): the device sets this literal when the loopback response
+    // was an idempotency REPLAY; hubs forward it as the Idempotent-Replay
+    // response header so clients can tell a replay from a fresh create.
+    idempotentReplay: Type.Optional(Type.Literal(true)),
   }),
   TunnelControl,
   Type.Object(

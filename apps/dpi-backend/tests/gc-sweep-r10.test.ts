@@ -143,6 +143,21 @@ test("gcPlan reports danglingRefs (the referential cost of --yes)", async () => 
       { schedules: 1, graphRuns: 1 },
       "a retention-ring entry counts as a dangling ref",
     );
+    // R13 P3-2: a JUNK keepRuns (out of range) is dropped together with its ring
+    // by the registry coercion — the sweep will never clear it, so the dry-run
+    // must not promise it either.
+    await writeFile(
+      join(dir, "schedules.json"),
+      JSON.stringify({
+        version: 1,
+        schedules: [{ id: "sch_junk", keepRuns: -5, recentSessionIds: [SID] }],
+      }),
+    );
+    assert.deepEqual(
+      danglingRefCounts(dir, new Set([SID])),
+      { schedules: 0, graphRuns: 1 },
+      "a doomed (junk keepRuns) ring is not counted",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -293,6 +293,7 @@ export class TunnelDispatcher {
         ...(frame.bodyEncoding === "base64"
           ? { contentDisposition: safeHeaderValue(frame.contentDisposition) }
           : {}),
+        ...(frame.idempotentReplay === true ? { idempotentReplay: true as const } : {}),
       });
       return;
     }
@@ -335,6 +336,7 @@ export class TunnelDispatcher {
                 body?: unknown;
                 bodyEncoding?: unknown;
                 contentDisposition?: unknown;
+                idempotentReplay?: unknown;
               }
             | undefined;
           if (typeof env?.status !== "number" || !Number.isFinite(env.status)) {
@@ -354,6 +356,7 @@ export class TunnelDispatcher {
             ...(env.bodyEncoding === "base64"
               ? { contentDisposition: safeHeaderValue(env.contentDisposition) }
               : {}),
+            ...(env.idempotentReplay === true ? { idempotentReplay: true as const } : {}),
             rawBytes: out.rawBytes,
           });
         }

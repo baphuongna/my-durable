@@ -3,8 +3,23 @@
 import { DpiClient } from "@sdk/client";
 import { DpiError } from "@sdk/errors";
 import type { ErrorCode, NetworkDevice } from "@sdk/api";
+import { notify } from "./store";
 
-export const deviceClient = (id: string) => new DpiClient(`/api/devices/${encodeURIComponent(id)}`);
+// R13 (R9-6.3 FE): the collapse of identical un-keyed creates is an accepted
+// retry-safety tradeoff — but it must be VISIBLE. The device's replay verdict
+// rides the tunnel envelope, the hub surfaces Idempotent-Replay, and the SDK
+// hook turns it into a toast naming the escape hatch (own idempotency-key).
+let replayToastAt = 0;
+export const deviceClient = (id: string) =>
+  new DpiClient(`/api/devices/${encodeURIComponent(id)}`, undefined, {
+    onIdempotentReplay: (path) => {
+      // Replays can arrive in bursts (a re-connected UI re-firing identical
+      // creates) — one toast per 30 s is plenty of signal.
+      if (Date.now() - replayToastAt < 30_000) return;
+      replayToastAt = Date.now();
+      notify(`Replayed an earlier identical request (${path}) — send a custom idempotency key for deliberate repeats.`);
+    },
+  });
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const r = await fetch(`/api${path}`, {

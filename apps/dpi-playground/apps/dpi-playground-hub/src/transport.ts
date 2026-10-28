@@ -29,6 +29,10 @@ export interface TransportResponse {
   bodyEncoding?: "base64";
   /** Sanitized Content-Disposition from the device (binary responses); may be undefined. */
   contentDisposition?: string;
+  /** R13 (R9-6.3 FE): the device answered this request with an idempotency
+   *  REPLAY — the proxy surfaces it as the Idempotent-Replay response header
+   *  so clients can tell a replay from a fresh create. */
+  idempotentReplay?: true;
   /** Diagnostics: assembled byte count for chunked responses. */
   rawBytes?: number;
 }
@@ -103,6 +107,9 @@ export class LanTransport implements DeviceTransport {
       body: textual ? raw.toString("utf8") : raw.toString("base64"),
       ...(textual ? {} : { bodyEncoding: "base64" as const }),
       ...(textual ? {} : { contentDisposition: safeHeaderValue(response.headers.get("content-disposition")) }),
+      // R13 (R9-6.3 FE): same replay verdict on the LAN leg — one TransportResponse
+      // contract, both transports.
+      ...(response.headers.get("idempotent-replay") === "true" ? { idempotentReplay: true as const } : {}),
     };
   }
 

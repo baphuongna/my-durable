@@ -757,6 +757,11 @@ export class DeviceConnector {
           // Small responses ride one frame; large ones chunk (hub reassembles).
           // Textual bodies keep the legacy UTF-8 string envelope; binaries are
           // base64-flagged so the hub can serve bytes byte-exact (R8 export).
+          // R13 (R9-6.3 FE): the device's idempotency replay verdict rides the
+          // envelope as an optional literal — old hubs ignore it (rest-response
+          // is de-Strict by design), new hubs surface the header so clients can
+          // tell a replay from a fresh create.
+          const replayed = res.headers.get("idempotent-replay") === "true" ? { idempotentReplay: true } : {};
           const envelope = textual
             ? ({
                 type: "rest-response",
@@ -764,6 +769,7 @@ export class DeviceConnector {
                 status: res.status,
                 contentType: resCt,
                 body: read.bytes.toString("utf8"),
+                ...replayed,
               } as const)
             : ({
                 type: "rest-response",
@@ -773,6 +779,7 @@ export class DeviceConnector {
                 body: read.bytes.toString("base64"),
                 bodyEncoding: "base64",
                 contentDisposition: safeHeaderValue(res.headers.get("content-disposition")),
+                ...replayed,
               } as const);
           const serialized = JSON.stringify(envelope);
           if (Buffer.byteLength(serialized, "utf8") <= INLINE_FRAME_MAX_BYTES) {
