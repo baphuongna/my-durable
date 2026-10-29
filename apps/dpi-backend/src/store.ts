@@ -1535,7 +1535,6 @@ export class Store {
 
   /** Stop all work, close the harness and move its files to archive/. Nothing is deleted. */
   async archive(row: SessionRow) {
-    this.salvageFailedSessions.delete(row.id); // R19: the bundle left this process's view
     const opened = this.opened.get(row.id);
     if (opened) {
       for (const record of await this.scanAll(opened.harness)) {
@@ -1573,6 +1572,7 @@ export class Store {
     });
     this.catalog.prepare("DELETE FROM conversation_names WHERE sessionId=?").run(row.id);
     this.catalog.prepare("DELETE FROM sessions WHERE id=?").run(row.id);
+    this.salvageFailedSessions.delete(row.id); // R20 h6: clear AFTER the move commits — a failed rename must not re-arm salvage
     this.errors.delete(row.id);
     this.notify();
     return { archived: target };
@@ -1603,7 +1603,6 @@ export class Store {
     // raw, so an uppercase-hex id could bypass the live-session refusal and
     // strand the bundle. Every check below now sees the same canonical value.
     sessionId = sessionId.toLowerCase();
-    this.salvageFailedSessions.delete(sessionId); // R19: the bundle came back — judge it fresh
     if (this.list().some((r) => r.id === sessionId))
       throw invalid("a live session with this id already exists");
     // R18 (run-4 h1): restore is a session-placement writer, so it enforces
@@ -1655,6 +1654,7 @@ export class Store {
       throw e;
     }
     this.notify();
+    this.salvageFailedSessions.delete(sessionId); // R20 h6: clear AFTER the bundle actually came back — a REFUSED restore must not re-arm salvage
     // sessionSummary handles a not-yet-opened session (the closed-bundle path).
     return await this.sessionSummary(row);
   }
@@ -1662,6 +1662,12 @@ export class Store {
   async openAgent(row: SessionRow, create = false, thinkingLevel: ThinkingLevel = "medium") {
     const current = this.opened.get(row.id);
     if (current) return current.harness;
+    // R20 (run-6 h6): attempt-once — the memo was only read by the search
+    // path, so every agent-touching request re-ran the FULL salvage (leader
+    // probe: 5.0 s per request on a corrupt session, unbounded). Fail fast
+    // from the recorded fault without touching storage.
+    if (!create && this.salvageFailedSessions.has(row.id))
+      throw new ApiFault("unavailable", this.errors.get(row.id) ?? "session database is unreadable (salvage failed)");
     if (!create) await stat(row.dbPath);
     await mkdir(dirname(row.dbPath), { recursive: true });
     const unlock = lockFile(`${row.dbPath}.lock`);

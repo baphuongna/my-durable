@@ -102,7 +102,14 @@ export function writeArchiveManifest(bundleDir: string, m: ArchiveManifest): voi
  */
 export function readArchiveManifest(bundleDir: string): ArchiveManifest | undefined {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(join(bundleDir, MANIFEST_NAME), "utf8"));
+    const manifestPath = join(bundleDir, MANIFEST_NAME);
+    // R20 (run-6 h6): a manifest written by store.archive() is a few hundred
+    // bytes; a planted one had NO ceiling — restore and the archive LISTING
+    // read the whole file into RAM per cheap request (leader probe: a 150 MB
+    // plant cost ~770 ms and ~600 MB RSS per refused restore, repeatable).
+    // Refuse oversized manifests without reading them.
+    if (statSync(manifestPath).size > 1024 * 1024) return undefined;
+    const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
     if (typeof parsed !== "object" || parsed === null) return undefined;
     const m = parsed as Record<string, unknown>;
     if (

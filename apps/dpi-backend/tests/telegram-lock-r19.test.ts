@@ -150,6 +150,9 @@ test("R19 cold-review minor: archiving a session clears its salvage memo (behavi
   // The real class exposes it, and archive()/restore() call it.
   assert.ok(typeof (Store.prototype as unknown as { clearSalvageMemo?: unknown }).clearSalvageMemo === "function");
   const src = readFileSync(new URL("../src/store.ts", import.meta.url), "utf8");
-  assert.ok(src.includes("this.salvageFailedSessions.delete(row.id); // R19"), "archive clears the memo");
-  assert.ok(src.includes("this.salvageFailedSessions.delete(sessionId); // R19"), "restore clears the memo");
+  // R20 h6: the clears moved AFTER the lifecycle transition commits (a refused
+  // restore/rename must not re-arm salvage) — the behavioural pins are the
+  // timing assertions in transcript-search-r19 (variant B).
+  assert.ok(src.includes("this.salvageFailedSessions.delete(row.id); // R20 h6"), "archive clears the memo after the move commits");
+  assert.ok(src.includes("this.salvageFailedSessions.delete(sessionId); // R20 h6"), "restore clears the memo after the bundle returns");
 });

@@ -60,6 +60,27 @@ test("R19 h1-a: a failed salvage runs at most ONCE — later scope=all searches 
     assert.equal(second.matches.length, 0);
     assert.equal(third.matches.length, 0);
     assert.ok(elapsed < 5_000, `later searches must skip salvage, took ${Math.round(elapsed)}ms for two`);
+    // R20 h6 variant A: the memo must hold on the OPEN path too — an
+    // agent-touching request re-ran the FULL salvage (leader probe: 5.0 s
+    // per request). It must now fail fast from the recorded fault.
+    const ta = performance.now();
+    await assert.rejects(
+      () => client2.agent("Victim", "main").send("again", "followUp", "req-2"),
+      /unavailable|Unreadable/i,
+    );
+    const agentMs = performance.now() - ta;
+    assert.ok(agentMs < 1_000, `agent request must fail fast from the memo, took ${Math.round(agentMs)}ms`);
+    // R20 h6 variant B: a REFUSED restore (live session exists) must NOT wipe
+    // the memo — the next scope=all search still skips the salvage.
+    const refused = await fetch(`${server2.base}/v1/archive/${sid}/restore`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(refused.status, 400, "live session refuses the restore");
+    const tb = performance.now();
+    const afterRefused = await client2.searchSessions("needle", "all");
+    assert.equal(afterRefused.matches.length, 0);
+    assert.ok(performance.now() - tb < 1_000, `search after refused restore must still skip salvage, took ${Math.round(performance.now() - tb)}ms`);
     await server2.stop();
   } finally {
     await t.cleanup();
