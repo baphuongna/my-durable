@@ -117,6 +117,18 @@ const KEYS: [string, string][] = [
 ];
 
 /** Returns false when `text` is not a command, so the caller sends it to the agent. */
+/**
+ * R19 (run-5 h2): every field of a TranscriptSearchHit is relay-borne — the
+ * numeric `entry` included. The compose site used to interpolate it raw, so a
+ * hostile hub/device could ride an OSC/CSI payload in a string-typed `entry`
+ * straight into the terminal (pi-tui writes Panel lines verbatim). One
+ * chokepoint, one test.
+ */
+export function findHitLine(name: string, hit: { agent: string; entry: number; text: string }): string {
+  const entry = sanitizeTerminal(String(hit.entry));
+  return `  ${sanitizeTerminal(name)}:${sanitizeTerminal(hit.agent)} #${entry} — ${sanitizeTerminal(hit.text.slice(0, 140))}`;
+}
+
 export async function runCommand(app: App, text: string): Promise<boolean> {
   const match = text.match(/^\/(\S+)\s*([\s\S]*)$/);
   const command = COMMANDS.find((c) => c.name === match?.[1]);
@@ -238,7 +250,7 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
         app.overlay(
           new Panel(() => {
             const lines = [
-              c.bold(c.accent(`"${sanitizeTerminal(arg)}" — ${result.matches.length} session${result.matches.length === 1 ? "" : "s"}`)),
+              c.bold(c.accent(`"${sanitizeTerminal(arg)}" — ${sanitizeTerminal(String(result.matches.length))} session${result.matches.length === 1 ? "" : "s"}`)),
               "",
             ];
             if (!result.matches.length) lines.push(c.muted("No matches (names, folders, models or transcripts)."));
@@ -247,15 +259,11 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
                 `${c.secondary(sanitizeTerminal(m.name))} ${c.muted(sanitizeTerminal(m.cwd))}${m.where.includes("transcript") ? " " + c.warn("◍ transcript") : ""}`,
               );
               for (const hit of (m.hits ?? []).slice(0, 3))
-                lines.push(
-                  c.muted(
-                    `  ${sanitizeTerminal(m.name)}:${sanitizeTerminal(hit.agent)} #${hit.entry} — ${sanitizeTerminal(hit.text.slice(0, 140))}`,
-                  ),
-                );
+                lines.push(c.muted(findHitLine(m.name, hit)));
             }
-            if (result.matches.length > shown.length) lines.push(c.muted(`… ${result.matches.length - shown.length} more`));
+            if (result.matches.length > shown.length) lines.push(c.muted(`… ${sanitizeTerminal(String(result.matches.length - shown.length))} more`));
             if (result.scanned?.truncated)
-              lines.push(c.muted(`scan budget reached (${result.scanned.entries} entries) — refine the query`));
+              lines.push(c.muted(`scan budget reached (${sanitizeTerminal(String(result.scanned.entries))} entries) — refine the query`));
             lines.push("", c.muted("esc close"));
             return lines;
           }, () => app.closeOverlay()),

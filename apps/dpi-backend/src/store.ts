@@ -206,6 +206,10 @@ const TRANSCRIPT_SESSION_LIMIT = 100;
 const TRANSCRIPT_AGENT_ENTRY_LIMIT = 4000;
 const TRANSCRIPT_ENTRY_BUDGET = 50_000;
 const TRANSCRIPT_HITS_PER_AGENT = 3;
+/** R19 (run-5 h1): per-SESSION hit cap — hits accumulate 3×matching conversations
+ * (fork/subagent), so without this the per-agent cap says nothing about a match's
+ * total cardinality (leader-probe: 2 conversations → 5 hits, linear in forks). */
+const TRANSCRIPT_HITS_PER_SESSION = 12;
 
 /** Scheduler granularity. Schedules are minute-granular, so 30 s is enough and
  *  the timer is unref'd: it never holds the process open. */
@@ -1593,6 +1597,11 @@ export class Store {
   }
 
   async restoreArchivedSession(sessionId: string): Promise<SessionSummary> {
+    // R19 (run-5 h4 hardening): normalize ONCE — the live-check used to be
+    // case-sensitive while the pin was case-normalized and the move target
+    // raw, so an uppercase-hex id could bypass the live-session refusal and
+    // strand the bundle. Every check below now sees the same canonical value.
+    sessionId = sessionId.toLowerCase();
     if (this.list().some((r) => r.id === sessionId))
       throw invalid("a live session with this id already exists");
     // R18 (run-4 h1): restore is a session-placement writer, so it enforces
@@ -1604,7 +1613,7 @@ export class Store {
     const bundleDir = findBundle(this.archiveDir, sessionId);
     if (!bundleDir) throw notFound(`no archived session ${sessionId}`);
     const pre = readArchiveManifest(bundleDir);
-    if (pre && pre.sessionId !== sessionId.toLowerCase())
+    if (pre && pre.sessionId !== sessionId)
       throw invalid(`archive manifest claims session ${pre.sessionId}, not ${sessionId} — refusing to restore under a foreign id`);
     const candidateCwd = pre?.cwd ?? "";
     if (!candidateCwd.trim())
@@ -1619,14 +1628,18 @@ export class Store {
     await this.assertSessionCwdAllowed(restoredCwd);
     const manifest = await restoreArchive(this.archiveDir, this.options.dataDir, sessionId).catch(() => undefined);
     if (!manifest) throw notFound(`no archived session ${sessionId}`);
+    // R19 (run-5 h4/h11 hardening): the catalog row is built from the
+    // VALIDATED pre-move manifest, not restoreArchive's second, unpinned
+    // re-read — a manifest swapped in during the move can no longer skew
+    // id/dbPath (cwd stays the validated realpath either way).
     const row: SessionRow = {
-      id: manifest.sessionId,
-      name: manifest.name || "Untitled session",
+      id: sessionId,
+      name: pre?.name || manifest.name || "Untitled session",
       cwd: restoredCwd,
-      dbPath: join(this.sessionsDir, manifest.sessionId, "agent.sqlite"),
-      createdAt: manifest.createdAt,
-      model: manifest.model,
-      provider: manifest.provider,
+      dbPath: join(this.sessionsDir, sessionId, "agent.sqlite"),
+      createdAt: pre?.createdAt ?? manifest.createdAt,
+      model: pre?.model ?? manifest.model,
+      provider: pre?.provider ?? manifest.provider,
     };
     this.catalog.exec("BEGIN");
     try {
@@ -1698,6 +1711,10 @@ export class Store {
         this.salvageInFlight.set(row.id, inFlight);
         const outcome = await inFlight;
         if (!outcome.recovered) {
+          // R19 (run-5 h1): attempt-once — a failed salvage is memoized for the
+          // process lifetime so every later open (and every scope=all query's
+          // reopen) fails fast instead of re-copying the corrupt database.
+          this.salvageFailedSessions.add(row.id);
           const note = salvageFailureNote(outcome);
           const previous = this.errors.get(row.id);
           this.errors.set(row.id, note); // rides the session summary and every later fault
@@ -2606,6 +2623,11 @@ export class Store {
     let sessionsScanned = 0;
     let truncated = false;
     for (const row of this.list()) {
+      // R19 (run-5 h1, leader-probed): a session whose salvage already FAILED
+      // never re-opens — the reopen used to re-run the whole-DB copy +
+      // integrity_check on EVERY query (262 MB corrupt db: 5.0 s per query,
+      // memoization-free), and the FE fires scope=all per keystroke.
+      if (this.salvageFailedSessions.has(row.id)) continue;
       if (sessionsScanned >= TRANSCRIPT_SESSION_LIMIT || entriesScanned >= TRANSCRIPT_ENTRY_BUDGET) {
         truncated = true;
         break;
@@ -2655,8 +2677,10 @@ export class Store {
             base.where.push("transcript");
             marked = true;
           }
-          for (const hit of hits)
+          for (const hit of hits) {
+            if (base.hits!.length >= TRANSCRIPT_HITS_PER_SESSION) break;
             base.hits!.push({ agent: ref.name, entry: hit.entry, kind: hit.kind, text: hit.text });
+          }
           byId.set(row.id, base);
         }
       } catch {
@@ -2857,6 +2881,8 @@ export class Store {
   /** R10 5.2: per-session salvage single-flight — concurrent openers of one
    *  corrupt session share ONE bounded attempt instead of racing scratch files. */
   private salvageInFlight = new Map<string, Promise<import("./salvage.js").SalvageOutcome>>();
+  /** R19 (run-5 h1): sessions whose salvage already failed — searched cheaply skipped, salvage never re-run. */
+  private salvageFailedSessions = new Set<string>();
 
   /** R8 schedule budgets (StoreOptions-overridable so tests simulate wedged
    *  dispatches in milliseconds instead of minutes). */

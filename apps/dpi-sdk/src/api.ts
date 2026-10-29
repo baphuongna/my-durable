@@ -491,7 +491,7 @@ export interface SessionSearchMatch {
   dbPath: string;
   compaction?: CompactionSettings;
   where: Array<"name" | "cwd" | "model" | "transcript">;
-  /** Present when scope=all found transcript text (up to a few per session, newest first). */
+  /** Present when scope=all found transcript text (up to 12 per session, newest first — R19 cap). */
   hits?: TranscriptSearchHit[];
 }
 

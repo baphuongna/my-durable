@@ -91,62 +91,68 @@ export class AuditUnavailableError extends Error {
 
 /** Redact every secret shape, including substrings, from arbitrary strings. */
 export function scrubSecrets(value: string): string {
-  let out = value;
-  out = out.replace(/dpt_[A-Za-z0-9_-]{1,64}/g, "dpt_<redacted>");
-  out = out.replace(/dpi_[A-Za-z0-9_-]{1,64}/g, "dpi_<redacted>");
-  // The hub's own admin token (adm_ + 32 random bytes, base64url).
-  out = out.replace(/adm_[A-Za-z0-9_-]{32,}/g, "adm_<redacted>");
-  out = out.replace(
-    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-    "<private-key-redacted>",
-  );
-  out = out.replace(/(authorization\s*[:=]\s*)(\S+)/gi, "$1<redacted>");
-  out = out.replace(/(bearer\s+)([A-Za-z0-9._-]{8,})/gi, "$1<redacted>");
-  out = out.replace(/([?&]code=)[A-Za-z0-9_-]+/g, "$1<redacted>");
-  // v2 offer links: the secret IS the #offer= fragment payload — redact it wherever a URL shows up.
-  out = out.replace(/(#offer=)[A-Za-z0-9_-]+/g, "$1<redacted>");
-  // R16 (run-2 h7) + R17 (run-3 h10): a denied request lands the FULL share
-  // capability token in audit path samples — the token IS the secret. The
-  // prefix spelling is ATTACKER-CONTROLLED (/share/, /api/shares/, /Share/,
-  // /%73hare/...), so anchor on a *share-shaped* path segment (case-blind,
-  // percent-encoding tolerated) followed by the token run — not on any one
-  // literal prefix. Bare token-shaped values elsewhere (audit enums like
-  // "foreign_subscription") stay readable.
-  // R18 (run-4 h6): three deliberate spellings still escaped — a non-token
-  // separator byte wedged between segment and token ('/api/shares/.<tok>'),
-  // a padded run longer than 32 chars, and percent-encoded spellings the
-  // literal pass cannot see. Tolerate 0-2 separator bytes, drop the upper
-  // bound, and re-run both rules on a percent-decoded copy.
-  // Cold-review minor 1: a decoded `/api/shares/<word>%2F<token>` leaves the
-  // token behind a short extra path segment — tolerate one such segment AND
-  // keep the direct 0–2 non-token separator (run-4 h6) before the run.
-  const shareShaped =
-    /(\/[a-z0-9%]*shares?\/)(?:[^\s"']{0,8}\/)?[^\w\n]{0,2}[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
-  // Encoded spellings (/%73hare/) hide the literal "share" — any
-  // percent-bearing path segment followed by a token-shaped run is treated
-  // the same.
-  const percentBearing = /(\/[^\s"']*%[^\s"']*\/)[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
-  const scrubTokens = (s: string): string => s.replace(shareShaped, "$1<redacted>").replace(percentBearing, "$1<redacted>");
-  out = scrubTokens(out);
+  // R19 (run-5 h5, leader-confirmed): the share-shaped gap used to tolerate
+  // only 2 separator bytes (or one ≤8-byte segment ending in '/'), so 3+
+  // requester-spelled gap bytes ('/share/...<tok>', ';;;', '%20%20%20',
+  // ';x=', double-encoded forms) left the capability intact. The gap is now
+  // any ≤16-byte non-space run (requester-controlled spelling, sample ≤200
+  // chars), and the FULL rule set re-runs on the decoded string (≤2 decode
+  // rounds) — not just the two share rules.
+  const applyRules = (s: string): string => {
+    let out = s;
+    out = out.replace(/dpt_[A-Za-z0-9_-]{1,64}/g, "dpt_<redacted>");
+    out = out.replace(/dpi_[A-Za-z0-9_-]{1,64}/g, "dpi_<redacted>");
+    // The hub's own admin token (adm_ + 32 random bytes, base64url).
+    out = out.replace(/adm_[A-Za-z0-9_-]{32,}/g, "adm_<redacted>");
+    out = out.replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g,
+      "<private-key-redacted>",
+    );
+    out = out.replace(/(authorization\s*[:=]\s*)(\S+)/gi, "$1<redacted>");
+    out = out.replace(/(bearer\s+)([A-Za-z0-9._-]{8,})/gi, "$1<redacted>");
+    out = out.replace(/([?&]code=)[A-Za-z0-9_-]+/g, "$1<redacted>");
+    // v2 offer links: the secret IS the #offer= fragment payload — redact it wherever a URL shows up.
+    out = out.replace(/(#offer=)[A-Za-z0-9_-]+/g, "$1<redacted>");
+    // R16 (run-2 h7) + R17 (run-3 h10): a denied request lands the FULL share
+    // capability token in audit path samples — the token IS the secret. The
+    // prefix spelling is ATTACKER-CONTROLLED (/share/, /api/shares/, /Share/,
+    // /%73hare/...), so anchor on a *share-shaped* path segment (case-blind,
+    // percent-encoding tolerated) followed by the token run — not on any one
+    // literal prefix. Bare token-shaped values elsewhere (audit enums like
+    // "foreign_subscription") stay readable.
+    const shareShaped =
+      /(\/[a-z0-9%]*shares?(?:\/|(?=[^a-z0-9_%]|$)))[^\s"']{0,16}?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
+    // Encoded spellings (/%73hare/) hide the literal "share" — any
+    // percent-bearing path segment followed by a token-shaped run is treated
+    // the same.
+    const percentBearing = /(\/[^\s"']*%[^\s"']*\/)[^\s"']{0,16}?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
+    out = out.replace(shareShaped, "$1<redacted>").replace(percentBearing, "$1<redacted>");
+    // Credential material without its prefix (slices, echo): 43-char base64url runs.
+    out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
+    // Pairing codes as standalone values ("code":"AB2C7DEF" / "ABCD2345EF67") but not ordinary words.
+    out = out.replace(/(["'?=:,\s])([A-Z2-7]{12}|[A-Z2-7]{8})(?=["'?\s:,}]|$)/g, "$1<code-redacted>");
+    // A MINTED code is a canonical UUID v4. Only a value LABELLED a code is a secret here: an audit
+    // row's own codeId/enrollmentId are correlation ids and must stay readable.
+    out = out.replace(
+      /(\bcode["']?\s*[:=]\s*["']?)([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?=["'?\s:,}&]|$)/gi,
+      "$1<code-redacted>",
+    );
+    return out;
+  };
+  let out = applyRules(value);
   // The decoded pass sees through %XX spellings of the separator, the first
   // token characters, or the segment itself; the sample is bounded (≤200
-  // chars) so a pathological decode cannot explode it.
-  try {
-    const decoded = decodeURIComponent(out);
-    if (decoded !== out) out = scrubTokens(decoded);
-  } catch {
-    // malformed percent escapes stay as the literal pass left them
+  // chars) so a pathological decode cannot explode it. Two rounds: the first
+  // decode can still carry second-encoding (%2573…) for the second pass.
+  for (let round = 0; round < 2; round++) {
+    try {
+      const decoded = decodeURIComponent(out);
+      if (decoded === out) break;
+      out = applyRules(decoded);
+    } catch {
+      break; // malformed percent escapes stay as the previous pass left them
+    }
   }
-  // Credential material without its prefix (slices, echo): 43-char base64url runs.
-  out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
-  // Pairing codes as standalone values ("code":"AB2C7DEF" / "ABCD2345EF67") but not ordinary words.
-  out = out.replace(/(["'?=:,\s])([A-Z2-7]{12}|[A-Z2-7]{8})(?=["'?\s:,}]|$)/g, "$1<code-redacted>");
-  // A MINTED code is a canonical UUID v4. Only a value LABELLED a code is a secret here: an audit
-  // row's own codeId/enrollmentId are correlation ids and must stay readable.
-  out = out.replace(
-    /(\bcode["']?\s*[:=]\s*["']?)([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?=["'?\s:,}&]|$)/gi,
-    "$1<code-redacted>",
-  );
   return out;
 }
 

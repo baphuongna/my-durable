@@ -217,3 +217,40 @@ test("a recorded real stream (dpi-backend + pi-durable watchEvents) reduces to t
   for (const frame of fixture.frames.slice(start)) fromSnapshot.apply(frame);
   assert.deepEqual(fromSnapshot.state.items, model.state.items);
 });
+
+test("R19 h10: a hostile contentIndex never holes the live message (drop the change whole)", () => {
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  // Out-of-range indices are dropped whole. (index === content.length is a legal
+  // append, so the hostile set starts past it.)
+  for (const index of [1, 2, 2 ** 32 - 2, -1, 1.5, Number.NaN]) {
+    const model = new AgentModel();
+    // Leader probe: the raw index crashed toTranscript's for-of ("Cannot read
+    // properties of undefined") on the NEXT rebuild — the SSE follow loop turned
+    // that into a disconnect/reconnect churn loop.
+    assert.doesNotThrow(() =>
+      model.apply({ type: "batch", events: [{ type: "message_update", usage, changes: [{ type: "text_start", contentIndex: index, block: { type: "text", text: "x" } }] }] } as never),
+    );
+    // The live item exists (a generation started), but the hostile CHANGE was
+    // dropped whole: no block, no hole, and rendering it must not throw.
+    const items = (model.state as { items?: { blocks?: { type?: string }[] }[] }).items ?? [];
+    for (const item of items) assert.deepEqual(item.blocks ?? [], [], `index ${index} must not land a block`);
+  }
+  // The honest index still applies — no throw and the live generation is set
+  // (the live message itself is private; the guard must not reject valid frames).
+  const ok = new AgentModel();
+  ok.apply({ type: "batch", events: [{ type: "message_update", usage, changes: [{ type: "text_start", contentIndex: 0, block: { type: "text", text: "hi" } }] }] } as never);
+  assert.equal((ok.state as { generating?: boolean }).generating, true, "a valid in-range change keeps the generation live");
+});
+
+test("R19 h10: the entries map is capped so a hostile stream cannot grow memory without bound", () => {
+  const model = new AgentModel();
+  for (let b = 0; b < 8; b++) {
+    const events = [];
+    for (let i = 0; i < 1000; i++)
+      events.push({ type: "entry_appended", entry: { id: b * 1000 + i + 1, conversationId: 1, kind: "pi.user", model: [{ role: "user", content: "x" }] } });
+    model.apply({ type: "batch", events } as never);
+  }
+  // Leader probe measured attacker-linear growth (10k entries, +11 MB, no ceiling).
+  const items = (model.state as { items?: unknown[] }).items ?? [];
+  assert.ok(items.length <= 5_100, `state must stay bounded, got ${items.length}`);
+});

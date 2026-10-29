@@ -193,6 +193,18 @@ test("URL validation: http(s) only, no userinfo, and private hosts only on reque
       await rejected(`http://${host}:8080/hook`);
     }
 
+    // R19 (run-5 h7, leader-confirmed end-to-end): IPv4-mapped IPv6 literals in
+    // their HEX-group spelling used to classify as public — URL() keeps the hex
+    // groups and the kernel maps them to the IPv4 destination, so
+    // "http://[::ffff:7f00:1]:port/hook" was ACCEPTED with no opt-in.
+    for (const host of ["[::ffff:7f00:1]", "[::ffff:a9fe:a9fe]", "[::ffff:a00:1]", "[::ffff:0:7f00:1]", "[::7f00:1]"]) {
+      assert.equal(isPrivateHost(host), true, `${host} denotes a private IPv4 destination`);
+      await rejected(`http://${host}:8080/hook`);
+    }
+    // The dotted-quad mapped form was already refused; keep it pinned.
+    assert.equal(isPrivateHost("::ffff:127.0.0.1"), true);
+    assert.equal(isPrivateHost("::ffff:8.8.8.8"), false, "a public mapped literal stays reachable");
+
     // …and a LAN ntfy is the common self-hosted case, so the operator can opt in.
     assert.equal(isPrivateHost("192.168.1.10"), true);
     assert.equal(isPrivateHost("example.com"), false);
@@ -703,5 +715,43 @@ test("deliver with no sinks is a no-op, and up() is safe on an empty registry", 
     assert.deepEqual(sinks.recent(), []);
   } finally {
     await s.cleanup();
+  }
+});
+
+test("R19 h7: a sink's 3xx response never re-aims the daemon's POST (redirect refused)", async () => {
+  const { createServer } = await import("node:http");
+  const hits: string[] = [];
+  const target = createServer((req, res) => {
+    hits.push(`${req.method} ${req.url}`);
+    res.writeHead(204);
+    res.end();
+  });
+  await new Promise<void>((r) => target.listen(0, "127.0.0.1", r));
+  const targetPort = (target.address() as { port: number }).port;
+  const redirector = createServer((_req, res) => {
+    res.writeHead(302, { Location: `http://127.0.0.1:${targetPort}/admin-secret` });
+    res.end();
+  });
+  await new Promise<void>((r) => redirector.listen(0, "127.0.0.1", r));
+  const redirectPort = (redirector.address() as { port: number }).port;
+  const dir = await scratch();
+  try {
+    const sinks = await openWith(dir.file);
+    // The registered sink is reachable (operator opted into a LAN sink); the
+    // 302 is what must be refused — the guard only ran at create time.
+    await sinks.create(
+      { kind: "webhook", url: `http://127.0.0.1:${redirectPort}/hook`, events: ["*"] },
+      { allowPrivateHosts: true },
+    );
+    const results = await sinks.deliver(event(), { device: "probe" });
+    await new Promise((r) => setTimeout(r, 250));
+    assert.deepEqual(hits, [], "the redirect target must receive nothing");
+    // Pre-fix the 302 was followed and the delivery reported "sent" to the
+    // internal target; now the fetch itself fails closed.
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.notEqual(results[0]!.status, "sent", `a followed redirect would report sent (${JSON.stringify(results)})`);
+  } finally {
+    redirector.close();
+    target.close();
   }
 });

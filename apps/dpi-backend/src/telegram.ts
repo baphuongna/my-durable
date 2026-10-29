@@ -131,24 +131,43 @@ export const defaultTelegramIo = (): TelegramIo => ({
     // Advisory lock file next to the registry. Both writers are the same OS
     // user, so create-exclusive + stale-break (mtime older than 5 s — a
     // crashed holder never wedges the bridge) is mutual exclusion enough.
+    // R19 (run-5 h3, leader-confirmed): the lock used to be ownership-blind —
+    // a stale-break stat→unlink raced a successor's fresh lock (forced
+    // interleave probe: double-entry), and the finally-unlink removed
+    // "whatever file is there". Every unlink now re-reads the holder nonce
+    // and removes the file only when it is still exactly the holder we judged.
     const lockPath = `${path}.lock`;
     const deadline = Date.now() + 10_000;
+    const nonce = `${process.pid}-${randomBytes(8).toString("hex")}`;
+    const lockNonce = async (): Promise<string | null> => {
+      try {
+        return (await readFile(lockPath, "utf8")).trim();
+      } catch {
+        return null; // vanished between the stat and the read — retry
+      }
+    };
     for (;;) {
       try {
         const handle = await open(lockPath, "wx", 0o600);
-        await handle.write(`${process.pid}\n`);
+        await handle.write(`${nonce}\n`);
         await handle.close();
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         let age = 0;
+        let seen: string | null = null;
         try {
           age = Date.now() - (await stat(lockPath)).mtimeMs;
+          seen = await lockNonce();
         } catch {
           continue; // released between the create attempt and the stat
         }
+        if (seen === null) continue; // gone mid-judge — retry the create
         if (age > 5_000) {
-          await unlink(lockPath).catch(() => undefined); // stale holder — break it
+          // Stale candidate — break it ONLY if it is still exactly the holder
+          // we just judged (a successor's fresh lock must survive our unlink).
+          const now = await lockNonce();
+          if (now !== null && now === seen) await unlink(lockPath).catch(() => undefined);
           continue;
         }
         if (Date.now() > deadline) throw new Error(`telegram registry lock busy: ${lockPath}`);
@@ -158,7 +177,9 @@ export const defaultTelegramIo = (): TelegramIo => ({
     try {
       return await fn();
     } finally {
-      await unlink(lockPath).catch(() => undefined);
+      // Release only our own lock — never a successor's.
+      const current = await lockNonce();
+      if (current !== null && current === nonce) await unlink(lockPath).catch(() => undefined);
     }
   },
   exists: async (path) => {
@@ -738,13 +759,43 @@ export class TelegramBridge {
     if (this.mainIsGood && (await this.io.exists(this.filePath))) {
       try {
         const previous = await this.io.readFile(this.filePath);
+        // R19 (run-5 h3, leader-confirmed): this re-read happens AFTER the CAS
+        // — if the bytes moved since the CAS, a foreign write landed inside
+        // our commit window and writing now would clobber it silently (the
+        // post-write verify only sees our own payload). Fail loudly BEFORE
+        // any write; the foreign bytes stay authoritative on disk.
+        if (this.registryText !== null && previous !== this.registryText) {
+          this.mainIsGood = false;
+          throw new TelegramBridgeError(
+            "registry_changed",
+            `registry changed between CAS and commit — foreign write preserved — refusing to clobber ${this.filePath}`,
+          );
+        }
         await this.io.writeFile(this.backupPath, previous);
         await this.io.chmod(this.backupPath, 0o600);
       } catch (error) {
+        if (error instanceof TelegramBridgeError) throw error;
         this.warn(`could not refresh ${this.backupPath}`, error);
       }
     }
     const payload = `${JSON.stringify(draft satisfies TelegramRegistryFile, null, 2)}\n`;
+    // R19 (run-5 h3, leader-confirmed HIGH): the .bak refresh above is separated
+    // from the write by awaited fs ops, so a NON-locking peer (operator hand-edit,
+    // a pre-R18 writer during the upgrade window) could land its bytes after that
+    // read and before our write — the post-write verify only ever compares to our
+    // OWN payload, so both commits reported success and the revoked binding
+    // survived on disk. Re-read immediately before writing: any divergence from
+    // the CAS baseline refuses the commit with the foreign bytes intact.
+    if (this.registryText !== null) {
+      const beforeWrite = await this.io.readFile(this.filePath);
+      if (beforeWrite !== this.registryText) {
+        this.mainIsGood = false;
+        throw new TelegramBridgeError(
+          "registry_changed",
+          `registry changed just before commit — foreign write preserved — refusing to clobber ${this.filePath}`,
+        );
+      }
+    }
     await this.io.writeFile(this.filePath, payload);
     await this.io.chmod(this.filePath, 0o600);
     // R18 (run-4 h3): the CAS above is separated from the write by several
@@ -757,11 +808,11 @@ export class TelegramBridge {
       try {
         const after = await this.io.readFile(this.filePath);
         if (after !== payload) {
-          await this.io.writeFile(this.filePath, after);
-          await this.io.chmod(this.filePath, 0o600);
-          // Converge memory onto the restored foreign bytes immediately — a
-          // stale in-memory binding must not authorize the very next update
-          // through syncForeign's "still our own last write" fast path.
+          // R19 (run-5 h3, leader-confirmed): the foreign bytes are ALREADY on
+          // disk — the old rollback rewrote them (a second blind write with
+          // its own clobber window). Adopt only: converge memory onto what is
+          // there so a stale in-memory binding cannot authorize the very next
+          // update through syncForeign's "still our own last write" fast path.
           const foreign = coerceRegistry(JSON.parse(after), this.now());
           this.adopt({ ...foreign, offset: Math.max(this.offset, foreign.offset) });
           this.registryText = after;

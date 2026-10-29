@@ -552,3 +552,35 @@ test("R18: scrub redacts the decoded-segment share spelling (cold-review minor 1
   assert.equal(scrubSecrets("GET /api/shares?limit=50"), "GET /api/shares?limit=50");
   assert.equal(scrubSecrets("foreign_subscription"), "foreign_subscription");
 });
+
+test("R19 h5: the share-shaped gap tolerates ANY short spelling (leader-confirmed LEAKs)", async () => {
+  const { scrubSecrets } = await import("../apps/dpi-playground-hub/src/audit.ts");
+  const T = "q5vG8Yb2rN1mZtK4xW7hP3jd"; // 24-char minted shape
+  // Every spelling below leaked the full capability before the fix.
+  for (const p of [
+    `/share/...${T}`,
+    `/share/;;;${T}`,
+    `/share/%2E%2E%2E${T}`,
+    `/share/x%2E%2E%2E${T}`,
+    `/share/%20%20%20${T}`,
+    `/share/;x=${T}`,
+    `/%2573hare%252E%252E%252E${T}`, // double-encoded
+    `/share...${T}`, // no slash after the segment word
+  ]) {
+    const out = scrubSecrets(p);
+    assert.ok(!out.includes(T), `${p} must not retain the capability (got ${out})`);
+  }
+  // Readability controls stay byte-identical.
+  for (const p of ["GET /api/shares?limit=50", "foreign_subscription", "GET /share/intro", "GET /api/shares"]) {
+    assert.equal(scrubSecrets(p), p);
+  }
+});
+
+test("R19 h5: the decoded pass applies the FULL rule set, not just the share rules", async () => {
+  const { scrubSecrets } = await import("../apps/dpi-playground-hub/src/audit.ts");
+  const dpt = `dpt_${"a".repeat(43)}`;
+  const out = scrubSecrets(`/%64pt_${"a".repeat(43)}`);
+  assert.ok(!out.includes(dpt), `percent-spelled prefix token must redact (got ${out})`);
+  const bearer = scrubSecrets("Authorization%3A%20Bearer%20dpi_" + "b".repeat(40));
+  assert.ok(!bearer.includes("dpi_" + "b".repeat(40)), `encoded bearer must redact (got ${bearer})`);
+});

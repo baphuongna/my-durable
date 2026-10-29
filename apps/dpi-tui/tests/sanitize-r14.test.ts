@@ -212,3 +212,13 @@ test("R18 h4: pairing note, network status and /name seed are sanitized", async 
   const lines = renderNetwork(100, rows, devices);
   assert.ok(lines.every(noEsc), `network status leaked: ${lines.join(" | ")}`);
 });
+
+test("R19 h2: /find hit lines sanitize the relay-borne numeric entry and counts", async () => {
+  const { findHitLine } = await import("../src/commands.ts");
+  const hostile = { agent: "Main", entry: "\u001b]52;c;aGVsbG8=\u0007" as unknown as number, text: "ok" };
+  const line = findHitLine("Session", hostile);
+  assert.ok(!/\u001b/.test(line), `no raw ESC may reach the terminal: ${JSON.stringify(line)}`);
+  assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(line), "no C0/C1 controls either");
+  // Honest values keep their readable shape.
+  assert.equal(findHitLine("Session", { agent: "Main", entry: 12345, text: "hello" }), "  Session:Main #12345 — hello");
+});

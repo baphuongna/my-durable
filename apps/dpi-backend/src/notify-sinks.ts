@@ -158,6 +158,8 @@ export type FetchLike = (
     headers: Record<string, string>;
     body: string;
     signal?: AbortSignal;
+    /** R19 (run-5 h7, leader-confirmed): redirects are refused — see attempt(). */
+    redirect?: "error" | "follow" | "manual";
   },
 ) => Promise<FetchResponseLike>;
 
@@ -238,10 +240,42 @@ export function isPrivateHost(hostname: string): boolean {
     if (host === "::" || host === "::1") return true;
     if (/^f[cd][0-9a-f]{2}:/.test(host)) return true; // fc00::/7 unique-local
     if (/^fe[89ab][0-9a-f]:/.test(host)) return true; // fe80::/10 link-local
-    if (host.startsWith("::ffff:")) return isPrivateIPv4(host.slice("::ffff:".length));
+    if (host.startsWith("::ffff:")) {
+      const mapped = host.slice("::ffff:".length);
+      if (isPrivateIPv4(mapped)) return true; // dotted-quad mapped form
+      // R19 (run-5 h7, leader-confirmed): hex-group mapped spellings
+      // ("::ffff:7f00:1" = 127.0.0.1, "::ffff:a9fe:a9fe" = 169.254.169.254)
+      // classify as PUBLIC unless decoded here — WHATWG URL keeps the hex
+      // groups and the kernel maps the literal's low 32 bits to the IPv4
+      // destination. Decode by the LAST two groups (the kernel-mapped half).
+      const groups = mapped.split(":").filter(Boolean);
+      if (groups.length >= 1 && groups.every((g) => /^[0-9a-f]{1,4}$/i.test(g))) {
+        const value = ipv4FromLastGroups(groups);
+        if (value !== null && isPrivateIPv4(value)) return true;
+      }
+      return false;
+    }
+    // IPv4-compatible ::/96 spellings ("::7f00:1") — deprecated but connectable.
+    if (/^::[0-9a-f:]+$/.test(host) && host.includes(":")) {
+      const groups = host.slice(2).split(":").filter(Boolean);
+      if (groups.length >= 1 && groups.every((g) => /^[0-9a-f]{1,4}$/i.test(g))) {
+        const value = ipv4FromLastGroups(groups);
+        if (value !== null && isPrivateIPv4(value)) return true;
+      }
+    }
     return false;
   }
   return false;
+}
+
+/** R19: decode the low 32 bits of a hex-group IPv6 tail into dotted-quad (null on overflow). */
+function ipv4FromLastGroups(groups: string[]): string | null {
+  const last = groups[groups.length - 1]!;
+  const prev = groups[groups.length - 2];
+  const hi = prev !== undefined ? parseInt(prev, 16) : 0;
+  const lo = parseInt(last, 16);
+  const value = ((hi & 0xffff) << 16) | (lo & 0xffff);
+  return `${(value >>> 24) & 255}.${(value >>> 16) & 255}.${(value >>> 8) & 255}.${value & 255}`;
 }
 
 function isPrivateIPv4(host: string): boolean {
@@ -794,6 +828,12 @@ export class NotifySinks {
         headers: request.headers,
         body: request.body,
         signal: AbortSignal.timeout(this.timeoutMs),
+        // R19 (run-5 h7, leader-confirmed): without this, a sink host's 3xx
+        // re-aims the daemon's POST at any loopback/LAN/metadata host the
+        // create-time private-host guard refuses — the redirect target is
+        // never re-validated. Refuse redirects like every other egress fetch
+        // in this repo (tunnel, pairing, jev, hub transport).
+        redirect: "error",
       });
       const ms = Date.now() - startedAt;
       const status = typeof response?.status === "number" ? response.status : 0;

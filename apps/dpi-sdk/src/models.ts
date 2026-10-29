@@ -99,6 +99,12 @@ export function applyMessageChange(message: WireAssistantMessage, change: WireMe
   if (change.type === "message") return structuredClone(change.message);
   const content = [...message.content] as WireAssistantBlock[];
   const i = change.contentIndex;
+  // R19 (run-5 h10, leader-probed): the wire number was indexed raw — any
+  // index > content.length creates holes that crash toTranscript's for-of
+  // ("Cannot read properties of undefined"), which the SSE follow loop turns
+  // into a disconnect/reconnect churn loop; a huge index also allocates a
+  // length-2^32 sparse array. Validate like setPath: drop the whole change.
+  if (!Number.isInteger(i) || i < 0 || i > content.length) return message;
   if (change.type === "block" || change.type.endsWith("_start")) {
     content[i] = structuredClone((change as { block: WireAssistantBlock }).block);
   } else if (change.type === "text_delta") {
@@ -206,6 +212,15 @@ export class AgentModel extends Emitter {
       const head = entry.head ?? entry.id;
       for (const id of this.entries.keys()) if (id < head) this.entries.delete(id);
     }
+    // R19 (run-5 h10, leader-probed): the events stream had NO aggregate cap —
+    // a hostile device streaming unique-id entries under the 16 MiB per-event
+    // cap grows this Map linearly until the operator's tab/TUI OOMs. Mirror
+    // the producer-side budget: keep the newest 5_000 entries.
+    while (this.entries.size > 5_000) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
   }
 
   private event(event: WireAgentEvent) {
@@ -299,6 +314,8 @@ export class AgentModel extends Emitter {
         return;
       case "compaction_start":
         if (!this.state.compactions.includes(event.taskId)) this.state.compactions.push(event.taskId);
+        // R19: bound alongside the entries cap — fresh taskIds grow unbounded.
+        if (this.state.compactions.length > 64) this.state.compactions = this.state.compactions.slice(-64);
         return;
       case "compaction_end":
         this.state.compactions = this.state.compactions.filter((id) => id !== event.taskId);
