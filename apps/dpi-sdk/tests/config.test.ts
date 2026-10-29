@@ -59,3 +59,21 @@ test("sync upserts config devices, keeps UI devices and prunes removed config de
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("R18 h7: ssh shape and start_dirs parse guards (leader-confirmed vectors)", async () => {
+  const { parseNetworkConfig } = await import("../src/node/config.js");
+  const yaml = (over: string) => `devices:\n  box:\n    kind: ssh\n    host: h\n    service: systemd\n    url: http://h:4780\n    token_env: DPI_TOKEN\n${over}`;
+  // ProxyJump-style option injection: the user part may not start with a dash.
+  assert.throws(
+    () => parseNetworkConfig(yaml("    ssh: -Jjump@evil\n    start_dirs: [~/w]"), ""),
+    /user@host/,
+  );
+  // The separator smuggle: one entry containing ':' would widen DPI_START_DIRS.
+  assert.throws(
+    () => parseNetworkConfig(yaml("    start_dirs: [~/w:/tmp]"), ""),
+    /separator/,
+  );
+  // Honest shapes still parse.
+  const ok = parseNetworkConfig(yaml("    ssh: pi@192.168.1.10:2222\n    start_dirs: [~/dpi-work]"), "");
+  assert.equal(ok.devices.box.ssh, "pi@192.168.1.10:2222");
+});

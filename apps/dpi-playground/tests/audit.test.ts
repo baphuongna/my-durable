@@ -540,3 +540,15 @@ test("storage perms: registry file tightened to 0600 on audit init", async () =>
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("R18: scrub redacts the decoded-segment share spelling (cold-review minor 1)", async () => {
+  const { scrubSecrets } = await import("../apps/dpi-playground-hub/src/audit.ts");
+  const tok = "abcdefghij0123456789AB"; // 22 chars, real token shape
+  for (const p of [`/api/shares/x%2F${tok}`, `/api/shares/x/${tok}`, `/api/shares/.${tok}`, `/api/shares/${"a".repeat(9)}${tok}`]) {
+    const out = scrubSecrets(p);
+    assert.ok(!out.includes(tok), `${p} must not retain the token (got ${out})`);
+  }
+  // The CRUD listing shape and enum values stay readable.
+  assert.equal(scrubSecrets("GET /api/shares?limit=50"), "GET /api/shares?limit=50");
+  assert.equal(scrubSecrets("foreign_subscription"), "foreign_subscription");
+});

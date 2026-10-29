@@ -1604,7 +1604,7 @@ export class Store {
     const bundleDir = findBundle(this.archiveDir, sessionId);
     if (!bundleDir) throw notFound(`no archived session ${sessionId}`);
     const pre = readArchiveManifest(bundleDir);
-    if (pre && pre.sessionId !== sessionId)
+    if (pre && pre.sessionId !== sessionId.toLowerCase())
       throw invalid(`archive manifest claims session ${pre.sessionId}, not ${sessionId} — refusing to restore under a foreign id`);
     const candidateCwd = pre?.cwd ?? "";
     if (!candidateCwd.trim())

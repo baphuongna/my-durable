@@ -113,6 +113,7 @@ watch(query, (value) => {
   clearTimeout(searchTimer);
   const q = value.trim();
   if (q.length < 2) {
+    ++searchGeneration; // an in-flight scan for the cleared query must not resurrect stale hits
     deviceHits.value = [];
     searching.value = false;
     return;
@@ -142,7 +143,7 @@ watch(query, (value) => {
     searching.value = false;
   }, 250);
 });
-const clearSearch = () => ((query.value = ""), (deviceHits.value = []));
+const clearSearch = () => ((query.value = ""), ++searchGeneration, (deviceHits.value = []));
 
 /** Bulk session manage (orca ManageSessionsSection): select many, then
  *  archive/abort each with a per-row result. Client-side loop over the

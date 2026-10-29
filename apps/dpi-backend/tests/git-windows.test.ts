@@ -479,7 +479,7 @@ test("markDirty: 'D:\\repo' invalidates the entry cached as 'd:/repo' — siblin
 });
 
 test("R18 h8: git/gh children never inherit DPI_TOKEN (allowlist pinned, both platforms)", async () => {
-  const secrets = { DPI_TOKEN: "dpi_secret_marker", OPENROUTER_API_KEY: "ork_marker" };
+  const secrets = { DPI_TOKEN: "dpi_secret_marker", OPENROUTER_API_KEY: "ork_marker", SYSTEMROOT: "C:\\Windows" };
   const saved = Object.fromEntries(Object.keys(secrets).map((k) => [k, (process.env as Record<string, string | undefined>)[k]]));
   Object.assign(process.env, secrets);
   const POSIX_ALLOW = new Set(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "TERM", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK"]);
@@ -501,12 +501,10 @@ test("R18 h8: git/gh children never inherit DPI_TOKEN (allowlist pinned, both pl
       }
     }
     // A win32 infra var present in the parent IS forwarded on win32 only.
-    process.env.SYSTEMROOT = "C:\\Windows";
     const winEnv = await withPlatform("win32", () => GIT_EXEC_OPTS(1000).env);
     assert.equal(winEnv.SYSTEMROOT, "C:\\Windows");
     const posixEnv = await withPlatform("linux", () => GIT_EXEC_OPTS(1000).env);
     assert.equal(posixEnv.SYSTEMROOT, undefined);
-    delete process.env.SYSTEMROOT;
   } finally {
     for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
