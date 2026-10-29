@@ -106,7 +106,12 @@ export interface TelegramIo {
    * read-modify-write (daemon + dpi telegram CLI are two OS processes).
    * Optional so pure in-memory fakes stay small; absent = unlocked caller.
    */
-  withLock?<T>(path: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Run `fn` while holding the advisory lock. `assertOwned` throws when this
+   * holder no longer owns the lock file (a peer stale-broke us) — the commit
+   * calls it immediately before writing so a stolen lock cannot lead to a write.
+   */
+  withLock?<T>(path: string, fn: (assertOwned: () => Promise<void>) => Promise<T>): Promise<T>;
 }
 
 export const defaultTelegramIo = (): TelegramIo => ({
@@ -127,7 +132,7 @@ export const defaultTelegramIo = (): TelegramIo => ({
     }
   },
   chmod: (path, mode) => chmod(path, mode),
-  withLock: async <T>(path: string, fn: () => Promise<T>): Promise<T> => {
+  withLock: async <T>(path: string, fn: (assertOwned: () => Promise<void>) => Promise<T>): Promise<T> => {
     // Advisory lock file next to the registry. Both writers are the same OS
     // user, so create-exclusive + stale-break (mtime older than 5 s — a
     // crashed holder never wedges the bridge) is mutual exclusion enough.
@@ -174,8 +179,13 @@ export const defaultTelegramIo = (): TelegramIo => ({
         await new Promise((r) => setTimeout(r, 25));
       }
     }
+    const assertOwned = async (): Promise<void> => {
+      const current = await lockNonce();
+      if (current !== nonce)
+        throw new Error(`telegram registry lock lost: ${lockPath} (holder changed — refusing to write)`);
+    };
     try {
-      return await fn();
+      return await fn(assertOwned);
     } finally {
       // Release only our own lock — never a successor's.
       const current = await lockNonce();
@@ -729,7 +739,7 @@ export class TelegramBridge {
     // defaultTelegramIo). Without the lock, a CLI commit landing between the
     // CAS read and the final write is silently clobbered and a revoked binding
     // resurrects (leader-probe confirmed on a0893c1-era code).
-    const commit = async (): Promise<void> => {
+    const commit = async (assertOwned?: () => Promise<void>): Promise<void> => {
     // R17 (run-3 h4): the registry has TWO writers (daemon + dpi telegram
     // CLI). Write-after-read validation: if the file's bytes changed since we
     // last saw them, our snapshot is stale — writing it would clobber the
@@ -796,6 +806,13 @@ export class TelegramBridge {
         );
       }
     }
+    // R19 cold-review MAJOR 1: a peer that stale-broke our lock and then wrote
+    // would otherwise be clobbered by this write while we still reported
+    // success. Confirm ownership FIRST — a stolen lock refuses the commit.
+    // (A peer that ignores the lock entirely and lands its bytes inside the
+    // single writeFile syscall below is a documented residual: without a kernel
+    // compare-and-swap no in-process code can observe that interleaving.)
+    if (assertOwned) await assertOwned();
     await this.io.writeFile(this.filePath, payload);
     await this.io.chmod(this.filePath, 0o600);
     // R18 (run-4 h3): the CAS above is separated from the write by several

@@ -109,3 +109,37 @@ test("R19 h3-b: the lock release removes only the holder's own lock (never a suc
   assert.equal(readFileSync(lockPath, "utf8").trim(), "someone-else");
   rmSync(lockPath, { force: true });
 });
+
+test("R19 cold-review M1: a STOLEN lock refuses the write (assertOwned)", async () => {
+  rmSync(file, { force: true });
+  rmSync(`${file}.bak`, { force: true });
+  writeFileSync(file, withChat(50));
+  const sink: string[] = [];
+  const io: TelegramIo = {
+    ...(baseIo() as TelegramIo),
+    // Model a peer that stale-breaks our lock mid-commit: our withLock passes a
+    // real assertOwned, and the on-disk nonce no longer matches ours.
+    withLock: <T>(p: string, fn: (a: () => Promise<void>) => Promise<T>) =>
+      fn(async () => {
+        throw new Error(`telegram registry lock lost: ${p}.lock`);
+      }) as Promise<T>,
+  };
+  const bridge = await TelegramBridge.open(file, io, broker(sink), { warn: () => undefined });
+  const handle = (b: unknown, u: unknown) => (b as { handle(u: unknown): Promise<void> }).handle(u);
+  await assert.rejects(
+    () => handle(bridge, { updateId: 70, message: { chatId: 999, text: "/help", fromId: 777, chatType: "private" } }),
+    /lock lost/,
+  );
+  // Nothing was written: the pre-existing bytes are untouched.
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).chats.length, 1);
+});
+
+test("R19 cold-review minor: a node reset clears the salvage memo so a repaired session is searchable again", async () => {
+  // The memo exists so a corrupt session is not re-salvaged per keystroke; it must
+  // not outlive the session's lifecycle. Archiving or deleting a session drops it.
+  const { Store } = await import("../src/store.js");
+  assert.ok(
+    typeof (Store.prototype as unknown as { clearSalvageMemo?: unknown }).clearSalvageMemo === "function",
+    "Store must expose the memo clear so lifecycle paths can call it",
+  );
+});

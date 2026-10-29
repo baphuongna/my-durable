@@ -279,7 +279,11 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
           if (!tasks.length) lines.push(c.muted("No live tasks."));
           for (const t of tasks)
             lines.push(
-              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${t.id} ${sanitizeTerminal(t.kind)} ${c.muted(sanitizeTerminal(`agent #${t.conversationId} │ ${t.state.status}${t.state.phase ? `/${t.state.phase}` : ""}`))}`,
+              // R19 cold-review MAJOR 4: task ids are wire-borne too — a hostile
+              // relay can type them as strings carrying escape sequences (the
+              // same class as the /find `entry` finding). Every scalar goes
+              // through the chokepoint.
+              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${sanitizeTerminal(String(t.id))} ${sanitizeTerminal(String(t.kind))} ${c.muted(sanitizeTerminal(`agent #${String(t.conversationId)} │ ${String(t.state.status)}${t.state.phase ? `/${String(t.state.phase)}` : ""}`))}`,
             );
           lines.push("", c.muted("esc close"));
           return lines;

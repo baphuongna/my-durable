@@ -584,3 +584,24 @@ test("R19 h5: the decoded pass applies the FULL rule set, not just the share rul
   const bearer = scrubSecrets("Authorization%3A%20Bearer%20dpi_" + "b".repeat(40));
   assert.ok(!bearer.includes("dpi_" + "b".repeat(40)), `encoded bearer must redact (got ${bearer})`);
 });
+
+test("R19 cold-review M5: a doubly-encoded control char cannot forge an extra audit line", async () => {
+  const { scrubSecrets } = await import("../apps/dpi-playground-hub/src/audit.ts");
+  // %250A → decode once "%0A" → decode again a real newline. The sample must stay one line.
+  const out = scrubSecrets("/api/shares%250Aforged-admin-row");
+  assert.ok(!out.includes("\n"), `no newline may survive: ${JSON.stringify(out)}`);
+  assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(out), `no control chars: ${JSON.stringify(out)}`);
+});
+
+test("R19 cold-review M3: the gap is not capped at 16 bytes", async () => {
+  const { scrubSecrets } = await import("../apps/dpi-playground-hub/src/audit.ts");
+  const T = "q5vG8Yb2rN1mZtK4xW7hP3jd";
+  const out = scrubSecrets(`/share/${"~".repeat(24)}${T}`);
+  assert.ok(!out.includes(T), `a 24-byte gap must still redact (got ${out})`);
+});
+
+test("R19 cold-review M4: prose after the shares word stays readable (no whitespace separator)", async () => {
+  const { scrubSecrets } = await import("../apps/dpi-playground-hub/src/audit.ts");
+  const prose = "GET /api/shares aaaaaabbbbbbccccccdddddd";
+  assert.equal(scrubSecrets(prose), prose, "a space is not a capability separator");
+});

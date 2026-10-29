@@ -176,6 +176,7 @@ export class AgentModel extends Emitter {
 
   private reset(snapshot: WireSnapshotEvent) {
     this.entries = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
+    this.capEntries(); // a hostile snapshot is as unbounded as a hostile stream
     this.live = snapshot.generation?.message ? structuredClone(snapshot.generation.message) : undefined;
     this.tools = new Map(
       snapshot.tools.map((slot) => [
@@ -200,9 +201,25 @@ export class AgentModel extends Emitter {
     this.state.agent = snapshot.agent;
     this.state.usage = snapshot.usage;
     this.state.retry = snapshot.generation?.retry;
-    this.state.compactions = snapshot.compactions.map((c) => c.taskId);
+    this.state.compactions = snapshot.compactions.map((c) => c.taskId).slice(-64);
     this.state.compactionFailure = snapshot.compactionFailure;
     this.state.ready = true;
+  }
+
+  /**
+   * R19 (run-5 h10, leader-probed): the events stream had NO aggregate cap — a
+   * hostile device streaming unique ids under the 16 MiB per-event cap grew this
+   * Map linearly (10k entries → +11 MB, no ceiling) until the operator's tab/TUI
+   * OOMs. Cold-review MAJOR 3: the cap first lived only in commit(), so the
+   * snapshot and tool_execution_end paths bypassed it — it is enforced in ONE
+   * place, on every mutation.
+   */
+  private capEntries() {
+    while (this.entries.size > 5_000) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
   }
 
   /** Store a committed entry. Resets (sent as message_end) and compactions start a new context head. */
@@ -212,15 +229,7 @@ export class AgentModel extends Emitter {
       const head = entry.head ?? entry.id;
       for (const id of this.entries.keys()) if (id < head) this.entries.delete(id);
     }
-    // R19 (run-5 h10, leader-probed): the events stream had NO aggregate cap —
-    // a hostile device streaming unique-id entries under the 16 MiB per-event
-    // cap grows this Map linearly until the operator's tab/TUI OOMs. Mirror
-    // the producer-side budget: keep the newest 5_000 entries.
-    while (this.entries.size > 5_000) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest === undefined) break;
-      this.entries.delete(oldest);
-    }
+    this.capEntries();
   }
 
   private event(event: WireAgentEvent) {
@@ -286,6 +295,7 @@ export class AgentModel extends Emitter {
           // A model-issued call renders from its result entry; drop the live slot so it is never duplicated.
           this.tools.delete(event.toolCallId);
           this.entries.set(event.entry.id, event.entry);
+          this.capEntries();
           return;
         }
         if (event.result) {

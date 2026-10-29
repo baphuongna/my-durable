@@ -45,8 +45,8 @@ const mutexIo = (): TelegramIo & { writes: number } => {
   return {
     ...(base as TelegramIo),
     writes: 0,
-    withLock: <T>(_p: string, fn: () => Promise<T>): Promise<T> => {
-      const run = chain.then(fn);
+    withLock: <T>(_p: string, fn: (assertOwned: () => Promise<void>) => Promise<T>): Promise<T> => {
+      const run = chain.then(() => fn(async () => undefined));
       chain = run.then(
         () => undefined,
         () => undefined,

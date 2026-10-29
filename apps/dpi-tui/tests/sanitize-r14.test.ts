@@ -222,3 +222,14 @@ test("R19 h2: /find hit lines sanitize the relay-borne numeric entry and counts"
   // Honest values keep their readable shape.
   assert.equal(findHitLine("Session", { agent: "Main", entry: 12345, text: "hello" }), "  Session:Main #12345 — hello");
 });
+
+test("R19 cold-review M4: the /tasks overlay treats task ids as wire data too", async () => {
+  const src = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../src/commands.ts", import.meta.url), "utf8"),
+  );
+  // Every scalar of a wire task must pass the chokepoint (a relay can type an id
+  // as a string carrying OSC sequences — same class as the /find `entry` fix).
+  assert.ok(!/\$\{t\.id\}/.test(src), "t.id must not be interpolated raw");
+  assert.ok(!/\$\{t\.conversationId\}/.test(src), "t.conversationId must not be interpolated raw");
+  assert.ok(src.includes("sanitizeTerminal(String(t.id))"), "ids go through sanitizeTerminal");
+});

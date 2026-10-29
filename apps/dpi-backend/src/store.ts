@@ -1535,6 +1535,7 @@ export class Store {
 
   /** Stop all work, close the harness and move its files to archive/. Nothing is deleted. */
   async archive(row: SessionRow) {
+    this.salvageFailedSessions.delete(row.id); // R19: the bundle left this process's view
     const opened = this.opened.get(row.id);
     if (opened) {
       for (const record of await this.scanAll(opened.harness)) {
@@ -1602,6 +1603,7 @@ export class Store {
     // raw, so an uppercase-hex id could bypass the live-session refusal and
     // strand the bundle. Every check below now sees the same canonical value.
     sessionId = sessionId.toLowerCase();
+    this.salvageFailedSessions.delete(sessionId); // R19: the bundle came back — judge it fresh
     if (this.list().some((r) => r.id === sessionId))
       throw invalid("a live session with this id already exists");
     // R18 (run-4 h1): restore is a session-placement writer, so it enforces
@@ -2883,6 +2885,17 @@ export class Store {
   private salvageInFlight = new Map<string, Promise<import("./salvage.js").SalvageOutcome>>();
   /** R19 (run-5 h1): sessions whose salvage already failed — searched cheaply skipped, salvage never re-run. */
   private salvageFailedSessions = new Set<string>();
+
+  /**
+   * R19 (run-5 h1): the salvage memo is per-process so a corrupt session is not
+   * re-copied on every scope=all query. It must NOT outlive the session's
+   * lifecycle: archiving, restoring or deleting a session calls this so a
+   * repaired database becomes searchable again in the same process.
+   */
+  clearSalvageMemo(sessionId?: string): void {
+    if (sessionId === undefined) this.salvageFailedSessions.clear();
+    else this.salvageFailedSessions.delete(sessionId);
+  }
 
   /** R8 schedule budgets (StoreOptions-overridable so tests simulate wedged
    *  dispatches in milliseconds instead of minutes). */

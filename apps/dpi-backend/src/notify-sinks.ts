@@ -234,7 +234,12 @@ export function isPrivateHost(hostname: string): boolean {
   const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
   if (!host) return true;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
+  // R19 cold-review MAJOR 2: the resolver is inet_aton-shaped, so a lone number
+  // is not the only alternate spelling — `0177.0.0.1` (octal) and `0x7f.0.0.1`
+  // (hex) both reach 127.0.0.1 through getaddrinfo. Canonicalise first.
   if (/^\d+$/.test(host)) return true; // decimal-encoded IPv4 (2130706433 → 127.0.0.1)
+  const canonical = canonicalIPv4(host);
+  if (canonical !== null && isPrivateIPv4(canonical)) return true;
   if (isPrivateIPv4(host)) return true;
   if (host.includes(":")) {
     if (host === "::" || host === "::1") return true;
@@ -263,9 +268,64 @@ export function isPrivateHost(hostname: string): boolean {
         if (value !== null && isPrivateIPv4(value)) return true;
       }
     }
+    // R19 cold-review MAJOR 2: prefixes that CARRY an IPv4 destination.
+    //   NAT64 64:ff9b::/96 (+ the 64:ff9b:1::/48 local-use block) → low 32 bits
+    //   6to4  2002::/16 → bits 16..48
+    // Teredo (2001::/32) obfuscates the client address (bitwise NOT) and its
+    // server address is attacker-chosen, so classify it as private outright.
+    if (/^64:ff9b(:|::)/.test(host)) {
+      const groups = host.slice(host.indexOf(":") + 1).split(":").filter(Boolean);
+      if (groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) {
+        if (groups.length < 3) return true; // 64:ff9b:1::/48 local-use block
+        const value = ipv4FromLastGroups(groups);
+        if (value === null || isPrivateIPv4(value)) return true;
+      }
+      return false;
+    }
+    if (/^2002:/.test(host)) {
+      const groups = host.split(":").filter(Boolean);
+      const hi = parseInt(groups[1] ?? "", 16);
+      const lo = parseInt(groups[2] ?? "", 16);
+      if (Number.isInteger(hi) && Number.isInteger(lo)) {
+        const v4 = `${(hi >>> 8) & 255}.${hi & 255}.${(lo >>> 8) & 255}.${lo & 255}`;
+        return isPrivateIPv4(v4);
+      }
+      return false;
+    }
+    if (/^2001:0{1,4}:/.test(host)) return true; // Teredo
     return false;
   }
   return false;
+}
+
+/**
+ * R19 cold-review MAJOR 2: inet_aton-compatible canonicalisation of a dotted
+ * IPv4 literal, so octal (`0177.0.0.1`) and hex (`0x7f.0.0.1`) octets cannot
+ * slip past the range checks. Returns dotted-quad, or null when the host is not
+ * an IPv4 literal at all.
+ */
+function canonicalIPv4(host: string): string | null {
+  const parts = host.split(".");
+  if (parts.length < 1 || parts.length > 4) return null;
+  const octets: number[] = [];
+  for (const part of parts) {
+    if (!part) return null;
+    let n: number;
+    if (/^0x[0-9a-f]*$/.test(part)) n = part.length > 2 ? parseInt(part.slice(2), 16) : Number.NaN;
+    else if (/^0[0-7]+$/.test(part)) n = parseInt(part.slice(1), 8);
+    else if (/^\d+$/.test(part)) n = Number(part);
+    else return null;
+    if (!Number.isInteger(n) || n < 0) return null;
+    octets.push(n);
+  }
+  // inet_aton: the last part fills the remaining bytes (a.b.c.d, a.b.c, a.b, a).
+  const last = octets.pop()!;
+  const limit = 256 ** (4 - octets.length);
+  if (last >= limit) return null;
+  if (octets.some((n) => n > 255)) return null;
+  const value = octets.reduce((acc, n) => (acc << 8) | n, 0) * limit + last;
+  if (!Number.isSafeInteger(value) || value > 0xffffffff) return null;
+  return `${(value >>> 24) & 255}.${(value >>> 16) & 255}.${(value >>> 8) & 255}.${value & 255}`;
 }
 
 /** R19: decode the low 32 bits of a hex-group IPv6 tail into dotted-quad (null on overflow). */

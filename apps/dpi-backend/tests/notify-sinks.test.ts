@@ -755,3 +755,23 @@ test("R19 h7: a sink's 3xx response never re-aims the daemon's POST (redirect re
     target.close();
   }
 });
+
+test("R19 cold-review M2: inet_aton spellings and IPv4-translating prefixes are private", () => {
+  // getaddrinfo resolves these to 127.0.0.1 / 169.254.169.254 — a guard that only
+  // parses dotted-decimal lets them straight through.
+  for (const host of [
+    "0177.0.0.1", // octal
+    "0x7f.0.0.1", // hex
+    "0x7f000001",
+    "0251.0376.0251.0376", // 169.254.169.254 in octal
+    "127.1", // a.b form
+    "[64:ff9b::7f00:1]", // NAT64
+    "[64:ff9b::a9fe:a9fe]",
+    "[2002:7f00:1::]", // 6to4
+    "[2001:0:1234::1]", // Teredo
+    "[::ffff:7f00:0001]", // mapped, zero-padded
+  ])
+    assert.equal(isPrivateHost(host), true, `${host} denotes a private destination`);
+  for (const host of ["8.8.8.8", "[64:ff9b::808:808]", "[::ffff:8.8.8.8]", "example.com", "0177.example.com"])
+    assert.equal(isPrivateHost(host), false, `${host} is public`);
+});

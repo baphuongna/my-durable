@@ -120,12 +120,16 @@ export function scrubSecrets(value: string): string {
     // percent-encoding tolerated) followed by the token run — not on any one
     // literal prefix. Bare token-shaped values elsewhere (audit enums like
     // "foreign_subscription") stay readable.
+    // Cold-review minors: the gap must not stop at 16 bytes (a 17-byte spelling
+    // leaked) and the no-slash branch must not treat whitespace as a separator
+    // ("/api/shares <word>" is readable prose, not a capability). The input is
+    // bounded (clipSample ≤200 chars), so a lazy any-byte gap stays linear.
     const shareShaped =
-      /(\/[a-z0-9%]*shares?(?:\/|(?=[^a-z0-9_%]|$)))[^\s"']{0,16}?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
+      /(\/[a-z0-9%]*shares?(?:\/|(?=[^a-z0-9_%\s]|$)))[^\s"']*?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
     // Encoded spellings (/%73hare/) hide the literal "share" — any
     // percent-bearing path segment followed by a token-shaped run is treated
     // the same.
-    const percentBearing = /(\/[^\s"']*%[^\s"']*\/)[^\s"']{0,16}?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
+    const percentBearing = /(\/[^\s"']*%[^\s"']*\/)[^\s"']*?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
     out = out.replace(shareShaped, "$1<redacted>").replace(percentBearing, "$1<redacted>");
     // Credential material without its prefix (slices, echo): 43-char base64url runs.
     out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
@@ -153,6 +157,11 @@ export function scrubSecrets(value: string): string {
       break; // malformed percent escapes stay as the previous pass left them
     }
   }
+  // R19 cold-review MAJOR 5: decoding can RESURRECT encoded control characters
+  // (a double-encoded newline survives into the sample), which would forge
+  // extra lines in the audit log.
+  // Scrub the sample to printable single-line text — audit rows are one line.
+  out = out.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, "\uFFFD");
   return out;
 }
 

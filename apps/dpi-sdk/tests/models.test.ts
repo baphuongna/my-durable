@@ -254,3 +254,19 @@ test("R19 h10: the entries map is capped so a hostile stream cannot grow memory 
   const items = (model.state as { items?: unknown[] }).items ?? [];
   assert.ok(items.length <= 5_100, `state must stay bounded, got ${items.length}`);
 });
+
+test("R19 cold-review M3: the entry cap also holds for snapshots and tool results", () => {
+  const model = new AgentModel();
+  const entries = Array.from({ length: 20_000 }, (_, i) => ({
+    id: i + 1,
+    conversationId: 1,
+    kind: "pi.user",
+    model: [{ role: "user", content: "x" }],
+  }));
+  model.apply({ type: "snapshot", snapshot: { entries, tools: [], nestedTools: [], compactions: [], agent: { name: "a" }, usage: null }, inbox: [] } as never);
+  assert.ok(((model.state as { entries?: unknown[] }).entries ?? []).length <= 5_000, "a hostile snapshot is capped too");
+  const m2 = new AgentModel();
+  for (let i = 0; i < 7_000; i++)
+    m2.apply({ type: "batch", events: [{ type: "tool_execution_end", toolCallId: `c${i}`, entry: { id: i + 1, conversationId: 1, kind: "pi.tool-result", model: [] } }] } as never);
+  assert.ok(((m2.state as { entries?: unknown[] }).entries ?? []).length <= 5_000, "tool results feed the same cap");
+});
