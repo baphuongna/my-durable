@@ -147,6 +147,9 @@ export function scrubSecrets(value: string): string {
     // redacts before any decode). The anchor needs a non-word char before
     // "share" ("/share", "?shares="), so plain prose never triggers this.
     if (/(?:^|[^\w\s])shares?/i.test(out)) {
+      // run-7 D5: encoded capability shapes must not depend on decode depth —
+      // in share-anchor context, any dense %XX cluster is capability material.
+      out = out.replace(/(?:%[0-9a-fA-F]{2}){8,}/g, "<redacted>");
       // Keep the R19 M4 decision: a run whose FIRST char is preceded by
       // whitespace is prose, not a capability — everything else in anchor
       // context is redacted (callback sees the true run start; a lookbehind
@@ -173,9 +176,12 @@ export function scrubSecrets(value: string): string {
   let out = applyRules(value);
   // The decoded pass sees through %XX spellings of the separator, the first
   // token characters, or the segment itself; the sample is bounded (≤200
-  // chars) so a pathological decode cannot explode it. Two rounds: the first
-  // decode can still carry second-encoding (%2573…) for the second pass.
-  for (let round = 0; round < 2; round++) {
+  // chars) so a pathological decode cannot explode it. run-7 D5 (leader-
+  // probed): 2 rounds was one depth short — a 3x-percent-encoded capability
+  // never presented a ≥20-char run in ANY pass and exited one decode away
+  // from plaintext, persisting in the append-only row past the share's TTL.
+  // Four rounds reach any fixpoint a 200-char sample can carry.
+  for (let round = 0; round < 4; round++) {
     try {
       const decoded = decodeURIComponent(out);
       if (decoded === out) break;

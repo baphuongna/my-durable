@@ -639,3 +639,17 @@ test("R19 cold-review: percent-heavy input stays linear (the unbounded gap was a
     assert.ok(ms < 200, `scrub must stay linear on ${shape.length} chars (took ${Math.round(ms)}ms)`);
   }
 });
+
+test("run-7 D5: percent-encoded share tokens never survive at any depth 1-4", async () => {
+  const { scrubSecrets } = await import("../apps/dpi-playground-hub/src/audit.ts");
+  const T = "q5vG8Yb2rN1mZtK4xW7hP3jd";
+  const esc1 = T.split("").map((c) => "%" + c.charCodeAt(0).toString(16)).join("");
+  const enc = (d: number) => { let s = esc1; for (let i = 1; i < d; i++) s = s.replaceAll("%", "%25"); return s; };
+  for (const depth of [1, 2, 3, 4]) {
+    const out = scrubSecrets("/share/" + enc(depth));
+    let x = out;
+    for (let i = 0; i < depth; i++) { try { x = decodeURIComponent(x); } catch { /* keep */ } }
+    assert.equal(x.includes(T), false, `depth ${depth} must not survive (got ${JSON.stringify(out.slice(0, 40))}…)`);
+  }
+  assert.equal(scrubSecrets("/share/" + T), "/share/<redacted>", "control stays redacted");
+});

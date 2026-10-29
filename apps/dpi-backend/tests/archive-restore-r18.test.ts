@@ -5,7 +5,7 @@
 // tool environment (and giving read-only sessions out-of-sandbox reads).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -96,4 +96,23 @@ test("R20 h6: an oversized planted archive manifest is refused without reading i
     await server.stop();
     await t.cleanup();
   }
+});
+
+test("run-7 D6: FIFO and /dev/zero manifest plants return undefined without blocking", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { readArchiveManifest } = await import("../src/archived.js");
+  const root = mkdtempSync(join(tmpdir(), "dpi-d6-reg-"));
+  const fifoBundle = join(root, "archive", `${randomUUID()}-1`);
+  mkdirSync(fifoBundle, { recursive: true });
+  execFileSync("mkfifo", [join(fifoBundle, "session.json")]);
+  const zeroBundle = join(root, "archive", `${randomUUID()}-2`);
+  mkdirSync(zeroBundle, { recursive: true });
+  symlinkSync("/dev/zero", join(zeroBundle, "session.json"));
+  // A block here would hang the whole suite: the descriptor-pinned read
+  // (O_NONBLOCK | O_NOFOLLOW + fstat isFile) must return undefined instantly.
+  const t0 = Date.now();
+  assert.equal(readArchiveManifest(fifoBundle), undefined, "FIFO plant degrades, never blocks");
+  assert.equal(readArchiveManifest(zeroBundle), undefined, "endless-device symlink degrades, never grows");
+  assert.ok(Date.now() - t0 < 1000, `both plants settled fast (${Date.now() - t0}ms)`);
+  rmSync(root, { recursive: true, force: true });
 });

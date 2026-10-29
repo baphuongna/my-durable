@@ -24,7 +24,20 @@
  *
  * No express, no Store import: the leader wires routes and store calls.
  */
-import { chmodSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync, type Dirent } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+  type Dirent,
+} from "node:fs";
 import { mkdir, rename, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -107,12 +120,29 @@ export function readArchiveManifest(bundleDir: string): ArchiveManifest | undefi
     // bytes; a planted one had NO ceiling — restore and the archive LISTING
     // read the whole file into RAM per cheap request (leader probe: a 150 MB
     // plant cost ~770 ms and ~600 MB RSS per refused restore, repeatable).
-    // Refuse oversized manifests without reading them.
-    if (statSync(manifestPath).size > 1024 * 1024) return undefined;
-    const text = readFileSync(manifestPath, "utf8");
-    // R20 cold-1 M5: a same-user planter can swap the file between stat and
-    // read — the cap is enforced on the BYTES WE ACTUALLY READ, not the stat.
-    if (text.length > 1024 * 1024) return undefined;
+    // run-7 D6 (leader-probed): the path-based stat+read was defeated by
+    // non-regular files — a FIFO (stat size 0) BLOCKED the synchronous read
+    // forever (whole-device freeze), a /dev/zero symlink read unbounded, and
+    // a swap race re-opened a different file. The cap is now DESCRIPTOR-
+    // pinned: O_NOFOLLOW refuses symlinks, O_NONBLOCK makes a FIFO open
+    // return instead of block, fstat-on-fd rejects non-regular files, and we
+    // read at most size+1 bytes FROM THE FD (the pinned inode cannot be
+    // swapped out from under us).
+    const fd = openSync(manifestPath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW);
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.size > 1024 * 1024) return undefined;
+      const buf = Buffer.alloc(st.size + 1); // +1: detect growth between fstat and read
+      let read = 0;
+      while (read < buf.length) {
+        const n = readSync(fd, buf, read, buf.length - read, read);
+        if (n === 0) break;
+        read += n;
+      }
+      if (read > 1024 * 1024) return undefined;
+      const text = buf.subarray(0, read).toString("utf8");
+      // R20 cold-1 M5 kept: the cap is enforced on the BYTES WE ACTUALLY READ.
+      if (text.length > 1024 * 1024) return undefined;
     const parsed: unknown = JSON.parse(text);
     if (typeof parsed !== "object" || parsed === null) return undefined;
     const m = parsed as Record<string, unknown>;
@@ -138,6 +168,9 @@ export function readArchiveManifest(bundleDir: string): ArchiveManifest | undefi
       archivedAt: m.archivedAt,
       packageVersion: m.packageVersion,
     };
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return undefined;
   }
@@ -161,7 +194,13 @@ function parseRecord(record: unknown): Record<string, unknown> | undefined {
 function bundleStats(bundleDir: string): { turns: number; lastMessageAt: number | null } {
   let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(join(bundleDir, DB_NAME), { readOnly: true });
+    // run-7 D6 (uncovered sibling, same root cause): a planted non-regular
+    // agent.sqlite (FIFO / /dev/zero symlink) blocks open(2) synchronously
+    // exactly like the manifest read did — only regular files may open.
+    const dbPath = join(bundleDir, DB_NAME);
+    const dbStat = lstatSync(dbPath);
+    if (!dbStat.isFile()) throw new Error("not a regular bundle database");
+    db = new DatabaseSync(dbPath, { readOnly: true });
     // R20 cold-1 M5: this used to materialize EVERY entries row into RAM and
     // JSON.parse each one per LISTING request — a planted multi-GB bundle was
     // a repeatable per-request stall (the manifest-cap class). Aggregates run
@@ -297,7 +336,13 @@ export function archivedTranscript(bundleDir: string, format: "markdown" | "json
   const entries: WireEntry[] = [];
   let truncated = 0;
   try {
-    db = new DatabaseSync(join(bundleDir, DB_NAME), { readOnly: true });
+    // run-7 D6 (uncovered sibling, same root cause): a planted non-regular
+    // agent.sqlite (FIFO / /dev/zero symlink) blocks open(2) synchronously
+    // exactly like the manifest read did — only regular files may open.
+    const dbPath = join(bundleDir, DB_NAME);
+    const dbStat = lstatSync(dbPath);
+    if (!dbStat.isFile()) throw new Error("not a regular bundle database");
+    db = new DatabaseSync(dbPath, { readOnly: true });
     // R20 cold-1 M5: the transcript view read the WHOLE entries table per
     // request — same planted-bundle amplification. A hard entry cap keeps the
     // newest turns (the ORDER BY is commit order; truncating from the front
