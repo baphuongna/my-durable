@@ -312,3 +312,31 @@ test("R20 h5: a hostile tasks frame with null/state-less rows must not throw in 
   assert.doesNotThrow(() => m2.backgroundTasks(1), "state-less row is dropped, not dereferenced");
   assert.equal(m2.state.tasks.length, 0);
 });
+
+test("R20 cold-1 M2: per-slot output is byte-capped (100 x 1MiB appends on one callId)", () => {
+  const m = new AgentModel();
+  m.apply({ type: "batch", events: [{ type: "tool_execution_start", toolCallId: "c1", toolName: "x", args: {} }] } as never);
+  for (let i = 0; i < 100; i++)
+    m.apply({ type: "batch", events: [{ type: "tool_execution_update", toolCallId: "c1", toolName: "x", output: { append: "y".repeat(1024 * 1024) } }] } as never);
+  const out = (m as unknown as { tools: Map<string, { output: string }> }).tools.get("c1")!.output;
+  assert.ok(out.length <= 256 * 1024, `retained ${out.length} bytes, must be <= 256 KiB`);
+});
+
+test("R20 cold-1 M2: snapshot.tools + nestedTools UNION stays <= 2000", () => {
+  const snap = (tools: unknown[], nested: unknown[]) =>
+    ({ type: "snapshot", snapshot: { entries: [], tools, nestedTools: nested, compactions: [], agent: {}, usage: { models: {}, tools: {} } }, inbox: [] }) as never;
+  const mk = (n: number, p: string) => Array.from({ length: n }, (_, i) => ({ callId: `${p}${i}`, name: "n", status: "running", output: "o" }));
+  const m = new AgentModel();
+  m.apply(snap([], []));
+  m.apply(snap(mk(2000, "t"), mk(2000, "n").map((s) => ({ ...s, parentCallId: "t0", parentTaskId: 1, taskId: 1, arguments: {} }))));
+  assert.ok((m as unknown as { tools: Map<string, unknown> }).tools.size <= 2_000, "union must stay <= 2000");
+});
+
+test("R20 cold-1 M3: the session frame validates tasks/agents too ({} / null must not crash render)", async () => {
+  const { SessionModel } = await import("../src/models.ts");
+  const m = new SessionModel();
+  assert.doesNotThrow(() => m.apply({ type: "session", agents: [], tasks: {}, usage: { models: {}, tools: {} } } as never));
+  assert.equal(m.backgroundTasks().length, 0, "tasks:{} degrades to empty, not a crash");
+  assert.doesNotThrow(() => m.apply({ type: "tasks", tasks: null } as never));
+  assert.equal(m.state.tasks.length, 0, "tasks:null degrades to empty");
+});

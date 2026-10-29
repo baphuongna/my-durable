@@ -152,7 +152,10 @@ export function scrubSecrets(value: string): string {
       // context is redacted (callback sees the true run start; a lookbehind
       // would just shift the match one char into the run).
       out = out.replace(/[A-Za-z0-9_-]{20,}/g, (run, offset: number, whole: string) =>
-        offset > 0 && /\s/.test(whole[offset - 1]) ? run : "<redacted>",
+        // R20 cold-1 M1: JS \s includes NBSP/U+2000-200A — a raw NBSP before
+        // the token exempted it while no gap rule could cross it either. The
+        // M4 prose decision is about an ASCII SPACE; narrow to exactly that.
+        offset > 0 && whole[offset - 1] === " " ? run : "<redacted>",
       );
     }
     // Credential material without its prefix (slices, echo): 43-char base64url runs.

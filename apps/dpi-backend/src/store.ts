@@ -1655,6 +1655,7 @@ export class Store {
     }
     this.notify();
     this.salvageFailedSessions.delete(sessionId); // R20 h6: clear AFTER the bundle actually came back — a REFUSED restore must not re-arm salvage
+    this.errors.delete(sessionId); // R20 cold-1 minor: the fast-fault note may predate the archive — do not surface a stale reason
     // sessionSummary handles a not-yet-opened session (the closed-bundle path).
     return await this.sessionSummary(row);
   }

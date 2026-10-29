@@ -206,7 +206,8 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       // not skip that gate (R4 finding 4: the palette entry used to wipe the
       // context unconditionally). A typed handoff note carries its own intent.
       if (!arg) {
-        const ok = await app.prompt(`Reset ${sanitizeTerminal(app.sessionSummary()?.name ?? "context")}? y/n`, "");
+        // R20 cold-1 M4: same gate text as the x-key door — oneLine, not sanitize-only.
+        const ok = await app.prompt(`Reset ${oneLine(app.sessionSummary()?.name ?? "context")}? y/n`, "");
         if (ok === undefined || !ok.trim().toLowerCase().startsWith("y"))
           return app.flash("reset cancelled"), true;
       }
@@ -286,7 +287,7 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
               // through the chokepoint.
               // sanitizeTerminal keeps \n/\t, so a one-line row also collapses
               // whitespace — a wire id must not split the row it belongs to.
-              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${oneLine(String(t.id))} ${oneLine(String(t.kind))} ${c.muted(`agent #${oneLine(String(t.conversationId))} │ ${oneLine(String(t.state?.status ?? ""))}${t.state?.phase ? `/${oneLine(String(t.state.phase))}` : ""}`)}`,
+              `${t?.background === true ? c.secondary("◌ bg") : c.warn("● fg")} #${oneLine(String(t?.id ?? "?"))} ${oneLine(String(t?.kind ?? "?"))} ${c.muted(`agent #${oneLine(String(t?.conversationId ?? "?"))} │ ${oneLine(String(t.state?.status ?? ""))}${t.state?.phase ? `/${oneLine(String(t.state.phase))}` : ""}`)}`,
             );
           lines.push("", c.muted("esc close"));
           return lines;
@@ -298,7 +299,7 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
         new Panel(
           () => [
             c.bold(c.accent("dpi-tui")),
-            c.muted(`${sanitizeTerminal(app.device.id)} │ ${sanitizeTerminal(app.device.url)}`),
+            c.muted(`${oneLine(app.device.id)} │ ${oneLine(app.device.url)}`), // R20 cold-1 M4
             "",
             ...KEYS.map(([k, d]) => `${c.secondary(k.padEnd(11))} ${d}`),
             "",

@@ -109,7 +109,11 @@ export function readArchiveManifest(bundleDir: string): ArchiveManifest | undefi
     // plant cost ~770 ms and ~600 MB RSS per refused restore, repeatable).
     // Refuse oversized manifests without reading them.
     if (statSync(manifestPath).size > 1024 * 1024) return undefined;
-    const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const text = readFileSync(manifestPath, "utf8");
+    // R20 cold-1 M5: a same-user planter can swap the file between stat and
+    // read — the cap is enforced on the BYTES WE ACTUALLY READ, not the stat.
+    if (text.length > 1024 * 1024) return undefined;
+    const parsed: unknown = JSON.parse(text);
     if (typeof parsed !== "object" || parsed === null) return undefined;
     const m = parsed as Record<string, unknown>;
     if (
@@ -158,21 +162,23 @@ function bundleStats(bundleDir: string): { turns: number; lastMessageAt: number 
   let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(join(bundleDir, DB_NAME), { readOnly: true });
-    const rows = db.prepare("SELECT record FROM entries").all() as unknown[];
-    let turns = 0;
+    // R20 cold-1 M5: this used to materialize EVERY entries row into RAM and
+    // JSON.parse each one per LISTING request — a planted multi-GB bundle was
+    // a repeatable per-request stall (the manifest-cap class). Aggregates run
+    // inside SQLite; json_extract tolerates non-JSON rows by yielding NULL.
+    const turnsRow = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM entries WHERE json_extract(record,'$.kind') IN ('pi.user','pi.assistant')",
+      )
+      .get() as { n?: number } | undefined;
+    const turns = typeof turnsRow?.n === "number" ? turnsRow.n : 0;
     let lastMessageAt: number | null = null;
-    for (const row of rows) {
-      const entry = parseRecord((row as { record?: unknown }).record);
-      if (!entry) continue;
-      if (entry.kind === "pi.user" || entry.kind === "pi.assistant") turns += 1;
-      if (!Array.isArray(entry.model)) continue;
-      for (const message of entry.model) {
-        const timestamp = (message as { timestamp?: unknown } | null)?.timestamp;
-        if (typeof timestamp === "number" && (lastMessageAt === null || timestamp > lastMessageAt)) {
-          lastMessageAt = timestamp;
-        }
-      }
-    }
+    const atRow = db
+      .prepare(
+        "SELECT MAX(json_extract(json_each.value,'$.timestamp')) AS t FROM entries, json_each(json_extract(record,'$.model')) WHERE json_extract(record,'$.model') IS NOT NULL",
+      )
+      .get() as { t?: unknown } | undefined;
+    if (typeof atRow?.t === "number") lastMessageAt = atRow.t;
     return { turns, lastMessageAt };
   } catch {
     return { turns: -1, lastMessageAt: null };
@@ -199,6 +205,9 @@ function dirBytes(dir: string, depth = 0): number {
     return 0;
   }
   if (depth >= 64) return total;
+  // R20 cold-1 M5: breadth cap — a planted million-entry directory allocated
+  // a giant dirent array per bundle per listing (depth alone bounded nothing).
+  if (entries.length > 100_000) return 0;
   for (const e of entries) {
     try {
       if (e.isDirectory()) total += dirBytes(join(dir, e.name), depth + 1);
@@ -288,11 +297,21 @@ export function archivedTranscript(bundleDir: string, format: "markdown" | "json
   const entries: WireEntry[] = [];
   try {
     db = new DatabaseSync(join(bundleDir, DB_NAME), { readOnly: true });
-    const rows = db.prepare("SELECT record FROM entries ORDER BY conversation_id, commit_seq").all() as unknown[];
+    // R20 cold-1 M5: the transcript view read the WHOLE entries table per
+    // request — same planted-bundle amplification. A hard entry cap keeps the
+    // newest turns (the ORDER BY is commit order; truncating from the front
+    // loses the oldest context, which a viewer can still get from the bundle).
+    const cap = 5_000;
+    const totalRow = db.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n?: number } | undefined;
+    const total = typeof totalRow?.n === "number" ? totalRow.n : 0;
+    const rows = db
+      .prepare("SELECT record FROM entries ORDER BY conversation_id, commit_seq LIMIT ? OFFSET ?")
+      .all(Math.min(total, cap), Math.max(0, total - Math.min(total, cap))) as unknown[];
     for (const row of rows) {
       const entry = parseRecord((row as { record?: unknown }).record);
       if (entry) entries.push(entry as unknown as WireEntry);
     }
+    if (total > cap) (entries as unknown as { truncated?: number }).truncated = total - cap;
   } catch {
     throw new Error("archive bundle unreadable");
   } finally {

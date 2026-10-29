@@ -238,8 +238,18 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
       `/share/${"~".repeat(65)}/${T2}`,
       `/share/"${T2}"`,
       `/share${T2}`,
+      // R20 h12 spellings (gap ≥65 bytes; the R19 gap bound was the bypass):
+      `DELETE /api/shares/${".".repeat(65)}${T2}`,
+      `GET /share/${"%20".repeat(65)}${T2}`,
+      `/share/${".".repeat(140)}${T2}`,
+      // R20 cold-1 M1: the sweep exemption is an ASCII SPACE only — JS \s
+      // (NBSP, em space, tab, ideographic space) is NOT prose.
+      `/api/shares/\u00a0${T2}`,
+      `/api/shares/\u2003${T2}`,
+      `/api/shares/\t${T2}`,
+      `/share/\u3000${T2}`,
     ])
-      assert.ok(!scrubSecrets(p).includes(T2), `${p} -> ${scrubSecrets(p)}`);
+      assert.ok(!scrubSecrets(p).includes(T2), `${p.slice(0, 40)} -> ${scrubSecrets(p)}`);
     assert.equal(scrubSecrets("please share the transcript with bob"), "please share the transcript with bob");
     assert.ok(!scrubSecrets('{"code":"ABCD2345EF67"}').includes("ABCD2345EF67"));
     assert.ok(scrubSecrets('{"code":"ABCD2345EF67"}').includes("<code-redacted>"));

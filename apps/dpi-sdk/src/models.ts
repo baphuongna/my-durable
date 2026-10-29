@@ -124,6 +124,16 @@ export function applyMessageChange(message: WireAssistantMessage, change: WireMe
   return { ...message, content };
 }
 
+/**
+ * R20 cold-1 M3: both tasks-bearing frame shapes (session + tasks) pass here
+ * — non-array input ({} / null) crashed the old inline filter itself, and
+ * null/state-less rows crashed the statusbar's every-frame deref.
+ */
+function safeTasks(value: unknown): TaskNode[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((t): t is TaskNode => !!t && typeof t === "object" && !!(t as { state?: unknown }).state);
+}
+
 export class AgentModel extends Emitter {
   state: AgentViewState = emptyAgentState();
   private entries = new Map<number, WireEntry>();
@@ -181,7 +191,7 @@ export class AgentModel extends Emitter {
     this.tools = new Map(
       snapshot.tools.slice(-2_000).map((slot) => [ // R20 h4: hostile snapshot.tools was uncapped — same bound as every other path
         slot.callId,
-        { name: slot.name, status: slot.status, output: slot.output ?? "" },
+        { name: slot.name, status: slot.status, output: this.capToolOutput(slot.output ?? "") },
       ]),
     );
     // Nested calls of running tools: they have no assistant entry, so the snapshot is the only source on attach.
@@ -190,13 +200,14 @@ export class AgentModel extends Emitter {
       this.tools.set(slot.callId, {
         name: slot.name,
         status: slot.status,
-        output: slot.output ?? "",
+        output: this.capToolOutput(slot.output ?? ""),
         args: slot.arguments,
         nested: { parentCallId: slot.parentCallId, parentTaskId: slot.parentTaskId, taskId: slot.taskId },
         ...(slot.summary ? { summary: slot.summary } : {}),
         ...(existing ?? {}),
       });
     }
+    this.capTools(); // R20 cold-1 M2: snapshot.tools(≤2000) + nestedTools(≤2000) must UNION to ≤2000
     this.state.running = !!snapshot.run;
     this.state.agent = snapshot.agent;
     this.state.usage = snapshot.usage;
@@ -220,6 +231,16 @@ export class AgentModel extends Emitter {
    * (rebuild → toTranscript is O(tools) per frame, so the stream is quadratic).
    * Same hostile-peer class as the entries cap, so the same bound.
    */
+  /**
+   * R20 cold-1 M2: capTools bounds the NUMBER of slots, not the bytes in one
+   * slot — 100 update events each appending ~16 MiB (the per-event cap) onto
+   * ONE callId retained ~1.6 GB in client state. Keep only the tail.
+   */
+  private static readonly MAX_TOOL_OUTPUT = 256 * 1024;
+  private capToolOutput(text: string): string {
+    return text.length > AgentModel.MAX_TOOL_OUTPUT ? text.slice(-AgentModel.MAX_TOOL_OUTPUT) : text;
+  }
+
   private capTools() {
     while (this.tools.size > 2_000) {
       const oldest = this.tools.keys().next().value;
@@ -299,8 +320,8 @@ export class AgentModel extends Emitter {
           output: "",
         };
         const output = event.output;
-        if (output && "set" in output) tool.output = output.set;
-        else if (output) tool.output = tool.output.slice(output.trimStart ?? 0) + (output.append ?? "");
+        if (output && "set" in output) tool.output = this.capToolOutput(output.set);
+        else if (output) tool.output = this.capToolOutput(tool.output.slice(output.trimStart ?? 0) + (output.append ?? ""));
         tool.status = "running";
         this.capTools(); // R20 h4: orphan-creating path — unseen callIds must not grow the map either
         this.tools.set(event.toolCallId, tool);
@@ -379,16 +400,15 @@ export class SessionModel extends Emitter {
 
   apply(frame: Frame): boolean {
     if (frame.type === "session") {
-      this.state = { agents: frame.agents, tasks: frame.tasks, usage: frame.usage, ready: true };
+      // R20 cold-1 M3: the session frame is the FIRST frame every client gets
+      // — its tasks/agents ride the same JSON.parse cast. One shared guard.
+      this.state = { agents: Array.isArray(frame.agents) ? frame.agents : [], tasks: safeTasks(frame.tasks), usage: frame.usage, ready: true };
     } else if (frame.type === "agents") this.state = { ...this.state, agents: frame.agents };
     else if (frame.type === "tasks")
       // R20 h5: wire task rows are unvalidated (SSE frames are JSON.parse casts)
       // — a null/state-less element threw TypeError in backgroundTasks, which
       // the statusbar runs EVERY frame. Drop malformed rows at the boundary.
-      this.state = {
-        ...this.state,
-        tasks: frame.tasks.filter((t) => !!t && typeof t === "object" && !!(t as { state?: unknown }).state),
-      };
+      this.state = { ...this.state, tasks: safeTasks(frame.tasks) };
     else if (frame.type === "usage") this.state = { ...this.state, usage: frame.usage };
     else return false;
     this.emit();

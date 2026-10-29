@@ -1157,7 +1157,7 @@ export class App {
     const session = this.sessions.find((x) => x.id === this.sessionId);
     const right =
       this.view === "agent" && session
-        ? `${sanitizeTerminal(this.device.id)}:${sanitizeTerminal(session.name)}:${this.agentId ?? 1}`
+        ? `${oneLine(this.device.id)}:${oneLine(session.name)}:${this.agentId ?? 1}` // R20 cold-1 M4
         : this.view === "agent"
           ? "no workspace"
           : "j/k move · ↵ open";
@@ -1233,7 +1233,7 @@ export class App {
     lines.push(
       AGENT_TABS.map((t) => (t.id === this.tab ? c.inverse(c.bold(` ${t.label} `)) : c.muted(` ${t.label} `))).join(
         c.muted("│"),
-      ) + c.muted(rep(" ", Math.max(0, w - 62))) + c.muted(sanitizeTerminal(this.model.state.agent.model?.modelId?.split("/").pop() ?? "")),
+      ) + c.muted(rep(" ", Math.max(0, w - 62))) + c.muted(oneLine(this.model.state.agent.model?.modelId?.split("/").pop() ?? "")), // R20 cold-1 M4
     );
     lines.push(c.muted(rep(box.h, w)));
     const inner = h - 3;
@@ -1357,12 +1357,12 @@ export class App {
     // config tab
     const model = this.model.state.agent.model;
     const lines = [
-      ` ${c.muted("model")}     ${c.text(sanitizeTerminal(model?.modelId ?? "—"))}`,
-      ` ${c.muted("provider")}  ${c.muted(sanitizeTerminal(model?.provider ?? "—"))}`,
+      ` ${c.muted("model")}     ${c.text(oneLine(model?.modelId ?? "—"))}`, // R20 cold-1 M4
+      ` ${c.muted("provider")}  ${c.muted(oneLine(model?.provider ?? "—"))}`, // R20 cold-1 M4
       ` ${c.muted("thinking")}  ${c.text(String(this.model.state.agent.thinkingLevel ?? "low"))} ${c.muted("(y cycles)")}`,
       "",
-      ` ${c.muted("device")}    ${c.text(sanitizeTerminal(this.device.id))} ${c.muted(sanitizeTerminal(this.device.url))}`,
-      ` ${c.muted("start dirs")} ${c.muted(sanitizeTerminal(this.info.startDirs.join(", ")).slice(0, w - 18) || "—")}`,
+      ` ${c.muted("device")}    ${c.text(oneLine(this.device.id))} ${c.muted(oneLine(this.device.url))}`, // R20 cold-1 M4
+      ` ${c.muted("start dirs")} ${c.muted(oneLine(this.info.startDirs.join(", ")).slice(0, w - 18) || "—")}`, // R20 cold-1 M4
     ];
     return lines;
   }
