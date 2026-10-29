@@ -576,7 +576,10 @@ if (args.includes("--dev")) {
   // styles (plus the stylesheet host of the brand fonts), talks only to this hub and cannot be framed.
   const shellPolicy = [
     "default-src 'none'",
-    "script-src 'self'",
+    // static.cloudflareinsights.com: Cloudflare Web Analytics auto-injects its
+    // beacon into every zone page — blocking it just spams the operator's
+    // console with CSP violations on every load.
+    "script-src 'self' https://static.cloudflareinsights.com",
     "style-src 'self' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
     "img-src 'self' data:",

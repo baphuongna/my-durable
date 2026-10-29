@@ -18,19 +18,50 @@ export interface GitEntry {
 const entries = new Map<string, GitEntry>();
 const inflight = new Map<string, Promise<void>>();
 
+/** A device's git surface is bounded by its start dirs (R21, index 400s): a
+ *  project left over from OTHER start dirs answers 400 on the device, and
+ *  asking anyway just spams the console with network errors every stale
+ *  window. The network frame carries each device's startDirs + platform —
+ *  pre-check client-side (the device stays the enforcer) and settle such
+ *  paths locally. Unknown device facts → allow: the device decides. */
+function gitPathAllowed(deviceId: string, path: string): boolean {
+  const dev = network.devices.value.find((d) => d.id === deviceId) as
+    | { info?: { startDirs?: unknown; platform?: unknown } }
+    | undefined;
+  const dirs = dev?.info?.startDirs;
+  if (!Array.isArray(dirs) || dirs.length === 0) return true;
+  const win = String(dev?.info?.platform ?? "").startsWith("win32");
+  const norm = (p: string) =>
+    win ? p.trim().replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase() : p.trim().replace(/\/+$/, "");
+  const a = norm(path);
+  return dirs.some((raw) => {
+    const b = norm(String(raw));
+    return !!b && (a === b || a.startsWith(win ? b + "\\" : b + "/"));
+  });
+}
+
+/** Settle an entry from either a real status or the batch's `{error}` shape. */
+function settleEntry(e: GitEntry, s: GitStatus | { error: string } | undefined) {
+  if (s && typeof (s as { error?: unknown }).error === "string") {
+    e.status = null;
+    e.error = (s as { error: string }).error;
+  } else {
+    e.status = (s as GitStatus) ?? null;
+    e.error = "";
+  }
+  e.at = Date.now();
+}
+
 /** Fill MANY folders in one round-trip (session lists want branch-per-cwd).
  *  Decorative by design: a failed batch stays silent — the Git tab is where
  *  errors belong. */
 export async function ensureGitBatch(deviceId: string, paths: string[]) {
-  const stale = paths.filter((p) => !fresh(gitEntry(deviceId, p), staleMsForBatch));
+  const stale = paths.filter((p) => !fresh(gitEntry(deviceId, p), staleMsForBatch) && gitPathAllowed(deviceId, p));
   if (!stale.length) return;
   try {
     const map = await deviceClient(deviceId).gitStatusBatch(stale, { timeoutMs: 60_000 });
     for (const [p, s] of Object.entries(map)) {
-      const e = gitEntry(deviceId, p);
-      e.status = s;
-      e.at = Date.now();
-      e.error = "";
+      settleEntry(gitEntry(deviceId, p), s as GitStatus | { error: string });
     }
   } catch {
     /* decorative: never surface batch failures */
@@ -100,6 +131,11 @@ export async function ensureGit(
   const k = key(deviceId, cwd);
   const e = gitEntry(deviceId, cwd);
   if (!force && fresh(e, staleMs)) return;
+  // Outside the device's sandbox: settle locally, never send the doomed 400.
+  if (!gitPathAllowed(deviceId, cwd)) {
+    settleEntry(e, { error: "outside the device's start dirs" });
+    return;
+  }
   const running = inflight.get(k);
   if (running) return running;
   const first = e.status === null && !e.error;

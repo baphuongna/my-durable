@@ -14,7 +14,7 @@ import type { DevicePairing } from "./pairing.js";
 
 type Async = (req: Request, res: Response) => Promise<unknown>;
 const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
-import { gitOp, gitStatus, gitStatusBatch, isNotARepoError, type GitOp } from "./git.js";
+import { gitOp, gitStatus, gitStatusBatch, isNotARepoError, type GitOp, type GitStatus } from "./git.js";
 const GIT_OPS: GitOp[] = ["diff", "log", "log-list", "fetch", "pull", "push", "switch", "branch", "commit", "stage", "unstage", "discard", "diff-file", "stash-push", "stash-pop", "compare", "merge-abort", "show-files", "ignore", "checkpoint", "checkpoints", "rewind", "resolve", "submodule-update", "pr-create", "pr-list", "pr-merge", "pr-checks", "pr-comment", "worktree-list", "worktree-add", "worktree-remove"];
 
 interface Locals {
@@ -180,12 +180,28 @@ export function v1(
   }));
   r.post("/git/status-batch", route(async (req, res) => {
     const raw: string[] = Array.isArray(req.body?.paths) ? req.body.paths.map(String).filter(Boolean).slice(0, 50) : [];
-    const paths = await Promise.all(raw.map((p) => store.containedPath(p)));
-    try {
-      res.json(await gitStatusBatch(paths));
-    } catch (e) {
-      throw gitFault(e, paths[0] ?? "");
+    // R21 (index 400s): a project left over from OTHER start dirs (device
+    // restarted with a narrower sandbox) used to reject the WHOLE batch from
+    // Promise.all — every project's chip died with it and the FE retried the
+    // doomed request every stale window. Settle containment per path: foreign
+    // paths answer a bounded `{error}` entry keyed by the path AS SENT (the
+    // FE's cache key), the rest keep their real status.
+    const settled = await Promise.all(
+      raw.map(async (p): Promise<[string, string | undefined]> => {
+        try {
+          return [p, await store.containedPath(p)];
+        } catch {
+          return [p, undefined];
+        }
+      }),
+    );
+    const contained = settled.filter((e): e is [string, string] => e[1] !== undefined).map(([, c]) => c);
+    const statuses = await gitStatusBatch(contained);
+    const out: Record<string, GitStatus | { error: string }> = {};
+    for (const [p, c] of settled) {
+      out[p] = c === undefined ? { error: "path must live under a start dir" } : (statuses[c] ?? { error: "git status unavailable" });
     }
+    res.json(out);
   }));
   r.post("/git", route(async (req, res) => {
     const body = req.body ?? {};

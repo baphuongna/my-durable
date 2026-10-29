@@ -166,7 +166,6 @@ test("B3: git routes are contained, default to the first start dir, and fail cle
     for (const init of [
       { method: "GET" as const, path: "/v1/git/status?path=%2Fetc" },
       { method: "POST" as const, path: "/v1/git", body: JSON.stringify({ op: "log", path: "/etc" }) },
-      { method: "POST" as const, path: "/v1/git/status-batch", body: JSON.stringify({ paths: [b.t.work, "/etc"] }) },
       { method: "POST" as const, path: "/v1/git", body: JSON.stringify({ op: "push", path: "~" }) },
     ]) {
       const res = await b.api(init.path, { method: init.method, body: (init as { body?: string }).body });
@@ -175,6 +174,19 @@ test("B3: git routes are contained, default to the first start dir, and fail cle
       assert.equal(error.code, "invalid");
       assert.match(error.message, /must live under a start dir/);
     }
+
+    // status-batch is the ONE exception by design (R21): one leftover project
+    // root from other start dirs must not kill the whole batch — foreign paths
+    // answer per-path error entries, contained repos keep their real status.
+    const batch = await b.api("/v1/git/status-batch", {
+      method: "POST",
+      body: JSON.stringify({ paths: [b.t.work, "/etc"] }),
+    });
+    assert.equal(batch.status, 200, "the batch survives a foreign path");
+    const batchMap = (await batch.json()) as Record<string, { repo?: boolean; error?: string }>;
+    assert.equal(batchMap[b.t.work]?.repo, true, "the contained repo still reports status");
+    assert.match(batchMap["/etc"]?.error ?? "", /must live under a start dir/);
+    assert.equal(Object.keys(batchMap).length, 2, "no status is fabricated for foreign roots");
 
     // A contained non-repo answers a clean 400 — never git's usage text, never a 500.
     const plain = join(b.t.root, "plain");

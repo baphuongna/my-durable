@@ -171,9 +171,21 @@ export interface GitStatus {
 
 /** One status for MANY paths — what a session list needs. The per-path cache
  *  keeps repeat polls cheap on big repos. */
-export async function gitStatusBatch(paths: string[]): Promise<Record<string, GitStatus>> {
+export async function gitStatusBatch(paths: string[]): Promise<Record<string, GitStatus | { error: string }>> {
   const unique = [...new Set(paths.filter(Boolean))];
-  const entries = await Promise.all(unique.map(async (p) => [p, await gitStatus(p)] as const));
+  // R21 (index 400s): one failing path (permissions, a git binary error, a
+  // timeout on a huge checkout) used to reject the WHOLE batch — every
+  // project's chip died with it. Settle each path separately: failures become
+  // bounded `{error}` entries the FE caches instead of retry-hammering.
+  const entries = await Promise.all(
+    unique.map(async (p): Promise<[string, GitStatus | { error: string }]> => {
+      try {
+        return [p, await gitStatus(p)];
+      } catch (e) {
+        return [p, { error: String((e as Error)?.message ?? e).slice(0, 120) }];
+      }
+    }),
+  );
   return Object.fromEntries(entries);
 }
 

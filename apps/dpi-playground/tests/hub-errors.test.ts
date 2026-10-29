@@ -434,8 +434,8 @@ test("RR: the app shell is served under a CSP without inline script, framing or 
       );
       assert.deepEqual(
         csp["script-src"],
-        ["'self'"],
-        `${path}: no inline script, no eval, no other origin`,
+        ["'self'", "https://static.cloudflareinsights.com"],
+        `${path}: no inline script, no eval — the sole extra origin is the Cloudflare Web Analytics beacon the zone auto-injects`,
       );
       assert.deepEqual(
         csp["connect-src"],

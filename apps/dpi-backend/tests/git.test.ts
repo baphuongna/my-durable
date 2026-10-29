@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitStatus, gitOp, gitStatusBatch, clearGitStatusCache, gitDirtyMarks } from "../src/git.ts";
+import { gitStatus, gitOp, gitStatusBatch, clearGitStatusCache, gitDirtyMarks, type GitStatus } from "../src/git.ts";
 
 const sh = (cmd: string, args: string[], opts: { cwd?: string } = {}) => execFileSync(cmd, args, { ...opts, encoding: "utf8" });
 
@@ -45,9 +45,9 @@ test("gitStatusBatch: many paths, one call, map back", async () => {
   const b = repo();
   const nowhere = mkdtempSync(join(tmpdir(), "dpi-nogit2-"));
   const out = await gitStatusBatch([a, b, nowhere]);
-  assert.equal(out[a]?.repo, true);
-  assert.equal(out[b]?.repo, true);
-  assert.equal(out[nowhere]?.repo, false);
+  assert.equal((out[a] as GitStatus)?.repo, true);
+  assert.equal((out[b] as GitStatus)?.repo, true);
+  assert.equal((out[nowhere] as GitStatus)?.repo, false);
   rmSync(a, { recursive: true, force: true });
   rmSync(b, { recursive: true, force: true });
   rmSync(nowhere, { recursive: true, force: true });
