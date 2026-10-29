@@ -109,20 +109,30 @@ export function scrubSecrets(value: string): string {
   // capability token in audit path samples — the token IS the secret. The
   // prefix spelling is ATTACKER-CONTROLLED (/share/, /api/shares/, /Share/,
   // /%73hare/...), so anchor on a *share-shaped* path segment (case-blind,
-  // percent-encoding tolerated) followed by the 20-32-char token run — not on
-  // any one literal prefix. Bare 20-32-char values elsewhere (audit enums
-  // like "foreign_subscription") stay readable.
-  out = out.replace(
-    /(\/[a-z0-9%]*shares?\/)[A-Za-z0-9_-]{20,32}(?![A-Za-z0-9_-])/gi,
-    "$1<redacted>",
-  );
+  // percent-encoding tolerated) followed by the token run — not on any one
+  // literal prefix. Bare token-shaped values elsewhere (audit enums like
+  // "foreign_subscription") stay readable.
+  // R18 (run-4 h6): three deliberate spellings still escaped — a non-token
+  // separator byte wedged between segment and token ('/api/shares/.<tok>'),
+  // a padded run longer than 32 chars, and percent-encoded spellings the
+  // literal pass cannot see. Tolerate 0-2 separator bytes, drop the upper
+  // bound, and re-run both rules on a percent-decoded copy.
+  const shareShaped = /(\/[a-z0-9%]*shares?\/)[^\w\n]{0,2}[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
   // Encoded spellings (/%73hare/) hide the literal "share" — any
   // percent-bearing path segment followed by a token-shaped run is treated
   // the same.
-  out = out.replace(
-    /(\/[^\s"']*%[^\s"']*\/)[A-Za-z0-9_-]{20,32}(?![A-Za-z0-9_-])/gi,
-    "$1<redacted>",
-  );
+  const percentBearing = /(\/[^\s"']*%[^\s"']*\/)[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
+  const scrubTokens = (s: string): string => s.replace(shareShaped, "$1<redacted>").replace(percentBearing, "$1<redacted>");
+  out = scrubTokens(out);
+  // The decoded pass sees through %XX spellings of the separator, the first
+  // token characters, or the segment itself; the sample is bounded (≤200
+  // chars) so a pathological decode cannot explode it.
+  try {
+    const decoded = decodeURIComponent(out);
+    if (decoded !== out) out = scrubTokens(decoded);
+  } catch {
+    // malformed percent escapes stay as the literal pass left them
+  }
   // Credential material without its prefix (slices, echo): 43-char base64url runs.
   out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
   // Pairing codes as standalone values ("code":"AB2C7DEF" / "ABCD2345EF67") but not ordinary words.

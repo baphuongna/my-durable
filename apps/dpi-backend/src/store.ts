@@ -25,6 +25,7 @@ import type {
   TaskNode,
   TaskOutcome,
   ThinkingLevel,
+  TranscriptSearchHit,
   UsageTotals,
   WhenBusy,
   WireEntry,
@@ -45,6 +46,7 @@ import {
   type UsageSummary,
 } from "../../dpi-sdk/src/transcript.js";
 import { ApiFault, invalid, isStorageBusy, isUnreadableStorage, notFound, storageBusyFault } from "./errors.js";
+import { searchHistory } from "./history.js";
 import { git, gitDirtyMarks, gitStatus, onGitDirty } from "./git.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
@@ -71,6 +73,7 @@ import {
 import {
   listArchived,
   findBundle,
+  readArchiveManifest,
   archivedTranscript,
   restoreArchive,
   writeArchiveManifest,
@@ -197,6 +200,12 @@ const CODE_DIR = resolve(import.meta.dirname, "../../..");
 
 /** Session search result cap: one screen of matches, not a transcript dump. */
 const SEARCH_LIMIT = 50;
+
+/** Transcript-search budgets (scope=all): newest-first across sessions, bounded work. */
+const TRANSCRIPT_SESSION_LIMIT = 100;
+const TRANSCRIPT_AGENT_ENTRY_LIMIT = 4000;
+const TRANSCRIPT_ENTRY_BUDGET = 50_000;
+const TRANSCRIPT_HITS_PER_AGENT = 3;
 
 /** Scheduler granularity. Schedules are minute-granular, so 30 s is enough and
  *  the timer is unref'd: it never holds the process open. */
@@ -1586,12 +1595,32 @@ export class Store {
   async restoreArchivedSession(sessionId: string): Promise<SessionSummary> {
     if (this.list().some((r) => r.id === sessionId))
       throw invalid("a live session with this id already exists");
+    // R18 (run-4 h1): restore is a session-placement writer, so it enforces
+    // the SAME choke point as create — a planted archive manifest must not
+    // root a restored session (and its tool environment) outside the start
+    // dirs. Leader-probe confirmed the verbatim insert bypassed it. The
+    // validation runs BEFORE restoreArchive moves the bundle, so a refusal
+    // leaves the archive untouched (restorable once the manifest is fixed).
+    const bundleDir = findBundle(this.archiveDir, sessionId);
+    if (!bundleDir) throw notFound(`no archived session ${sessionId}`);
+    const pre = readArchiveManifest(bundleDir);
+    const candidateCwd = pre?.cwd ?? "";
+    if (!candidateCwd.trim())
+      throw invalid(`archive manifest has no usable cwd — restore needs the bundle's session.json to name a start-dir folder`);
+    let restoredCwd: string;
+    try {
+      restoredCwd = await realpath(resolve(candidateCwd));
+      if (!(await stat(restoredCwd)).isDirectory()) throw Error();
+    } catch {
+      throw invalid(`archived cwd is not an existing folder on ${this.name}: ${candidateCwd}`);
+    }
+    await this.assertSessionCwdAllowed(restoredCwd);
     const manifest = await restoreArchive(this.archiveDir, this.options.dataDir, sessionId).catch(() => undefined);
     if (!manifest) throw notFound(`no archived session ${sessionId}`);
     const row: SessionRow = {
       id: manifest.sessionId,
       name: manifest.name || "Untitled session",
-      cwd: manifest.cwd,
+      cwd: restoredCwd,
       dbPath: join(this.sessionsDir, manifest.sessionId, "agent.sqlite"),
       createdAt: manifest.createdAt,
       model: manifest.model,
@@ -2554,6 +2583,91 @@ export class Store {
       (a, b) => Number(b.where.includes("name")) - Number(a.where.includes("name")) || b.createdAt - a.createdAt,
     );
     return { query, matches: matches.slice(0, SEARCH_LIMIT) };
+  }
+
+  /**
+   * R18 transcript search (scope=all): the metadata pass above, PLUS a
+   * bounded newest-first scan of every session's stored history — the answer
+   * to "which session did the agent say X in?". One broken session (storage
+   * busy, unopenable) is skipped, never fails the search. Budgets: newest
+   * TRANSCRIPT_SESSION_LIMIT sessions, TRANSCRIPT_AGENT_ENTRY_LIMIT entries per
+   * agent, TRANSCRIPT_ENTRY_BUDGET entries total (truncated=true past that).
+   */
+  async searchSessionsAll(rawQuery: string): Promise<SessionSearchResult> {
+    const query = String(rawQuery ?? "").trim();
+    const result = this.searchSessions(query);
+    if (query.length < 2) return result;
+    const byId = new Map(
+      result.matches.map((m) => [m.id, { ...m, hits: [] as TranscriptSearchHit[] }] as const),
+    );
+    let entriesScanned = 0;
+    let sessionsScanned = 0;
+    let truncated = false;
+    for (const row of this.list()) {
+      if (sessionsScanned >= TRANSCRIPT_SESSION_LIMIT || entriesScanned >= TRANSCRIPT_ENTRY_BUDGET) {
+        truncated = true;
+        break;
+      }
+      sessionsScanned += 1;
+      let h: Harness;
+      try {
+        try {
+          h = this.harness(row);
+        } catch {
+          h = await this.reopenOnce(row);
+        }
+      } catch {
+        continue; // a session that cannot open does not block the search
+      }
+      try {
+        let marked = false;
+        const names = this.names(row.id);
+        for (const record of await this.scanAll(h)) {
+          const c = await h.conversation(record.id as ConversationId, ctx);
+          if (!c) continue;
+          const entries: WireEntry[] = [];
+          let cursor: string | undefined;
+          do {
+            const page = await c.entries({}, 2000, decodeCursor(cursor), ctx);
+            entries.push(...(page.items as unknown as WireEntry[]));
+            cursor = encodeCursor(page.next);
+          } while (cursor && entries.length < TRANSCRIPT_AGENT_ENTRY_LIMIT);
+          entriesScanned += entries.length;
+          const hits = searchHistory(entries, { query, order: "newest", limit: TRANSCRIPT_HITS_PER_AGENT }, {}).results;
+          if (!hits.length) continue;
+          const ref = this.agentRef(record, names);
+          const base = byId.get(row.id) ?? {
+            ...this.sessionSummaryBase(row),
+            where: [],
+            hits: [] as TranscriptSearchHit[],
+          };
+          if (!marked) {
+            base.where.push("transcript");
+            marked = true;
+          }
+          for (const hit of hits)
+            base.hits!.push({ agent: ref.name, entry: hit.entry, kind: hit.kind, text: hit.text });
+          byId.set(row.id, base);
+        }
+      } catch {
+        continue; // one session's read failure never fails the search
+      }
+    }
+    // Name hits first, then transcript hits, then the newest — same intent as the metadata pass.
+    const matches = [...byId.values()]
+      .filter((m) => m.where.length)
+      .sort(
+        (a, b) =>
+          Number(b.where.includes("name")) - Number(a.where.includes("name")) ||
+          Number(b.where.includes("transcript")) - Number(a.where.includes("transcript")) ||
+          b.createdAt - a.createdAt,
+      )
+      .slice(0, SEARCH_LIMIT);
+    return {
+      query,
+      matches,
+      scanned: { sessions: sessionsScanned, entries: entriesScanned, truncated },
+    };
   }
 
   /**

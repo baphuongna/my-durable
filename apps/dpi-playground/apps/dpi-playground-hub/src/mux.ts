@@ -85,8 +85,12 @@ export function parseSubKey(key: string) {
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
     if (signal.aborted) return resolve();
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+    // R18 (run-4 h5): remove the abort listener on the timer path too — a
+    // completed sleep used to leave one listener on the long-lived signal,
+    // and a flapping device retained closures without bound.
+    const onAbort = () => (clearTimeout(timer), resolve());
+    const timer = setTimeout(() => (signal.removeEventListener("abort", onAbort), resolve()), ms);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 
 export class StreamMux {

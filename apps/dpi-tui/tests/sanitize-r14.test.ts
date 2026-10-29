@@ -182,3 +182,33 @@ test("R17 h5: pending notes are sanitized at the setPending chokepoint", async (
     await app.exit();
   }
 });
+
+test("R18 h4: pairing note, network status and /name seed are sanitized", async () => {
+  const OSC = "\u001b]8;;http://evil.example\u0007x\u001b\\";
+  // Theme SGR is trusted chrome (R17 pattern) — strip it before asserting.
+  const noEsc = (s: string) => {
+    const bare = s.replace(/\u001b\[[0-9;]*m/g, "");
+    return !bare.includes("\u001b") && !bare.includes("evil.example");
+  };
+
+  // (1) pairing panel: the note reaches chrome through TWO branches now (the
+  // !status branch was always sanitized; the status branches were raw).
+  const { pairingViewLines } = await import("../src/pairing.ts");
+  for (const dto of [
+    { state: "pairing", fingerprint: "abc" },
+    { state: "paired", fingerprint: "abc" },
+    { state: "revoked", fingerprint: "abc" },
+  ] as never[]) {
+    const lines = pairingViewLines(dto, `note ${OSC}`, 100);
+    assert.ok(lines.every(noEsc), `pairing note leaked: ${lines.join(" | ")}`);
+  }
+
+  // (2) network view: a hub-supplied free-form status string never injects.
+  const { renderNetwork } = await import("../src/views.ts");
+  const rows = [{ kind: "device", deviceId: "d1", label: "d1", depth: 0, key: "d1" }] as never[];
+  const devices = [
+    { id: "d1", name: "d1", kind: "local", transport: "lan", lastStatus: OSC, lastSeen: 0 },
+  ] as never[];
+  const lines = renderNetwork(100, rows, devices);
+  assert.ok(lines.every(noEsc), `network status leaked: ${lines.join(" | ")}`);
+});

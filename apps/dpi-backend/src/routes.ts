@@ -350,7 +350,16 @@ export function v1(
   r.post("/sessions", create, route(async (req, res) => res.status(201).json(await store.create(req.body ?? {}))));
   // Literal route, so it must precede `/sessions/:s` (Express matches in order).
   // Names/cwds/models only — transcript search needs an FTS index, not a LIKE scan.
-  r.get("/sessions/search", route(async (req, res) => res.json(store.searchSessions(String(req.query.q ?? "")))));
+  r.get(
+    "/sessions/search",
+    route(async (req, res) => {
+      const q = String(req.query.q ?? "");
+      // scope=all adds the bounded transcript scan (R18); default stays metadata-only
+      // so existing callers see the same shape and cost as before.
+      if (String(req.query.scope ?? "") === "all") return res.json(await store.searchSessionsAll(q));
+      return res.json(store.searchSessions(q));
+    }),
+  );
   r.get("/sessions/:s", route(async (_req, res) => res.json(await store.sessionSummary(L(res).row))));
   r.patch("/sessions/:s", route(async (req, res) => res.json(await store.rename(L(res).row, req.body?.name))));
   r.get("/sessions/:s/compaction", route(async (_req, res) => res.json(store.compactionOf(L(res).row.id))));

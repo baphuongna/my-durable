@@ -175,9 +175,9 @@ export function pairingViewLines(
   } else if (status.state === "revoked") {
     lines.push(c.warn("Revoked on the hub. /pair CODE to pair again."));
   } else {
-    lines.push(c.muted(note));
+    lines.push(c.muted(sanitizeTerminal(note)));
   }
-  if (note && status.state !== "pairing") lines.push(c.muted(note));
+  if (note && status.state !== "pairing") lines.push(c.muted(sanitizeTerminal(note)));
   return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
 }
 

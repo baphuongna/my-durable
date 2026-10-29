@@ -342,9 +342,12 @@ export class DpiClient {
   deviceUsage() {
     return this.request<DeviceUsageReport>("GET", "/v1/device/usage");
   }
-  /** Session search over names/cwds/models (transcripts are not scanned). */
-  searchSessions(query: string) {
-    return this.request<SessionSearchResult>("GET", `/v1/sessions/search?q=${enc(query)}`);
+  /** Session search over names/cwds/models; scope="all" adds the bounded transcript scan (R18). */
+  searchSessions(query: string, scope?: "meta" | "all") {
+    return this.request<SessionSearchResult>(
+      "GET",
+      `/v1/sessions/search?q=${enc(query)}${scope === "all" ? "&scope=all" : ""}`,
+    );
   }
   dirs(path = "") {
     return this.request<DirListing>("GET", `/v1/fs/dirs?path=${enc(path)}`);
@@ -614,8 +617,12 @@ export type ConnectionState = "connecting" | "live" | "offline" | "unauthorized"
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
     if (signal.aborted) return resolve();
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+    // R18 (run-4 h5): remove the abort listener on the timer path too — a
+    // completed sleep used to leave one listener on the long-lived signal,
+    // and a flapping device retained closures without bound.
+    const onAbort = () => (clearTimeout(timer), resolve());
+    const timer = setTimeout(() => (signal.removeEventListener("abort", onAbort), resolve()), ms);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 
 /**

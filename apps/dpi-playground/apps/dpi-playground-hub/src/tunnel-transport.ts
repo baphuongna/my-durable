@@ -558,7 +558,7 @@ export class TunnelDispatcher {
     // connection swap. The prefix marks hub-derived keys in device logs; 73 chars fits the
     // device's 128-char header cap and the wire schema's 256.
     const idempotencyKey =
-      input.idempotencyKey ??
+      input.idempotencyKey ||
       (input.method === "GET" || input.method === "HEAD"
         ? undefined
         : "dpi-auto-" +

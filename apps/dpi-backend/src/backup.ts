@@ -433,6 +433,24 @@ export function readZipEntries(data: Uint8Array): ZipArchiveEntry[] {
 
 /** Read + parse a backup file; restore and the CLI's plan share the `not_found` mapping. */
 export async function readBackupEntries(io: BackupIo, zipPath: string): Promise<ZipArchiveEntry[]> {
+  // R18 (run-4 h2): refuse by physical size BEFORE reading. The file is a
+  // 1:1 operator-own artifact, but a typed refusal beats a linear RAM spike
+  // into the CLI process (slack covers zip structure overhead: entries +
+  // central directory + any comment).
+  const PHYSICAL_SLACK_BYTES = 16 * 1024 * 1024;
+  try {
+    const size = (await io.stat(zipPath)).size;
+    if (size > MAX_BACKUP_BYTES + PHYSICAL_SLACK_BYTES) {
+      const mbSize = (n: number) => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+      throw new BackupError(
+        "invalid",
+        `backup ${zipPath} is ${mbSize(size)} on disk — over the ${mbSize(MAX_BACKUP_BYTES)} restore ceiling; refusing to load it`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof BackupError) throw error;
+    throw new BackupError("not_found", `cannot read backup ${zipPath}: ${describeError(error)}`);
+  }
   let data: Uint8Array;
   try {
     data = await io.readFile(resolve(zipPath));

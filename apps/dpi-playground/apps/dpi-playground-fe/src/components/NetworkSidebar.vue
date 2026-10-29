@@ -46,7 +46,16 @@ const list = ref<HTMLElement>();
  *  own matches (names/cwds/models) so results do not depend on how fresh the
  *  hub's tree is. Transcripts are not scanned — that needs an FTS index. */
 const query = ref("");
-const deviceHits = ref<{ deviceId: string; name: string; cwd: string; id: string; where: string[] }[]>([]);
+const deviceHits = ref<
+  {
+    deviceId: string;
+    name: string;
+    cwd: string;
+    id: string;
+    where: string[];
+    hits: { agent: string; entry: number; kind: string; text: string }[];
+  }[]
+>([]);
 const searching = ref(false);
 const needle = computed(() => query.value.trim().toLowerCase());
 const filtering = computed(() => needle.value.length >= 2);
@@ -112,10 +121,17 @@ watch(query, (value) => {
     const found: typeof deviceHits.value = [];
     for (const device of network.devices.value.filter((d) => d.status === "online")) {
       const result = await deviceClient(device.id)
-        .searchSessions(q)
+        .searchSessions(q, "all")
         .catch(() => undefined);
       for (const match of result?.matches ?? [])
-        found.push({ deviceId: device.id, id: match.id, name: match.name, cwd: match.cwd, where: match.where });
+        found.push({
+          deviceId: device.id,
+          id: match.id,
+          name: match.name,
+          cwd: match.cwd,
+          where: match.where,
+          hits: match.hits ?? [],
+        });
     }
     deviceHits.value = found;
     searching.value = false;
@@ -387,6 +403,13 @@ function keydown(e: KeyboardEvent) {
             <span class="hit-name">{{ hit.name }}</span>
             <code class="hit-cwd">{{ hit.cwd }}</code>
             <em v-if="hit.where.length" class="hit-where">{{ hit.where.join(" · ") }}</em>
+            <em
+              v-if="hit.hits.length"
+              class="hit-line"
+              :title="hit.hits.map((h) => `${h.agent} #${h.entry}: ${h.text}`).join('\n')"
+            >
+              {{ hit.hits[0].agent }} #{{ hit.hits[0].entry }} · {{ hit.hits[0].text.slice(0, 90) }}
+            </em>
           </button>
         </template>
         <p v-if="filtering && !localRows.length && !extraHits.length" class="hint tree-empty">
@@ -446,6 +469,16 @@ function keydown(e: KeyboardEvent) {
 .search-input::-webkit-search-cancel-button { display: none; }
 .tree-search .clear { padding: 2px; }
 .searching { opacity: 0.6; font-size: 13px; }
+.hit-line {
+  display: block;
+  font-style: normal;
+  font-size: 12px;
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
 .hit-head { margin: 6px 2px 2px; }
 .hit {
   display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left;

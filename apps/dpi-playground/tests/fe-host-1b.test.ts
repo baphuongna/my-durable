@@ -9,8 +9,8 @@ test("host-checklist Wave 1b: vitals, search and export reach every layer", asyn
   // before the `:s` param route or it would be swallowed by it.
   const routes = await R("../../dpi-backend/src/routes.ts");
   assert.match(routes, /r\.get\("\/device\/vitals"/, "vitals route missing");
-  const searchAt = routes.indexOf('r.get("/sessions/search"');
-  const paramAt = routes.indexOf('r.get("/sessions/:s"');
+  const searchAt = routes.indexOf('"/sessions/search"');
+  const paramAt = routes.indexOf('"/sessions/:s"');
   assert.ok(searchAt > 0, "session search route missing");
   assert.ok(paramAt > 0 && searchAt < paramAt, "/sessions/search must precede /sessions/:s");
   // R8: the export handler grew a streaming body, so the route is declared multiline.
@@ -25,7 +25,7 @@ test("host-checklist Wave 1b: vitals, search and export reach every layer", asyn
   // SDK client: the FE cannot call a route the client does not expose.
   const client = await R("../../dpi-sdk/src/client.ts");
   assert.match(client, /vitals\(\)/, "client vitals missing");
-  assert.match(client, /searchSessions\(query: string\)/, "client search missing");
+  assert.match(client, /searchSessions\(query: string, scope\?: "meta" \| "all"\)/, "client search missing");
   assert.match(client, /exportSession\(sessionId: string, options: RequestOptions/, "client export missing");
 
   // FE: the host card, the search box, and the bundle button.
@@ -35,7 +35,7 @@ test("host-checklist Wave 1b: vitals, search and export reach every layer", asyn
   assert.match(host, /vitals\.disk\.known/, "disk meter missing");
   assert.match(host, /watch\(deviceId, load, \{ immediate: true \}\)/, "vitals must load on first paint");
   const sidebar = await R("../apps/dpi-playground-fe/src/components/NetworkSidebar.vue");
-  assert.match(sidebar, /searchSessions\(q\)/, "device-side search unused");
+  assert.match(sidebar, /searchSessions\(q, "all"\)/, "device-side search unused");
   assert.match(sidebar, /localRows/, "instant local filter missing");
   assert.match(sidebar, /extraHits/, "device-only hits section missing");
   const insp = await R("../apps/dpi-playground-fe/src/components/Inspector.vue");

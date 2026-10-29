@@ -473,6 +473,14 @@ export interface DeviceVitals {
   counts?: { sessions: number; archived: number };
 }
 
+/** One transcript hit inside a session search match (scope=all): which agent, which entry, what it says. */
+export interface TranscriptSearchHit {
+  agent: string;
+  entry: number;
+  kind: string;
+  text: string;
+}
+
 /** One session-search hit: the summary fields plus which of them matched. */
 export interface SessionSearchMatch {
   id: string;
@@ -482,12 +490,16 @@ export interface SessionSearchMatch {
   createdAt: number;
   dbPath: string;
   compaction?: CompactionSettings;
-  where: Array<"name" | "cwd" | "model">;
+  where: Array<"name" | "cwd" | "model" | "transcript">;
+  /** Present when scope=all found transcript text (up to a few per session, newest first). */
+  hits?: TranscriptSearchHit[];
 }
 
 export interface SessionSearchResult {
   query: string;
   matches: SessionSearchMatch[];
+  /** Present on scope=all: what the transcript scan covered before its budget ran out. */
+  scanned?: { sessions: number; entries: number; truncated: boolean };
 }
 
 export interface DeviceTree {

@@ -27,6 +27,7 @@ export const COMMANDS: SlashCommand[] = [
   { name: "reset", description: "start a fresh context", argumentHint: "[handoff note]" },
   { name: "name", description: "rename this agent", argumentHint: "<name>" },
   { name: "tasks", description: "live tasks in this session" },
+  { name: "find", description: "search every session's transcript on this device", argumentHint: "<text>" },
   { name: "pair", description: "pair THIS device with a hub", argumentHint: "<CODE|PAIR_URL> [--hub ORIGIN] [--force]" },
   {
     name: "git",
@@ -206,7 +207,10 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       let value = arg;
       if (!value) {
         const current = app.sessionSummary()?.agents.find((a) => a.id === app.agentId)?.name ?? "";
-        const typed = await app.prompt("Agent name", current && current !== "main" ? current : "");
+        // Agent names ride the wire from device/hub (model-choosable for forks
+        // and subagents) and pi-tui's Input renders its value verbatim — seed
+        // it sanitized (run-4 h4).
+        const typed = await app.prompt("Agent name", current && current !== "main" ? sanitizeTerminal(current) : "");
         value = (typed ?? "").trim();
         if (!value) return app.flash("rename cancelled"), true;
       }
@@ -223,6 +227,42 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
     case "pair":
       await runPairing(app, parsePairArgs(arg));
       break;
+    case "find": {
+      // R18: transcript search across every session on the device. Transcript
+      // text is untrusted — every interpolation below goes through
+      // sanitizeTerminal before it reaches chrome (run-3 h5 discipline).
+      if (!arg) return app.flash("usage: /find <text> — searches every session's transcript", true), true;
+      await app.run(async () => {
+        const result = await app.client.searchSessions(arg, "all");
+        const shown = result.matches.slice(0, 12);
+        app.overlay(
+          new Panel(() => {
+            const lines = [
+              c.bold(c.accent(`"${sanitizeTerminal(arg)}" — ${result.matches.length} session${result.matches.length === 1 ? "" : "s"}`)),
+              "",
+            ];
+            if (!result.matches.length) lines.push(c.muted("No matches (names, folders, models or transcripts)."));
+            for (const m of shown) {
+              lines.push(
+                `${c.secondary(sanitizeTerminal(m.name))} ${c.muted(sanitizeTerminal(m.cwd))}${m.where.includes("transcript") ? " " + c.warn("◍ transcript") : ""}`,
+              );
+              for (const hit of (m.hits ?? []).slice(0, 3))
+                lines.push(
+                  c.muted(
+                    `  ${sanitizeTerminal(m.name)}:${sanitizeTerminal(hit.agent)} #${hit.entry} — ${sanitizeTerminal(hit.text.slice(0, 140))}`,
+                  ),
+                );
+            }
+            if (result.matches.length > shown.length) lines.push(c.muted(`… ${result.matches.length - shown.length} more`));
+            if (result.scanned?.truncated)
+              lines.push(c.muted(`scan budget reached (${result.scanned.entries} entries) — refine the query`));
+            lines.push("", c.muted("esc close"));
+            return lines;
+          }, () => app.closeOverlay()),
+        );
+      });
+      break;
+    }
     case "tasks":
       app.overlay(
         new Panel(() => {

@@ -34,7 +34,7 @@
  * the tests run against fakes with zero sockets and zero real time.
  */
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 /** Bumped only when the on-disk shape changes; `coerceRegistry` owns the upgrade path. */
@@ -101,6 +101,12 @@ export interface TelegramIo {
   /** Returns an unref-able handle, so the bridge never holds the event loop open. */
   setTimeout(cb: () => void, ms: number): { unref(): void };
   clearTimeout(t: { unref(): void }): void;
+  /**
+   * R18 (run-4 h3): cross-writer mutual exclusion around the registry's
+   * read-modify-write (daemon + dpi telegram CLI are two OS processes).
+   * Optional so pure in-memory fakes stay small; absent = unlocked caller.
+   */
+  withLock?<T>(path: string, fn: () => Promise<T>): Promise<T>;
 }
 
 export const defaultTelegramIo = (): TelegramIo => ({
@@ -121,6 +127,40 @@ export const defaultTelegramIo = (): TelegramIo => ({
     }
   },
   chmod: (path, mode) => chmod(path, mode),
+  withLock: async <T>(path: string, fn: () => Promise<T>): Promise<T> => {
+    // Advisory lock file next to the registry. Both writers are the same OS
+    // user, so create-exclusive + stale-break (mtime older than 5 s — a
+    // crashed holder never wedges the bridge) is mutual exclusion enough.
+    const lockPath = `${path}.lock`;
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try {
+        const handle = await open(lockPath, "wx", 0o600);
+        await handle.write(`${process.pid}\n`);
+        await handle.close();
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        let age = 0;
+        try {
+          age = Date.now() - (await stat(lockPath)).mtimeMs;
+        } catch {
+          continue; // released between the create attempt and the stat
+        }
+        if (age > 5_000) {
+          await unlink(lockPath).catch(() => undefined); // stale holder — break it
+          continue;
+        }
+        if (Date.now() > deadline) throw new Error(`telegram registry lock busy: ${lockPath}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    try {
+      return await fn();
+    } finally {
+      await unlink(lockPath).catch(() => undefined);
+    }
+  },
   exists: async (path) => {
     try {
       await stat(path);
@@ -663,11 +703,27 @@ export class TelegramBridge {
    * new bytes through the io's atomic write, then 0600.
    */
   private async persist(draft: TelegramRegistryFile): Promise<void> {
+    // R18 (run-4 h3): the whole read-modify-write is ONE critical section for
+    // every lock-respecting writer (this daemon + the dpi telegram CLI share
+    // defaultTelegramIo). Without the lock, a CLI commit landing between the
+    // CAS read and the final write is silently clobbered and a revoked binding
+    // resurrects (leader-probe confirmed on a0893c1-era code).
+    const commit = async (): Promise<void> => {
     // R17 (run-3 h4): the registry has TWO writers (daemon + dpi telegram
     // CLI). Write-after-read validation: if the file's bytes changed since we
     // last saw them, our snapshot is stale — writing it would clobber the
     // foreign commit (un-spend a code, revert a /stop). Fail loudly instead.
-    if (this.registryText !== null && (await this.io.exists(this.filePath))) {
+    // R18 (run-4 h3): the vanished-registry case is ALSO a foreign change —
+    // rewriting from memory would resurrect every revoked binding. Fail closed
+    // exactly like syncForeign does.
+    if (this.registryText !== null) {
+      if (!(await this.io.exists(this.filePath))) {
+        this.mainIsGood = false;
+        throw new TelegramBridgeError(
+          "registry_changed",
+          `registry vanished before commit — refusing to resurrect ${this.filePath}`,
+        );
+      }
       const current = await this.io.readFile(this.filePath);
       if (current !== this.registryText) {
         this.mainIsGood = false;
@@ -691,8 +747,49 @@ export class TelegramBridge {
     const payload = `${JSON.stringify(draft satisfies TelegramRegistryFile, null, 2)}\n`;
     await this.io.writeFile(this.filePath, payload);
     await this.io.chmod(this.filePath, 0o600);
+    // R18 (run-4 h3): the CAS above is separated from the write by several
+    // awaited fs ops, so a foreign write can land INSIDE our commit window.
+    // Verify after the write: if the bytes on disk are not exactly ours, we
+    // clobbered someone — restore THEIR bytes (our offset commit is safely
+    // re-delivered by Telegram) and fail loudly. The revoked binding stays
+    // revoked instead of silently resurrecting.
+    if (this.registryText !== null) {
+      try {
+        const after = await this.io.readFile(this.filePath);
+        if (after !== payload) {
+          await this.io.writeFile(this.filePath, after);
+          await this.io.chmod(this.filePath, 0o600);
+          // Converge memory onto the restored foreign bytes immediately — a
+          // stale in-memory binding must not authorize the very next update
+          // through syncForeign's "still our own last write" fast path.
+          const foreign = coerceRegistry(JSON.parse(after), this.now());
+          this.adopt({ ...foreign, offset: Math.max(this.offset, foreign.offset) });
+          this.registryText = after;
+          this.mainIsGood = false;
+          throw new TelegramBridgeError(
+            "registry_changed",
+            `registry changed during commit; foreign write preserved — refusing to clobber ${this.filePath}`,
+          );
+        }
+      } catch (error) {
+        if (error instanceof TelegramBridgeError) throw error;
+        // The verify read itself failed (e.g. deleted again): treat as a
+        // foreign change, keep the old non-null baseline so syncForeign stays
+        // fail-closed, and fail loudly.
+        this.mainIsGood = false;
+        throw new TelegramBridgeError(
+          "registry_changed",
+          `registry unreadable after commit — treating as foreign change on ${this.filePath}`,
+        );
+      }
+    }
     this.registryText = payload;
     this.mainIsGood = true;
+    };
+    if (this.io.withLock) return this.io.withLock(this.filePath, commit);
+    // Fakes without a lock keep the R17 semantics (CAS + verify) — the lock is
+    // what closes the pre-write half of the window for the real two writers.
+    return commit();
   }
 
   // --------------------------------------------------------------- poll loop

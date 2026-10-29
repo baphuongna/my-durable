@@ -108,10 +108,22 @@ export class LanTransport implements DeviceTransport {
         },
         body: hasBody && input.body !== undefined ? JSON.stringify(input.body) : undefined,
         signal: effective,
+        // R18 (run-4 h5): the device-side connector refuses redirects (one
+        // exact origin); a compromised LAN peer must not aim the hub's fetches
+        // elsewhere. 3xx → clean 502, same as the connector.
+        redirect: "manual",
       });
     } catch (cause) {
       if (signal?.aborted) throw cause;
       throw new DpiError("offline", `Cannot reach ${this.client.baseUrl}`, 0, { cause });
+    }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new DpiError(
+        "offline",
+        `Device API answered with a redirect (${response.status}); redirects are not followed`,
+        502,
+      );
     }
     // R17 (run-3 h8): size parity with the tunnel leg — the device connector
     // caps its own fetches (16 MiB textual / binary cap) and reassembly
