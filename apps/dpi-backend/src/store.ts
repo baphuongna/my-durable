@@ -1604,6 +1604,8 @@ export class Store {
     const bundleDir = findBundle(this.archiveDir, sessionId);
     if (!bundleDir) throw notFound(`no archived session ${sessionId}`);
     const pre = readArchiveManifest(bundleDir);
+    if (pre && pre.sessionId !== sessionId)
+      throw invalid(`archive manifest claims session ${pre.sessionId}, not ${sessionId} — refusing to restore under a foreign id`);
     const candidateCwd = pre?.cwd ?? "";
     if (!candidateCwd.trim())
       throw invalid(`archive manifest has no usable cwd — restore needs the bundle's session.json to name a start-dir folder`);
@@ -2623,6 +2625,14 @@ export class Store {
         let marked = false;
         const names = this.names(row.id);
         for (const record of await this.scanAll(h)) {
+          // The TOTAL budget binds inside the conversation loop too: a
+          // fork-heavy session (a flagship feature) has many conversations,
+          // and per-agent caps alone let one session scan past 50k entries
+          // (cold-review major 2 — API.md promises a total budget).
+          if (entriesScanned >= TRANSCRIPT_ENTRY_BUDGET) {
+            truncated = true;
+            break;
+          }
           const c = await h.conversation(record.id as ConversationId, ctx);
           if (!c) continue;
           const entries: WireEntry[] = [];

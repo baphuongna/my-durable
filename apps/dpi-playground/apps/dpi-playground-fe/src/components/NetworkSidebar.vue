@@ -108,6 +108,7 @@ const extraHits = computed(() =>
 );
 
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let searchGeneration = 0;
 watch(query, (value) => {
   clearTimeout(searchTimer);
   const q = value.trim();
@@ -118,11 +119,15 @@ watch(query, (value) => {
   }
   searchTimer = setTimeout(async () => {
     searching.value = true;
+    // R18 cold-review minor 4: scope=all scans take seconds per device — a
+    // generation token keeps a slower OLD query from overwriting a newer one.
+    const generation = ++searchGeneration;
     const found: typeof deviceHits.value = [];
     for (const device of network.devices.value.filter((d) => d.status === "online")) {
       const result = await deviceClient(device.id)
         .searchSessions(q, "all")
         .catch(() => undefined);
+      if (generation !== searchGeneration) return; // a newer query superseded this scan
       for (const match of result?.matches ?? [])
         found.push({
           deviceId: device.id,

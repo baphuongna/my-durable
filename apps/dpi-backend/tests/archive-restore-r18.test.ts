@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { Store } from "../src/store.ts";
+import { Store } from "../src/store.js";
 
 test("restore refuses a manifest cwd outside the start dirs (create-parity choke point)", async () => {
   const root = mkdtempSync(join(tmpdir(), "dpi-restore-r18-"));

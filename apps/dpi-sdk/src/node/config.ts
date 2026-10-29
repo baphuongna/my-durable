@@ -118,7 +118,16 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
       node: Number(d.node ?? 24),
       codeDir: pathish(typeof d.code_dir === "string" ? d.code_dir : "~/dpi", "code_dir"),
       homeDir: pathish(typeof d.home_dir === "string" ? d.home_dir : "~/.dpi", "home_dir"),
-      startDirs: d.start_dirs === undefined ? [DEFAULT_START_DIR] : strList(d.start_dirs, `${where}.start_dirs`).map((r: string) => pathish(r, "start_dirs")),
+      // R18 (run-4 h7): ':' is the DPI_START_DIRS list separator on the device
+      // (config.ts splits on it) — an entry containing ':' would smuggle an
+      // EXTRA containment root past the operator's declared list.
+      startDirs:
+        d.start_dirs === undefined
+          ? [DEFAULT_START_DIR]
+          : strList(d.start_dirs, `${where}.start_dirs`).map((r: string) => {
+              if (r.includes(":")) throw Error(`${where}.start_dirs must not contain ':' (the DPI_START_DIRS separator)`);
+              return pathish(r, "start_dirs");
+            }),
       host: d.host === undefined ? (kind === "local" ? "127.0.0.1" : "0.0.0.0") : pathish(str(d.host, `${where}.host`), "host"),
       envKeys: d.env_keys === undefined ? [] : strList(d.env_keys, `${where}.env_keys`),
       env: {},
@@ -134,7 +143,9 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
       // R17 (run-3 h12): the ssh scalar is a leading argv element — a leading
       // dash would be parsed as an ssh OPTION (e.g. -oProxyCommand=…). Accept
       // only a user@host[:port] shape.
-      if (!/^[A-Za-z0-9._%-]+@[A-Za-z0-9.-]+(:\d+)?$/.test(target))
+      // R18 (run-4 h7): the user part may not START with a dash either —
+      // `-Jjump@evil` is an attached-value ssh option (ProxyJump), not a user.
+      if (!/^[A-Za-z0-9._%][A-Za-z0-9._%-]*@[A-Za-z0-9.-]+(:\d+)?$/.test(target))
         throw Error(`${where}.ssh must be user@host[:port] (no options, no metacharacters)`);
       device.ssh = target;
     }

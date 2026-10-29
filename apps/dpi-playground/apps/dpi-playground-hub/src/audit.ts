@@ -117,7 +117,11 @@ export function scrubSecrets(value: string): string {
   // a padded run longer than 32 chars, and percent-encoded spellings the
   // literal pass cannot see. Tolerate 0-2 separator bytes, drop the upper
   // bound, and re-run both rules on a percent-decoded copy.
-  const shareShaped = /(\/[a-z0-9%]*shares?\/)[^\w\n]{0,2}[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
+  // Cold-review minor 1: a decoded `/api/shares/<word>%2F<token>` leaves the
+  // token behind a short extra path segment — tolerate one such segment AND
+  // keep the direct 0–2 non-token separator (run-4 h6) before the run.
+  const shareShaped =
+    /(\/[a-z0-9%]*shares?\/)(?:[^\s"']{0,8}\/)?[^\w\n]{0,2}[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
   // Encoded spellings (/%73hare/) hide the literal "share" — any
   // percent-bearing path segment followed by a token-shaped run is treated
   // the same.

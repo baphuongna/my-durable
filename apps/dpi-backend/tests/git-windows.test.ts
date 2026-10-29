@@ -477,3 +477,37 @@ test("markDirty: 'D:\\repo' invalidates the entry cached as 'd:/repo' — siblin
     clearGitStatusCache();
   }
 });
+
+test("R18 h8: git/gh children never inherit DPI_TOKEN (allowlist pinned, both platforms)", async () => {
+  const secrets = { DPI_TOKEN: "dpi_secret_marker", OPENROUTER_API_KEY: "ork_marker" };
+  const saved = Object.fromEntries(Object.keys(secrets).map((k) => [k, (process.env as Record<string, string | undefined>)[k]]));
+  Object.assign(process.env, secrets);
+  const POSIX_ALLOW = new Set(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "TERM", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK"]);
+  const WIN32_EXTRA = new Set([
+    "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "TEMP", "TMP",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMDATA",
+  ]);
+  try {
+    for (const [platform, allow] of [["linux", POSIX_ALLOW] as const, ["win32", new Set([...POSIX_ALLOW, ...WIN32_EXTRA])] as const]) {
+      const envs = await withPlatform(platform as NodeJS.Platform, async () => [
+        GIT_EXEC_OPTS(1000).env,
+        GH_EXEC_OPTS("/tmp/repo", 1000).env,
+      ]);
+      for (const env of envs) {
+        const names = Object.keys(env);
+        assert.ok(names.every((n) => allow.has(n.toUpperCase()) || allow.has(n)), `${platform}: unexpected env name ${names.join(",")}`);
+        assert.equal(env.DPI_TOKEN, undefined, `${platform}: DPI_TOKEN must not ride into git/gh children`);
+        assert.equal(env.OPENROUTER_API_KEY, undefined, `${platform}: operator secrets must not ride either`);
+      }
+    }
+    // A win32 infra var present in the parent IS forwarded on win32 only.
+    process.env.SYSTEMROOT = "C:\\Windows";
+    const winEnv = await withPlatform("win32", () => GIT_EXEC_OPTS(1000).env);
+    assert.equal(winEnv.SYSTEMROOT, "C:\\Windows");
+    const posixEnv = await withPlatform("linux", () => GIT_EXEC_OPTS(1000).env);
+    assert.equal(posixEnv.SYSTEMROOT, undefined);
+    delete process.env.SYSTEMROOT;
+  } finally {
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+});

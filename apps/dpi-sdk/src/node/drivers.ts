@@ -115,6 +115,10 @@ async function writeEnv(device: NetDevice, ctx: DriverContext, rotate = false) {
       ctx.log(`warning: device ${device.id} env ${k} has no value or contains a newline — skipped`);
   // R17 (run-3 h12): config.ts rejects CR/LF in these at parse; the sink
   // guards too so a future field can never reintroduce the line-injection.
+  // R18 (run-4 h7): ':' in a start_dirs entry splits into an EXTRA containment
+  // root on the device — refuse at the sink as well.
+  if (device.startDirs.some((r) => r.includes(":")))
+    throw Error(`device ${device.id}: start_dirs must not contain ':' (the DPI_START_DIRS separator)`);
   for (const [k, v] of [["DPI_HOST", device.host], ["DPI_START_DIRS", device.startDirs.join(":")]] as const)
     if (/[\n\r]/.test(v))
       throw Error(`device ${device.id}: ${k} value contains a newline — refusing to write backend.env`);
