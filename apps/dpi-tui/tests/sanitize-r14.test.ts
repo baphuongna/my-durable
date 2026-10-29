@@ -231,3 +231,10 @@ test("R19 cold-review M4: oneLine collapses a newline-carrying wire id (row spoo
   assert.ok(!/\u001b/.test(oneLine("\u001b]52;c;x\u0007report")), "escapes stripped too");
   assert.equal(oneLine("plain  task\tid"), "plain task id", "whitespace collapsed, text kept");
 });
+
+test("R20 h5: the oneLine chokepoint lives in sanitize.ts (hoisted) and commands re-exports it", async () => {
+  const { oneLine: fromCommands } = await import("../src/commands.ts");
+  const { oneLine: fromSanitize } = await import("../src/sanitize.ts");
+  assert.equal(fromCommands, fromSanitize, "one definition, one chokepoint");
+  assert.ok(!fromSanitize("a\nb").includes("\n"));
+});

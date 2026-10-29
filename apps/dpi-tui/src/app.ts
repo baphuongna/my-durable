@@ -49,7 +49,7 @@ import { HubMux, type MuxState } from "./hub-mux.ts";
 import { FOLLOW_TAIL, scrollBy, viewportTop, type ScrollState } from "./scroll.ts";
 import { wrapByColumn } from "./wrap.ts";
 import { box, c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
-import { sanitizeTerminal } from "./sanitize.ts";
+import { sanitizeTerminal, oneLine } from "./sanitize.ts";
 
 export interface DeviceRef {
   id: string;
@@ -655,7 +655,7 @@ export class App {
   setPending(text: string | null) {
     // R17 (run-3 h5): pending notes interpolate device-sourced paths/names
     // (walkDirs/newSession feed them) — sanitize at the chokepoint.
-    this.pendingNote = text === null ? null : sanitizeTerminal(text);
+    this.pendingNote = text === null ? null : oneLine(text); // R20 h5: single-line chrome
     this.requestRender();
   }
 
@@ -710,7 +710,7 @@ export class App {
       this.input!.value = "/";
     } else if (data === "f") this.beginInput("filter", "filter ❯ ");
     else if (data === "n") this.beginInput("new", "new session › ");
-    else if (data === "x") this.beginInput("kill", `reset ${sanitizeTerminal(this.sessionSummary()?.name ?? "context")}? y/n`);
+    else if (data === "x") this.beginInput("kill", `reset ${oneLine(this.sessionSummary()?.name ?? "context")}? y/n`);
     else if (data === "g") this.setView("herd");
     else if (data === "N") this.setView("network");
     else if (data === "L") this.setView("log");
@@ -1026,7 +1026,7 @@ export class App {
   notify(message: string, error = false) {
     // Audit run-1: toast text often carries device/hub error messages —
     // strip control sequences before the toast renders to the terminal.
-    this.toast = (error ? "✗ " : "") + sanitizeTerminal(message);
+    this.toast = (error ? "✗ " : "") + oneLine(message); // R20 h5: toasts are single-line chrome — collapse \\n too
     this.toastTicks = 50;
     this.requestRender();
   }
@@ -1222,10 +1222,10 @@ export class App {
     // the web shows a banner — the TUI used to show a healthy branch chip
     // while the repo was mid-merge with conflicts.
     const gitChip = g?.repo
-      ? `  ${c.muted("⎇")} ${c.text(sanitizeTerminal(g.branch ?? g.head ?? ""))}${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0) ? c.warn(` ±${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0)}`) : ""}${g.merge ? c.err(gitStateSuffix(g)) : g.detached ? c.warn(gitStateSuffix(g)) : ""}`
+      ? `  ${c.muted("⎇")} ${c.text(oneLine(g.branch ?? g.head ?? ""))}${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0) ? c.warn(` ±${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0)}`) : ""}${g.merge ? c.err(gitStateSuffix(g)) : g.detached ? c.warn(gitStateSuffix(g)) : ""}`
       : "";
     lines.push(
-      `${c.muted(sanitizeTerminal(this.device.id))} ${c.muted("›")} ${c.text(sanitizeTerminal(session?.name ?? "—"))} ${c.muted("›")} ${c.bold(`#${this.agentId ?? 1}`)}${gitChip}  ` +
+      `${c.muted(oneLine(this.device.id))} ${c.muted("›")} ${c.text(oneLine(session?.name ?? "—"))} ${c.muted("›")} ${c.bold(`#${this.agentId ?? 1}`)}${gitChip}  ` +
         `${STATE_COLOR[state](STATE_GLYPH[state] + " " + (this.busy() ? "working" : "idle"))}  ` +
         // Catalog miss renders "?" not "—" (R5 finding 5): unknown window ≠ no usage.
         `${c.muted("ctx")} ${ctx === undefined ? c.muted("?") : c.accent(rep("█", filled)) + c.muted(rep("░", barW - filled)) + " " + c.muted(`${ctx}%`)}`,
@@ -1377,7 +1377,7 @@ export class App {
     if (this.filter)
       lines.push(c.warn(` filter: ${this.filter} · ${rows.length}/${this.events.length} shown — esc clears`));
     const visible = h - lines.length;
-    for (const e of rows.slice(-visible)) lines.push(` ${c.muted(e.at)} ${c.accent(e.glyph)} ${c.text(sanitizeTerminal(e.text).slice(0, w - 18))}`);
+    for (const e of rows.slice(-visible)) lines.push(` ${c.muted(e.at)} ${c.accent(e.glyph)} ${c.text(oneLine(e.text).slice(0, w - 18))}`);
     return lines;
   }
 

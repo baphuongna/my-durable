@@ -14,3 +14,15 @@ const C0 = /[\u0000-\u0008\u000B-\u001F\u007F\u0080-\u009F]/g;
 export function sanitizeTerminal(s: string): string {
   return s.replace(ESC_SEQ, "").replace(C0, "");
 }
+
+/**
+ * R20 (run-6 h5): single-line chrome compose chokepoint. sanitizeTerminal
+ * strips escape sequences but KEEPS \n/\t by design (multi-line content is
+ * legitimate elsewhere) — a wire string interpolated into a one-line frame row
+ * must also collapse whitespace, or it splits its own row and forges chrome
+ * below it. Hoisted here from commands.ts so every compose site shares one
+ * definition.
+ */
+export function oneLine(text: string): string {
+  return sanitizeTerminal(text).replace(/\s+/g, " ");
+}

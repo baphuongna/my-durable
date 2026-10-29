@@ -179,7 +179,7 @@ export class AgentModel extends Emitter {
     this.capEntries(); // a hostile snapshot is as unbounded as a hostile stream
     this.live = snapshot.generation?.message ? structuredClone(snapshot.generation.message) : undefined;
     this.tools = new Map(
-      snapshot.tools.map((slot) => [
+      snapshot.tools.slice(-2_000).map((slot) => [ // R20 h4: hostile snapshot.tools was uncapped — same bound as every other path
         slot.callId,
         { name: slot.name, status: slot.status, output: slot.output ?? "" },
       ]),
@@ -302,6 +302,7 @@ export class AgentModel extends Emitter {
         if (output && "set" in output) tool.output = output.set;
         else if (output) tool.output = tool.output.slice(output.trimStart ?? 0) + (output.append ?? "");
         tool.status = "running";
+        this.capTools(); // R20 h4: orphan-creating path — unseen callIds must not grow the map either
         this.tools.set(event.toolCallId, tool);
         return;
       }
@@ -320,6 +321,7 @@ export class AgentModel extends Emitter {
           tool.status = "done";
           tool.result = { text: nestedResultText(event.result), isError: event.result.isError };
           tool.summary = { isError: event.result.isError, durationMs: event.result.durationMs };
+          this.capTools(); // R20 h4: orphan-creating path — unseen callIds must not grow the map either
           this.tools.set(event.toolCallId, tool);
           return;
         }
@@ -379,7 +381,14 @@ export class SessionModel extends Emitter {
     if (frame.type === "session") {
       this.state = { agents: frame.agents, tasks: frame.tasks, usage: frame.usage, ready: true };
     } else if (frame.type === "agents") this.state = { ...this.state, agents: frame.agents };
-    else if (frame.type === "tasks") this.state = { ...this.state, tasks: frame.tasks };
+    else if (frame.type === "tasks")
+      // R20 h5: wire task rows are unvalidated (SSE frames are JSON.parse casts)
+      // — a null/state-less element threw TypeError in backgroundTasks, which
+      // the statusbar runs EVERY frame. Drop malformed rows at the boundary.
+      this.state = {
+        ...this.state,
+        tasks: frame.tasks.filter((t) => !!t && typeof t === "object" && !!(t as { state?: unknown }).state),
+      };
     else if (frame.type === "usage") this.state = { ...this.state, usage: frame.usage };
     else return false;
     this.emit();
@@ -401,11 +410,11 @@ export class SessionModel extends Emitter {
   }
 
   foregroundBusy(agentId: number) {
-    return this.state.tasks.some((t) => !t.background && t.conversationId === agentId);
+    return this.state.tasks.some((t) => !!t && t?.background !== true && t.conversationId === agentId);
   }
 
   backgroundTasks(agentId?: number) {
-    return this.state.tasks.filter((t) => t.background && (agentId === undefined || t.conversationId === agentId));
+    return this.state.tasks.filter((t) => !!t && t?.background === true && (agentId === undefined || t.conversationId === agentId));
   }
 }
 

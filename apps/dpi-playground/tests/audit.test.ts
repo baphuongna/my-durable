@@ -227,6 +227,20 @@ test("scrub: tokens, codes, keys, Authorization, pair-URL — including substrin
     assert.ok(scrubSecrets(`GET /share/${shareTok}`).includes("/share/<redacted>"));
     assert.ok(!scrubSecrets(`GET /share/${shareTok}`).includes(shareTok));
     assert.equal(scrubSecrets("GET /share/intro"), "GET /share/intro");
+    // R20 (run-6 h2): the share rules are first-match — a decoy run, an
+    // over-long gap, a raw quote, or zero separation must not shield the
+    // real token. Anchor context redacts EVERY token-shaped run.
+    const T2 = "q5vG8Yb2rN1mZtK4xW7hP3jd"; // 24-char base64url, real mint shape
+    for (const p of [
+      `/share/${"a".repeat(20)}/${T2}`,
+      `/api/shares/${"a".repeat(20)}/${T2}`,
+      `/share/${"~".repeat(65)}${T2}`,
+      `/share/${"~".repeat(65)}/${T2}`,
+      `/share/"${T2}"`,
+      `/share${T2}`,
+    ])
+      assert.ok(!scrubSecrets(p).includes(T2), `${p} -> ${scrubSecrets(p)}`);
+    assert.equal(scrubSecrets("please share the transcript with bob"), "please share the transcript with bob");
     assert.ok(!scrubSecrets('{"code":"ABCD2345EF67"}').includes("ABCD2345EF67"));
     assert.ok(scrubSecrets('{"code":"ABCD2345EF67"}').includes("<code-redacted>"));
     assert.ok(

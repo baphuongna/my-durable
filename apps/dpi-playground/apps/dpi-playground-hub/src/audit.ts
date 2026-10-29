@@ -135,6 +135,26 @@ export function scrubSecrets(value: string): string {
     // percent characters (the optimizer would otherwise retry every split).
     const percentBearing = /(\/[^\s"'%]*%[^\s"']{0,64}\/)[^\s"']{0,64}?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
     out = out.replace(shareShaped, "$1<redacted>").replace(percentBearing, "$1<redacted>");
+    // R20 (run-6 h2): the two rules above are FIRST-SATISFYING-MATCH regexes —
+    // a requester-spelled decoy ≥20-char run ('/share/aaaa…/<tok>'), a >64-byte
+    // gap, a raw quote separator, or a zero-separator concatenation
+    // ('/share<tok>') spends the match on attacker bytes and leaves the real
+    // 24-char capability token behind. Once ANY share-shaped anchor is present
+    // the whole sample is capability context: redact EVERY token-shaped run.
+    // A run preceded by whitespace is exempt — the R19 M4 decision stands: a
+    // space is prose, not a capability separator (and an encoded space %20
+    // still leaks its token here: the digits glue into the run, which round 1
+    // redacts before any decode). The anchor needs a non-word char before
+    // "share" ("/share", "?shares="), so plain prose never triggers this.
+    if (/(?:^|[^\w\s])shares?/i.test(out)) {
+      // Keep the R19 M4 decision: a run whose FIRST char is preceded by
+      // whitespace is prose, not a capability — everything else in anchor
+      // context is redacted (callback sees the true run start; a lookbehind
+      // would just shift the match one char into the run).
+      out = out.replace(/[A-Za-z0-9_-]{20,}/g, (run, offset: number, whole: string) =>
+        offset > 0 && /\s/.test(whole[offset - 1]) ? run : "<redacted>",
+      );
+    }
     // Credential material without its prefix (slices, echo): 43-char base64url runs.
     out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
     // Pairing codes as standalone values ("code":"AB2C7DEF" / "ABCD2345EF67") but not ordinary words.

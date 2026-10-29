@@ -281,3 +281,34 @@ test("R19 cold-review: the tools map is bounded too (30k tool slots = OOM + quad
   assert.ok(size <= 2_001, `tools map must stay bounded, got ${size}`);
   assert.ok(elapsed < 10_000, `bounded per-frame cost, took ${Math.round(elapsed)}ms`);
 });
+
+test("R20 h4: snapshot.tools and BOTH orphan-creating paths are capped too", () => {
+  const snap = (tools: unknown[]) =>
+    ({ type: "snapshot", snapshot: { entries: [], tools, nestedTools: [], compactions: [], agent: {}, usage: { models: {}, tools: {} } }, inbox: [] }) as never;
+  const sized = (m: AgentModel) => (m as unknown as { tools: Map<string, unknown> }).tools.size;
+  const a = new AgentModel();
+  a.apply(snap([]));
+  a.apply(snap(Array.from({ length: 50_000 }, (_, i) => ({ callId: "s" + i, name: "n", status: "running", output: "" }))));
+  assert.ok(sized(a) <= 2_000, `hostile snapshot.tools must be sliced, got ${sized(a)}`);
+  const b = new AgentModel();
+  b.apply(snap([]));
+  for (let i = 0; i < 10_000; i++)
+    b.apply({ type: "batch", events: [{ type: "tool_execution_update", toolCallId: "u" + i, toolName: "x", output: { set: "" } }] } as never);
+  assert.ok(sized(b) <= 2_001, `update orphans must be capped, got ${sized(b)}`);
+  const c = new AgentModel();
+  c.apply(snap([]));
+  for (let i = 0; i < 10_000; i++)
+    c.apply({ type: "batch", events: [{ type: "tool_execution_end", toolCallId: "n" + i, toolName: "x", result: { taskId: 1, isError: false, durationMs: 1, structuredOutput: "r" } }] } as never);
+  assert.ok(sized(c) <= 2_001, `end-with-result orphans must be capped, got ${sized(c)}`);
+});
+
+test("R20 h5: a hostile tasks frame with null/state-less rows must not throw in the render path", () => {
+  const m = new SessionModel();
+  m.apply({ type: "tasks", tasks: [null] } as never);
+  assert.equal(m.backgroundTasks().length, 0, "null row dropped at the boundary");
+  assert.equal(m.foregroundBusy(1), false);
+  const m2 = new SessionModel();
+  m2.apply({ type: "tasks", tasks: [{ id: 1, kind: "x", conversationId: 1, background: false }] } as never);
+  assert.doesNotThrow(() => m2.backgroundTasks(1), "state-less row is dropped, not dereferenced");
+  assert.equal(m2.state.tasks.length, 0);
+});

@@ -2,7 +2,8 @@
 import type { SlashCommand } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import type { App } from "./app.ts";
-import { sanitizeTerminal } from "./sanitize.ts";
+import { sanitizeTerminal, oneLine } from "./sanitize.ts";
+export { oneLine };
 import { Panel, pickAgent, pickDevice, pickModel, pickSession, pickThinking } from "./pickers.ts";
 import { parsePairArgs, runPairing } from "./pairing.ts";
 import { gitStateSuffix } from "./views.ts";
@@ -117,16 +118,6 @@ const KEYS: [string, string][] = [
 ];
 
 /** Returns false when `text` is not a command, so the caller sends it to the agent. */
-/**
- * R19 (run-5 h2 + cold-review): every field of a wire row is untrusted at the
- * terminal boundary. sanitizeTerminal strips escape sequences but keeps
- * newlines and tabs, so single-line chrome collapses whitespace too — otherwise
- * a wire id can split the row it belongs to (visual spoof, no escape bytes).
- */
-export function oneLine(text: string): string {
-  return sanitizeTerminal(text).replace(/\s+/g, " ");
-}
-
 /** R19 (run-5 h2): every field of a TranscriptSearchHit is relay-borne — the
  * numeric `entry` included. The compose site used to interpolate it raw, so a
  * hostile hub/device could ride an OSC/CSI payload in a string-typed `entry`
@@ -264,7 +255,9 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
             if (!result.matches.length) lines.push(c.muted("No matches (names, folders, models or transcripts)."));
             for (const m of shown) {
               lines.push(
-                `${c.secondary(sanitizeTerminal(m.name))} ${c.muted(sanitizeTerminal(m.cwd))}${m.where.includes("transcript") ? " " + c.warn("◍ transcript") : ""}`,
+                // R20 h5: the match header is in the SAME panel as the fixed hit
+              // lines — a \n in a session name split the row above the hits.
+              `${c.secondary(oneLine(m.name))} ${c.muted(oneLine(m.cwd))}${m.where.includes("transcript") ? " " + c.warn("◍ transcript") : ""}`,
               );
               for (const hit of (m.hits ?? []).slice(0, 3))
                 lines.push(c.muted(findHitLine(m.name, hit)));
@@ -293,7 +286,7 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
               // through the chokepoint.
               // sanitizeTerminal keeps \n/\t, so a one-line row also collapses
               // whitespace — a wire id must not split the row it belongs to.
-              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${oneLine(String(t.id))} ${oneLine(String(t.kind))} ${c.muted(`agent #${oneLine(String(t.conversationId))} │ ${oneLine(String(t.state.status))}${t.state.phase ? `/${oneLine(String(t.state.phase))}` : ""}`)}`,
+              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${oneLine(String(t.id))} ${oneLine(String(t.kind))} ${c.muted(`agent #${oneLine(String(t.conversationId))} │ ${oneLine(String(t.state?.status ?? ""))}${t.state?.phase ? `/${oneLine(String(t.state.phase))}` : ""}`)}`,
             );
           lines.push("", c.muted("esc close"));
           return lines;
