@@ -95,6 +95,20 @@ function setPath(target: Record<string | number, unknown>, path: readonly (strin
   node[last] = String(node[last] ?? "") + delta;
 }
 
+/** run-7 D4-B: inbox items are wire JSON — non-array or null-element shapes
+ *  threw in every tasks-tab consumer; same discipline as safeTasks. */
+function safeInbox(items: unknown): AgentViewState["inbox"] {
+  return (Array.isArray(items) ? items : []).filter((x) => !!x && typeof x === "object") as AgentViewState["inbox"];
+}
+
+/** run-7 D3 F3: live message blocks append unbounded deltas between
+ *  message_start/message_end — keep a 256Ki flattened tail (the capToolOutput
+ *  principle, applied to the live accumulator). */
+const LIVE_TEXT_CAP = 256 * 1024;
+function capLiveText(text: string): string {
+  return text.length > LIVE_TEXT_CAP ? AgentModel.flatSlice(text.slice(text.length - LIVE_TEXT_CAP)) : text;
+}
+
 export function applyMessageChange(message: WireAssistantMessage, change: WireMessageChange): WireAssistantMessage {
   if (change.type === "message") return structuredClone(change.message);
   const content = [...message.content] as WireAssistantBlock[];
@@ -109,12 +123,12 @@ export function applyMessageChange(message: WireAssistantMessage, change: WireMe
     content[i] = structuredClone((change as { block: WireAssistantBlock }).block);
   } else if (change.type === "text_delta") {
     const block = content[i];
-    content[i] = { type: "text", text: (block?.type === "text" ? block.text : "") + change.delta };
+    content[i] = { type: "text", text: capLiveText((block?.type === "text" ? block.text : "") + change.delta) };
   } else if (change.type === "thinking_delta") {
     const block = content[i];
     content[i] = {
       type: "thinking",
-      thinking: (block?.type === "thinking" ? block.thinking : "") + change.delta,
+      thinking: capLiveText((block?.type === "thinking" ? block.thinking : "") + change.delta),
     };
   } else if (change.type === "toolcall_delta") {
     const block = structuredClone(content[i] ?? { type: "toolCall", id: "", name: "", arguments: {} });
@@ -155,17 +169,29 @@ export class AgentModel extends Emitter {
     switch (frame.type) {
       case "snapshot":
         this.reset(frame.snapshot);
-        this.state.inbox = frame.inbox;
+        this.state.inbox = safeInbox(frame.inbox);
         break;
       case "batch":
-        for (const event of frame.events) this.event(event);
+        // run-7 D4-B: non-iterable events threw inside apply(), which follow()
+        // turns into a reconnect loop re-receiving the same hostile frame.
+        for (const event of (Array.isArray(frame.events) ? frame.events : []).filter((e) => !!e && typeof e === "object"))
+          this.event(event);
         break;
       case "inbox":
-        this.state.inbox = frame.items;
+        this.state.inbox = safeInbox(frame.items);
         break;
-      case "doc":
-        this.state.docs = { ...this.state.docs, [frame.kind]: frame.value };
+      case "doc": {
+        // run-7 D3 F2: docs was the ONE wire-driven map with neither a count
+        // cap nor a byte cap — kind strings are device-chosen and values rode
+        // the 16MiB wire ceiling verbatim, forever (no eviction either).
+        const kinds: Record<string, unknown> = {
+          ...this.state.docs,
+          [String(frame.kind)]: this.capDocValue(frame.value),
+        };
+        const kept = Object.keys(kinds).slice(-64); // insertion order: newest 64 survive
+        this.state.docs = Object.fromEntries(kept.map((k) => [k, kinds[k]]));
         break;
+      }
       default:
         return false;
     }
@@ -195,11 +221,18 @@ export class AgentModel extends Emitter {
   }
 
   private reset(snapshot: WireSnapshotEvent) {
-    this.entries = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
+    // run-7 D4-B: snapshot carriers arrive as raw JSON.parse casts — a
+    // non-array (or null-element) shape threw in these map/filter chains and
+    // follow() re-delivered the hostile snapshot forever.
+    const snapEntries = (Array.isArray(snapshot.entries) ? snapshot.entries : []).filter((x) => !!x && typeof x === "object");
+    const snapTools = (Array.isArray(snapshot.tools) ? snapshot.tools : []).filter((x) => !!x && typeof x === "object");
+    const snapNested = (Array.isArray(snapshot.nestedTools) ? snapshot.nestedTools : []).filter((x) => !!x && typeof x === "object");
+    const snapCompactions = (Array.isArray(snapshot.compactions) ? snapshot.compactions : []).filter((x) => !!x && typeof x === "object");
+    this.entries = new Map(snapEntries.map((entry) => [entry.id, entry]));
     this.capEntries(); // a hostile snapshot is as unbounded as a hostile stream
     this.live = snapshot.generation?.message ? structuredClone(snapshot.generation.message) : undefined;
     this.tools = new Map(
-      snapshot.tools
+      snapTools
         .filter((slot) => typeof slot.callId === "string" && slot.callId.length <= 4_096 && typeof slot.name === "string" && slot.name.length <= 4_096) // R20 cold-3 M1: oversized ids/names are dropped, not retained
         .slice(-2_000)
         .map((slot) => [ // R20 h4: hostile snapshot.tools was uncapped — same bound as every other path
@@ -208,7 +241,7 @@ export class AgentModel extends Emitter {
         ]),
     );
     // Nested calls of running tools: they have no assistant entry, so the snapshot is the only source on attach.
-    for (const slot of snapshot.nestedTools.filter((x) => typeof x.callId === "string" && x.callId.length <= 4_096 && typeof x.name === "string" && x.name.length <= 4_096).slice(-2_000)) {
+    for (const slot of snapNested.filter((x) => typeof x.callId === "string" && x.callId.length <= 4_096 && typeof x.name === "string" && x.name.length <= 4_096).slice(-2_000)) {
       const existing = this.tools.get(slot.callId);
       this.tools.set(slot.callId, {
         name: slot.name,
@@ -225,7 +258,7 @@ export class AgentModel extends Emitter {
     this.state.agent = snapshot.agent;
     this.state.usage = snapshot.usage;
     this.state.retry = snapshot.generation?.retry;
-    this.state.compactions = snapshot.compactions.map((c) => c.taskId).slice(-64);
+    this.state.compactions = snapCompactions.map((c) => c.taskId).slice(-64);
     this.state.compactionFailure = snapshot.compactionFailure;
     this.state.ready = true;
   }
@@ -299,12 +332,43 @@ export class AgentModel extends Emitter {
 
   /** Store a committed entry. Resets (sent as message_end) and compactions start a new context head. */
   private commit(entry: WireEntry) {
-    this.entries.set(entry.id, entry);
+    this.entries.set(entry.id, this.capEntry(entry));
     if (entry.kind === "pi.reset" || entry.kind === "pi.compaction") {
       const head = entry.head ?? entry.id;
       for (const id of this.entries.keys()) if (id < head) this.entries.delete(id);
     }
     this.capEntries();
+  }
+
+  /** run-7 D3 F3: entries were count-capped but byte-uncapped (5000 × the
+   *  16MiB wire ceiling, joined again by toTranscript on every rebuild).
+   *  Assistant text/thinking blocks keep a flattened 256Ki TAIL + marker. */
+  private capEntry(entry: WireEntry): WireEntry {
+    // WireEntry.model is readonly WireMessage[]; assistant messages carry
+    // content blocks whose text/thinking strings are the retention vector.
+    if (!Array.isArray(entry.model)) return entry;
+    for (const msg of entry.model) {
+      const content = (msg as { content?: unknown }).content;
+      if (!Array.isArray(content)) continue;
+      for (const b of content) {
+        const block = b as { text?: unknown; thinking?: unknown };
+        for (const f of ["text", "thinking"] as const) {
+          const v = block[f];
+          if (typeof v === "string" && v.length > LIVE_TEXT_CAP) {
+            block[f] = AgentModel.flatSlice(v.slice(v.length - LIVE_TEXT_CAP)) + "…[truncated]";
+          }
+        }
+      }
+    }
+    return entry;
+  }
+
+  /** run-7 D3 F2: bound a wire doc value — over 64Ki serialized it becomes a
+   *  flattened 4Ki preview (the capArgs discipline). */
+  private capDocValue(value: unknown): unknown {
+    const text = safeStringify(value);
+    if (text.length > 64 * 1024) return { truncated: true, preview: AgentModel.flatSlice(text.slice(0, 4096)) };
+    return value;
   }
 
   private event(event: WireAgentEvent) {
@@ -363,6 +427,11 @@ export class AgentModel extends Emitter {
         });
         return;
       case "tool_execution_update": {
+        // run-7 D3 F1: the R20 cold-3 M1 4096-drop ran on the start path only;
+        // this orphan path stored the id as the MAP KEY and the name verbatim
+        // (16MiB × 2000 slots ceiling). Same drop discipline.
+        if (typeof event.toolCallId !== "string" || event.toolCallId.length > 4_096 || typeof event.toolName !== "string" || event.toolName.length > 4_096)
+          return;
         const tool = this.tools.get(event.toolCallId) ?? {
           name: event.toolName,
           status: "running" as const,
@@ -380,12 +449,15 @@ export class AgentModel extends Emitter {
         if (event.entry) {
           // A model-issued call renders from its result entry; drop the live slot so it is never duplicated.
           this.tools.delete(event.toolCallId);
-          this.entries.set(event.entry.id, event.entry);
-          this.capEntries();
+          this.commit(event.entry);
           this.capTools();
           return;
         }
         if (event.result) {
+          // run-7 D3 F1: same drop discipline as start/update (this path also
+          // stored id/name verbatim into the capped-by-count-only map).
+          if (typeof event.toolCallId !== "string" || event.toolCallId.length > 4_096 || typeof event.toolName !== "string" || event.toolName.length > 4_096)
+            return;
           // A nested call has no entry: keep the slot so its result still renders, exactly once.
           const tool = this.tools.get(event.toolCallId) ?? { name: event.toolName, status: "done" as const, output: "" };
           tool.status = "done";

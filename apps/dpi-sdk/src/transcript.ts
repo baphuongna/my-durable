@@ -274,6 +274,7 @@ export function sumUsage(state?: Pick<WireUsageState, "models"> | { models: Reco
     cacheWriteCost: 0,
   };
   for (const u of Object.values(state?.models ?? {})) {
+    if (!u || typeof u !== "object") continue; // run-7 D4-C: hostile usage frames can carry null entries
     total.tokens += u.totalTokens ?? u.input + u.output + u.cacheRead + u.cacheWrite;
     total.cost += u.cost?.total ?? 0;
     total.input += u.input ?? 0;

@@ -12,6 +12,11 @@ const C0 = /[\u0000-\u0008\u000B-\u001F\u007F\u0080-\u009F]/g;
 
 /** Neutralize terminal control sequences in an untrusted string before render/stdout. */
 export function sanitizeTerminal(s: string): string {
+  // run-7 D4-A: wire fields are typed strings only by CONVENTION — a hostile
+  // device's name/modelId/branch/error-message arrived as any JSON value and
+  // the bare s.replace() below killed the whole TUI render (no try/catch in
+  // pi-tui's render loop, no process.on handler installed).
+  if (typeof s !== "string") return String(s ?? "");
   return s.replace(ESC_SEQ, "").replace(C0, "");
 }
 

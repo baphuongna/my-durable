@@ -17,6 +17,17 @@ export interface GitEntry {
 
 const entries = new Map<string, GitEntry>();
 const inflight = new Map<string, Promise<void>>();
+/** run-7 D2: the module-global entry map had NO ceiling — a hostile device's
+ *  status-batch response (or a hostile tree's cwds) grew it forever until the
+ *  tab OOMs. Same discipline as the SDK caps: bounded slots, oldest evicted. */
+const MAX_GIT_ENTRIES = 2000;
+function capEntries() {
+  while (entries.size > MAX_GIT_ENTRIES) {
+    const oldest = entries.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    entries.delete(oldest);
+  }
+}
 
 /** A device's git surface is bounded by its start dirs (R21, index 400s): a
  *  project left over from OTHER start dirs answers 400 on the device, and
@@ -58,14 +69,28 @@ function settleEntry(e: GitEntry, s: GitStatus | { error: string } | undefined) 
 export async function ensureGitBatch(deviceId: string, paths: string[]) {
   const stale = paths.filter((p) => !fresh(gitEntry(deviceId, p), staleMsForBatch) && gitPathAllowed(deviceId, p));
   if (!stale.length) return;
-  try {
-    const map = await deviceClient(deviceId).gitStatusBatch(stale, { timeoutMs: 60_000 });
-    for (const [p, s] of Object.entries(map)) {
-      settleEntry(gitEntry(deviceId, p), s as GitStatus | { error: string });
+  // run-7 D2: (a) the device truncates at 50 paths — chunk so every stale
+  // path actually settles (beyond-50 paths used to ride every batch forever);
+  // (b) 10 chunks max per pass keeps a hostile tree from fanning requests.
+  for (let i = 0; i < stale.length && i < 500; i += 50) {
+    const chunk = stale.slice(i, i + 50);
+    try {
+      const map = (await deviceClient(deviceId).gitStatusBatch(chunk, { timeoutMs: 60_000 })) as Record<
+        string,
+        GitStatus | { error: string }
+      >;
+      // run-7 D2: settle ONLY the keys WE sent — the response map is hostile-
+      // device-controlled and used to be iterated wholesale, letting a device
+      // grow this tab's retained state with keys the FE never asked for.
+      for (const p of chunk) {
+        const s = map[p];
+        if (s !== undefined) settleEntry(gitEntry(deviceId, p), s);
+      }
+    } catch {
+      /* decorative: never surface batch failures */
     }
-  } catch {
-    /* decorative: never surface batch failures */
   }
+  capEntries();
 }
 const staleMsForBatch = 60_000;
 
@@ -135,7 +160,7 @@ export async function ensureGit(
   if (!gitPathAllowed(deviceId, cwd)) {
     settleEntry(e, { error: "outside the device's start dirs" });
     return;
-  }
+  }  capEntries();
   const running = inflight.get(k);
   if (running) return running;
   const first = e.status === null && !e.error;

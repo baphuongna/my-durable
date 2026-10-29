@@ -388,3 +388,49 @@ test("R20 cold-3 M3: hostile network trees (null agents/sessions/devices) never 
   }
   assert.ok(count >= 2, `sanitized tree renders, got ${count} nodes`);
 });
+
+test("run-7 D3 F1: oversized ids/names are dropped on update and end-result paths too", () => {
+  const m = new AgentModel();
+  m.apply({ type: "batch", events: [{ type: "tool_execution_update", toolCallId: "x".repeat(65536), toolName: "y".repeat(65536), output: { set: "" } }] } as never);
+  m.apply({ type: "batch", events: [{ type: "tool_execution_end", toolCallId: "z".repeat(65536), toolName: "w".repeat(65536), result: { taskId: 1, isError: false, durationMs: 1, structuredOutput: { ok: 1 } } }] } as never);
+  assert.equal((m as unknown as { tools: Map<string, unknown> }).tools.size, 0, "no oversized id/name slot survives either orphan path");
+});
+
+test("run-7 D3 F2: doc kinds are capped and oversized values become bounded previews", () => {
+  const m = new AgentModel();
+  for (let i = 0; i < 100; i++) m.apply({ type: "doc", kind: "k" + i, value: "v" } as never);
+  const kinds = Object.keys((m as unknown as { state: { docs: Record<string, unknown> } }).state.docs);
+  assert.equal(kinds.length, 64, "newest 64 kinds survive");
+  assert.ok(kinds.includes("k99") && !kinds.includes("k0"), "eviction is by insertion order");
+  m.apply({ type: "doc", kind: "big", value: "x".repeat(200 * 1024) } as never);
+  const big = (m as unknown as { state: { docs: Record<string, { truncated?: boolean; preview?: string }> } }).state.docs.big;
+  assert.equal(big.truncated, true);
+  assert.equal(big.preview?.length, 4096, "preview is a flattened 4Ki prefix");
+});
+
+test("run-7 D4-B: hostile snapshot/batch/inbox carriers never throw", () => {
+  const m = new AgentModel();
+  const ok = m.apply({ type: "snapshot", snapshot: { entries: {} as never, tools: [null] as never, nestedTools: [] as never, compactions: [] as never, agent: {} as never, usage: { models: {} }, inbox: "nope" as never } } as never);
+  assert.equal(ok, true);
+  assert.equal((m as unknown as { state: { ready: boolean } }).state.ready, true, "a hostile snapshot still reaches ready");
+  m.apply({ type: "batch", events: {} as never } as never);
+  m.apply({ type: "inbox", items: [null, 5, "x"] as never } as never);
+  const inbox = (m as unknown as { state: { inbox: unknown[] } }).state.inbox;
+  assert.equal(inbox.length, 0, "null/primitive inbox items are dropped, not stored");
+});
+
+test("run-7 D3 F3: entry text blocks are tail-capped at commit", () => {
+  const m = new AgentModel();
+  const big = "a".repeat(300 * 1024);
+  m.apply({ type: "batch", events: [{ type: "entry_appended", entry: { id: 1, kind: "assistant", model: [{ role: "assistant", content: [{ type: "text", text: big }] }] } }] } as never);
+  const entry = (m as unknown as { entries: Map<number, { model?: { content?: { text?: string }[] }[] }> }).entries.get(1);
+  const text = entry?.model?.[0]?.content?.[0]?.text ?? "";
+  assert.ok(text.length <= 256 * 1024 + 20, `entry text capped, got ${text.length}`);
+  assert.match(text, /\[truncated\]$/, "capped text carries the marker");
+});
+
+test("run-7 D4-C: sumUsage skips null usage entries", async () => {
+  const { sumUsage } = await import("../src/transcript.ts");
+  const t = sumUsage({ models: { x: null as never, y: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } } } as never);
+  assert.equal(t.tokens, 3, "null entries are skipped, honest ones summed");
+});

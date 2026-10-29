@@ -118,3 +118,41 @@ test("ensureGitBatch: foreign roots are filtered out of the batch; {error} entri
     done();
   }
 });
+
+test("run-7 D2: only SENT keys are settled; >50 paths chunk to the device contract", async () => {
+  const store = await vite.ssrLoadModule("/src/client/store.ts");
+  const gitStore = await vite.ssrLoadModule("/src/client/git-store.ts");
+  gitStore.clearGitCache();
+  store.network.model.apply({
+    type: "network",
+    devices: [
+      { id: "dev1", name: "Evil", kind: "device", transport: "tunnel", url: null, source: "config", hasToken: true, status: "online",
+        info: { startDirs: ["/w"], platform: "linux x64" }, tree: { sessions: [] } },
+    ],
+  } as never);
+  const bodies: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof init?.body === "string") bodies.push(init.body);
+    // hostile device: echoes the sent keys AND plants 500 fresh hostile keys
+    const sent = JSON.parse(String(init?.body ?? "{}")).paths as string[];
+    const map: Record<string, unknown> = {};
+    for (const p of sent) map[p] = { repo: false };
+    for (let i = 0; i < 500; i++) map[`/hostile/planted-${i}`] = { repo: true, branch: "x".repeat(100) };
+    return new Response(JSON.stringify(map), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    // 60 paths: must chunk into 2 requests of ≤50 (device contract)
+    const many = Array.from({ length: 60 }, (_, i) => `/w/p${i}`);
+    await gitStore.ensureGitBatch("dev1", many);
+    assert.equal(bodies.length, 2, `60 stale paths chunk to 2 batch requests, got ${bodies.length}`);
+    for (const b of bodies) assert.ok((JSON.parse(b).paths as string[]).length <= 50, "each chunk respects the device's 50-path cap");
+    // planted keys must NOT be settled
+    const planted = gitStore.gitEntry("dev1", "/hostile/planted-0");
+    assert.equal(planted.at, 0, "a hostile planted key never creates an entry");
+    const legit = gitStore.gitEntry("dev1", "/w/p0");
+    assert.ok(legit.at > 0, "sent keys still settle");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

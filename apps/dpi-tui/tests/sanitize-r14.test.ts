@@ -238,3 +238,10 @@ test("R20 h5: the oneLine chokepoint lives in sanitize.ts (hoisted) and commands
   assert.equal(fromCommands, fromSanitize, "one definition, one chokepoint");
   assert.ok(!fromSanitize("a\nb").includes("\n"));
 });
+
+test("run-7 D4-A: sanitizeTerminal/oneLine are total over non-string wire values", async () => {
+  const { sanitizeTerminal, oneLine } = await import("../src/sanitize.ts");
+  assert.equal(sanitizeTerminal(5 as never), "5");
+  assert.equal(oneLine({} as never), "[object Object]");
+  assert.equal(oneLine(null as never), "");
+});

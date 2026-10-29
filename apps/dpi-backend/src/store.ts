@@ -47,7 +47,7 @@ import {
 } from "../../dpi-sdk/src/transcript.js";
 import { ApiFault, invalid, isStorageBusy, isUnreadableStorage, notFound, storageBusyFault } from "./errors.js";
 import { searchHistory } from "./history.js";
-import { git, gitDirtyMarks, gitStatus, onGitDirty } from "./git.js";
+import { configureGitRootGuard, git, gitDirtyMarks, gitStatus, onGitDirty } from "./git.js";
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readdir, realpath, rename as renamePath, stat } from "node:fs/promises";
 import { deviceVitals, type DeviceVitals } from "./vitals.js";
@@ -671,6 +671,11 @@ export class Store {
     }
     // Start dirs are where new sessions begin; create any that do not exist yet.
     await Promise.all(options.startDirs.map((dir) => mkdir(dir, { recursive: true }).catch(() => {})));
+    // run-7 D1: every git effect (status disclosure, watcher, .gitignore write)
+    // must stay under the start dirs even when git's repo discovery walks up
+    // from a contained slice to an enclosing repo rooted OUTSIDE the sandbox.
+    // Installed before any gitStatus call below can seed projects from a walk-up.
+    configureGitRootGuard(async (root) => store.underRoots(root, await store.startDirRoots()));
     try {
       store.projects = await ProjectRegistry.open(store.projectsPath, {
         warn: (m) => process.emitWarning(`projects: ${m}`),

@@ -269,6 +269,18 @@ function ensureWatcher(root: string) {
   watchers.set(root, entry);
 }
 
+// R21/run-7 D1: git's repo discovery WALKS UP from the contained request path —
+// a start dir that is a slice of a bigger repo (monorepo, worktree-heavy
+// checkout) made git adopt an OUT-of-sandbox repo root, disclosing repo-wide
+// files/branches/worktrees/remoteUrl and (op "ignore") even WRITING .gitignore
+// outside the start dirs. The store installs this guard; git.ts itself never
+// learns the roots.
+type RepoRootGuard = (root: string) => Promise<boolean>;
+let repoRootAllowed: RepoRootGuard | undefined;
+export function configureGitRootGuard(fn: RepoRootGuard | undefined) {
+  repoRootAllowed = fn;
+}
+
 /** Test hook: the TTL cache would serve a pre-mutation answer. */
 export function clearGitStatusCache() {
   statusCache.clear();
@@ -302,6 +314,15 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     // the daemon's PATH (seen on a Windows Startup-launched device) must NOT
     // read as "not a repository" under a real repo.
     const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
+    // The discovered root is an ATTACKER-REACHABLE fact (any contained
+    // subdirectory of a repo reaches it): clamp before anything repo-wide runs.
+    if (repoRootAllowed && !(await repoRootAllowed(root))) {
+      out.repo = true; // repo presence only — no root, files, branches,
+      // worktrees, remoteUrl, subject, identity; no watcher on foreign ground.
+      statusCache.set(key, { at: Date.now(), s: out });
+      statusFailCache.delete(key);
+      return out;
+    }
     out.repo = true;
     out.root = root;
     // Everything after toplevel runs in PARALLEL — status is the long pole
@@ -626,6 +647,7 @@ export async function gitOp(
       if (lines.length > 50) throw Error("ignore takes at most 50 lines");
       for (const l of lines) if (!l.trim() || l.length > 200 || /[\n\r\0]/.test(l)) throw Error("bad ignore pattern");
       const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
+      if (repoRootAllowed && !(await repoRootAllowed(root))) throw Error("repo root lives outside the start dirs");
       await appendFile(join(root, ".gitignore"), `\n${lines.join("\n")}\n`, "utf8");
       return { text: `added to .gitignore: ${lines.join(", ")}` };
     }
