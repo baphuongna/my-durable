@@ -775,3 +775,11 @@ test("R19 cold-review M2: inet_aton spellings and IPv4-translating prefixes are 
   for (const host of ["8.8.8.8", "[64:ff9b::808:808]", "[::ffff:8.8.8.8]", "example.com", "0177.example.com"])
     assert.equal(isPrivateHost(host), false, `${host} is public`);
 });
+
+test("R19 cold-review: a trailing-dot FQDN cannot slip past the name checks", () => {
+  // URL.hostname keeps the root dot and getaddrinfo resolves "localhost." → ::1.
+  for (const host of ["localhost.", "foo.localhost.", "[2001::1]", "[2001:0:1::]"])
+    assert.equal(isPrivateHost(host), true, `${host} must be refused`);
+  for (const host of ["example.com.", "[2001:4860::1]"])
+    assert.equal(isPrivateHost(host), false, `${host} is public`);
+});

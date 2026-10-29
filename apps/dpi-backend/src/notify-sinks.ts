@@ -231,7 +231,9 @@ const nonEmptyString = (value: unknown): string | undefined =>
  * the check — the flag exists to stop the obvious cases, not to be a firewall.
  */
 export function isPrivateHost(hostname: string): boolean {
-  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  // R19 cold-review: a trailing dot is an FQDN root and resolves identically
+  // ("localhost." → ::1), so strip it before every name check.
+  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
   if (!host) return true;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   // R19 cold-review MAJOR 2: the resolver is inet_aton-shaped, so a lone number
@@ -292,7 +294,7 @@ export function isPrivateHost(hostname: string): boolean {
       }
       return false;
     }
-    if (/^2001:0{1,4}:/.test(host)) return true; // Teredo
+    if (/^2001:(?:0{1,4}|):/.test(host)) return true; // Teredo 2001:0000::/32, incl. the "2001::" compression
     return false;
   }
   return false;

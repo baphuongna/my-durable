@@ -185,7 +185,7 @@ export class AgentModel extends Emitter {
       ]),
     );
     // Nested calls of running tools: they have no assistant entry, so the snapshot is the only source on attach.
-    for (const slot of snapshot.nestedTools) {
+    for (const slot of snapshot.nestedTools.slice(-2_000)) {
       const existing = this.tools.get(slot.callId);
       this.tools.set(slot.callId, {
         name: slot.name,
@@ -214,6 +214,20 @@ export class AgentModel extends Emitter {
    * snapshot and tool_execution_end paths bypassed it — it is enforced in ONE
    * place, on every mutation.
    */
+  /**
+   * R19 cold-review follow-up: `tools` is the SDK's other unbounded map — 30k
+   * `tool_execution_start` events grew it to 30k slots AND cost ~140 s of CPU
+   * (rebuild → toTranscript is O(tools) per frame, so the stream is quadratic).
+   * Same hostile-peer class as the entries cap, so the same bound.
+   */
+  private capTools() {
+    while (this.tools.size > 2_000) {
+      const oldest = this.tools.keys().next().value;
+      if (oldest === undefined) break;
+      this.tools.delete(oldest);
+    }
+  }
+
   private capEntries() {
     while (this.entries.size > 5_000) {
       const oldest = this.entries.keys().next().value;
@@ -266,6 +280,7 @@ export class AgentModel extends Emitter {
       case "entry_appended":
         return this.commit(event.entry);
       case "tool_execution_start":
+        this.capTools(); // R19: bound before the insert adds one more
         this.tools.set(event.toolCallId, {
           name: event.toolName,
           status: "running",
@@ -296,6 +311,7 @@ export class AgentModel extends Emitter {
           this.tools.delete(event.toolCallId);
           this.entries.set(event.entry.id, event.entry);
           this.capEntries();
+          this.capTools();
           return;
         }
         if (event.result) {

@@ -812,7 +812,16 @@ export class TelegramBridge {
     // (A peer that ignores the lock entirely and lands its bytes inside the
     // single writeFile syscall below is a documented residual: without a kernel
     // compare-and-swap no in-process code can observe that interleaving.)
-    if (assertOwned) await assertOwned();
+    if (assertOwned) {
+      try {
+        await assertOwned();
+      } catch (error) {
+        // Cold-review minor: every other refusal marks the baseline bad; keep the
+        // symmetry so the next sync re-reads instead of trusting memory.
+        this.mainIsGood = false;
+        throw error;
+      }
+    }
     await this.io.writeFile(this.filePath, payload);
     await this.io.chmod(this.filePath, 0o600);
     // R18 (run-4 h3): the CAS above is separated from the write by several

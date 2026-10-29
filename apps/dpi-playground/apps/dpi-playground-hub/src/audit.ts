@@ -121,15 +121,19 @@ export function scrubSecrets(value: string): string {
     // literal prefix. Bare token-shaped values elsewhere (audit enums like
     // "foreign_subscription") stay readable.
     // Cold-review minors: the gap must not stop at 16 bytes (a 17-byte spelling
-    // leaked) and the no-slash branch must not treat whitespace as a separator
-    // ("/api/shares <word>" is readable prose, not a capability). The input is
-    // bounded (clipSample ≤200 chars), so a lazy any-byte gap stays linear.
+    // leaked), the no-slash branch must not treat whitespace as a separator
+    // ("(/api/shares <word>" is readable prose, not a capability), and the gap
+    // is BOUNDED at 64 bytes: an unbounded lazy gap combined with `[^\s"']*`
+    // before `%` is catastrophic backtracking on '/a%'-style input (measured
+    // 1.6 s at 600 chars, 2.4 s at 800). 64 bytes covers every real spelling
+    // and keeps the scan linear.
     const shareShaped =
-      /(\/[a-z0-9%]*shares?(?:\/|(?=[^a-z0-9_%\s]|$)))[^\s"']*?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
+      /(\/[a-z0-9%]*shares?(?:\/|(?=[^a-z0-9_%\s]|$)))[^\s"']{0,64}?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
     // Encoded spellings (/%73hare/) hide the literal "share" — any
     // percent-bearing path segment followed by a token-shaped run is treated
-    // the same.
-    const percentBearing = /(\/[^\s"']*%[^\s"']*\/)[^\s"']*?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
+    // the same. The leading run excludes `%` so the quantifier cannot nest on
+    // percent characters (the optimizer would otherwise retry every split).
+    const percentBearing = /(\/[^\s"'%]*%[^\s"']{0,64}\/)[^\s"']{0,64}?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/gi;
     out = out.replace(shareShaped, "$1<redacted>").replace(percentBearing, "$1<redacted>");
     // Credential material without its prefix (slices, echo): 43-char base64url runs.
     out = out.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, "<redacted>");
@@ -159,9 +163,9 @@ export function scrubSecrets(value: string): string {
   }
   // R19 cold-review MAJOR 5: decoding can RESURRECT encoded control characters
   // (a double-encoded newline survives into the sample), which would forge
-  // extra lines in the audit log.
-  // Scrub the sample to printable single-line text — audit rows are one line.
-  out = out.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, "\uFFFD");
+  // extra lines in the audit log. Scrub the sample to printable single-line
+  // text — audit rows are one line. U+2028/U+2029 are line breaks too.
+  out = out.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/g, "\uFFFD");
   return out;
 }
 

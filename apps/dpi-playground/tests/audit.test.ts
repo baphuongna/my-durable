@@ -605,3 +605,13 @@ test("R19 cold-review M4: prose after the shares word stays readable (no whitesp
   const prose = "GET /api/shares aaaaaabbbbbbccccccdddddd";
   assert.equal(scrubSecrets(prose), prose, "a space is not a capability separator");
 });
+
+test("R19 cold-review: percent-heavy input stays linear (the unbounded gap was a ReDoS)", async () => {
+  const { scrubSecrets } = await import("../apps/dpi-playground-hub/src/audit.ts");
+  for (const shape of ["/a%".repeat(200), "/s%a".repeat(200), "/a%x".repeat(200)]) {
+    const t0 = performance.now();
+    scrubSecrets(shape);
+    const ms = performance.now() - t0;
+    assert.ok(ms < 200, `scrub must stay linear on ${shape.length} chars (took ${Math.round(ms)}ms)`);
+  }
+});

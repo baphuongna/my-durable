@@ -223,13 +223,11 @@ test("R19 h2: /find hit lines sanitize the relay-borne numeric entry and counts"
   assert.equal(findHitLine("Session", { agent: "Main", entry: 12345, text: "hello" }), "  Session:Main #12345 — hello");
 });
 
-test("R19 cold-review M4: the /tasks overlay treats task ids as wire data too", async () => {
-  const src = await import("node:fs/promises").then((fs) =>
-    fs.readFile(new URL("../src/commands.ts", import.meta.url), "utf8"),
-  );
-  // Every scalar of a wire task must pass the chokepoint (a relay can type an id
-  // as a string carrying OSC sequences — same class as the /find `entry` fix).
-  assert.ok(!/\$\{t\.id\}/.test(src), "t.id must not be interpolated raw");
-  assert.ok(!/\$\{t\.conversationId\}/.test(src), "t.conversationId must not be interpolated raw");
-  assert.ok(src.includes("sanitizeTerminal(String(t.id))"), "ids go through sanitizeTerminal");
+test("R19 cold-review M4: oneLine collapses a newline-carrying wire id (row spoof)", async () => {
+  const { oneLine } = await import("../src/commands.ts");
+  const hostile = "12\n● fg #999 forged-task";
+  const out = oneLine(hostile);
+  assert.ok(!out.includes("\n"), `a single-line row must stay one line: ${JSON.stringify(out)}`);
+  assert.ok(!/\u001b/.test(oneLine("\u001b]52;c;x\u0007report")), "escapes stripped too");
+  assert.equal(oneLine("plain  task\tid"), "plain task id", "whitespace collapsed, text kept");
 });

@@ -270,3 +270,14 @@ test("R19 cold-review M3: the entry cap also holds for snapshots and tool result
     m2.apply({ type: "batch", events: [{ type: "tool_execution_end", toolCallId: `c${i}`, entry: { id: i + 1, conversationId: 1, kind: "pi.tool-result", model: [] } }] } as never);
   assert.ok(((m2.state as { entries?: unknown[] }).entries ?? []).length <= 5_000, "tool results feed the same cap");
 });
+
+test("R19 cold-review: the tools map is bounded too (30k tool slots = OOM + quadratic CPU)", () => {
+  const model = new AgentModel();
+  const t0 = performance.now();
+  for (let i = 0; i < 5_000; i++)
+    model.apply({ type: "batch", events: [{ type: "tool_execution_start", toolCallId: `c${i}`, toolName: "bash", args: {} }] } as never);
+  const elapsed = performance.now() - t0;
+  const size = (model as unknown as { tools: Map<string, unknown> }).tools.size;
+  assert.ok(size <= 2_001, `tools map must stay bounded, got ${size}`);
+  assert.ok(elapsed < 10_000, `bounded per-frame cost, took ${Math.round(elapsed)}ms`);
+});

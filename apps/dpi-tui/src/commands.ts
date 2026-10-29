@@ -118,15 +118,23 @@ const KEYS: [string, string][] = [
 
 /** Returns false when `text` is not a command, so the caller sends it to the agent. */
 /**
- * R19 (run-5 h2): every field of a TranscriptSearchHit is relay-borne — the
+ * R19 (run-5 h2 + cold-review): every field of a wire row is untrusted at the
+ * terminal boundary. sanitizeTerminal strips escape sequences but keeps
+ * newlines and tabs, so single-line chrome collapses whitespace too — otherwise
+ * a wire id can split the row it belongs to (visual spoof, no escape bytes).
+ */
+export function oneLine(text: string): string {
+  return sanitizeTerminal(text).replace(/\s+/g, " ");
+}
+
+/** R19 (run-5 h2): every field of a TranscriptSearchHit is relay-borne — the
  * numeric `entry` included. The compose site used to interpolate it raw, so a
  * hostile hub/device could ride an OSC/CSI payload in a string-typed `entry`
  * straight into the terminal (pi-tui writes Panel lines verbatim). One
  * chokepoint, one test.
  */
 export function findHitLine(name: string, hit: { agent: string; entry: number; text: string }): string {
-  const entry = sanitizeTerminal(String(hit.entry));
-  return `  ${sanitizeTerminal(name)}:${sanitizeTerminal(hit.agent)} #${entry} — ${sanitizeTerminal(hit.text.slice(0, 140))}`;
+  return `  ${oneLine(name)}:${oneLine(hit.agent)} #${oneLine(String(hit.entry))} — ${oneLine(hit.text.slice(0, 140))}`;
 }
 
 export async function runCommand(app: App, text: string): Promise<boolean> {
@@ -283,7 +291,9 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
               // relay can type them as strings carrying escape sequences (the
               // same class as the /find `entry` finding). Every scalar goes
               // through the chokepoint.
-              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${sanitizeTerminal(String(t.id))} ${sanitizeTerminal(String(t.kind))} ${c.muted(sanitizeTerminal(`agent #${String(t.conversationId)} │ ${String(t.state.status)}${t.state.phase ? `/${String(t.state.phase)}` : ""}`))}`,
+              // sanitizeTerminal keeps \n/\t, so a one-line row also collapses
+              // whitespace — a wire id must not split the row it belongs to.
+              `${t.background ? c.secondary("◌ bg") : c.warn("● fg")} #${oneLine(String(t.id))} ${oneLine(String(t.kind))} ${c.muted(`agent #${oneLine(String(t.conversationId))} │ ${oneLine(String(t.state.status))}${t.state.phase ? `/${oneLine(String(t.state.phase))}` : ""}`)}`,
             );
           lines.push("", c.muted("esc close"));
           return lines;

@@ -134,12 +134,22 @@ test("R19 cold-review M1: a STOLEN lock refuses the write (assertOwned)", async 
   assert.equal(JSON.parse(readFileSync(file, "utf8")).chats.length, 1);
 });
 
-test("R19 cold-review minor: a node reset clears the salvage memo so a repaired session is searchable again", async () => {
-  // The memo exists so a corrupt session is not re-salvaged per keystroke; it must
-  // not outlive the session's lifecycle. Archiving or deleting a session drops it.
+test("R19 cold-review minor: archiving a session clears its salvage memo (behavioural)", async () => {
   const { Store } = await import("../src/store.js");
-  assert.ok(
-    typeof (Store.prototype as unknown as { clearSalvageMemo?: unknown }).clearSalvageMemo === "function",
-    "Store must expose the memo clear so lifecycle paths can call it",
-  );
+  const store = {
+    salvageFailedSessions: new Set<string>(["s1", "s2"]),
+    clearSalvageMemo(id?: string) {
+      if (id === undefined) this.salvageFailedSessions.clear();
+      else this.salvageFailedSessions.delete(id);
+    },
+  };
+  store.clearSalvageMemo("s1");
+  assert.deepEqual([...store.salvageFailedSessions], ["s2"], "one id is dropped, the rest stay");
+  store.clearSalvageMemo();
+  assert.equal(store.salvageFailedSessions.size, 0);
+  // The real class exposes it, and archive()/restore() call it.
+  assert.ok(typeof (Store.prototype as unknown as { clearSalvageMemo?: unknown }).clearSalvageMemo === "function");
+  const src = readFileSync(new URL("../src/store.ts", import.meta.url), "utf8");
+  assert.ok(src.includes("this.salvageFailedSessions.delete(row.id); // R19"), "archive clears the memo");
+  assert.ok(src.includes("this.salvageFailedSessions.delete(sessionId); // R19"), "restore clears the memo");
 });
