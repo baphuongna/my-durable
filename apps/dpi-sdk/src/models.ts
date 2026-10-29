@@ -199,13 +199,16 @@ export class AgentModel extends Emitter {
     this.capEntries(); // a hostile snapshot is as unbounded as a hostile stream
     this.live = snapshot.generation?.message ? structuredClone(snapshot.generation.message) : undefined;
     this.tools = new Map(
-      snapshot.tools.slice(-2_000).map((slot) => [ // R20 h4: hostile snapshot.tools was uncapped — same bound as every other path
-        slot.callId,
-        { name: slot.name, status: slot.status, output: this.capToolOutput(slot.output ?? "") },
-      ]),
+      snapshot.tools
+        .filter((slot) => typeof slot.callId === "string" && slot.callId.length <= 4_096 && typeof slot.name === "string" && slot.name.length <= 4_096) // R20 cold-3 M1: oversized ids/names are dropped, not retained
+        .slice(-2_000)
+        .map((slot) => [ // R20 h4: hostile snapshot.tools was uncapped — same bound as every other path
+          slot.callId,
+          { name: slot.name, status: slot.status, output: this.capToolOutput(slot.output ?? "") },
+        ]),
     );
     // Nested calls of running tools: they have no assistant entry, so the snapshot is the only source on attach.
-    for (const slot of snapshot.nestedTools.slice(-2_000)) {
+    for (const slot of snapshot.nestedTools.filter((x) => typeof x.callId === "string" && x.callId.length <= 4_096 && typeof x.name === "string" && x.name.length <= 4_096).slice(-2_000)) {
       const existing = this.tools.get(slot.callId);
       this.tools.set(slot.callId, {
         name: slot.name,
@@ -257,7 +260,7 @@ export class AgentModel extends Emitter {
    * 607 MiB retained for 300 "bounded" slots). Round-tripping through bytes
    * detaches the slice from the parent.
    */
-  private static flatSlice(text: string): string {
+  static flatSlice(text: string): string { // module fns (nestedResultText) share it
     return Buffer.from(text, "utf8").toString("utf8");
   }
 
@@ -338,6 +341,15 @@ export class AgentModel extends Emitter {
       case "entry_appended":
         return this.commit(event.entry);
       case "tool_execution_start":
+        // R20 cold-3 M1: name/callId rode the same 16 MiB per-event ceiling as
+        // args — the engine's ids/names are tens of bytes, so oversized ones
+        // are hostile bytes and the slot is dropped, not stored verbatim.
+        if (
+          typeof event.toolCallId !== "string" || event.toolCallId.length > 4_096 ||
+          typeof event.toolName !== "string" || event.toolName.length > 4_096 ||
+          (event.parentToolCallId !== undefined && typeof event.parentToolCallId === "string" && event.parentToolCallId.length > 4_096)
+        )
+          return;
         this.capTools(); // R19: bound before the insert adds one more
         this.tools.set(event.toolCallId, {
           name: event.toolName,
@@ -527,7 +539,9 @@ export const agentKey = (deviceId: string, sessionId: string, agentId: number) =
 /** Nest agents under the agent they forked from or the agent whose task owns them. */
 export function agentTree(deviceId: string, session: SessionSummary, stale: boolean): TreeNode[] {
   const nodes = new Map<number, Extract<TreeNode, { type: "agent" }>>();
-  for (const agent of session.agents)
+  // R20 cold-3 M3: tree data is hub-relayed and unvalidated — a null element
+  // threw here on EVERY sidebar build (always-render). Same guard as safeAgents.
+  for (const agent of (Array.isArray(session.agents) ? session.agents : []).filter((a) => !!a && typeof a === "object"))
     nodes.set(agent.id, {
       type: "agent",
       key: agentKey(deviceId, session.id, agent.id),
@@ -571,7 +585,18 @@ export class NetworkModel extends Emitter {
   devices: NetworkDevice[] = [];
   apply(frame: Frame): boolean {
     if (frame.type !== "network") return false;
-    this.devices = frame.devices;
+    // R20 cold-3 M3: hub-relayed trees are unvalidated — null agent/session/
+    // device elements threw in FE renders (TreeRow reduce, sidebar tree) and
+    // in agentTree. Sanitize at the ONE ingestion point.
+    this.devices = (Array.isArray(frame.devices) ? frame.devices : [])
+      .filter((d) => !!d && typeof d === "object")
+      .map((d) => {
+        const sessions = Array.isArray(d.tree?.sessions) ? d.tree!.sessions.filter((x) => !!x && typeof x === "object") : [];
+        return {
+          ...d,
+          ...(d.tree ? { tree: { ...d.tree, sessions: sessions.map((x) => ({ ...x, agents: (Array.isArray(x.agents) ? x.agents : []).filter((a) => !!a && typeof a === "object") })) } } : {}),
+        };
+      });
     this.emit();
     return true;
   }
@@ -587,6 +612,17 @@ export class NetworkModel extends Emitter {
 function nestedResultText(result: WireNestedToolResult): string {
   const value = result.structuredOutput;
   if (value === undefined || value === null) return "";
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
+  const text = typeof value === "string" ? value : safeStringify(value);
+  // R20 cold-3 M2: the slice MUST be flattened — an unflattened V8 slice
+  // retains its <=16 MiB parent behind a 4 KiB result (the 607 MiB class).
+  return text.length > 4000 ? `${AgentModel.flatSlice(text.slice(0, 4000))}…` : text;
+}
+
+/** R20 cold-3 M1: stringify that never throws (cyclic structuredOutput). */
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
 }

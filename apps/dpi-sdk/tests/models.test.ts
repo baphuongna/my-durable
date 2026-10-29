@@ -367,3 +367,24 @@ test("R20 cold-2 M2: hostile session/agents frames drop null elements at the bou
   m.apply({ type: "agents", agents: [undefined, "x", { id: 2, name: "Fork", kind: "fork", parentId: 1 }] } as never);
   assert.equal(m.state.agents.length, 1, "primitives dropped, the object kept (the frame REPLACES the array)");
 });
+
+test("R20 cold-3 M1: oversized tool ids/names are dropped, not retained verbatim", () => {
+  const m = new AgentModel();
+  m.apply({ type: "batch", events: [{ type: "tool_execution_start", toolCallId: "x".repeat(16 * 1024 * 1024), toolName: "n", args: {} }] } as never);
+  m.apply({ type: "batch", events: [{ type: "tool_execution_start", toolCallId: "ok", toolName: "n".repeat(16 * 1024 * 1024), args: {} }] } as never);
+  assert.equal((m as unknown as { tools: Map<string, unknown> }).tools.size, 0, "oversized id/name slots dropped");
+  m.apply({ type: "batch", events: [{ type: "tool_execution_start", toolCallId: "fine", toolName: "bash", args: {} }] } as never);
+  assert.equal((m as unknown as { tools: Map<string, unknown> }).tools.size, 1, "normal slots kept");
+});
+
+test("R20 cold-3 M3: hostile network trees (null agents/sessions/devices) never throw in tree()", async () => {
+  const { NetworkModel } = await import("../src/models.ts");
+  const nm = new NetworkModel();
+  nm.apply({ type: "network", devices: [null, { id: "d", status: "online", tree: { sessions: [null, { id: "s", agents: [null, { id: 1, name: "M", kind: "root" }] }] } }] } as never);
+  let count = 0;
+  for (const d of nm.tree()) {
+    count++;
+    for (const sess of d.children) count += sess.children.length;
+  }
+  assert.ok(count >= 2, `sanitized tree renders, got ${count} nodes`);
+});

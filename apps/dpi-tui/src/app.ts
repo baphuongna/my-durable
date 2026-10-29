@@ -398,7 +398,13 @@ export class App {
 
   private async refreshSessions() {
     try {
-      this.sessions = (await this.client.tree()).sessions;
+      // R20 cold-3 M3: the device's tree is hostile-capable — null agent
+      // elements threw in find()/reduce() across every TUI consumer. Drop
+      // them at the ONE ingestion point.
+      this.sessions = (await this.client.tree()).sessions.map((s) => ({
+        ...s,
+        agents: (Array.isArray(s.agents) ? s.agents : []).filter((a) => !!a && typeof a === "object"),
+      }));
       this.deviceOnline = true;
       this.requestRender();
     } catch {
