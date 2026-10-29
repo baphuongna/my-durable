@@ -1331,7 +1331,7 @@ export class App {
       for (const [name, n] of [...counts.entries()].sort((a, b) => b[1] - a[1])) {
         const barW = 16;
         const filled = Math.round((n / max) * barW);
-        lines.push(` ${c.text(sanitizeTerminal(name).padEnd(14))} ${c.muted(rep("▮", filled))}${c.muted(rep("▯", barW - filled))} ${c.muted(String(n))}`);
+        lines.push(` ${c.text(oneLine(name).padEnd(14))} ${c.muted(rep("▮", filled))}${c.muted(rep("▯", barW - filled))} ${c.muted(String(n))}`);
       }
       if (!counts.size) lines.push(c.muted("  no tool calls yet"));
       return lines;

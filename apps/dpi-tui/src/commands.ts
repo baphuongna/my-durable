@@ -222,7 +222,7 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
         // Agent names ride the wire from device/hub (model-choosable for forks
         // and subagents) and pi-tui's Input renders its value verbatim — seed
         // it sanitized (run-4 h4).
-        const typed = await app.prompt("Agent name", current && current !== "main" ? sanitizeTerminal(current) : "");
+        const typed = await app.prompt("Agent name", current && current !== "main" ? oneLine(current) : ""); // R20 cold-2 minor: Input renders verbatim — one-line it
         value = (typed ?? "").trim();
         if (!value) return app.flash("rename cancelled"), true;
       }
@@ -277,7 +277,7 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       app.overlay(
         new Panel(() => {
           const tasks = app.session.state.tasks;
-          const lines = [c.bold(c.accent(`Live tasks in ${sanitizeTerminal(app.sessionSummary()?.name ?? "session")}`)), ""];
+          const lines = [c.bold(c.accent(`Live tasks in ${oneLine(app.sessionSummary()?.name ?? "session")}`)), ""]; // R20 cold-2 minor
           if (!tasks.length) lines.push(c.muted("No live tasks."));
           for (const t of tasks)
             lines.push(

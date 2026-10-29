@@ -295,6 +295,7 @@ export function findBundle(archiveDir: string, sessionId: string): string | null
 export function archivedTranscript(bundleDir: string, format: "markdown" | "json"): ArchivedTranscript {
   let db: DatabaseSync | undefined;
   const entries: WireEntry[] = [];
+  let truncated = 0;
   try {
     db = new DatabaseSync(join(bundleDir, DB_NAME), { readOnly: true });
     // R20 cold-1 M5: the transcript view read the WHOLE entries table per
@@ -311,7 +312,7 @@ export function archivedTranscript(bundleDir: string, format: "markdown" | "json
       const entry = parseRecord((row as { record?: unknown }).record);
       if (entry) entries.push(entry as unknown as WireEntry);
     }
-    if (total > cap) (entries as unknown as { truncated?: number }).truncated = total - cap;
+    truncated = Math.max(0, total - entries.length);
   } catch {
     throw new Error("archive bundle unreadable");
   } finally {
@@ -322,7 +323,12 @@ export function archivedTranscript(bundleDir: string, format: "markdown" | "json
     }
   }
   const items = toTranscript(entries);
-  return format === "markdown" ? { format: "markdown", text: toMarkdown(items) } : { format: "json", items };
+  // R20 cold-2 minor: the truncation marker used to be a dead array property —
+  // surface it in the rendered text the viewer actually reads.
+  const notice = truncated > 0 ? `> Showing the newest ${entries.length} entries — ${truncated} older entries truncated.
+
+` : "";
+  return format === "markdown" ? { format: "markdown", text: notice + toMarkdown(items) } : { format: "json", items };
 }
 
 /**

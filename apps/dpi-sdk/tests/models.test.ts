@@ -340,3 +340,30 @@ test("R20 cold-1 M3: the session frame validates tasks/agents too ({} / null mus
   assert.doesNotThrow(() => m.apply({ type: "tasks", tasks: null } as never));
   assert.equal(m.state.tasks.length, 0, "tasks:null degrades to empty");
 });
+
+test("R20 cold-2 M1: oversized args become a bounded preview (not verbatim retention)", () => {
+  const m = new AgentModel();
+  const blob = "x".repeat(2 * 1024 * 1024);
+  for (let i = 0; i < 50; i++)
+    m.apply({ type: "batch", events: [{ type: "tool_execution_start", toolCallId: "b" + i, toolName: "x", args: { blob } }] } as never);
+  const tools = (m as unknown as { tools: Map<string, { args?: { truncated?: boolean; preview?: string } }> }).tools;
+  for (const slot of tools.values()) {
+    assert.equal(slot.args?.truncated, true, "oversized args marked truncated");
+    assert.ok((slot.args?.preview?.length ?? 0) <= 4_096, `preview bounded, got ${slot.args?.preview?.length}`);
+    // verbatim retention check: the FULL 2 MiB blob must not be reachable
+    assert.ok((slot.args as { blob?: unknown }).blob === undefined, "the blob value itself is gone");
+  }
+  // small args pass through untouched
+  m.apply({ type: "batch", events: [{ type: "tool_execution_start", toolCallId: "small", toolName: "x", args: { a: 1 } }] } as never);
+  assert.deepEqual((tools.get("small")!.args as unknown), { a: 1 });
+});
+
+test("R20 cold-2 M2: hostile session/agents frames drop null elements at the boundary", async () => {
+  const { SessionModel } = await import("../src/models.ts");
+  const m = new SessionModel();
+  m.apply({ type: "session", agents: [null, { id: 1, name: "Main", kind: "root" }], tasks: [], usage: { models: {}, tools: {} } } as never);
+  assert.equal(m.state.agents.length, 1, "null agent dropped");
+  assert.doesNotThrow(() => m.lineage(1));
+  m.apply({ type: "agents", agents: [undefined, "x", { id: 2, name: "Fork", kind: "fork", parentId: 1 }] } as never);
+  assert.equal(m.state.agents.length, 1, "primitives dropped, the object kept (the frame REPLACES the array)");
+});

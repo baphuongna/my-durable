@@ -125,6 +125,16 @@ export function applyMessageChange(message: WireAssistantMessage, change: WireMe
 }
 
 /**
+ * R20 cold-2 M2: agents elements ride the same JSON.parse cast — [null]
+ * threw in lineage()/find() from the FE's always-render breadcrumb. Same
+ * boundary discipline as safeTasks.
+ */
+function safeAgents(value: unknown): AgentSummary[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((a): a is AgentSummary => !!a && typeof a === "object");
+}
+
+/**
  * R20 cold-1 M3: both tasks-bearing frame shapes (session + tasks) pass here
  * — non-array input ({} / null) crashed the old inline filter itself, and
  * null/state-less rows crashed the statusbar's every-frame deref.
@@ -201,7 +211,7 @@ export class AgentModel extends Emitter {
         name: slot.name,
         status: slot.status,
         output: this.capToolOutput(slot.output ?? ""),
-        args: slot.arguments,
+        args: this.capArgs(slot.arguments), // R20 cold-2 M1
         nested: { parentCallId: slot.parentCallId, parentTaskId: slot.parentTaskId, taskId: slot.taskId },
         ...(slot.summary ? { summary: slot.summary } : {}),
         ...(existing ?? {}),
@@ -238,7 +248,34 @@ export class AgentModel extends Emitter {
    */
   private static readonly MAX_TOOL_OUTPUT = 256 * 1024;
   private capToolOutput(text: string): string {
-    return text.length > AgentModel.MAX_TOOL_OUTPUT ? text.slice(-AgentModel.MAX_TOOL_OUTPUT) : text;
+    return text.length > AgentModel.MAX_TOOL_OUTPUT ? AgentModel.flatSlice(text.slice(-AgentModel.MAX_TOOL_OUTPUT)) : text;
+  }
+
+  /**
+   * R20 cold-2 M1 (probe follow-up): a V8 SlicedString RETAINS its parent —
+   * a 4 KiB preview of a 2 MiB JSON kept the whole 2 MiB alive (measured
+   * 607 MiB retained for 300 "bounded" slots). Round-tripping through bytes
+   * detaches the slice from the parent.
+   */
+  private static flatSlice(text: string): string {
+    return Buffer.from(text, "utf8").toString("utf8");
+  }
+
+  /**
+   * R20 cold-2 M1: `args` rode the same 16 MiB per-event ceiling as output —
+   * 2000 slots x 16 MiB of verbatim args was a ~32 GiB retention path the
+   * output cap did not touch. Oversized args become a bounded preview.
+   */
+  private static readonly MAX_ARGS = 64 * 1024;
+  private capArgs(args: unknown): unknown {
+    if (args === undefined || args === null) return args;
+    try {
+      const text = JSON.stringify(args);
+      if (text.length <= AgentModel.MAX_ARGS) return args;
+      return { truncated: true, preview: AgentModel.flatSlice(text.slice(0, 4_096)) };
+    } catch {
+      return { truncated: true };
+    }
   }
 
   private capTools() {
@@ -306,7 +343,7 @@ export class AgentModel extends Emitter {
           name: event.toolName,
           status: "running",
           output: "",
-          args: event.args,
+          args: this.capArgs(event.args), // R20 cold-2 M1: bounded like output
           // A nested call names the call that made it; a model-issued call has no parent.
           ...(event.parentToolCallId !== undefined && event.parentTaskId !== undefined && event.taskId !== undefined
             ? { nested: { parentCallId: event.parentToolCallId, parentTaskId: event.parentTaskId, taskId: event.taskId } }
@@ -402,8 +439,8 @@ export class SessionModel extends Emitter {
     if (frame.type === "session") {
       // R20 cold-1 M3: the session frame is the FIRST frame every client gets
       // — its tasks/agents ride the same JSON.parse cast. One shared guard.
-      this.state = { agents: Array.isArray(frame.agents) ? frame.agents : [], tasks: safeTasks(frame.tasks), usage: frame.usage, ready: true };
-    } else if (frame.type === "agents") this.state = { ...this.state, agents: frame.agents };
+      this.state = { agents: safeAgents(frame.agents), tasks: safeTasks(frame.tasks), usage: frame.usage, ready: true };
+    } else if (frame.type === "agents") this.state = { ...this.state, agents: safeAgents(frame.agents) };
     else if (frame.type === "tasks")
       // R20 h5: wire task rows are unvalidated (SSE frames are JSON.parse casts)
       // — a null/state-less element threw TypeError in backgroundTasks, which
