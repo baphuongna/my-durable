@@ -84,7 +84,7 @@ test("R28 ui scale: the 6-band zoom curve, --uiz per band, compensated heights o
   assert.match(s, /\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;[\s\S]*?height: 42px;[\s\S]*?flex: 0 0 auto;/, "header is a pinned 42px flex row");
   assert.match(s, /max-height: calc\(55vh \/ 0\.82\)/, "inspector cap compensated ≤740");
   assert.match(s, /max-height: calc\(55vh \/ 0\.78\)/, "inspector cap compensated ≤550");
-  assert.match(s, /@supports not \(zoom: 2\)\s*\{\s*@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
+  assert.match(s, /@supports not \(zoom: 2\)\s*\{[\s\S]*?@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
   assert.match(s, /@media \(max-width: 550px\)\s*\{\s*:root\s*\{\s*font-size: 12\.5px;\s*\}\s*\}/, "rem fallback ≤550");
   assert.match(s, /text-size-adjust: 100%/, "Safari cannot re-inflate");
   assert.doesNotMatch(readFileSync(join(FE, "components/GraphPanel.vue"), "utf8"), /font:\s*[\d.]+px\//, "no px font shorthand");
@@ -107,7 +107,7 @@ test("R28 keyboard: visual-viewport shell, 16px inputs, resize meta", () => {
 test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed to wrap", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
   // the single compact row (user: tinh gọn chứ không lược tính năng)
-  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;\s*gap: 5px;\s*padding: 0 6px;\s*height: 42px;\s*min-height: 42px;\s*max-height: 42px;/, "one 42px pinned row");
+  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;\s*gap: 4px;\s*padding: 0 5px;\s*height: 42px;\s*min-height: 42px;\s*max-height: 42px;/, "one 42px pinned row");
   // history: three competing ≤740 .topbar rules (58px, 68px, wrap+auto) used to
   // fight over the cascade — the LAST one (wrap, auto height) ate a quarter of
   // the screen. Only the base and the compact row may size the mobile topbar.
@@ -119,9 +119,9 @@ test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed
   assert.doesNotMatch(s, /\.top-actions \.icon-button\s*\{\s*display:\s*none/, "bell/help/toggles stay visible");
   assert.doesNotMatch(s, /\.chip\.connection,\s*\.usage-chip\s*\{\s*display:\s*none/, "connection + usage chips stay visible");
   // compact sizing of every element that stays
-  assert.match(s, /\.brandmark\s*\{\s*width: 28px;\s*height: 16px;/, "smaller logo");
-  assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 116px;[^}]*text-overflow: ellipsis;/, "connection chip ellipsizes");
-  assert.match(s, /\.top-actions \.primary\.small\s*\{\s*padding: 0 8px;\s*min-height: 26px;/, "compact New session");
+  assert.match(s, /\.brandmark\s*\{\s*width: 24px;\s*height: 14px;/, "smaller logo");
+  assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 74px;[^}]*text-overflow: ellipsis;/, "connection chip ellipsizes");
+  assert.match(s, /\.top-actions \.primary\.small\s*\{\s*padding: 0 7px;\s*min-height: 26px;\s*gap: 2px;\s*font-size: 0\.75rem;/, "compact New session");
 });
 
 test("R28 body headers: the chat header matches the topbar, no stale offsets", () => {
@@ -136,4 +136,18 @@ test("R28 body headers: the chat header matches the topbar, no stale offsets", (
   assert.doesNotMatch(s, /top:\s*68px/, "no 68px offsets left");
   // the Details pane's own heading slims to match
   assert.match(s, /\.session-heading\s*\{\s*padding: 10px 14px 8px;/, "slim session heading");
+});
+
+test("R28 no-zoom engines: the fallback must not leak desktop sizes", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // engines without zoom apply no factor, so --uiz must collapse to 1 —
+  // otherwise the 16px-safe input rule rendered 16/0.78 ≈ 20px monsters
+  assert.match(s, /@supports not \(zoom: 2\)\s*\{\s*\/\*[^*]*\*\/\s*:root\s*\{\s*--uiz: 1;/, "--uiz collapses to 1 in the fallback");
+  // the topbar must NOT clip its own dropdowns (bell panel lives inside it)
+  const topbarBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.doesNotMatch(topbarBlock, /overflow:\s*hidden/, "topbar must not clip dropdown panels");
+  assert.match(topbarBlock, /flex-wrap: nowrap/, "single row is kept by nowrap + ellipsis, not clipping");
+  // the row fits 360px: small logo, small chips
+  assert.match(s, /\.brandmark\s*\{\s*width: 24px;\s*height: 14px;/, "24px logo");
+  assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 74px;/, "connection chip capped at 74px");
 });
