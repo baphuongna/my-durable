@@ -28,9 +28,21 @@ import {
 } from "../../../../dpi-sdk/src/protocol/limits.js";
 
 interface BrowserStream {
-  send(frame: MuxFrame): void;
+  /** run-8 U5: `preSerialized` lets the relay seam (follow) admit on and send
+ *  the SAME serialization — one stringify per inbound frame, not one per tab. */
+  send(frame: MuxFrame, preSerialized?: string): void;
   upstreams: Map<string, AbortController>;
 }
+
+/** run-8 U5: relay admission cap for device->browser frames — the B4
+ *  discipline (TREE_MAX_BYTES at the monitor seam) applied to EVERY frame the
+ *  mux forwards, so a hostile device cannot push ~16MiB agent-event frames
+ *  into per-tab stringify/copy work below the transport ceiling. */
+const RELAY_FRAME_CAP_BYTES = 1024 * 1024;
+/** Trees are legitimately larger (the device-scope tree path is bounded by its
+ *  own monitor-seam caps) — still far below the 16MiB transport ceiling so a
+ *  hostile device cannot drive ~16MiB parse/copy work per frame. */
+const RELAY_TREE_CAP_BYTES = 4 * 1024 * 1024;
 
 const sseBudget = new ByteBudget("hub-sse", HUB_BUFFER_BUDGET_BYTES);
 
@@ -155,8 +167,9 @@ export class StreamMux {
     const writer = pacedSseWriter(res, { budget: this.options.budget, onClose: cleanup });
     const stream: BrowserStream = {
       upstreams: new Map(),
-      send: (frame) => {
-        if (writer.write(`data: ${JSON.stringify(frame)}\n\n`) === "too-large") {
+      send: (frame, preSerialized) => {
+        const text = preSerialized ?? JSON.stringify(frame);
+        if (writer.write(`data: ${text}\n\n`) === "too-large") {
           stream.send({
             sub: frame.sub,
             frame: {
@@ -267,7 +280,27 @@ export class StreamMux {
         )) {
           if (!checkDeviceFrame(frame))
             throw new DpiError("invalid", "Invalid device stream frame");
-          stream.send({ sub: sub.key, frame });
+          // run-8 U5: admission bound at the relay seam — checkDeviceFrame is
+          // shape-only, so agent-event frames rode the ~16MiB transport
+          // ceiling into per-tab stringify (B4 capped TREE frames at the
+          // monitor seam only). Serialize ONCE here, admit on its byte size,
+          // and hand the same string to every tab.
+          const text = JSON.stringify({ sub: sub.key, frame });
+          const cap = frame.type === "tree" ? RELAY_TREE_CAP_BYTES : RELAY_FRAME_CAP_BYTES;
+          if (Buffer.byteLength(text) > cap) {
+            stream.send({
+              sub: sub.key,
+              frame: {
+                type: "fault",
+                error: {
+                  code: "invalid",
+                  message: `Device stream frame exceeds the relay cap (${cap} bytes)`,
+                },
+              },
+            });
+            continue;
+          }
+          stream.send({ sub: sub.key, frame }, text);
           if (frame.type === "hello") backoff.reset();
         }
         if (signal.aborted) return;

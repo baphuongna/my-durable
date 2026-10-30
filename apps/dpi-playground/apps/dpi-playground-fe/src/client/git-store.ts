@@ -109,8 +109,14 @@ export function wireGitAutoRefresh() {
       );
       if (!marks.length) continue;
       for (const key of [...entries.keys()]) {
-        const [devId, cwd] = key.split("::");
-        if (devId !== d.id || !cwd) continue;
+        // run-8 U4: decode at the FIRST '::' — a cwd containing '::' (legal
+        // POSIX bytes, device-controlled per R23) truncated the split() form at
+        // its own first '::', never refreshing the real entry and force-
+        // refreshing a phantom prefix entry on a matching prefix mark.
+        const sep = key.indexOf("::");
+        const devId = key.slice(0, sep);
+        const cwd = key.slice(sep + 2);
+        if (sep < 0 || !devId || devId !== d.id || !cwd) continue;
         const e = entries.get(key)!;
         if (!marks.some((m) => cwd === m.root || cwd.startsWith(m.root + "/") || cwd.startsWith(m.root + "\\"))) continue;
         if (e.loading || now - e.at < 4000) continue; // throttle: bursts coalesce

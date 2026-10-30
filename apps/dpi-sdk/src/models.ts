@@ -98,15 +98,55 @@ function setPath(target: Record<string | number, unknown>, path: readonly (strin
 }
 
 /** run-7 D4-B: inbox items are wire JSON — non-array or null-element shapes
- *  threw in every tasks-tab consumer; same discipline as safeTasks. */
+ *  threw in every tasks-tab consumer; same discipline as safeTasks.
+ *  run-8 U5: items also rode the ~16MiB frame ceiling VERBATIM (probe: a
+ *  1MiB InboxItem.content retained whole) — cap item count and per-item
+ *  content like every other retained wire string. */
+const INBOX_MAX_ITEMS = 128;
+const INBOX_ITEM_TEXT_CAP = 64 * 1024;
 function safeInbox(items: unknown): AgentViewState["inbox"] {
-  return (Array.isArray(items) ? items : []).filter((x) => !!x && typeof x === "object") as AgentViewState["inbox"];
+  const list = (Array.isArray(items) ? items : []).filter((x) => !!x && typeof x === "object") as AgentViewState["inbox"];
+  return list.slice(-INBOX_MAX_ITEMS).map((item) => {
+    const content = (item as { content?: unknown }).content;
+    if (typeof content === "string" && content.length > INBOX_ITEM_TEXT_CAP) {
+      return { ...item, content: Buffer.from(content.slice(0, INBOX_ITEM_TEXT_CAP), "utf8").toString("utf8") + "…[truncated]" } as AgentViewState["inbox"][number];
+    }
+    return item;
+  });
 }
 
 /** run-7 D3 F3: live message blocks append unbounded deltas between
  *  message_start/message_end — keep a 256Ki flattened tail (the capToolOutput
  *  principle, applied to the live accumulator). */
 const LIVE_TEXT_CAP = 256 * 1024;
+
+/** run-8 U5: notice strings rode the frame ceiling verbatim — bounded tail,
+ *  flat slice (V8 SlicedString retention), explicit marker. */
+const NOTICE_TEXT_CAP = 4 * 1024;
+function capNoticeText(text: string): string {
+  return text.length > NOTICE_TEXT_CAP
+    ? Buffer.from(text.slice(-NOTICE_TEXT_CAP), "utf8").toString("utf8") + "…[truncated]"
+    : text;
+}
+
+/** run-8 U5: the live assistant message cloned VERBATIM from message_start /
+ *  snapshot.generation bypassed every delta cap (probe: 1MiB text block
+ *  retained whole) — cap the text-bearing blocks at clone time. */
+function capLiveMessage(message: WireAssistantMessage): WireAssistantMessage {
+  const cloned = structuredClone(message);
+  const content = (cloned as { content?: unknown }).content;
+  if (!Array.isArray(content)) return cloned;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as { text?: unknown; thinking?: unknown };
+    if (typeof b.text === "string" && b.text.length > LIVE_TEXT_CAP)
+      b.text = capLiveText(b.text.slice(-LIVE_TEXT_CAP));
+    if (typeof b.thinking === "string" && b.thinking.length > LIVE_TEXT_CAP)
+      b.thinking = capLiveText(b.thinking.slice(-LIVE_TEXT_CAP));
+  }
+  return cloned;
+}
+
 function capLiveText(text: string): string {
   return text.length > LIVE_TEXT_CAP ? AgentModel.flatSlice(text.slice(text.length - LIVE_TEXT_CAP)) : text;
 }
@@ -251,7 +291,7 @@ export class AgentModel extends Emitter {
     const snapCompactions = (Array.isArray(snapshot.compactions) ? snapshot.compactions : []).filter((x) => !!x && typeof x === "object");
     this.entries = new Map(snapEntries.map((entry) => [entry.id, entry]));
     this.capEntries(); // a hostile snapshot is as unbounded as a hostile stream
-    this.live = snapshot.generation?.message ? structuredClone(snapshot.generation.message) : undefined;
+    this.live = snapshot.generation?.message ? capLiveMessage(snapshot.generation.message) : undefined;
     this.tools = new Map(
       snapTools
         .filter((slot) => typeof slot.callId === "string" && slot.callId.length <= 4_096 && typeof slot.name === "string" && slot.name.length <= 4_096) // R20 cold-3 M1: oversized ids/names are dropped, not retained
@@ -404,8 +444,7 @@ export class AgentModel extends Emitter {
         this.live = undefined;
         return;
       case "message_start":
-        if (event.message.role === "assistant")
-          this.live = structuredClone(event.message as WireAssistantMessage);
+        if (event.message.role === "assistant") this.live = capLiveMessage(event.message as WireAssistantMessage);
         return;
       case "message_update":
         if (!this.live)
@@ -516,7 +555,14 @@ export class AgentModel extends Emitter {
           : undefined;
         return;
       case "task_failed":
-        this.state.notices = [...this.state.notices.slice(-9), `${event.kind} failed: ${event.message}`];
+        // run-8 U5: kind/message rode the frame ceiling verbatim — 10 x 16MiB
+        // notices froze the FE tab (probe: notice[0].length === 1048592).
+        // Same discipline as capToolOutput: bounded tail, flat slice.
+        if (typeof event.kind !== "string" || event.kind.length > 64) return;
+        this.state.notices = [
+          ...this.state.notices.slice(-9),
+          `${event.kind} failed: ${capNoticeText(String(event.message ?? ""))}`,
+        ];
         return;
       default:
         return;

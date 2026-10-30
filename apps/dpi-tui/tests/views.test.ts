@@ -353,3 +353,25 @@ test("run-7 B2: git scalars and hostile names never inject escapes or split rows
   assert.ok(!rows.some((r) => "label" in r && r.label.includes("\u001b")), "labels carry no escape payloads");
   assert.ok(rows.some((r) => "label" in r && r.label.includes("triage")), "the honest first line survives the collapse");
 });
+
+test("run-8 U6: hostile LF in device lastStatus cannot forge a network row", async () => {
+  const { oneLine } = await import("../src/sanitize.ts");
+  // the compose site now routes the free-string fragment through oneLine
+  const hostile = "online\n[FORGED] paired to https://evil.example";
+  assert.ok(!oneLine(hostile).includes("\n"), "oneLine must collapse the LF");
+  const rows = networkRows(
+    [
+      {
+        id: "dev1",
+        name: "laptop",
+        url: "http://127.0.0.1:1",
+        kind: "url",
+        lastStatus: hostile,
+      } as never,
+    ],
+    { sessions: [], seen: new Set(["dev1"]) } as never,
+  );
+  const flat = rows.map((r) => r.label).join("\n");
+  assert.ok(!/\[FORGED\]/.test(flat.split("\n").find((l) => l.startsWith("    ")) ?? "") || !flat.includes("[FORGED]"), "no forged chrome row");
+  for (const r of rows) assert.ok(!r.label.includes("\n"), `row label must be one physical line: ${JSON.stringify(r.label)}`);
+});

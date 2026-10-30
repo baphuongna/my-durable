@@ -54,8 +54,15 @@ export function cacheKey(p: string, platform: NodeJS.Platform = process.platform
   return platform === "win32" ? trimmed.toLowerCase() : trimmed;
 }
 
-/** Same, for the `-- <paths...>` lists (stage/discard/commit/unstage/resolve). */
-const gitPaths = (paths: string[]): string[] => paths.map(gitPath);
+/** Same, for the `-- <paths...>` lists (stage/discard/commit/unstage/resolve).
+ *  run-8 U2: NUL/empty are refused for EVERY files-bearing op (commit-only
+ *  before) — with -z parsing the returned spellings are exact bytes, so the
+ *  parity check is load-bearing. */
+const gitPaths = (paths: string[]): string[] =>
+  paths.map((p) => {
+    if (typeof p !== "string" || p.includes("\0") || p === "") throw Error("bad file path");
+    return gitPath(p);
+  });
 
 /** Child-process options, exported so a test can assert the Windows console
  *  window stays hidden: a daemon that polls git must never flash a terminal. */
@@ -370,12 +377,12 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     const [branchP, headP, statusP, gitDirP, wlP, branchesP, numWorkP, numIdxP, mergeP, nameP, emailP, remoteP] = await Promise.allSettled([
       g(["branch", "--show-current"]),
       g(["log", "-1", "--pretty=%h%x09%s"]),
-      g(["--no-optional-locks", "status", "--porcelain=v1", "-b"], GIT_SLOW_TIMEOUT),
+      g(["--no-optional-locks", "status", "--porcelain=v1", "-z", "-b"], GIT_SLOW_TIMEOUT),
       g(["rev-parse", "--git-dir"]),
       g(["worktree", "list", "--porcelain"], GIT_SLOW_TIMEOUT),
       g(["for-each-ref", "refs/heads", "--format=%(refname:short)%09%(upstream:short)%09%(if)%(HEAD)%(then)1%(else)0%(end)"]),
-      g(["--no-optional-locks", "diff", "--numstat", "--no-renames"], GIT_SLOW_TIMEOUT),
-      g(["--no-optional-locks", "diff", "--numstat", "--cached", "--no-renames"]),
+      g(["--no-optional-locks", "diff", "--numstat", "-z", "--no-renames"], GIT_SLOW_TIMEOUT),
+      g(["--no-optional-locks", "diff", "--numstat", "-z", "--cached", "--no-renames"]),
       // MERGE_HEAD exists ⇔ a merge is waiting to be resolved.
       g(["rev-parse", "-q", "--verify", "MERGE_HEAD"]),
       g(["config", "user.name"]),
@@ -393,8 +400,14 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     }
     if (statusP.status === "rejected") throw statusP.reason;
     const status = statusP.value;
-    const lines = status.split("\n");
-    const head2 = lines[0] ?? "";
+    // run-8 U2: parse the -z stream (NUL-delimited, NEVER C-quoted). The
+    // v1 line form C-quotes control/backslash/non-ASCII names; stripping
+    // only the outer quotes handed the ESCAPED spelling to the FE, and its
+    // verbatim round-trip into stage/discard reported success while missing
+    // the real file (leader-probed: "discarded 1 file(s)" with the
+    // TAB-named file still modified).
+    const records = status.split("\0").filter(Boolean);
+    const head2 = records[0]?.startsWith("## ") ? records[0] : "";
     // "## main...origin/main [ahead 2, behind 1]" — split by hand: a lazy \S+?
     // ate the branch down to one letter.
     const info = head2.replace(/^## /, "");
@@ -407,10 +420,11 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
       out.ahead = Number(ab.match(/ahead (\d+)/)?.[1] ?? 0);
       out.behind = Number(ab.match(/behind (\d+)/)?.[1] ?? 0);
     }
-    // Per line — a ^-anchored regex on the joined blob only ever sees line 1.
-    const body = lines.slice(1).filter(Boolean);
+    // Per record — NUL-delimited, so an embedded newline can never forge a
+    // record boundary (the old line-form regex was per-line).
+    const body = records.filter((r) => !r.startsWith("## "));
     out.merge = mergeP.status === "fulfilled";
-    out.conflicts = count(body.join("\n"), /^(UU|AA|DD|AU|UA|DU|UD)/gm);
+    out.conflicts = body.filter((r) => /^(UU|AA|DD|AU|UA|DU|UD)/.test(r)).length;
     out.identity = {
       name: nameP.status === "fulfilled" ? nameP.value.trim() || undefined : undefined,
       email: emailP.status === "fulfilled" ? emailP.value.trim() || undefined : undefined,
@@ -419,8 +433,10 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     // ±n per file: worktree-vs-index numstat for unstaged paths, cached for staged.
     const numstat = (raw: string) => {
       const m = new Map<string, { a: number; d: number }>();
-      for (const l of raw.split("\n")) {
-        const mt = l.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
+      // run-8 U2: -z is NUL-delimited and unquoted (renames disabled, so no
+      // trailing original-path record). Paths may contain any byte but NUL.
+      for (const rec of raw.split("\0")) {
+        const mt = rec.match(/^(\d+|-)\t(\d+|-)\t([\s\S]+)$/);
         if (!mt) continue;
         m.set(mt[3]!, { a: mt[1] === "-" ? -1 : Number(mt[1]), d: mt[2] === "-" ? -1 : Number(mt[2]) });
       }
@@ -428,12 +444,18 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     };
     const workNum = numstat(numWorkP.status === "fulfilled" ? numWorkP.value : "");
     const idxNum = numstat(numIdxP.status === "fulfilled" ? numIdxP.value : "");
-    out.files = body.slice(0, 500).map((l) => {
-      const p = l.slice(3).replace(/^"|"$/g, "");
-      const staged = l[0] !== " " && l[0] !== "?";
+    out.files = [];
+    for (let i = 0; i < body.length && out.files.length < 500; i++) {
+      const l = body[i]!;
+      const x = l[0] ?? " ";
+      const y = l[1] ?? " ";
+      const p = l.slice(3);
+      // v1 -z rename/copy records carry the ORIGINAL path as the next record
+      if ((x === "R" || x === "C") && i + 1 < body.length) i++;
+      const staged = x !== " " && x !== "?";
       const n = staged ? idxNum.get(p) : workNum.get(p);
-      return { path: p, x: l[0] ?? " ", y: l[1] ?? " ", ...(n ? { a: n.a, d: n.d } : {}) };
-    });
+      out.files.push({ path: p, x, y, ...(n ? { a: n.a, d: n.d } : {}) });
+    }
     if (branchesP.status === "fulfilled")
       out.branches = branchesP.value
         .split("\n")
@@ -444,9 +466,11 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
           return { name: name ?? "", current: head === "1", upstream: upstream || undefined };
         })
         .filter((b) => b.name);
-    out.staged = count(body.join("\n"), /^[MADRC]/gm);
-    out.unstaged = count(body.join("\n"), /^ [MD]/gm);
-    out.untracked = count(body.join("\n"), /^\?\?/gm);
+    // run-8 U2: count PER RECORD — with -z a filename may contain a newline,
+    // so the old joined-text ^-anchored regexes could be forged by a name.
+    out.staged = body.filter((r) => /^[MADRC]/.test(r)).length;
+    out.unstaged = body.filter((r) => /^ [MD]/.test(r)).length;
+    out.untracked = body.filter((r) => /^\?\?/.test(r)).length;
     // In a linked worktree --git-dir is "<main>/.git/worktrees/<name>";
     // the main checkout is the .git's parent.
     const gitDir = (gitDirP.status === "fulfilled" ? gitDirP.value : "").trim();

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitStatus, gitOp, gitStatusBatch, clearGitStatusCache, gitDirtyMarks, type GitStatus } from "../src/git.ts";
@@ -314,5 +314,38 @@ test("git fs-watcher: a repo the UI looked at reports dirty when files change", 
   assert.ok(gitDirtyMarks().some((m) => m.root === root), `dirty marks: ${JSON.stringify(gitDirtyMarks())}`);
   const s2 = await gitStatus(root); // fresh, not the cached pre-change answer
   assert.ok(s2.files?.some((f) => f.path === "watched.txt"), "watcher must invalidate the status cache");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("run-8 U2: quoted-class filenames (TAB/backslash/non-ASCII) round-trip exactly — mutations hit the REAL file", async () => {
+  const root = repo(false);
+  const tabName = "a\tb.txt"; // real TAB — the C-quote class
+  const litName = "a\\tb.txt"; // literal backslash-t twin
+  writeFileSync(join(root, tabName), "tab\n");
+  writeFileSync(join(root, litName), "lit\n");
+  writeFileSync(join(root, "é.txt"), "accent\n");
+  sh("git", ["add", "."], { cwd: root });
+  sh("git", ["commit", "-m", "first"], { cwd: root });
+
+  writeFileSync(join(root, tabName), "tab-MODIFIED\n");
+  writeFileSync(join(root, "é.txt"), "accent-MODIFIED\n");
+  const st = await gitStatus(root);
+  const files = st.files ?? [];
+  const tab = files.find((f) => f.path === tabName);
+  const accent = files.find((f) => f.path === "é.txt");
+  assert.ok(tab, `TAB file must appear verbatim, got: ${JSON.stringify(files)}`);
+  assert.ok(accent, "non-ASCII file must appear verbatim");
+  assert.ok(!files.some((f) => f.path === litName && f.x !== "?"), "clean twin must not be listed");
+
+  const num = tab as { a?: number; d?: number };
+  assert.ok(typeof num.a === "number", `numstat must key on the -z spelling: ${JSON.stringify(tab)}`);
+
+  const r = await gitOp(root, "discard", { files: [tabName, "é.txt"] });
+  assert.match(r.text, /discarded/);
+  assert.equal(readFileSync(join(root, tabName), "utf8"), "tab\n", "discard must revert the REAL TAB-named file");
+  assert.equal(readFileSync(join(root, "é.txt"), "utf8"), "accent\n", "discard must revert the non-ASCII file");
+  assert.equal(readFileSync(join(root, litName), "utf8"), "lit\n", "twin file untouched");
+
+  await assert.rejects(() => gitOp(root, "stage", { files: ["bad\0path"] }), /bad file path/);
   rmSync(root, { recursive: true, force: true });
 });

@@ -82,7 +82,7 @@ import {
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, EXPORT_RAW_LIMIT_BYTES, type ZipEntry } from "./zip.js";
 import { salvageFailureNote, salvageSessionDb } from "./salvage.js";
-import { mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, rmSync, statSync, realpathSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 import { join, dirname, relative, resolve, sep } from "node:path";
@@ -816,7 +816,18 @@ export class Store {
       durableVersion: DURABLE_VERSION,
       packageVersion: PACKAGE_VERSION,
       startedAt: this.startedAt,
-      startDirs: this.startDirs,
+      // run-8 U4: report the REALPATH spelling — session cwds and the git/fs
+      // enforcement roots are realpath'd (startDirRoots), so a configured
+      // spelling with a symlink component (macOS /tmp -> /private/tmp, win
+      // junctions) made the FE advisory pre-check reject every session under
+      // it with a permanent, un-retryable error while the device answered 200.
+      startDirs: this.startDirs.map((d) => {
+        try {
+          return realpathSync(d);
+        } catch {
+          return d;
+        }
+      }),
       models: this.modelList,
       defaultModel: this.defaultModel(),
       provider: this.options.provider,

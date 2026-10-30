@@ -239,7 +239,7 @@ export function renderNetwork(
       const seen = d.lastSeenAt ? ageOf(d.lastSeenAt) : "never";
       label =
         `${dot} ${c.bold(row.label)}${row.current ? c.accent(" ▌") : ""} ${c.muted(`[${d.kind}]`)} ` +
-        `${c.muted(d.transport === "tunnel" ? "tunnel" : "lan")} ${c.muted(d.lastStatus === "online" ? seen : `${sanitizeTerminal(d.lastStatus)} · ${seen}`)}`;
+        `${c.muted(d.transport === "tunnel" ? "tunnel" : "lan")} ${c.muted(d.lastStatus === "online" ? seen : `${oneLine(d.lastStatus)} · ${seen}`)}`;
     } else {
       const selected = row.sessionId === opts.currentSessionId;
       const marker = selected ? c.accent("▌") : " ";

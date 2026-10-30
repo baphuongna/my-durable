@@ -697,7 +697,9 @@ export class DevicePairing {
         )
       ) {
         this.pending = undefined;
-        this.lastFailure = `${code}: ${message}`;
+        // run-8 U6: the hub controls this message; the TUI renders (and
+        // re-wraps) it every poll — bound it at the seam.
+        this.lastFailure = `${code}: ${String(message ?? "").slice(0, 400)}`;
         return;
       }
       await sleep(pollMs * 2, pending.abort.signal);

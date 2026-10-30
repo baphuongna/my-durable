@@ -16,7 +16,7 @@ import type { App } from "./app.ts";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Panel } from "./pickers.ts";
 import { c } from "./theme.ts";
-import { sanitizeTerminal } from "./sanitize.ts";
+import { oneLine } from "./sanitize.ts";
 
 export interface PairArgs {
   code?: string;
@@ -152,32 +152,36 @@ export function pairingViewLines(
   hubOrigin?: string,
 ): string[] {
   const lines: string[] = [c.bold(c.accent("Pair this device"))];
-  if (hubOrigin) lines.push(c.muted(`hub: ${sanitizeTerminal(hubOrigin)}`));
+  if (hubOrigin) lines.push(c.muted(`hub: ${oneLine(hubOrigin)}`));
   if (!status) {
-    lines.push(c.muted(sanitizeTerminal(note)));
+    lines.push(c.muted(oneLine(note)));
     return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
   }
-  lines.push(c.muted(sanitizeTerminal(`device: ${status.deviceName ?? status.deviceUid ?? "?"} · uid ${status.deviceUid ?? "?"}`)));
+  lines.push(c.muted(oneLine(`device: ${status.deviceName ?? status.deviceUid ?? "?"} · uid ${status.deviceUid ?? "?"}`)));
   lines.push("");
   lines.push(c.bold("key fingerprint (compare with the hub wizard):"));
-  for (const line of wrapFingerprint(status.fingerprint, width)) lines.push(`  ${c.secondary(sanitizeTerminal(line))}`);
+  for (const line of wrapFingerprint(status.fingerprint, width)) lines.push(`  ${c.secondary(oneLine(line))}`);
   lines.push("");
   if (status.pending) {
     lines.push(c.warn("Awaiting approval on the hub…"));
-    if (status.pending.note) lines.push(c.muted(`  ${sanitizeTerminal(status.pending.note)}`));
+    if (status.pending.note) lines.push(c.muted(`  ${oneLine(status.pending.note)}`));
   } else if (status.lastError) {
-    lines.push(c.err(sanitizeTerminal(describePairingError(status.lastError))));
+    // run-8 U6: the hub relays its own error.message here unbounded, and
+    // wrapTextWithAnsi SPLITS on LF — a hostile message forged panel rows
+    // right below the real TOFU fingerprint block (probe: 2 rows, one read
+    // "Paired to https://good.example (generation 9)").
+    lines.push(c.err(oneLine(describePairingError(status.lastError))));
     if (status.state === "paired")
-      lines.push(c.muted(sanitizeTerminal(`Existing pairing to ${status.hubOrigin} is unchanged.`)));
+      lines.push(c.muted(oneLine(`Existing pairing to ${status.hubOrigin} is unchanged.`)));
   } else if (status.state === "paired") {
-    lines.push(c.ok(sanitizeTerminal(`Paired to ${status.hubOrigin} (generation ${status.generation}).`)));
+    lines.push(c.ok(oneLine(`Paired to ${status.hubOrigin} (generation ${status.generation}).`)));
     lines.push(c.muted("The connector keeps the tunnel up; /pair again to re-pair."));
   } else if (status.state === "revoked") {
     lines.push(c.warn("Revoked on the hub. /pair CODE to pair again."));
   } else {
-    lines.push(c.muted(sanitizeTerminal(note)));
+    lines.push(c.muted(oneLine(note)));
   }
-  if (note && status.state !== "pairing") lines.push(c.muted(sanitizeTerminal(note)));
+  if (note && status.state !== "pairing") lines.push(c.muted(oneLine(note)));
   return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
 }
 

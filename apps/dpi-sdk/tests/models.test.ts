@@ -434,3 +434,25 @@ test("run-7 D4-C: sumUsage skips null usage entries", async () => {
   const t = sumUsage({ models: { x: null as never, y: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } } } as never);
   assert.equal(t.tokens, 3, "null entries are skipped, honest ones summed");
 });
+
+test("run-8 U5: task_failed / inbox / live clone are size-capped (verbatim frame-ceiling strings cannot be retained)", () => {
+  const m = new AgentModel();
+  const big = "x".repeat(1 << 20);
+  for (let i = 0; i < 12; i++) m.apply({ type: "batch", events: [{ type: "task_failed", kind: "spawner", message: big }] } as never);
+  assert.equal(m.state.notices.length, 10, "notice count cap");
+  assert.ok(m.state.notices[0]!.length < 8 * 1024, `notice text must be capped, got ${m.state.notices[0]!.length}`);
+  // oversized kind is dropped outright
+  m.apply({ type: "batch", events: [{ type: "task_failed", kind: "k".repeat(500), message: "m" }] } as never);
+  assert.equal(m.state.notices.length, 10, "oversized kind must not enqueue a notice");
+
+  m.apply({ type: "inbox", items: [{ id: "i1", content: big }] } as never);
+  assert.equal(m.state.inbox.length, 1);
+  assert.ok(((m.state.inbox[0] as { content?: string }).content ?? "").length < 130 * 1024, "inbox content must be capped");
+
+  m.apply({ type: "inbox", items: Array.from({ length: 500 }, (_, i) => ({ id: `i${i}`, content: "x" })) } as never);
+  assert.ok(m.state.inbox.length <= 128, `inbox item cap, got ${m.state.inbox.length}`);
+
+  m.apply({ type: "batch", events: [{ type: "message_start", message: { id: "a1", role: "assistant", content: [{ type: "text", text: big }] } }] } as never);
+  const live = (m as unknown as { live?: { content?: { text?: string }[] } }).live;
+  assert.ok((live?.content?.[0]?.text ?? "").length <= 256 * 1024, "live clone text must respect LIVE_TEXT_CAP");
+});

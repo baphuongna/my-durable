@@ -21,7 +21,7 @@ import type { App, DeviceRef } from "./app.ts";
 import { Picker } from "./pickers.ts";
 import { parsePairArgs, runPairing, type PairArgs } from "./pairing.ts";
 import { c } from "./theme.ts";
-import { sanitizeTerminal } from "./sanitize.ts";
+import { oneLine, sanitizeTerminal } from "./sanitize.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -277,8 +277,11 @@ export class WelcomePicker extends Picker {
 /** Open the welcome screen overlay. `notice` names an unreachable auto-connect. */
 export function showWelcome(app: App, opts: { notice?: string } = {}) {
   const devices = app.registry?.list() ?? [];
+  // run-8 U6: oneLine, not just sanitizeTerminal — a hostile device JSON
+  // error.message carries LFs, and truncateToWidth passes an embedded LF
+  // through inside ONE logical row (probe: forged row + cursor drift).
   const subtitle = opts.notice
-    ? c.err(sanitizeTerminal(opts.notice))
+    ? c.err(oneLine(opts.notice))
     : c.muted("This is the app — connect a device to get started:");
   let picked = false; // an action was chosen: closing the overlay is a step, not a quit
   app.overlay(
@@ -426,7 +429,7 @@ async function welcomeLocal(app: App) {
   const id = suggestDeviceId(probe.info.hostname, probe.info.name);
   stepPicker(
     app,
-    `Local backend: ${sanitizeTerminal(probe.info.name || probe.info.hostname || url)}`,
+    `Local backend: ${oneLine(probe.info.name || probe.info.hostname || url)}`,
     [{ value: "open", label: `Save as "${id}" and open`, description: `${url} │ token from DPI_TOKEN / backend.env` }],
     // local.token was read BEFORE a first boot may have written backend.env —
     // re-resolve, the file exists now.
@@ -454,7 +457,9 @@ function welcomeSwitch(app: App) {
 async function saveAndOpen(app: App, id: string, url: string, token: string, name?: string) {
   if (!app.registry) return app.flash("No registry — start with --url/--token.", true);
   try {
-    app.registry.upsert({ id, name: name || id, url, kind: "url", source: "ui", token });
+    // run-8 U6: the device-supplied name is persisted for EVERY later render —
+    // collapse and bound it at the write boundary, not per render site.
+    app.registry.upsert({ id, name: oneLine(name || id).slice(0, 128) || id, url, kind: "url", source: "ui", token });
   } catch (e) {
     app.flash((e as Error).message, true);
     return showWelcome(app);
