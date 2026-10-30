@@ -294,8 +294,11 @@ export class NetworkRegistry {
     const sets = ["last_status=?", "last_error=?"];
     const values: (string | number | null)[] = [patch.status, patch.error ?? null];
     if (patch.seenAt !== undefined) sets.push("last_seen_at=?"), values.push(patch.seenAt);
-    if (patch.info) sets.push("last_info_json=?"), values.push(JSON.stringify(patch.info));
-    if (patch.tree) sets.push("last_tree_json=?"), values.push(JSON.stringify(patch.tree));
+    // run-7 B4: device-authored JSON is untrusted — cap what a hostile device
+    // can rewrite into the registry row every 10s (the uiSet sibling caps UI
+    // state at 100k chars; the tree seam already degrades oversized frames).
+    if (patch.info) sets.push("last_info_json=?"), values.push(JSON.stringify(patch.info).slice(0, 64 * 1024));
+    if (patch.tree) sets.push("last_tree_json=?"), values.push(JSON.stringify(patch.tree).slice(0, 288 * 1024));
     this.db.prepare(`UPDATE devices SET ${sets.join(",")} WHERE id=?`).run(...values, id);
   }
 

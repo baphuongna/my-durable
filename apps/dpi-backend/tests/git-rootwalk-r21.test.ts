@@ -63,3 +63,44 @@ test("status from a contained slice must not disclose the enclosing repo (run-7 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a planted .git gitdir redirect cannot point ops at an outside repository (run-7 B3)", async () => {
+  const root = join(tmpdir(), `dpi-gitdir-${Date.now()}`);
+  const R = join(root, "outside-repo");
+  mkdirSync(R, { recursive: true });
+  sh(["init", "-b", "main", "-q"], R);
+  sh(["config", "user.email", "t@t"], R);
+  sh(["config", "user.name", "t"], R);
+  writeFileSync(join(R, "outside-secret.txt"), "classified\n");
+  sh(["add", "."], R);
+  sh(["commit", "-m", "base", "-q"], R);
+  const slice = join(root, "start", "slice");
+  mkdirSync(slice, { recursive: true });
+  writeFileSync(join(slice, ".git"), `gitdir: ${R}/.git\n`); // the redirect
+
+  const token = newToken();
+  const store = await Store.open({ dataDir: join(root, "data"), startDirs: [join(root, "start")], name: "gitdir-box", provider: "faux" });
+  const app = express();
+  app.use("/v1", bearerAuth(token), express.json({ limit: "256kb" }), v1(store));
+  app.use(errorMiddleware);
+  const server: Server = createServer(app);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const api = (path: string, init: RequestInit = {}) =>
+    fetch(`${base}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(init.headers ?? {}) } });
+  try {
+    const res = await api(`/v1/git/status?path=${encodeURIComponent(slice)}`);
+    assert.equal(res.status, 200);
+    const s = (await res.json()) as { repo: boolean; files?: { path: string }[] };
+    assert.equal(s.repo, true);
+    assert.equal((s.files ?? []).some((f) => f.path.includes("outside-secret")), false, "the redirected index must not disclose outside names");
+    const log = await api("/v1/git", { method: "POST", body: JSON.stringify({ op: "log", path: slice }) });
+    assert.equal(log.status, 400, "ops through the redirect are refused");
+    assert.match(((await log.json()) as { error: { message: string } }).error.message, /start dirs/);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+    await store.close().catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});

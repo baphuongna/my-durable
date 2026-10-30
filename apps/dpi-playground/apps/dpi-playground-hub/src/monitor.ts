@@ -11,6 +11,12 @@ import type {
   TunnelDiagnostics,
 } from "../../../../dpi-sdk/src/api.js";
 import { toPublic, type NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
+
+/** run-7 B4 admission bounds: device-authored status payloads are untrusted —
+ *  32 devices x 256KiB keeps the AGGREGATE network frame under the 16MiB
+ *  writer cap even when every paired device is hostile. */
+const TREE_MAX_BYTES = 256 * 1024;
+const TREE_MAX_SESSIONS = 2000;
 import { Backoff } from "../../../../dpi-sdk/src/protocol/backoff.js";
 import { MONITOR_BACKOFF_S } from "../../../../dpi-sdk/src/protocol/limits.js";
 
@@ -272,7 +278,7 @@ export class DeviceMonitor {
         if (device.deviceUid && device.deviceUid !== info.uid) {
           this.update(id, {
             status: "mismatch",
-            error: `${device.url} now answers as "${info.name}" (uid ${info.uid.slice(0, 8)}), not the device first seen there (uid ${device.deviceUid.slice(0, 8)})`,
+            error: `${device.url} now answers as "${String(info.name ?? "").slice(0, 200)}" (uid ${String(info.uid ?? "").slice(0, 8)}), not the device first seen there (uid ${String(device.deviceUid ?? "").slice(0, 8)})`,
           });
           await sleep(30_000, signal);
           continue;
@@ -294,13 +300,30 @@ export class DeviceMonitor {
           { path: "/v1/events", consumerId: `monitor:${id}` },
           signal,
         )) {
-          if (frame.type === "tree")
+          if (frame.type === "tree") {
+            // run-7 B4: the monitor seam had NO admission bound — a hostile
+            // device's ≤16MiB wire-legal tree was retained verbatim, persisted
+            // uncapped, and fanned out; aggregate network frames over the
+            // writer cap were REPLACED by faults, blinding every viewer's
+            // network view. Degrade oversized/hostile-shaped trees at the seam.
+            const sessions = Array.isArray(frame.tree?.sessions) ? frame.tree.sessions : [];
+            const size = JSON.stringify(frame.tree)?.length ?? 0;
+            if (size > TREE_MAX_BYTES || sessions.length > TREE_MAX_SESSIONS) {
+              this.update(id, {
+                status: "faulted",
+                error: `oversized tree frame (${size} bytes, ${sessions.length} sessions)`,
+                tree: undefined,
+                lastSeenAt: Date.now(),
+              });
+              continue;
+            }
             this.update(id, {
               status: "online",
               error: undefined,
               tree: frame.tree,
               lastSeenAt: Date.now(),
             });
+          }
         }
         if (signal.aborted) return;
         // The stream was live until now: that is the last time the device was seen.

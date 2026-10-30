@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import { agentTree, type TreeNode } from "../../dpi-sdk/src/models.ts";
-import { sanitizeTerminal } from "./sanitize.ts";
+import { oneLine, sanitizeTerminal } from "./sanitize.ts";
 import type { App } from "./app.ts";
 import { c, selectTheme } from "./theme.ts";
 
@@ -261,11 +261,14 @@ export async function pickSession(app: App) {
   const tree = await app.client.tree();
   const items: SelectItem[] = [
     { value: "+new", label: "＋ New session", description: `choose a directory on ${sanitizeTerminal(app.device.id)}` },
-    ...tree.sessions.map((s) => ({
-      value: s.id,
-      label: sanitizeTerminal(s.name),
-      description: `${sanitizeTerminal(s.cwd.split("/").slice(-2).join("/"))} │ ${s.agents.length} agent${s.agents.length === 1 ? "" : "s"}${s.busy ? " │ working" : ""}`,
-    })),
+    ...tree.sessions.map((s) => {
+      const agents = Array.isArray(s.agents) ? s.agents : [];
+      return {
+        value: s.id,
+        label: oneLine(String(s.name ?? "")),
+        description: `${oneLine(String(s.cwd ?? "").split("/").slice(-2).join("/"))} │ ${agents.length} agent${agents.length === 1 ? "" : "s"}${s.busy ? " │ working" : ""}`,
+      };
+    }),
   ];
   app.overlay(
     new Picker(`Sessions on ${sanitizeTerminal(app.device.id)}`, items, (item) => {
@@ -368,7 +371,7 @@ function chooseModel(app: App, current?: string) {
     const models = app.info.models;
     const picker = new Picker(
       `Model (${sanitizeTerminal(app.device.name)})`,
-      models.map((m) => ({ value: `${m.provider}/${m.id}`, label: sanitizeTerminal(m.name), description: `${sanitizeTerminal(m.tier)} │ ${sanitizeTerminal(m.provider)}` })),
+      models.map((m) => ({ value: `${m.provider}/${m.id}`, label: oneLine(String(m.name ?? "")), description: `${oneLine(String(m.tier ?? ""))} │ ${oneLine(String(m.provider ?? ""))}` })),
       (item) => {
         app.closeOverlay();
         done(models.find((m) => `${m.provider}/${m.id}` === item.value));
@@ -438,7 +441,7 @@ export function pickAgent(app: App) {
       rows.push({
         value: String(a.id),
         label: `${"  ".repeat(depth)}${icon} ${sanitizeTerminal(a.name)}${a.busy ? " ●" : ""}`,
-        description: [a.kind === "fork" ? `fork @ #${a.forkedAt}` : a.kind, a.background ? `${a.background} bg` : ""]
+        description: [a.kind === "fork" ? `fork @ #${oneLine(String(a.forkedAt ?? ""))}` : oneLine(String(a.kind ?? "")), a.background ? `${oneLine(String(a.background))} bg` : ""]
           .filter(Boolean)
           .join(" │ "),
       });

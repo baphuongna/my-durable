@@ -1229,7 +1229,7 @@ export class App {
     // the web shows a banner — the TUI used to show a healthy branch chip
     // while the repo was mid-merge with conflicts.
     const gitChip = g?.repo
-      ? `  ${c.muted("⎇")} ${c.text(oneLine(g.branch ?? g.head ?? ""))}${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0) ? c.warn(` ±${(g.staged ?? 0) + (g.unstaged ?? 0) + (g.untracked ?? 0)}`) : ""}${g.merge ? c.err(gitStateSuffix(g)) : g.detached ? c.warn(gitStateSuffix(g)) : ""}`
+      ? `  ${c.muted("⎇")} ${c.text(oneLine(String(g.branch ?? g.head ?? "")))}${(Number(g.staged) || 0) + (Number(g.unstaged) || 0) + (Number(g.untracked) || 0) ? c.warn(` ±${(Number(g.staged) || 0) + (Number(g.unstaged) || 0) + (Number(g.untracked) || 0)}`) : ""}${g.merge ? c.err(gitStateSuffix(g)) : g.detached ? c.warn(gitStateSuffix(g)) : ""}`
       : "";
     lines.push(
       `${c.muted(oneLine(this.device.id))} ${c.muted("›")} ${c.text(oneLine(session?.name ?? "—"))} ${c.muted("›")} ${c.bold(`#${this.agentId ?? 1}`)}${gitChip}  ` +

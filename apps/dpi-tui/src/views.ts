@@ -7,7 +7,7 @@ import type { SessionSummary } from "../../dpi-sdk/src/api.ts";
 import type { GitStatus } from "../../dpi-sdk/src/client.ts";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
 import { c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
-import { sanitizeTerminal } from "./sanitize.ts";
+import { oneLine, sanitizeTerminal } from "./sanitize.ts";
 
 export type View = "herd" | "network" | "agent" | "log";
 
@@ -68,7 +68,7 @@ export const sessionState = (s: SessionSummary): RowState =>
  * web's GitPanel has carried a merge banner all along. Mirrors the FE text.
  */
 export function gitStateSuffix(g: Pick<GitStatus, "merge" | "conflicts" | "detached">): string {
-  if (g.merge) return ` · merging (${g.conflicts ?? 0} conflicts)`;
+  if (g.merge) return ` · merging (${Number(g.conflicts) || 0} conflicts)`;
   if (g.detached) return " (detached)";
   return "";
 }
@@ -102,19 +102,19 @@ export function herdRows(sessions: SessionSummary[], filter = "", branchOf?: (cw
   const out: HerdRow[] = [];
   const groups = new Map<string, SessionSummary[]>();
   for (const s of kept) {
-    const key = basename(s.cwd);
+    const key = basename(String(s.cwd ?? ""));
     const list = groups.get(key) ?? [];
     list.push(s);
     groups.set(key, list);
   }
   for (const [dir, list] of groups) {
-    out.push({ kind: "group", label: sanitizeTerminal(dir) });
+    out.push({ kind: "group", label: oneLine(String(dir ?? "")) });
     for (const s of list)
       out.push({
         kind: "session",
-        label: sanitizeTerminal(s.name),
+        label: oneLine(String(s.name ?? "")),
         sessionId: s.id,
-        branch: branchOf ? sanitizeTerminal(branchOf(s.cwd) ?? "") || undefined : undefined,
+        branch: branchOf ? oneLine(String(branchOf(String(s.cwd ?? "")) ?? "")) || undefined : undefined,
       });
   }
   return out;
@@ -147,7 +147,7 @@ export function renderHerd(
   const cursorRow = rows[opts.cursor ?? 0];
   for (const row of rows) {
     if (row.kind === "group") {
-      const group = sessions.filter((s) => sanitizeTerminal(basename(s.cwd)) === row.label);
+      const group = sessions.filter((s) => oneLine(String(basename(String(s.cwd ?? "")) ?? "")) === row.label);
       const busy = group.filter((s) => s.busy).length;
       const header = `${c.muted("~/")}${c.text(row.label)}${c.muted("/")}  ${c.muted(`· ${group.length} agent${group.length === 1 ? "" : "s"} · ${busy} busy`)}`;
       // The cursor is drawn on headers too: a keypress must always be visible,
@@ -167,7 +167,7 @@ export function renderHerd(
     const branch = row.branch ? ` ${c.muted(`⎇ ${fit(row.branch, 10)}`)}` : "";
     let line =
       `${marker}${fit(selected ? c.bold(row.label) : row.label, cols.name - visibleWidth(branch))}${branch}  ${fit(state, cols.state)}` +
-      (showModel ? `  ${fit(c.muted(sanitizeTerminal(basename(s.model) || s.model)), cols.model)}` : "") +
+      (showModel ? `  ${fit(c.muted(oneLine(String((basename(String(s.model ?? "")) || s.model) ?? ""))), cols.model)}` : "") +
       `  ${fit(c.muted(agents), cols.agents)}`;
     if (showAge) line += `  ${fit(c.muted(ageOf(s.createdAt)), cols.age)}`;
     lines.push(atCursor && !selected ? c.inverse(fit(line, w)) : fit(line, w));
@@ -208,12 +208,12 @@ export function networkRows(devices: DeviceRow[], currentDeviceId: string, filte
       continue;
     out.push({
       kind: "device",
-      label: sanitizeTerminal(d.name || d.id),
+      label: oneLine(String(d.name || d.id)),
       deviceId: d.id,
       current: d.id === currentDeviceId,
     });
-    for (const s of d.lastTree?.sessions ?? [])
-      out.push({ kind: "session", label: sanitizeTerminal(s.name), deviceId: d.id, sessionId: s.id });
+    for (const s of (Array.isArray(d.lastTree?.sessions) ? d.lastTree!.sessions : []))
+      out.push({ kind: "session", label: oneLine(String(s.name ?? "")), deviceId: d.id, sessionId: s.id });
   }
   return out;
 }
@@ -283,7 +283,7 @@ export function renderStatusbar(
       : ["j/k move", "↵ open", "1-4 views", "⇥ tabs", "esc agent"];
   // Catalog miss degrades to "?" (R5 finding 5): "—" read as "no usage yet",
   // when it actually means the window is unknown — a different problem.
-  const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("?") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(sanitizeTerminal(opts.device), 18))}`;
+  const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("?") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(oneLine(String(opts.device ?? "")), 18))}`;
   const left = `${chip} ${keys.map((k) => c.muted(k)).join(c.muted(" • "))}`;
   const gap = Math.max(1, w - visibleWidth(left) - visibleWidth(right));
   return c.inverse(padTo(fit(`${left}${rep(" ", gap)}${right}`, w), w));
@@ -355,10 +355,10 @@ export function renderHerdPanel(
   const onDefault = defaultModel !== undefined && s.model === defaultModel;
   const lines = [
     c.muted(" OVERVIEW"),
-    ` ${c.bold(sanitizeTerminal(s.name))}`,
-    ` ${c.muted(sanitizeTerminal(basename(s.cwd)))} ${c.muted("·")} ${c.text(sanitizeTerminal(basename(s.model) || s.model))}${onDefault ? c.muted(" (default)") : ""}`,
+    ` ${c.bold(oneLine(String(s.name ?? "")))}`,
+    ` ${c.muted(oneLine(String(basename(String(s.cwd ?? "")) ?? "")))} ${c.muted("·")} ${c.text(oneLine(String((basename(String(s.model ?? "")) || s.model) ?? "")))}${onDefault ? c.muted(" (default)") : ""}`,
     git?.repo
-      ? ` ${c.muted("⎇")} ${c.text(sanitizeTerminal(git.branch ?? git.head ?? "?"))}${c.muted("±")}${c.text(String((git.staged ?? 0) + (git.unstaged ?? 0) + (git.untracked ?? 0)))}${git.ahead ? c.text(` ↑${git.ahead}`) : ""}${git.behind ? c.text(` ↓${git.behind}`) : ""}${git.worktreeOf ? c.muted(" · worktree") : ""}`
+      ? ` ${c.muted("⎇")} ${c.text(oneLine(String(git.branch ?? git.head ?? "?")))}${c.muted("±")}${c.text(String((Number(git.staged) || 0) + (Number(git.unstaged) || 0) + (Number(git.untracked) || 0)))}${Number(git.ahead) > 0 ? c.text(` ↑${Number(git.ahead)}`) : ""}${Number(git.behind) > 0 ? c.text(` ↓${Number(git.behind)}`) : ""}${git.worktreeOf ? c.muted(" · worktree") : ""}`
       : "",
     "",
     ` ${c.muted("state")}   ${STATE_COLOR[sessionState(s)](sessionState(s))}`,

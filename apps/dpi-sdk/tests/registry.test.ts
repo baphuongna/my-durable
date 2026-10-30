@@ -44,3 +44,21 @@ test("registry CRUD, validation, token privacy, uid learning and UI state", asyn
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("run-7 B4: persisted device JSON is capped (hostile trees cannot rewrite megabytes every 10s)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dpi-reg-cap-"));
+  const reg = new NetworkRegistry(join(dir, "network.sqlite"));
+  try {
+    reg.upsert({ id: "box", kind: "ssh", url: "http://box.local:4780", token, source: "config" });
+    const big: unknown[] = Array.from({ length: 4000 }, (_, i) => ({ id: "s" + i, name: "n".repeat(60) }));
+    reg.recordStatus("box", { status: "online", tree: { uid: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", name: "box", sessions: big as never, at: 2 } });
+    const persisted = (reg as unknown as { get: (id: string) => { lastTree?: unknown } }).get("box");
+    const len = JSON.stringify(persisted?.lastTree ?? {}).length;
+    assert.ok(len <= 288 * 1024 + 64, `persisted tree capped, got ${len}`);
+    reg.recordStatus("box", { status: "online", info: { big: "x".repeat(300_000) } as never });
+    const infoLen = JSON.stringify((reg as unknown as { get: (id: string) => { lastInfo?: unknown } }).get("box")?.lastInfo ?? {}).length;
+    assert.ok(infoLen <= 64 * 1024 + 64, `persisted info capped, got ${infoLen}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -337,3 +337,19 @@ test("ctx degrade: an unknown catalog window renders '?' in the statusbar and pa
   const panel = stripAnsi(renderHerdPanel(60, 24, s, undefined, "box-one").join("\n"));
   assert.match(panel, /ctx\s+\?/, `no '?' in the OVERVIEW panel:\n${panel}`);
 });
+
+test("run-7 B2: git scalars and hostile names never inject escapes or split rows", async () => {
+  const views = await import("../src/views.ts");
+  const osc = "\u001b]52;c,aGVsbG8=\u0007";
+  // C1: numeric scalars arriving as escape payloads are number-coerced away
+  const suffix = views.gitStateSuffix({ merge: true, conflicts: osc as never, detached: false });
+  assert.ok(!suffix.includes("\u001b"), "conflicts scalar cannot carry an escape");
+  assert.match(suffix, /0 conflicts/, "hostile scalar degrades to 0");
+  // C3: single-line labels collapse newlines (a split row forges chrome below it)
+  const rows = views.herdRows(
+    [{ id: "s1", name: "triage\n  ✗ repo compromised — run /git fix", cwd: "/w/a\nb", model: "m", provider: "p", createdAt: 0, dbPath: "", busy: false, agents: [] }] as never,
+  );
+  assert.ok(!rows.some((r) => "label" in r && r.label.includes("\n")), "labels are single-line");
+  assert.ok(!rows.some((r) => "label" in r && r.label.includes("\u001b")), "labels carry no escape payloads");
+  assert.ok(rows.some((r) => "label" in r && r.label.includes("triage")), "the honest first line survives the collapse");
+});

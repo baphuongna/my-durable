@@ -269,6 +269,23 @@ function ensureWatcher(root: string) {
   watchers.set(root, entry);
 }
 
+/** run-7 B3: TWO escapes exist past a contained request path — (1) discovery
+ *  WALKS UP to an enclosing repo rooted outside (show-toplevel escapes), and
+ *  (2) a planted .git GITDIR FILE (or core.worktree) points the effective
+ *  repository elsewhere: show-toplevel then names the sandbox dir while the
+ *  index/objects/status belong to the outside repo (leader-probed: ` D
+ *  outside-secret.txt` leaked through). BOTH the toplevel and the absolute
+ *  git dir must live under the start dirs. */
+async function assertRepoConfined(path: string): Promise<void> {
+  if (!repoRootAllowed) return;
+  const [topLevel, gitDir] = await Promise.all([
+    git(path, ["rev-parse", "--show-toplevel"]),
+    git(path, ["rev-parse", "--absolute-git-dir"]),
+  ]);
+  if (!(await repoRootAllowed(topLevel.trim())) || !(await repoRootAllowed(gitDir.trim())))
+    throw Error("repo root lives outside the start dirs");
+}
+
 // R21/run-7 D1: git's repo discovery WALKS UP from the contained request path —
 // a start dir that is a slice of a bigger repo (monorepo, worktree-heavy
 // checkout) made git adopt an OUT-of-sandbox repo root, disclosing repo-wide
@@ -315,8 +332,11 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     // read as "not a repository" under a real repo.
     const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
     // The discovered root is an ATTACKER-REACHABLE fact (any contained
-    // subdirectory of a repo reaches it): clamp before anything repo-wide runs.
-    if (repoRootAllowed && !(await repoRootAllowed(root))) {
+    // subdirectory of a repo reaches it): clamp before anything repo-wide
+    // runs. run-7 B3: the gitdir redirect variant names the SANDBOX dir as
+    // toplevel while the index belongs outside — both facts are checked.
+    const gitDirFact = (await git(path, ["rev-parse", "--absolute-git-dir"])).trim();
+    if (repoRootAllowed && (!(await repoRootAllowed(root)) || !(await repoRootAllowed(gitDirFact)))) {
       out.repo = true; // repo presence only — no root, files, branches,
       // worktrees, remoteUrl, subject, identity; no watcher on foreign ground.
       statusCache.set(key, { at: Date.now(), s: out });
@@ -534,6 +554,12 @@ export async function gitOp(
   prs?: { n: number; title: string; state: string; draft: boolean; branch: string; url: string }[];
 }> {
   const { ref, message, target, branch, files, create, staged, rebase, setUpstream, name, lines, method, body, n, side } = opts;
+  // run-7 B3 (extension of the D1 clamp): status/ignore were guarded, but every
+  // OTHER op spawns `git -C <contained>` whose EFFECTIVE worktree (a planted
+  // .git gitdir redirect or core.worktree) can sit outside the start dirs —
+  // reads would disclose outside content, writes would land outside. One
+  // rev-parse per op; refuse when the effective root escapes.
+  await assertRepoConfined(path);
   switch (op) {
     case "diff":
       return { text: await git(path, ["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
@@ -646,8 +672,8 @@ export async function gitOp(
       if (!lines?.length) throw Error("ignore needs pattern lines");
       if (lines.length > 50) throw Error("ignore takes at most 50 lines");
       for (const l of lines) if (!l.trim() || l.length > 200 || /[\n\r\0]/.test(l)) throw Error("bad ignore pattern");
+      await assertRepoConfined(path);
       const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
-      if (repoRootAllowed && !(await repoRootAllowed(root))) throw Error("repo root lives outside the start dirs");
       await appendFile(join(root, ".gitignore"), `\n${lines.join("\n")}\n`, "utf8");
       return { text: `added to .gitignore: ${lines.join(", ")}` };
     }
