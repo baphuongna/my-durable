@@ -120,18 +120,23 @@ const emit = defineEmits<{ newSession: [] }>();
       >
         <Bell :size="18" /><i v-if="unread" class="bell-dot">{{ unread > 9 ? "9+" : unread }}</i>
       </button>
-      <div v-if="bellOpen" class="notif-panel" @click.stop>
-        <header>
-          <b>Notifications</b>
-          <button class="icon-button" aria-label="Close notifications" @click="bellOpen = false">✕</button>
-        </header>
-        <p v-if="!notifications.length" class="hint">Nothing yet — events land here as they happen.</p>
-        <ul>
-          <li v-for="n in notifications" :key="n.id" :class="{ unread: !n.read }">
-            <span class="when">{{ when(n.at) }}</span><span>{{ n.text }}</span>
-          </li>
-        </ul>
-      </div>
+      <!-- Teleported: the mobile topbar scrolls horizontally, and a scroll
+           container always clips absolutely-positioned children — the panel
+           lives on <body> instead, pinned under the bar. -->
+      <Teleport to="body">
+        <div v-if="bellOpen" class="notif-panel" @click.stop>
+          <header>
+            <b>Notifications</b>
+            <button class="icon-button" aria-label="Close notifications" @click="bellOpen = false">✕</button>
+          </header>
+          <p v-if="!notifications.length" class="hint">Nothing yet — events land here as they happen.</p>
+          <ul>
+            <li v-for="n in notifications" :key="n.id" :class="{ unread: !n.read }">
+              <span class="when">{{ when(n.at) }}</span><span>{{ n.text }}</span>
+            </li>
+          </ul>
+        </div>
+      </Teleport>
       <button
         class="icon-button"
         title="How this works"
@@ -171,7 +176,7 @@ const emit = defineEmits<{ newSession: [] }>();
   background: var(--warn, #e5a50a); color: #000; border-radius: 8px; padding: 0 4px;
 }
 .notif-panel {
-  position: absolute; top: calc(100% + 6px); right: 8px; z-index: 80; width: 320px; max-height: 340px;
+  position: fixed; top: 48px; right: 6px; z-index: 80; width: 320px; max-height: 340px;
   overflow: auto; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 10px;
   padding: 10px 12px; box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
 }

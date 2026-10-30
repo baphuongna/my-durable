@@ -2088,12 +2088,20 @@ textarea.app-state-json {
     min-height: 42px;
     max-height: 42px;
     flex: 0 0 auto;
-    /* no overflow:hidden: it clipped the bell's dropdown panel — dropdowns
-       must escape the bar. The row stays single-line via nowrap + ellipsis. */
+    /* engines without zoom have no shrink factor, so the row can exceed the
+       screen: it scrolls horizontally instead (nothing hidden, nothing
+       wrapped, swipe to reach every control). The bell panel is teleported
+       to <body>, so no scroll container clips it. Scrollbars hidden. */
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: none;
+  }
+  .topbar::-webkit-scrollbar {
+    display: none;
   }
   .brand {
     gap: 4px;
-    min-width: 0;
+    flex-shrink: 0;
   }
   .brandmark {
     width: 24px;
@@ -2104,8 +2112,7 @@ textarea.app-state-json {
   .brand strong {
     font-size: 0.875rem;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex-shrink: 0;
   }
   .brand-separator,
   .brand > .muted,
@@ -2131,6 +2138,8 @@ textarea.app-state-json {
     gap: 3px;
     font-size: 0.6875rem;
     max-width: 74px;
+    min-width: 0;
+    flex-shrink: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3406,21 +3415,21 @@ select:focus {
       then resizes, so 100dvh follows); iOS never resizes its layout viewport,
       so main.ts measures visualViewport and feeds --vvh, which the shell
       heights above prefer over 100dvh. */
-@media (max-width: 1599px) {
-  input,
-  textarea,
-  select {
-    /* 1rem = the SAME rendered size as the surrounding text — the earlier
-       16px-rendered rule left inputs a third bigger than everything around
-       them (live: "input lớn, không đồng bộ"). */
-    font-size: 1rem !important;
-  }
-  /* iOS zooms the viewport when the FOCUSED control computes under 16px, so
-     16px is applied exactly while editing: computed 16 ≥ 16 → no auto-zoom,
-     and the typed text still renders through the ui zoom like everything else. */
-  input:focus,
-  textarea:focus,
-  select:focus {
-    font-size: 16px !important;
+/* Inputs carry their COMPONENT-designed rem sizes (composer, selects, git
+   fields…) — they scale with the type system like every other element, no
+   !important, no blanket override (a forced 1rem read bigger than the
+   designed sizes around it — live report). The ONE exception is iOS-only:
+   Safari zooms the viewport when a FOCUSED control computes under 16px, so
+   on iOS alone the focused control computes 16px while editing. `:root`
+   lifts specificity above scoped component styles WITHOUT !important, and
+   -webkit-touch-callout scopes it to iOS — Android never zooms on focus and
+   keeps its designed size even while typing. */
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 1599px) {
+    :root input:focus,
+    :root textarea:focus,
+    :root select:focus {
+      font-size: 16px;
+    }
   }
 }

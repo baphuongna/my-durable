@@ -85,21 +85,28 @@ test("R28 ui scale: the 6-band zoom curve, compensated heights on :root .shell",
   assert.doesNotMatch(readFileSync(join(FE, "components/GraphPanel.vue"), "utf8"), /font:\s*[\d.]+px\//, "no px font shorthand");
 });
 
-test("R28 keyboard: inputs ride the scale, 16px computed only while editing", () => {
+test("R28 keyboard: inputs keep their designed sizes, iOS-only 16px at focus, zero !important", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
+  // NO forced input font at all — components carry their own rem sizes and
+  // scale with the type system (a forced 1rem read bigger than the designed
+  // sizes around it — live report). Best practice per the user: no !important.
+  assert.equal(
+    [...s.matchAll(/font-size:[^;\n]*!important/g)].length,
+    0,
+    "style.css carries zero font-size !important",
+  );
+  // iOS alone zooms the viewport when a focused control computes under 16px:
+  // 16px at focus, scoped to iOS by -webkit-touch-callout, winning over scoped
+  // component styles via :root specificity — never !important
   assert.match(
     s,
-    /@media \(max-width: 1599px\)\s*\{\s*input,\s*textarea,\s*select\s*\{[\s\S]*?font-size: 1rem !important;/,
-    "inputs = 1rem, the same rendered size as the text around them",
+    /@supports \(-webkit-touch-callout: none\)\s*\{\s*@media \(max-width: 1599px\)\s*\{\s*:root input:focus,\s*:root textarea:focus,\s*:root select:focus\s*\{\s*font-size: 16px;/,
+    "iOS-only 16px at focus",
   );
-  assert.match(
-    s,
-    /input:focus,\s*textarea:focus,\s*select:focus\s*\{\s*font-size: 16px !important;/,
-    "16px computed exactly while editing (iOS reads it at focus → no auto-zoom)",
-  );
-  assert.doesNotMatch(s, /var\(--uiz/, "--uiz is gone (it existed only for the oversized input rule)");
+  // Android/Chrome: the layout viewport (dvh) follows the keyboard
   const html = readFileSync(join(FE, "../index.html"), "utf8");
-  assert.match(html, /interactive-widget=resizes-content/, "Android/Chrome resize the layout viewport for dvh");
+  assert.match(html, /interactive-widget=resizes-content/, "viewport meta opts into keyboard resize");
+  // iOS: visualViewport is measured and fed to the shell heights
   const main = readFileSync(join(FE, "main.ts"), "utf8");
   assert.match(main, /visualViewport/, "iOS: visualViewport is measured…");
   assert.match(main, /--vvh/, "…and fed to the shell heights");
@@ -110,6 +117,15 @@ test("R28 no-zoom engines: the fallback shrinks text and never leaks desktop siz
   assert.match(s, /@supports not \(zoom: 2\)\s*\{[\s\S]*?@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
   assert.match(s, /@media \(max-width: 550px\)\s*\{\s*:root\s*\{\s*font-size: 12\.5px;\s*\}\s*\}/, "rem fallback ≤550");
   assert.doesNotMatch(s, /var\(--uiz/, "no --uiz left to leak a desktop-size divide");
+  // no-zoom engines have no shrink factor: the toolbar scrolls horizontally
+  // (nothing hidden, nothing wrapped) and the bell panel is teleported to
+  // <body> so no scroll container can clip it
+  const tbBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(tbBlock, /overflow-x:\s*auto/, "the toolbar swipes horizontally instead of clipping");
+  assert.match(s, /\.topbar::-webkit-scrollbar\s*\{\s*display: none;/, "hidden scrollbar");
+  const topbar = readFileSync(join(FE, "components/TopBar.vue"), "utf8");
+  assert.match(topbar, /Teleport to="body"/, "the bell panel escapes the scroll container");
+  assert.match(topbar, /\.notif-panel\s*\{\s*position: fixed;/, "panel is viewport-pinned");
 });
 
 test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed to wrap", () => {
@@ -127,6 +143,8 @@ test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed
   const topbarBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
   assert.doesNotMatch(topbarBlock, /overflow:\s*hidden/, "topbar must not clip dropdown panels");
   assert.match(s, /\.brandmark\s*\{\s*width: 24px;\s*height: 14px;/, "24px logo");
+  assert.match(s, /\.brand\s*\{\s*gap: 4px;\s*flex-shrink: 0;\s*\}/, "the brand never collapses to nothing (the lost-text bug)");
+  assert.match(s, /\.brand strong\s*\{[^}]*flex-shrink: 0;/, "brand text never shrinks away");
   assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 74px;/, "connection chip capped at 74px");
   assert.match(s, /\.top-actions \.primary\.small\s*\{\s*padding: 0 7px;\s*min-height: 26px;\s*gap: 2px;\s*font-size: 0\.75rem;/, "compact New session");
 });
