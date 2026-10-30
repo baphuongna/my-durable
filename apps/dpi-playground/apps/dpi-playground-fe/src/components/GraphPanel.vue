@@ -191,7 +191,7 @@ async function add() {
   flex-direction: column;
   gap: 10px;
   padding: 4px 2px 12px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .graph {
   display: flex;
@@ -211,7 +211,7 @@ async function add() {
   margin-left: auto;
 }
 .graph .cwd {
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.7;
 }
 .tasks {
@@ -227,7 +227,7 @@ async function add() {
   align-items: baseline;
   gap: 6px;
   flex-wrap: wrap;
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .tasks .dot {
   width: 8px;
@@ -249,12 +249,12 @@ async function add() {
   font-weight: 600;
 }
 .tasks .deps {
-  font-size: 12px;
+  font-size: 0.75rem;
   opacity: 0.6;
 }
 .tasks .err {
   font-style: normal;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--warn, #e5a50a);
 }
 .tag.ok {
@@ -276,11 +276,11 @@ async function add() {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.85;
 }
 .add-form textarea {
-  font: 12.5px/1.5 ui-monospace, monospace;
+  font: 0.78125rem/1.5 ui-monospace, monospace;
   padding: 6px 8px;
   color: var(--fg);
   background: transparent;

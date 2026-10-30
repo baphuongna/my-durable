@@ -24,16 +24,16 @@
   min-width: 0;
 }
 .ext-head strong {
-  font-size: 16px;
+  font-size: 1rem;
 }
 .ext-head code {
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--secondary);
 }
 .ext-card > p {
   margin: 8px 0 0;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.5;
 }
 .ext-prompts {
@@ -50,7 +50,7 @@
 .ext-prompts li {
   display: grid;
   gap: 4px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .ext-prompts label {
   display: flex;
@@ -60,7 +60,7 @@
 }
 .ext-prompts code {
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .ext-prompts li > span {
   padding-left: 26px;
@@ -82,7 +82,7 @@
   white-space: pre-wrap;
   background: #180f10;
   border-radius: 6px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 /* Tools tab: tools the agent's tool filter removes (read only) fade out. */

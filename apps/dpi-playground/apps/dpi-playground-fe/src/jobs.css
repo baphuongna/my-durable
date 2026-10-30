@@ -45,7 +45,7 @@
 .job-run-titles h3 {
   margin: 2px 0 0;
   font-family: var(--font-title);
-  font-size: 19px;
+  font-size: 1.1875rem;
   font-weight: 750;
 }
 .job-run-eyebrow {
@@ -53,7 +53,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 12px;
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: 1.2px;
   color: var(--secondary);
 }
@@ -72,7 +72,7 @@
   padding: 4px 9px;
   border-radius: 5px;
   background: #352728;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .job-run-status i {
   width: 7px;
@@ -94,7 +94,7 @@
 }
 .job-run-about {
   margin: 12px 0 8px;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.55;
 }
 .job-run-meta {
@@ -102,7 +102,7 @@
   flex-wrap: wrap;
   gap: 6px 14px;
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--secondary);
 }
 .job-run-input,
@@ -140,7 +140,7 @@
   border: 1px solid #4a3638;
   border-radius: 999px;
   background: #241819;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .job-step-dot {
   display: grid;
@@ -150,7 +150,7 @@
   border-radius: 50%;
   background: #3a2a2c;
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .ph-done .job-chip {
   border-color: #3f6b52;
@@ -215,7 +215,7 @@
   padding: 9px 12px;
   list-style: none;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .job-phase summary::-webkit-details-marker {
   display: none;
@@ -238,7 +238,7 @@
 .job-phase-empty {
   margin: 0;
   padding: 0 12px 8px 34px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--secondary);
 }
 .job-steps {
@@ -251,7 +251,7 @@
 }
 .job-steps > li {
   display: block;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .job-steps summary,
 .job-step-line {
@@ -278,7 +278,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   background: #2c1e20;
   border-radius: 4px;
   padding: 1px 6px;
@@ -331,7 +331,7 @@
   white-space: pre-wrap;
   background: #180f10;
   border-radius: 5px;
-  font-size: 16px;
+  font-size: 1rem;
   color: #e6d7d8;
 }
 .job-step-link {
@@ -353,7 +353,7 @@
 }
 .job-approval p {
   margin: 6px 0 10px;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.5;
 }
 .job-approval-buttons {
@@ -369,7 +369,7 @@
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid #3c2b2d;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--secondary);
 }
 .job-run-foot span {
@@ -397,11 +397,11 @@
 }
 .job-def-head strong {
   margin-right: auto;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .job-def p {
   margin: 8px 0;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.5;
 }
 .job-chain {
@@ -419,7 +419,7 @@
   padding: 3px 9px 3px 3px;
   border: 1px solid #4a3638;
   border-radius: 999px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .job-chain li span {
   display: grid;
@@ -429,7 +429,7 @@
   border-radius: 50%;
   background: #3a2a2c;
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .job-chain li:not(:last-child)::after {
   content: "→";
@@ -443,7 +443,7 @@
 }
 .job-def-meta code {
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--secondary);
   overflow-wrap: anywhere;
 }
@@ -453,7 +453,7 @@
   align-items: center;
   gap: 6px 10px;
   margin-top: 10px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .job-def-last .text-button {
   margin-top: 0;
@@ -480,7 +480,7 @@
   border-left: 3px solid #5a3a3e;
   border-radius: 6px;
   background: #211617;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .task-row[data-task-kind="pi.tool"] {
   border-left-color: var(--accent);
@@ -491,7 +491,7 @@
 .task-row small {
   width: 100%;
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--secondary);
 }
 .task-row .text-button {
@@ -512,11 +512,11 @@
   align-items: baseline;
   flex-wrap: wrap;
   gap: 6px 8px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .context-numbers strong {
   font-family: var(--font-title);
-  font-size: 22px;
+  font-size: 1.375rem;
 }
 .context-pct {
   font-family: var(--font-mono);
@@ -592,7 +592,7 @@
   left: 50%;
   transform: translateX(-50%);
   white-space: nowrap;
-  font-size: 16px;
+  font-size: 1rem;
   font-family: var(--font-mono);
   color: var(--warn);
   pointer-events: none;
@@ -623,12 +623,12 @@
   gap: 4px;
   padding: 0;
   color: var(--warn);
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: 0;
 }
 .compaction-modal p {
   margin: 0 0 12px;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
 }
 .modal .context-toggle {
@@ -646,10 +646,10 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 4px 8px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .context-toggle small {
   width: 100%;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--secondary);
 }

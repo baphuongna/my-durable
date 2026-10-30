@@ -38,7 +38,7 @@
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 15px;
+  font-size: 0.9375rem;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 3px 10px;
@@ -96,7 +96,7 @@
   position: absolute;
   top: 2px;
   right: 2px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   min-width: 16px;
   height: 16px;
   line-height: 16px;
@@ -135,7 +135,7 @@
   justify-content: space-between;
   padding: 10px 12px 10px 16px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 0.875rem;
   letter-spacing: 1.6px;
   font-weight: 650;
 }
@@ -168,7 +168,7 @@
   padding: 3px 6px 3px calc(4px + var(--depth) * 16px);
   border-radius: 6px;
   cursor: pointer;
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: #e9e2e2;
   white-space: nowrap;
 }
@@ -211,7 +211,7 @@
 }
 .tree-row.device .name {
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .tree-row.session .name {
   font-weight: 600;
@@ -224,7 +224,7 @@
   color: var(--accent);
 }
 .tree-row .badge {
-  font-size: 12px;
+  font-size: 0.75rem;
   border: 1px solid #443738;
   border-radius: 4px;
   padding: 1px 5px;
@@ -233,7 +233,7 @@
 }
 .tree-row .meta,
 .tree-row .path {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -270,7 +270,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--muted);
 }
 .tree-row > .dot.work,
@@ -366,7 +366,7 @@
   color: var(--accent);
 }
 .crumb-kind {
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1;
   letter-spacing: 1.2px;
   text-transform: uppercase;
@@ -376,7 +376,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 600;
   line-height: 1.2;
   min-width: 0;
@@ -404,7 +404,7 @@
   align-items: center;
   gap: 8px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 0.875rem;
   margin: 8px 0 18px;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -447,7 +447,7 @@
 .dir-path input {
   flex: 1;
   font-family: var(--font-mono);
-  font-size: 14px !important;
+  font-size: 0.875rem !important;
 }
 .dir-list {
   max-height: 220px;
@@ -462,7 +462,7 @@
   justify-content: flex-start;
   padding: 6px 8px;
   border-radius: 5px;
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: #e9e2e2;
 }
 .dir-item:hover {
@@ -516,7 +516,7 @@
 }
 .offline-error {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 0.875rem;
   overflow-wrap: anywhere;
 }
 .offline-command {
@@ -530,7 +530,7 @@
   border: 1px solid var(--line);
 }
 .offline-command code {
-  font-size: 17px;
+  font-size: 1.0625rem;
   color: #fff;
 }
 .offline-actions {
@@ -660,16 +660,16 @@
 }
 .slash-menu code {
   color: var(--accent);
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .slash-args {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .slash-desc {
   margin-left: auto;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 0.875rem;
   text-align: right;
 }

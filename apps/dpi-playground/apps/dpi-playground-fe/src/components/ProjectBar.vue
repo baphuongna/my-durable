@@ -250,12 +250,12 @@ defineExpose({ reload: load });
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   letter-spacing: 0.06em;
   opacity: 0.6;
 }
 .project-hint {
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.6;
   display: inline-flex;
   align-items: center;
@@ -277,7 +277,7 @@ defineExpose({ reload: load });
   border-radius: 999px;
   background: none;
   color: var(--fg);
-  font-size: 14px;
+  font-size: 0.875rem;
   cursor: pointer;
 }
 .chip:hover {
@@ -298,12 +298,12 @@ defineExpose({ reload: load });
 }
 .chip-count {
   font-style: normal;
-  font-size: 11px;
+  font-size: 0.6875rem;
   opacity: 0.65;
   font-variant-numeric: tabular-nums;
 }
 .chip-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 0 5px;
   border-radius: 6px;
   border: 1px solid var(--line);

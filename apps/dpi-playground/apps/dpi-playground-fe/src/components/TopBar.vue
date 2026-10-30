@@ -164,10 +164,10 @@ const emit = defineEmits<{ newSession: [] }>();
 </template>
 
 <style scoped>
-.usage-chip { font-size: 12px; opacity: 0.8; margin-right: 6px; white-space: nowrap; }
+.usage-chip { font-size: 0.75rem; opacity: 0.8; margin-right: 6px; white-space: nowrap; }
 .bell-host, .icon-button:has(.bell-dot) { position: relative; }
 .bell-dot {
-  position: absolute; top: -4px; right: -4px; font-size: 9px; font-style: normal;
+  position: absolute; top: -4px; right: -4px; font-size: 0.5625rem; font-style: normal;
   background: var(--warn, #e5a50a); color: #000; border-radius: 8px; padding: 0 4px;
 }
 .notif-panel {
@@ -177,7 +177,7 @@ const emit = defineEmits<{ newSession: [] }>();
 }
 .notif-panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .notif-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.notif-panel li { display: flex; gap: 8px; font-size: 14px; opacity: 0.85; }
+.notif-panel li { display: flex; gap: 8px; font-size: 0.875rem; opacity: 0.85; }
 .notif-panel li.unread { opacity: 1; font-weight: 550; }
-.notif-panel .when { opacity: 0.6; font-size: 12px; min-width: 3ch; text-align: right; }
+.notif-panel .when { opacity: 0.6; font-size: 0.75rem; min-width: 3ch; text-align: right; }
 </style>

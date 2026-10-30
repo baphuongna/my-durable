@@ -5,6 +5,13 @@
   background: var(--bg);
   font-synthesis: none;
   font-size: 16px;
+  /* Desktop base. Every other font-size in the codebase is rem, so the
+     mobile knob below retunes the whole type scale from this one value.
+     100% stops mobile Safari's automatic text inflation, which fights a
+     deliberately dense layout. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Brand design tokens
   /* Brand design tokens (presentation layer).
      Palette per the UI brand spec — NEVER self-referential
      (a token defined in terms of itself is a cycle that collapses to unset;
@@ -128,7 +135,7 @@ h3 {
   font-family: var(--font-title);
 }
 h2 {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 650;
 }
 pre,
@@ -136,13 +143,13 @@ code {
   font-family: var(--font-mono);
 }
 pre {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 small {
-  font-size: 16px;
+  font-size: 1rem;
 }
 svg {
   flex-shrink: 0;
@@ -171,7 +178,7 @@ svg {
   gap: 14px;
 }
 .brand strong {
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: -0.5px;
   font-family: var(--font-title);
   font-weight: 750;
@@ -214,14 +221,14 @@ svg {
 }
 .primary.small {
   padding: 8px 12px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .secondary {
   border: 1px solid #443738;
   background: #2b2021;
   padding: 8px 12px;
   border-radius: 6px;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 500;
 }
 .connection {
@@ -229,7 +236,7 @@ svg {
   align-items: center;
   gap: 7px;
   color: var(--muted);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .connection i,
 .live-dot {
@@ -248,7 +255,7 @@ svg {
 .version {
   font-family: var(--font-mono);
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   border: 1px solid #3b3031;
   border-radius: 4px;
   padding: 4px 6px;
@@ -270,13 +277,13 @@ svg {
   padding: 25px 26px 21px;
 }
 .eyebrow {
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: 1.8px;
   font-weight: 600;
   color: var(--fg);
 }
 .session-heading h1 {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   font-weight: 650;
   letter-spacing: -0.7px;
@@ -290,7 +297,7 @@ svg {
 .path {
   font-family: var(--font-mono);
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -310,7 +317,7 @@ svg {
   gap: 6px;
   border-radius: 4px;
   padding: 4px 8px;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.3;
 }
 .status-pill i {
@@ -331,11 +338,11 @@ svg {
   display: flex;
   gap: 5px;
   align-items: center;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .background-pill {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .model-section {
@@ -345,7 +352,7 @@ svg {
 .section-label {
   display: flex;
   justify-content: space-between;
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: 1.3px;
   color: var(--fg);
   margin-bottom: 13px;
@@ -379,28 +386,28 @@ svg {
   min-width: 0;
 }
 .model-button strong {
-  font-size: 16px;
+  font-size: 1rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .model-button small {
   color: var(--muted);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .thinking-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-top: 10px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .thinking-row select {
   border: 0;
   background: none;
   padding: 4px 2px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .metrics {
@@ -415,13 +422,13 @@ svg {
 }
 .metrics span {
   font-family: var(--font-title);
-  font-size: 19px;
+  font-size: 1.1875rem;
   letter-spacing: -0.5px;
   font-weight: 500;
 }
 .metrics small {
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .stats-section {
   margin-top: 24px;
@@ -433,7 +440,7 @@ svg {
   width: 100%;
   border-collapse: collapse;
   margin-top: 22px;
-  font-size: 16px;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
 }
 .usage-breakdown th,
@@ -473,7 +480,7 @@ svg {
 }
 .inspector-tabs button {
   color: var(--fg);
-  font-size: 15px;
+  font-size: 0.9375rem;
   flex: 0 0 auto;
   padding: 10px 8px 8px;
   gap: 6px;
@@ -490,7 +497,7 @@ svg {
   border-bottom-color: var(--accent);
 }
 .count {
-  font-size: 16px;
+  font-size: 1rem;
   padding: 1px 4px;
   background: #462f31;
   border-radius: 4px;
@@ -512,7 +519,7 @@ svg {
   color: var(--fg);
 }
 .tag {
-  font-size: 16px;
+  font-size: 1rem;
   background: #302526;
   color: var(--fg);
   border: 1px solid #403536;
@@ -531,14 +538,14 @@ svg {
   color: var(--fg);
 }
 .hint {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.65;
   color: var(--fg);
   margin: 8px 0 18px;
 }
 .field-label {
   display: block;
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: 1px;
   color: var(--fg);
   margin-bottom: 8px;
@@ -557,7 +564,7 @@ svg {
   width: 100%;
   box-shadow: none;
   padding: 10px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .inline-input .icon-button {
   margin-right: 4px;
@@ -582,7 +589,7 @@ svg {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #140e10;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
 }
 .state-field {
@@ -607,7 +614,7 @@ svg {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .state-field-heading select {
   width: auto;
@@ -622,7 +629,7 @@ svg {
 .state-field input {
   width: 100%;
   min-width: 0;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .state-number {
   display: flex;
@@ -666,14 +673,14 @@ svg {
   margin-top: 8px;
 }
 .counter-card .field-label {
-  font-size: 16px;
+  font-size: 1rem;
   margin: 0;
 }
 .counter-card strong {
   display: block;
   font-family: var(--font-title);
   color: var(--accent);
-  font-size: 32px;
+  font-size: 2rem;
   font-weight: 500;
   margin-top: 4px;
   line-height: 1.1;
@@ -682,14 +689,14 @@ svg {
   background: #392a2b;
   color: var(--fg);
   border-color: #5a3c3f;
-  font-size: 16px;
+  font-size: 1rem;
   padding: 7px 9px;
 }
 .note {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
   margin: 0 0 10px;
   color: var(--fg);
@@ -719,7 +726,7 @@ svg {
   cursor: pointer;
   color: var(--fg);
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .raw summary:after {
   content: "+";
@@ -730,7 +737,7 @@ svg {
   content: "−";
 }
 .raw summary span {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   margin-left: auto;
 }
@@ -745,7 +752,7 @@ svg {
 }
 .raw textarea {
   width: 100%;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .raw button {
   margin-top: 8px;
@@ -770,11 +777,11 @@ svg {
   gap: 4px;
 }
 .demo-action strong {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 500;
 }
 .demo-action small {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .demo-action > svg {
@@ -808,7 +815,7 @@ svg {
   gap: 5px;
 }
 .job-title strong {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 500;
 }
 .progress {
@@ -827,7 +834,7 @@ svg {
   display: flex;
   justify-content: space-between;
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   gap: 6px;
 }
@@ -839,17 +846,17 @@ svg {
 }
 .approval > span {
   width: 100%;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   margin-bottom: 3px;
 }
 .approval button {
-  font-size: 16px;
+  font-size: 1rem;
   padding: 6px 10px;
 }
 .text-button {
   color: var(--accent);
-  font-size: 16px;
+  font-size: 1rem;
   margin-top: 12px;
   padding: 0;
 }
@@ -864,7 +871,7 @@ svg {
   align-items: center;
   gap: 8px;
   padding: 0 22px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .inspector-footer .icon-button {
@@ -893,7 +900,7 @@ svg {
 }
 .agent-stream-status p {
   margin: 4px 0 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .chat-header {
   display: flex;
@@ -916,7 +923,7 @@ svg {
   border: 0;
   box-shadow: none;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   padding: 8px 3px;
   max-width: 230px;
 }
@@ -924,7 +931,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 3px;
-  font-size: 16px;
+  font-size: 1rem;
   white-space: nowrap;
   color: var(--fg);
 }
@@ -955,7 +962,7 @@ svg {
   padding: 10px 9px;
   border-radius: 5px;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .dropdown button:hover {
   background: #3c2d2e;
@@ -1006,17 +1013,17 @@ svg {
   border-radius: 50%;
 }
 .chat-empty .eyebrow {
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: 2.1px;
 }
 .chat-empty h2 {
-  font-size: 27px;
+  font-size: 1.6875rem;
   font-weight: 500;
   letter-spacing: -0.8px;
   margin: 11px 0;
 }
 .chat-empty p {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.7;
   color: var(--fg);
 }
@@ -1045,11 +1052,11 @@ svg {
   margin-bottom: 13px;
 }
 .starter-grid strong {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 500;
 }
 .starter-grid span {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .starter-grid button > svg:last-child {
@@ -1078,7 +1085,7 @@ svg {
   box-shadow: none;
   background: none;
   padding: 18px 20px 9px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .composer-toolbar {
   display: flex;
@@ -1098,11 +1105,11 @@ svg {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .composer-left select {
-  font-size: 16px;
+  font-size: 1rem;
   border: 0;
   background: none;
   color: var(--fg);
@@ -1110,7 +1117,7 @@ svg {
 }
 .interrupt {
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   padding: 6px 8px;
   border-radius: 5px;
   border: 1px solid #66414460;
@@ -1129,7 +1136,7 @@ svg {
   justify-content: space-between;
   margin-top: 11px;
   gap: 12px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .composer-footnote > span:first-child {
@@ -1150,7 +1157,7 @@ svg {
   gap: 8px;
   align-items: center;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: 1.3px;
   margin-bottom: 10px;
 }
@@ -1158,10 +1165,10 @@ svg {
   font-family: var(--font-mono);
   letter-spacing: 0;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .user-message {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.8;
   white-space: pre-wrap;
   color: var(--fg);
@@ -1176,7 +1183,7 @@ svg {
   flex-shrink: 0;
 }
 .markdown {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.85;
   color: var(--fg);
   overflow-wrap: anywhere;
@@ -1191,7 +1198,7 @@ svg {
 .markdown h2,
 .markdown h3 {
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   margin: 22px 0 12px;
 }
 .markdown ul,
@@ -1207,7 +1214,7 @@ svg {
   font-weight: 600;
 }
 .markdown code {
-  font-size: 16px;
+  font-size: 1rem;
   background: #3a2628;
   padding: 2px 5px;
   border-radius: 4px;
@@ -1242,7 +1249,7 @@ svg {
 .fork-button {
   display: inline-flex;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: 0;
   margin-left: auto;
   opacity: 1;
@@ -1257,7 +1264,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   padding: 8px 0;
 }
@@ -1275,7 +1282,7 @@ svg {
   background: #251819;
   margin: 10px 0;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   overflow: hidden;
 }
 .tool-call summary,
@@ -1298,7 +1305,7 @@ svg {
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .tool-call pre,
 .tool-result pre {
@@ -1314,7 +1321,7 @@ svg {
   background: #201415;
 }
 .tool-result summary > span {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .tool-result.failed {
@@ -1340,7 +1347,7 @@ svg {
   margin-left: auto;
 }
 .thinking {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   margin: 8px 0 16px;
 }
@@ -1349,7 +1356,7 @@ svg {
 }
 .thinking div {
   white-space: pre-wrap;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.8;
   margin-top: 12px;
   padding-left: 12px;
@@ -1357,7 +1364,7 @@ svg {
   color: var(--fg);
 }
 .message-error {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.7;
   color: var(--fg);
   border: 1px solid #6b4245;
@@ -1369,7 +1376,7 @@ svg {
 }
 .streaming {
   letter-spacing: 0;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--accent);
   margin-left: auto;
 }
@@ -1402,13 +1409,13 @@ svg {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .live-tool > div > span {
   margin-left: auto;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .live-tool pre {
   max-height: 150px;
@@ -1426,7 +1433,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .queue span {
@@ -1442,7 +1449,7 @@ svg {
   padding: 8px 26px;
   background: #33292a33;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .empty-panel {
   padding: 30px 0;
@@ -1451,7 +1458,7 @@ svg {
   flex-direction: column;
   gap: 12px;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .empty-panel strong {
   color: var(--fg);
@@ -1476,12 +1483,12 @@ svg {
 }
 .task-card strong {
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 400;
   overflow-wrap: anywhere;
 }
 .task-card p {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   margin: 8px 0 11px;
 }
@@ -1499,11 +1506,11 @@ svg {
   color: var(--fg);
 }
 .hook-card strong {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 500;
 }
 .hook-card p {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
   color: var(--fg);
   margin-top: 10px;
@@ -1541,15 +1548,15 @@ svg {
 }
 .tool-row strong {
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 500;
 }
 .tool-row .tag {
   margin-left: auto;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .tool-row p {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   line-height: 1.75;
   margin: 12px 0;
@@ -1566,7 +1573,7 @@ svg {
   border: 1px solid var(--line);
   border-radius: 8px;
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1602,7 +1609,7 @@ svg {
   width: 100%;
   justify-content: space-between;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   text-align: left;
   border-bottom: 1px solid var(--line);
   padding: 14px 0;
@@ -1633,11 +1640,11 @@ svg {
   padding: 0 7px;
 }
 .sessions-drawer h2 {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 550;
 }
 .sessions-drawer h2 span {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   margin-left: 6px;
 }
@@ -1668,21 +1675,21 @@ svg {
   background: #312324;
 }
 .session-item strong {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 550;
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 .session-item .path {
-  font-size: 16px;
+  font-size: 1rem;
 }
 .session-model {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   overflow-wrap: anywhere;
 }
 .session-model img {
@@ -1703,7 +1710,7 @@ svg {
   gap: 8px;
   align-items: center;
   padding: 18px 8px 0;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .modal-backdrop {
@@ -1736,7 +1743,7 @@ svg {
   gap: 12px;
 }
 .modal header h2 {
-  font-size: 22px;
+  font-size: 1.375rem;
   letter-spacing: -0.5px;
   margin-top: 7px;
   font-weight: 550;
@@ -1746,17 +1753,17 @@ svg {
   flex-direction: column;
   gap: 9px;
   margin-top: 20px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .modal input,
 .modal select {
   width: 100%;
-  font-size: 16px;
+  font-size: 1rem;
   padding: 12px;
 }
 .modal small.path {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
   color: var(--fg);
   margin-top: -1px;
@@ -1791,7 +1798,7 @@ svg {
 }
 .login-card .hint {
   color: var(--fg);
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.55;
 }
 .login-card footer {
@@ -1841,11 +1848,11 @@ svg {
   flex: 1;
 }
 .model-list strong {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 500;
 }
 .model-list small {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
 }
 .model-modal .hint {
@@ -1864,7 +1871,7 @@ svg {
 }
 .learning-list li > span {
   font-family: var(--font-mono);
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   border: 1px solid #5a383b;
   border-radius: 5px;
@@ -1876,12 +1883,12 @@ svg {
   flex-shrink: 0;
 }
 .learning-list strong {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   font-weight: 500;
 }
 .learning-list p {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   line-height: 1.8;
   margin-top: 5px;
@@ -1905,7 +1912,7 @@ svg {
   gap: 10px;
   padding: 13px 19px;
   max-width: 90%;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   line-height: 1.5;
 }
@@ -1954,7 +1961,7 @@ textarea.app-state-json {
   background: #462b2d;
   color: var(--fg);
   padding: 10px 25px;
-  font-size: 16px;
+  font-size: 1rem;
   z-index: 90;
 }
 .error-banner span {
@@ -1977,12 +1984,12 @@ textarea.app-state-json {
   position: relative;
 }
 .welcome .eyebrow {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   letter-spacing: 2.6px;
 }
 .welcome h1 {
-  font-size: clamp(36px, 4.6vw, 64px);
+  font-size: clamp(2.25rem, 4.6vw, 4rem);
   font-weight: 500;
   line-height: 1.15;
   letter-spacing: -2.5px;
@@ -1990,7 +1997,7 @@ textarea.app-state-json {
   color: var(--fg);
 }
 .welcome p {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--fg);
   margin: 4px 0 30px;
 }
@@ -1999,7 +2006,7 @@ textarea.app-state-json {
   gap: 33px;
   margin-top: 70px;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .welcome-features > span {
   display: flex;
@@ -2045,7 +2052,7 @@ textarea.app-state-json {
     padding-right: 20px;
   }
   .chat-empty h2 {
-    font-size: 23px;
+    font-size: 1.4375rem;
   }
   .composer-footnote > span:last-child {
     display: none;
@@ -2081,7 +2088,7 @@ textarea.app-state-json {
     gap: 8px;
   }
   .brand strong {
-    font-size: 16px;
+    font-size: 1rem;
   }
   .brand-separator,
   .brand > .muted,
@@ -2106,7 +2113,7 @@ textarea.app-state-json {
     padding: 17px 20px 10px;
   }
   .session-heading h1 {
-    font-size: 19px;
+    font-size: 1.1875rem;
     margin: 5px 0;
   }
   .session-heading > .eyebrow,
@@ -2137,7 +2144,7 @@ textarea.app-state-json {
     padding: 24px 22px;
   }
   .chat-empty h2 {
-    font-size: 22px;
+    font-size: 1.375rem;
   }
   .composer-region {
     padding: 12px;
@@ -2170,7 +2177,7 @@ textarea.app-state-json {
     bottom: 15px;
     width: max-content;
     max-width: 90%;
-    font-size: 16px;
+    font-size: 1rem;
   }
   .fork-label {
     display: none;
@@ -2410,7 +2417,7 @@ button:disabled {
     display: none;
   }
   .brand strong {
-    font-size: 16px;
+    font-size: 1rem;
   }
   .model-button img {
     width: 40px;
@@ -2503,7 +2510,7 @@ button:disabled {
 }
 .full-directory {
   display: block;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2514,7 +2521,7 @@ button:disabled {
   min-width: min(960px, 100%);
 }
 .markdown :is(h4, h5, h6, small, sub, sup) {
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 /* Keep navigation fixed above the currently selected inspector panel. */
@@ -2645,7 +2652,7 @@ textarea::placeholder {
   border-radius: 6px;
   color: var(--secondary);
   white-space: nowrap;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .lineage-crumb:hover {
   background: #342328;
@@ -2663,7 +2670,7 @@ textarea::placeholder {
 .lineage-source {
   margin: 4px 9px 0;
   color: var(--secondary);
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.5;
 }
 .conversation-menu-dismiss {
@@ -2688,7 +2695,7 @@ textarea::placeholder {
 }
 .conversation-picker-heading {
   color: var(--secondary);
-  font-size: 16px;
+  font-size: 1rem;
   padding: 10px 12px 14px;
 }
 .conversation-choice {
@@ -2717,7 +2724,7 @@ textarea::placeholder {
   align-items: center;
   gap: 5px;
   color: var(--fg);
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.5;
 }
 .choice-lineage > span {
@@ -2729,7 +2736,7 @@ textarea::placeholder {
   color: var(--secondary);
 }
 .choice-source {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.5;
 }
 .conversation-choice.selected .choice-lineage > span:last-child {
@@ -2770,7 +2777,7 @@ textarea::placeholder {
   border-radius: 8px;
   background: #342329;
   color: #f8eeee;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
 }
@@ -2812,7 +2819,7 @@ textarea::placeholder {
   align-items: center;
   gap: 8px;
   margin: 0 0 10px;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 650;
 }
 .task-example {
@@ -2826,7 +2833,7 @@ textarea::placeholder {
 .task-explanation p,
 .task-empty {
   color: var(--secondary);
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
   margin: 8px 0 14px;
 }
@@ -2901,7 +2908,7 @@ textarea::placeholder {
 /* eyebrow label: display face, tracked uppercase. */
 .label {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 0.875rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   font-weight: 700;
@@ -2919,7 +2926,7 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: var(--faint);
   min-width: 0;
   flex-wrap: wrap;
@@ -2957,7 +2964,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: 999px;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--faint);
   background: var(--bg);
   white-space: nowrap;
@@ -3017,7 +3024,7 @@ textarea::placeholder {
 }
 .dialog-eyebrow {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -3026,7 +3033,7 @@ textarea::placeholder {
 .dialog h3 {
   margin: 5px 0 0;
   font-family: var(--font-display);
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
@@ -3042,7 +3049,7 @@ textarea::placeholder {
   gap: 10px;
   padding: 7px 0;
   border-bottom: 1px solid var(--line-soft);
-  font-size: 16px;
+  font-size: 1rem;
 }
 .help-step:last-of-type {
   border-bottom: 0;
@@ -3065,7 +3072,7 @@ textarea::placeholder {
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
   background: var(--chat);
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--muted);
   display: flex;
   gap: 10px;
@@ -3116,7 +3123,7 @@ textarea::placeholder {
     border-radius: 8px;
     background: transparent;
     color: var(--faint);
-    font-size: 12px;
+    font-size: 0.75rem;
   }
   .mnav button.is-on {
     color: var(--accent);
@@ -3133,7 +3140,7 @@ textarea::placeholder {
     background: var(--primary);
     color: var(--on-primary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 0.6875rem;
     line-height: 16px;
   }
 }
@@ -3263,4 +3270,53 @@ select:focus {
 }
 .network-sidebar {
   background: var(--tree);
+}
+
+/* ── Mobile scale: ONE knob, the WHOLE ui ─────────────────────────────────
+   Reported live: 16px type reads oversized on phones — and shrinking only
+   the words (rem) while paddings, buttons and icons stayed desktop-sized
+   looked half-done. So ≤740px the entire app renders at ZOOM 0.85: type,
+   spacing, buttons, icons, radii — everything, uniformly, exactly like
+   stepping back from the desktop design. Engines without standardised zoom
+   (Safari < 17.4) ignore it and fall back to the rem type scale below:
+   text-only shrink, still coherent.
+   Viewport units need compensating under zoom (zoom multiplies rendered
+   lengths, so 100dvh would render 85dvh and strand a dead strip at the
+   bottom): every dvh/vh height the mobile layout uses is divided by the
+   zoom factor so it lands back at full viewport height. */
+@media (max-width: 740px) {
+  :root {
+    zoom: 0.85;
+  }
+  .shell {
+    min-height: calc(100dvh / 0.85);
+  }
+  .inspector {
+    max-height: calc(55vh / 0.85);
+  }
+}
+@media (max-width: 390px) {
+  :root {
+    zoom: 0.8;
+  }
+  .shell {
+    min-height: calc(100dvh / 0.8);
+  }
+  .inspector {
+    max-height: calc(55vh / 0.8);
+  }
+}
+/* Fallback for engines without standardised zoom: shrink the (all-rem)
+   type scale instead — the single px base below is the only exception. */
+@supports not (zoom: 2) {
+  @media (max-width: 740px) {
+    :root {
+      font-size: 13.5px;
+    }
+  }
+  @media (max-width: 390px) {
+    :root {
+      font-size: 12.5px;
+    }
+  }
 }

@@ -552,12 +552,12 @@ onBeforeUnmount(() => {
   border: 1px solid #2a3442;
   border-radius: 12px;
 }
-.pair-pending h3 { margin: 0 0 10px; font-size: 14px; }
+.pair-pending h3 { margin: 0 0 10px; font-size: 0.875rem; }
 .pair-pending ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .pair-pending li { display: grid; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid #222b36; }
 .pair-pending li:last-child { border-bottom: 0; padding-bottom: 0; }
 .pair-pending .who { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
-.pair-pending .fp { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; color: #7ee2a8; }
+.pair-pending .fp { font-family: ui-monospace, monospace; font-size: 0.75rem; word-break: break-all; color: #7ee2a8; }
 .pair-pending .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
-.pair-pending .phase { font-size: 12px; color: #8fa0b5; }
+.pair-pending .phase { font-size: 0.75rem; color: #8fa0b5; }
 </style>

@@ -311,7 +311,7 @@ function remove(v: EnvVarView) {
   flex-direction: column;
   gap: 10px;
   padding: 4px 2px 12px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .var-list {
   display: flex;
@@ -342,10 +342,10 @@ function remove(v: EnvVarView) {
   margin-left: auto;
 }
 .var .key {
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .var .value {
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.75;
   word-break: break-all;
 }
@@ -361,12 +361,12 @@ function remove(v: EnvVarView) {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.85;
 }
 .add-form input {
   font: inherit;
-  font-size: 15px;
+  font-size: 0.9375rem;
   padding: 5px 8px;
   color: var(--fg);
   background: transparent;
@@ -378,11 +378,11 @@ function remove(v: EnvVarView) {
   gap: 6px;
 }
 .message-restart {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--warn, #e5a50a);
 }
 .hint.path {
-  font-size: 12px;
+  font-size: 0.75rem;
   opacity: 0.55;
   word-break: break-all;
 }

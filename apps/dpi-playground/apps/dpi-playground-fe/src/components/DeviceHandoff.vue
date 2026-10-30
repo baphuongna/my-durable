@@ -85,16 +85,16 @@ header {
 }
 h3 {
   margin: 0;
-  font-size: 14.5px;
+  font-size: 0.90625rem;
 }
 .what {
   margin: 0 0 10px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--muted);
 }
 code {
   font-family: ui-monospace, monospace;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .row {
   display: flex;
@@ -105,7 +105,7 @@ code {
 label {
   display: grid;
   gap: 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--muted);
 }
 input {
@@ -119,13 +119,13 @@ input {
 }
 .err {
   color: var(--danger, #f28b82);
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   margin: 8px 0 0;
 }
 .target {
   margin: 10px 0 0;
   font-family: ui-monospace, monospace;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--muted);
   word-break: break-all;
 }

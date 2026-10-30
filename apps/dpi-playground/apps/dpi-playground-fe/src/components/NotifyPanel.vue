@@ -200,7 +200,7 @@ async function test() {
   flex-direction: column;
   gap: 10px;
   padding: 4px 2px 12px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .sink-list,
 .results {
@@ -231,12 +231,12 @@ async function test() {
 .sink .next {
   margin-left: auto;
   font-style: normal;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.7;
 }
 .sink .url,
 .url {
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.7;
   word-break: break-all;
 }
@@ -250,7 +250,7 @@ async function test() {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .results li.failed {
   color: var(--warn, #e5a50a);
@@ -267,13 +267,13 @@ async function test() {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.85;
 }
 .add-form input,
 .add-form select {
   font: inherit;
-  font-size: 15px;
+  font-size: 0.9375rem;
   padding: 5px 8px;
   color: var(--fg);
   background: transparent;

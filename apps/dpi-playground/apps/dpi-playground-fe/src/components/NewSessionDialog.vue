@@ -226,7 +226,7 @@ async function create() {
 <style scoped>
 .recent-cwds { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
 .recent-cwds .chip {
-  font-size: 13px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 12px;
+  font-size: 0.8125rem; padding: 3px 10px; border: 1px solid var(--line); border-radius: 12px;
   background: none; cursor: pointer; color: inherit;
 }
 .recent-cwds .chip.on { border-color: var(--accent); font-weight: 550; }

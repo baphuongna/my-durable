@@ -146,7 +146,7 @@ async function download(s: ArchivedView) {
   flex-direction: column;
   gap: 10px;
   padding: 4px 2px 12px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .old-list {
   display: flex;
@@ -177,7 +177,7 @@ async function download(s: ArchivedView) {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.75;
 }
 .old .cwd {

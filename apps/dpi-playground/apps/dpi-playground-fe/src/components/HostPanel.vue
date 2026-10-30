@@ -161,7 +161,7 @@ async function refresh() {
   flex-direction: column;
   gap: 12px;
   padding: 4px 2px 12px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .vitals-grid {
   display: grid;
@@ -180,17 +180,17 @@ async function refresh() {
 .meter .label {
   color: var(--fg-dim, var(--fg));
   opacity: 0.72;
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .vital strong {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-variant-numeric: tabular-nums;
 }
 .vital em {
   font-style: normal;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.7;
 }
 .meter {
@@ -220,7 +220,7 @@ async function refresh() {
   background: var(--warn, #e5a50a);
 }
 .path {
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.7;
   word-break: break-all;
 }

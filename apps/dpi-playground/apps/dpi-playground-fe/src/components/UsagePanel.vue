@@ -217,7 +217,7 @@ async function refresh() {
   flex-direction: column;
   gap: 10px;
   padding: 4px 2px 12px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .usage-block {
   display: flex;
@@ -225,7 +225,7 @@ async function refresh() {
   gap: 8px;
 }
 .block-label {
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-dim, var(--fg));
@@ -249,17 +249,17 @@ async function refresh() {
 .total .label {
   color: var(--fg-dim, var(--fg));
   opacity: 0.72;
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .total strong {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-variant-numeric: tabular-nums;
 }
 .total em {
   font-style: normal;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.7;
 }
 .table-scroll {
@@ -271,7 +271,7 @@ async function refresh() {
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 0.875rem;
   border: 0;
 }
 .usage-table th,
@@ -282,7 +282,7 @@ async function refresh() {
   white-space: nowrap;
 }
 .usage-table thead th {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -336,7 +336,7 @@ async function refresh() {
 }
 .share .pct {
   font-style: normal;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.72;
   font-variant-numeric: tabular-nums;
   width: 4ch;
@@ -361,7 +361,7 @@ async function refresh() {
   align-items: center;
   gap: 10px;
   padding: 4px 0;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .row + .row {
   border-top: 1px solid var(--line);
@@ -381,7 +381,7 @@ async function refresh() {
 }
 .row-main em {
   font-style: normal;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.65;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -392,7 +392,7 @@ async function refresh() {
   white-space: nowrap;
 }
 .row-meta {
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.72;
   white-space: nowrap;
   min-width: 9ch;

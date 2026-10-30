@@ -203,7 +203,7 @@ async function save() {
   flex-direction: column;
   gap: 10px;
   padding: 4px 2px 12px;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .schedule-list {
   display: flex;
@@ -232,7 +232,7 @@ async function save() {
 }
 .schedule .next {
   margin-left: auto;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.7;
 }
 .schedule .tag.running {
@@ -243,7 +243,7 @@ async function save() {
   border-color: var(--warn, #e5a50a);
 }
 .schedule .cwd {
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.7;
   word-break: break-all;
 }
@@ -266,14 +266,14 @@ async function save() {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.85;
 }
 .add-form input,
 .add-form textarea,
 .add-form select {
   font: inherit;
-  font-size: 15px;
+  font-size: 0.9375rem;
   padding: 5px 8px;
   color: var(--fg);
   background: transparent;
@@ -290,7 +290,7 @@ async function save() {
   width: 72px;
 }
 .add-form .muted {
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.6;
 }
 .spin {
