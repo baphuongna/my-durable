@@ -347,7 +347,19 @@ function openExclusive(path: string, busyTimeoutMs: number): DatabaseSync {
 }
 
 /** v0 preflight: no stray v1 objects, exact column set per v0 table, canonical ids/uids, no duplicates. */
-function preflightV0(db: DatabaseSync): void {
+/** Sanitized replacement values for rows whose legacy fields the live writers
+ *  would refuse or cap. Applied INSIDE the migration transaction (never in the
+ *  read-only preflight): a preflight write would mutate the v0 file before the
+ *  WAL-safe backup and before BEGIN, so an aborted migration would silently
+ *  drop operator tokens. */
+export interface V0Overrides {
+  url?: string;
+  token?: string | null;
+  info?: string | null;
+  tree?: string | null;
+}
+
+function preflightV0(db: DatabaseSync): Map<string, V0Overrides> {
   // First: anything the v1 schema owns means this is not a v0 file at all. Refused before
   // the backup is written and before any write touches the registry (the caller's
   // `reached(opts, "preflight")` hook still fires only after preflightV0 returns).
@@ -388,9 +400,7 @@ function preflightV0(db: DatabaseSync): void {
   }[];
   const INFO_CAP = 64 * 1024;
   const TREE_CAP = 288 * 1024;
-  const normalize = db.prepare(
-    "UPDATE devices SET url=?, token=?, last_info_json=?, last_tree_json=? WHERE id=?",
-  );
+  const overrides = new Map<string, V0Overrides>();
   const seenUid = new Set<string>();
   for (const row of rows) {
     if (!DEVICE_ID_PATTERN.test(row.id)) throw new MigrationError(`non-canonical device id ${JSON.stringify(row.id)} — resolve manually (no trim)`);
@@ -420,9 +430,14 @@ function preflightV0(db: DatabaseSync): void {
       text !== null && text.length > cap ? null : text;
     const info = capJson(row.last_info_json, INFO_CAP);
     const tree = capJson(row.last_tree_json, TREE_CAP);
-    if (url !== row.url || token !== row.token || info !== row.last_info_json || tree !== row.last_tree_json)
-      normalize.run(url, token, info, tree, row.id);
+    const patch: V0Overrides = {};
+    if (url !== row.url) patch.url = url;
+    if (token !== row.token) patch.token = token;
+    if (info !== row.last_info_json) patch.info = info;
+    if (tree !== row.last_tree_json) patch.tree = tree;
+    if (Object.keys(patch).length) overrides.set(row.id, patch);
   }
+  return overrides;
 }
 
 /**
@@ -499,7 +514,7 @@ function migrateV0(db: DatabaseSync, path: string, opts: MigrationOptions): Regi
   }
   assertMigratable(version);
 
-  preflightV0(db);
+  const overrides = preflightV0(db);
   reached(opts, "preflight");
 
   const preCount = (db.prepare("SELECT count(*) AS n FROM devices").get() as { n: number }).n;
@@ -521,6 +536,20 @@ function migrateV0(db: DatabaseSync, path: string, opts: MigrationOptions): Regi
          created_at,updated_at,'lan'
        FROM devices`,
     );
+    // The sanitized legacy values land on the NEW table, inside this
+    // transaction: the v0 file is never modified by a migration that aborts.
+    if (overrides.size) {
+      const setUrl = db.prepare("UPDATE devices_v1_new SET url=? WHERE id=?");
+      const setToken = db.prepare("UPDATE devices_v1_new SET token=? WHERE id=?");
+      const setInfo = db.prepare("UPDATE devices_v1_new SET last_info_json=? WHERE id=?");
+      const setTree = db.prepare("UPDATE devices_v1_new SET last_tree_json=? WHERE id=?");
+      for (const [id, patch] of overrides) {
+        if (patch.url !== undefined) setUrl.run(patch.url, id);
+        if (patch.token !== undefined) setToken.run(patch.token, id);
+        if (patch.info !== undefined) setInfo.run(patch.info, id);
+        if (patch.tree !== undefined) setTree.run(patch.tree, id);
+      }
+    }
     reached(opts, "mid-transaction");
     db.exec("DROP TABLE devices; ALTER TABLE devices_v1_new RENAME TO devices;");
     db.exec(V1_SCHEMA_SQL);

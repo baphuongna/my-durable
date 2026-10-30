@@ -391,3 +391,19 @@ test("run-8 U9: the v0->v1 copy enforces the live writers' per-field policy (cap
   makeClosedV0(path2, [{ id: "dev-badurl", url: "javascript:alert(1)", token: "b".repeat(40) }]);
   assert.throws(() => migrateRegistryFile(path2), /url the live writer refuses|cannot be normalised|not an http/i);
 });
+
+test("run-8 U9: an aborted migration leaves the v0 file untouched (sanitising never happens in the read-only preflight)", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const dir = await tempDir();
+  const path = join(dir, "network.sqlite");
+  // row A needs sanitising (oversized tree), row B makes the migration abort.
+  makeClosedV0(path, [
+    { id: "dev-a", url: "http://10.0.0.9:7900", token: "c".repeat(40), last_tree_json: JSON.stringify({ b: "z".repeat(300 * 1024) }) },
+    { id: "dev-b", url: "javascript:alert(1)", token: "d".repeat(40) },
+  ]);
+  assert.throws(() => migrateRegistryFile(path), /url the live writer refuses/);
+  const db = new DatabaseSync(path);
+  const row = db.prepare("SELECT last_tree_json FROM devices WHERE id='dev-a'").get() as { last_tree_json: string };
+  db.close();
+  assert.equal(row.last_tree_json.length, JSON.stringify({ b: "z".repeat(300 * 1024) }).length, "the v0 row must not be rewritten by an aborted migration");
+});
