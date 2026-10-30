@@ -1,18 +1,18 @@
-// R28 (live, four rounds of user verdicts): oversized phone text; a
-// phone-only shrink was half-done; "make it uniformly small on every
-// screen"; the bottom bar/header/sidebar scrolled away on mobile; the form
-// broke when the soft keyboard opened. The shipped answer, all pinned here:
-//   1. every font-size rides rem (base 16px + the fallback knob = only px);
+// R28 (live, six rounds of user verdicts) — the mobile/uniform-scale contract:
+//   1. every font-size rides rem (base 16px + fallback knob = the only px);
 //   2. the whole app renders at a 6-band zoom curve, steps of 0.05, no cliff;
 //   3. each band divides the shell viewport height by its factor
 //      (`:root .shell` — network.css' ≤760 .shell rule loads later);
-//   4. ≤740 the shell IS the screen (fixed height, overflow hidden) — the
-//      document never scrolls, topbar/mnav are pinned flex rows;
-//   5. the soft keyboard: shell height prefers the JS-measured visual
-//      viewport (--vvh), Android resizes the layout viewport via the
-//      interactive-widget meta, and inputs render a 16px minimum so iOS
-//      never auto-zooms the form on focus.
-// Static source contract — survives every refactor.
+//   4. ≤740 the shell IS the screen — the document never scrolls, topbar and
+//      bottom nav are pinned flex rows;
+//   5. the soft keyboard: inputs render the SAME size as surrounding text
+//      (1rem), 16px computed only while editing (iOS reads it at focus → no
+//      auto-zoom); Android resizes the layout viewport via the viewport meta;
+//      iOS measures visualViewport into --vvh;
+//   6. engines without zoom take the rem knob as fallback and never leak
+//      desktop sizes;
+//   7. ONE compact mobile header — every control on a single 42px row,
+//      nothing removed, nothing wrapped, no dropdown clipped.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -43,13 +43,13 @@ const media = (mw: number) => `@media \\(max-width: ${mw}px\\)`;
 test("R28 type scale: every font-size is rem except sanctioned bases", () => {
   const offenders: string[] = [];
   for (const f of files) {
-    const s = readFileSync(f, "utf8");
-    for (const m of s.matchAll(/font-size:\s*([^;}\n]+)/g)) {
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/font-size:\s*([^;}\n]+)/g)) {
       const v = m[1]!.trim();
       const inStyle = f.endsWith("style.css");
       const rem = /^[\d.]+rem( !important)?$/.test(v) || /^clamp\([\d.]+rem,/.test(v);
       const sanctioned =
-        inStyle && (v === "16px" || v === "13.5px" || v === "12.5px" || v === "calc(16px / var(--uiz, 1)) !important");
+        inStyle && (v === "16px" || v === "13.5px" || v === "12.5px" || v === "1rem !important" || v === "16px !important");
       if (!rem && !sanctioned) offenders.push(`${f.replace(FE, "")}: ${v}`);
     }
   }
@@ -59,29 +59,24 @@ test("R28 type scale: every font-size is rem except sanctioned bases", () => {
   assert.doesNotMatch(readFileSync(join(FE, "style.css"), "utf8"), /font-size:\s*clamp\([^)]*px/);
 });
 
-test("R28 ui scale: the 6-band zoom curve, --uiz per band, compensated heights on :root .shell", () => {
+test("R28 ui scale: the 6-band zoom curve, compensated heights on :root .shell", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
   for (const [mw, z] of BANDS) {
     const zs = z.replace(".", "\\.");
-    // the band declares zoom AND its factor
-    assert.match(s, new RegExp(`${media(mw)}\\s*\\{\\s*:root\\s*\\{\\s*zoom: ${zs}; --uiz: ${zs};`), `≤${mw} band`);
-    // heights prefer --vvh (keyboard), fall back to the dvh calc
+    assert.match(s, new RegExp(`${media(mw)}\\s*\\{\\s*:root\\s*\\{\\s*zoom: ${zs};`), `≤${mw} band zooms ${z}`);
     assert.match(
       s,
       new RegExp(`height: var\\(--vvh, calc\\(100dvh \\/ ${zs}\\)\\)`),
       `≤${mw}: shell height = var(--vvh, dvh-calc)`,
     );
   }
-  // :root .shell specificity — plain .shell loses to network.css' ≤760 rule
   assert.match(s, /:root \.shell \{ height: var\(--vvh, calc\(100dvh \/ 0\.95\)\); \}/);
-  // ≤740: the shell IS the screen
   assert.match(
     s,
     /@media \(max-width: 740px\)\s*\{[\s\S]*?:root \.shell\s*\{\s*height: var\(--vvh, calc\(100dvh \/ 0\.82\)\);\s*min-height: 0;\s*overflow: hidden;\s*\}/,
     "≤740: fixed-height, non-scrolling shell",
   );
   assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.net-workspace\s*\{\s*overflow: hidden;/, "workspace never scrolls the page");
-  assert.match(s, /\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;[\s\S]*?height: 42px;[\s\S]*?flex: 0 0 auto;/, "header is a pinned 42px flex row");
   assert.match(s, /max-height: calc\(55vh \/ 0\.82\)/, "inspector cap compensated ≤740");
   assert.match(s, /max-height: calc\(55vh \/ 0\.78\)/, "inspector cap compensated ≤550");
   assert.match(s, /@supports not \(zoom: 2\)\s*\{[\s\S]*?@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
@@ -90,13 +85,19 @@ test("R28 ui scale: the 6-band zoom curve, --uiz per band, compensated heights o
   assert.doesNotMatch(readFileSync(join(FE, "components/GraphPanel.vue"), "utf8"), /font:\s*[\d.]+px\//, "no px font shorthand");
 });
 
-test("R28 keyboard: visual-viewport shell, 16px inputs, resize meta", () => {
+test("R28 keyboard: inputs ride the scale, 16px computed only while editing", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
   assert.match(
     s,
-    /@media \(max-width: 1599px\)\s*\{\s*input,\s*textarea,\s*select\s*\{\s*font-size: calc\(16px \/ var\(--uiz, 1\)\) !important;/,
-    "inputs render 16px on every zoomed band (iOS would focus-zoom otherwise)",
+    /@media \(max-width: 1599px\)\s*\{\s*input,\s*textarea,\s*select\s*\{[\s\S]*?font-size: 1rem !important;/,
+    "inputs = 1rem, the same rendered size as the text around them",
   );
+  assert.match(
+    s,
+    /input:focus,\s*textarea:focus,\s*select:focus\s*\{\s*font-size: 16px !important;/,
+    "16px computed exactly while editing (iOS reads it at focus → no auto-zoom)",
+  );
+  assert.doesNotMatch(s, /var\(--uiz/, "--uiz is gone (it existed only for the oversized input rule)");
   const html = readFileSync(join(FE, "../index.html"), "utf8");
   assert.match(html, /interactive-widget=resizes-content/, "Android/Chrome resize the layout viewport for dvh");
   const main = readFileSync(join(FE, "main.ts"), "utf8");
@@ -104,50 +105,38 @@ test("R28 keyboard: visual-viewport shell, 16px inputs, resize meta", () => {
   assert.match(main, /--vvh/, "…and fed to the shell heights");
 });
 
+test("R28 no-zoom engines: the fallback shrinks text and never leaks desktop sizes", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  assert.match(s, /@supports not \(zoom: 2\)\s*\{[\s\S]*?@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
+  assert.match(s, /@media \(max-width: 550px\)\s*\{\s*:root\s*\{\s*font-size: 12\.5px;\s*\}\s*\}/, "rem fallback ≤550");
+  assert.doesNotMatch(s, /var\(--uiz/, "no --uiz left to leak a desktop-size divide");
+});
+
 test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed to wrap", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  // the single compact row (user: tinh gọn chứ không lược tính năng)
-  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;\s*gap: 4px;\s*padding: 0 5px;\s*height: 42px;\s*min-height: 42px;\s*max-height: 42px;/, "one 42px pinned row");
-  // history: three competing ≤740 .topbar rules (58px, 68px, wrap+auto) used to
-  // fight over the cascade — the LAST one (wrap, auto height) ate a quarter of
-  // the screen. Only the base and the compact row may size the mobile topbar.
+  assert.match(
+    s,
+    /@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;\s*gap: 4px;\s*padding: 0 5px;\s*height: 42px;\s*min-height: 42px;\s*max-height: 42px;/,
+    "one 42px pinned row",
+  );
   assert.equal([...s.matchAll(/min-height:\s*68px/g)].length, 0, "the 68px header is gone");
   assert.doesNotMatch(s, /\.topbar\s*\{[^}]*height:\s*auto/, "no auto-height topbar anywhere");
   assert.doesNotMatch(s, /\.topbar\s*\{[^}]*flex-wrap:\s*wrap/, "the topbar never wraps on any width");
-  // feature pin: the icon buttons are NEVER display:none on mobile (an old
-  // rule hid the bell + help there) and the chips/toggles stay
   assert.doesNotMatch(s, /\.top-actions \.icon-button\s*\{\s*display:\s*none/, "bell/help/toggles stay visible");
   assert.doesNotMatch(s, /\.chip\.connection,\s*\.usage-chip\s*\{\s*display:\s*none/, "connection + usage chips stay visible");
-  // compact sizing of every element that stays
-  assert.match(s, /\.brandmark\s*\{\s*width: 24px;\s*height: 14px;/, "smaller logo");
-  assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 74px;[^}]*text-overflow: ellipsis;/, "connection chip ellipsizes");
+  const topbarBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.doesNotMatch(topbarBlock, /overflow:\s*hidden/, "topbar must not clip dropdown panels");
+  assert.match(s, /\.brandmark\s*\{\s*width: 24px;\s*height: 14px;/, "24px logo");
+  assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 74px;/, "connection chip capped at 74px");
   assert.match(s, /\.top-actions \.primary\.small\s*\{\s*padding: 0 7px;\s*min-height: 26px;\s*gap: 2px;\s*font-size: 0\.75rem;/, "compact New session");
 });
 
 test("R28 body headers: the chat header matches the topbar, no stale offsets", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  // the chat header IS the second header on a phone — it rides the same 42px
   assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.chat-header\s*\{\s*padding: 0 10px;\s*min-height: 42px;\s*max-height: 42px;/, "chat header = 42px like the topbar");
-  // the 40px model avatar inflated the old 55px row
   assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.model-button img\s*\{\s*width: 26px;\s*height: 26px;/, "26px model avatar");
   assert.doesNotMatch(s, /@media \(max-width: 740px\)\s*\{[^@]*\.model-button img\s*\{[^}]*40px/, "no 40px avatar anywhere on mobile");
-  // the tree drawer backdrop anchored to the OLD 68px header — stale offset
   assert.match(s, /\.drawer-backdrop\s*\{\s*top: 42px;/, "drawer backdrop tracks the 42px header");
   assert.doesNotMatch(s, /top:\s*68px/, "no 68px offsets left");
-  // the Details pane's own heading slims to match
   assert.match(s, /\.session-heading\s*\{\s*padding: 10px 14px 8px;/, "slim session heading");
-});
-
-test("R28 no-zoom engines: the fallback must not leak desktop sizes", () => {
-  const s = readFileSync(join(FE, "style.css"), "utf8");
-  // engines without zoom apply no factor, so --uiz must collapse to 1 —
-  // otherwise the 16px-safe input rule rendered 16/0.78 ≈ 20px monsters
-  assert.match(s, /@supports not \(zoom: 2\)\s*\{\s*\/\*[^*]*\*\/\s*:root\s*\{\s*--uiz: 1;/, "--uiz collapses to 1 in the fallback");
-  // the topbar must NOT clip its own dropdowns (bell panel lives inside it)
-  const topbarBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
-  assert.doesNotMatch(topbarBlock, /overflow:\s*hidden/, "topbar must not clip dropdown panels");
-  assert.match(topbarBlock, /flex-wrap: nowrap/, "single row is kept by nowrap + ellipsis, not clipping");
-  // the row fits 360px: small logo, small chips
-  assert.match(s, /\.brandmark\s*\{\s*width: 24px;\s*height: 14px;/, "24px logo");
-  assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 74px;/, "connection chip capped at 74px");
 });

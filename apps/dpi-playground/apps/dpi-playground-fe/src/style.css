@@ -3337,19 +3337,19 @@ select:focus {
    Engines without standardised zoom (Safari < 17.4) ignore it and fall back
    to the all-rem type scale at the bottom: text-only shrink, still coherent. */
 @media (max-width: 1599px) {
-  :root { zoom: 0.95; --uiz: 0.95; }
+  :root { zoom: 0.95; }
   :root .shell { height: var(--vvh, calc(100dvh / 0.95)); }
 }
 @media (max-width: 1199px) {
-  :root { zoom: 0.9; --uiz: 0.9; }
+  :root { zoom: 0.9; }
   :root .shell { height: var(--vvh, calc(100dvh / 0.9)); }
 }
 @media (max-width: 899px) {
-  :root { zoom: 0.85; --uiz: 0.85; }
+  :root { zoom: 0.85; }
   :root .shell { height: var(--vvh, calc(100dvh / 0.85)); }
 }
 @media (max-width: 740px) {
-  :root { zoom: 0.82; --uiz: 0.82; }
+  :root { zoom: 0.82; }
   /* The shell IS the screen: fixed height, never scrolls — the topbar and
      the bottom nav are ordinary flex rows so they stay pinned, and the
      active pane (chat-scroll / inspector / tree drawer) scrolls inside.
@@ -3369,7 +3369,7 @@ select:focus {
   }
 }
 @media (max-width: 550px) {
-  :root { zoom: 0.78; --uiz: 0.78; }
+  :root { zoom: 0.78; }
   :root .shell {
     height: var(--vvh, calc(100dvh / 0.78));
     min-height: 0;
@@ -3381,11 +3381,7 @@ select:focus {
 /* Fallback for engines without standardised zoom: shrink the (all-rem)
    type scale instead — the single px base above is the only exception. */
 @supports not (zoom: 2) {
-  /* no zoom applied → no factor to divide by: inputs stay 16px FLAT (still
-     iOS-safe), never 16px/var(--uiz) which rendered 20px monsters */
-  :root {
-    --uiz: 1;
-  }
+  /* no zoom applied — the rem type knob below is the whole fallback */
   @media (max-width: 740px) {
     :root {
       font-size: 13.5px;
@@ -3414,6 +3410,17 @@ select:focus {
   input,
   textarea,
   select {
-    font-size: calc(16px / var(--uiz, 1)) !important;
+    /* 1rem = the SAME rendered size as the surrounding text — the earlier
+       16px-rendered rule left inputs a third bigger than everything around
+       them (live: "input lớn, không đồng bộ"). */
+    font-size: 1rem !important;
+  }
+  /* iOS zooms the viewport when the FOCUSED control computes under 16px, so
+     16px is applied exactly while editing: computed 16 ≥ 16 → no auto-zoom,
+     and the typed text still renders through the ui zoom like everything else. */
+  input:focus,
+  textarea:focus,
+  select:focus {
+    font-size: 16px !important;
   }
 }
