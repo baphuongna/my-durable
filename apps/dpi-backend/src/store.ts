@@ -82,7 +82,7 @@ import {
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, EXPORT_RAW_LIMIT_BYTES, type ZipEntry } from "./zip.js";
 import { salvageFailureNote, salvageSessionDb } from "./salvage.js";
-import { mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 import { join, dirname, relative, resolve, sep } from "node:path";
@@ -433,6 +433,11 @@ export class Store {
   readonly models = createModels({ credentials: this.pi.credentials });
   readonly opened = new Map<string, Opened>();
   readonly errors = new Map<string, string>();
+  /** run-7 B1-A: archive() bumps this as its FIRST act; openAgent compares
+   *  its entry snapshot before arming — a reopen that raced the archive
+   *  window (opened.delete → rename → catalog DELETE) must not re-arm a live
+   *  harness over the moved-away bundle. */
+  readonly archiveEpoch = new Map<string, number>();
   readonly catalog: DatabaseSync;
   readonly startedAt = Date.now();
   shared!: SharedState;
@@ -1540,6 +1545,9 @@ export class Store {
 
   /** Stop all work, close the harness and move its files to archive/. Nothing is deleted. */
   async archive(row: SessionRow) {
+    // FIRST act, before any await: reopens racing the window below compare
+    // against this epoch and fail like any dead row (run-7 B1-A).
+    this.archiveEpoch.set(row.id, (this.archiveEpoch.get(row.id) ?? 0) + 1);
     const opened = this.opened.get(row.id);
     if (opened) {
       for (const record of await this.scanAll(opened.harness)) {
@@ -1638,14 +1646,30 @@ export class Store {
     // VALIDATED pre-move manifest, not restoreArchive's second, unpinned
     // re-read — a manifest swapped in during the move can no longer skew
     // id/dbPath (cwd stays the validated realpath either way).
+    // run-7 B1-B: the create/rename choke points must hold for restores too
+    // — a planted manifest (the r18 same-user-planter threat) must not land a
+    // ~1MiB / control-char / reserved-'search' name or unbounded model strings
+    // in the catalog: they reach every tree() broadcast, notify titles and
+    // harness.root. A bad name degrades to a bounded fallback (the bundle
+    // stays restorable); model strings are bounded and stripped.
+    const rawName = pre?.name || manifest.name || "Untitled session";
+    const name = (() => {
+      try {
+        return assertSessionName(rawName) || "Untitled session";
+      } catch {
+        return `archived-${sessionId.slice(0, 8)}`;
+      }
+    })();
+    const boundModelish = (v: string | undefined): string | undefined =>
+      typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 200) || undefined : undefined;
     const row: SessionRow = {
       id: sessionId,
-      name: pre?.name || manifest.name || "Untitled session",
+      name,
       cwd: restoredCwd,
       dbPath: join(this.sessionsDir, sessionId, "agent.sqlite"),
       createdAt: pre?.createdAt ?? manifest.createdAt,
-      model: pre?.model ?? manifest.model,
-      provider: pre?.provider ?? manifest.provider,
+      model: boundModelish(pre?.model ?? manifest.model) ?? "faux",
+      provider: boundModelish(pre?.provider ?? manifest.provider) ?? "faux",
     };
     this.catalog.exec("BEGIN");
     try {
@@ -1668,15 +1692,29 @@ export class Store {
   async openAgent(row: SessionRow, create = false, thinkingLevel: ThinkingLevel = "medium") {
     const current = this.opened.get(row.id);
     if (current) return current.harness;
+    const epoch = this.archiveEpoch.get(row.id) ?? 0; // run-7 B1-A: liveness is re-checked at the arm point
     // R20 (run-6 h6): attempt-once — the memo was only read by the search
     // path, so every agent-touching request re-ran the FULL salvage (leader
     // probe: 5.0 s per request on a corrupt session, unbounded). Fail fast
     // from the recorded fault without touching storage.
     if (!create && this.salvageFailedSessions.has(row.id))
       throw new ApiFault("unavailable", this.errors.get(row.id) ?? "session database is unreadable (salvage failed)");
-    if (!create) await stat(row.dbPath);
-    await mkdir(dirname(row.dbPath), { recursive: true });
-    const unlock = lockFile(`${row.dbPath}.lock`);
+    let unlock: () => void;
+    try {
+      if (!create) await stat(row.dbPath);
+      await mkdir(dirname(row.dbPath), { recursive: true });
+      unlock = lockFile(`${row.dbPath}.lock`);
+    } catch (e) {
+      // run-7 B1-A (variant 3): archive() moved the session dir between the
+      // entry stat and here — mkdir may have just RESURRECTED an empty
+      // sessions/<id>/ husk that permanently blocks a later restore. When the
+      // epoch proves archive ran in the window, remove the husk and refuse.
+      if ((this.archiveEpoch.get(row.id) ?? 0) !== epoch) {
+        rmSync(dirname(row.dbPath), { recursive: true, force: true });
+        throw new ApiFault("unavailable", "session was archived while opening");
+      }
+      throw e;
+    }
     try {
       const shellEnv = Object.fromEntries(
         ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "TERM"].flatMap((k) =>
@@ -1792,6 +1830,15 @@ export class Store {
       row.model = rootModel.modelId;
       this.catalog.prepare("UPDATE sessions SET provider=?,model=? WHERE id=?").run(row.provider, row.model, row.id);
       const unsubscribe = harness.subscribeCommits(() => this.notify());
+      // run-7 B1-A: the row was ALIVE at entry, but archive() may have moved
+      // the session dir away while the opens above were awaiting — arming now
+      // would park a live harness over the archived bundle (post-archive
+      // writes, mis-bound restores, silent loss when gc unlinks it).
+      if ((this.archiveEpoch.get(row.id) ?? 0) !== epoch) {
+        await harness.close(ctx).catch(() => {});
+        unlock();
+        throw new ApiFault("unavailable", "session was archived while opening");
+      }
       this.opened.set(row.id, { harness, unlock, unsubscribe, jobs, addons });
       this.errors.delete(row.id);
       // pi-durable 1.2+: any failed Storage call closes the Session, without waiting for the next event.

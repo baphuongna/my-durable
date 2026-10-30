@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Store } from "../src/store.js";
+import { faux, tempStore } from "./helpers.js";
 
 test("restore refuses a manifest cwd outside the start dirs (create-parity choke point)", async () => {
   const root = mkdtempSync(join(tmpdir(), "dpi-restore-r18-"));
@@ -115,4 +116,64 @@ test("run-7 D6: FIFO and /dev/zero manifest plants return undefined without bloc
   assert.equal(readArchiveManifest(zeroBundle), undefined, "endless-device symlink degrades, never grows");
   assert.ok(Date.now() - t0 < 1000, `both plants settled fast (${Date.now() - t0}ms)`);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("run-7 B1-A: a reopen racing archive() must not re-arm over the moved bundle", async () => {
+  const t = await tempStore();
+  const store = await Store.open({ ...t.options, name: "b1-race-box" });
+  try {
+    let reArmed = 0;
+    let refused = 0;
+    for (let i = 0; i < 5; i++) {
+      const row = await store.create({ name: "race-" + i, cwd: "project", model: faux } as never);
+      await store.archive(store.row(row.id) as never); // make the row un-opened
+      const restored = await store.restoreArchivedSession(row.id);
+      // the race: openAgent in flight while archive completes mid-open
+      const opening = (store as unknown as { openAgent: (r: never) => Promise<unknown> }).openAgent(store.row(restored.id) as never);
+      opening.catch(() => {}); // the rejection may land before the await below
+      await store.archive(store.row(restored.id) as never);
+      try {
+        await opening;
+        if ((store as unknown as { opened: Map<string, unknown> }).opened.has(restored.id)) reArmed++;
+      } catch {
+        refused++; // any refusal (epoch guard or the archived-away storage) is the safe outcome
+      }
+    }
+    assert.equal(reArmed, 0, "no live harness may sit over an archived bundle");
+    assert.ok(refused >= 1, "the racing reopen is refused with the archiving reason");
+  } finally {
+    await store.close().catch(() => {});
+    await t.cleanup();
+  }
+});
+
+test("run-7 B1-B: planted manifest names degrade through the restore choke point", async () => {
+  const t = await tempStore();
+  const store = await Store.open({ ...t.options, name: "b1-name-box" });
+  try {
+    const row = await store.create({ name: "plantme", cwd: "project", model: faux } as never);
+    await store.archive(store.row(row.id));
+    // plant hostile names into the archived bundle's manifest, one at a time
+    const bundleRoot = (store as unknown as { archiveDir: string }).archiveDir;
+    const { readdirSync } = await import("node:fs");
+    const bundleName = readdirSync(bundleRoot).find((n) => n.startsWith(row.id));
+    assert.ok(bundleName, "bundle exists");
+    const { readArchiveManifest, writeArchiveManifest } = await import("../src/archived.js");
+    for (const bad of ["search", "a\nb", "x".repeat(500_000)]) {
+      // re-find the bundle EVERY round: the restore below moves it away and
+      // the re-archive mints a fresh <id>-<ts> name
+      const current = readdirSync(bundleRoot).find((n) => n.startsWith(row.id))!;
+      const m = readArchiveManifest(join(bundleRoot, current))!;
+      writeArchiveManifest(join(bundleRoot, current), { ...m, name: bad });
+      const restored = await store.restoreArchivedSession(row.id);
+      const listed = store.list().find((s) => s.id === restored.id)!;
+      assert.ok(typeof listed.name === "string" && listed.name.length <= 80, "name is bounded");
+      assert.notEqual(listed.name.toLowerCase(), "search", "reserved name never lands");
+      assert.ok(!/[\u0000-\u001f\u007f]/.test(listed.name), "control characters never land");
+      await store.archive(store.row(restored.id) as never); // re-archive for the next plant
+    }
+  } finally {
+    await store.close().catch(() => {});
+    await t.cleanup();
+  }
 });
