@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir, hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { writePrivateFileAtomic } from "../../dpi-sdk/src/node/private-file.js";
 
 export interface BackendConfig {
@@ -66,8 +66,12 @@ export async function loadConfig(argv = process.argv.slice(2), env = process.env
     home,
     envFile,
     dataDir: resolve(expand(flag("--data-dir", env.DPI_DATA_DIR ?? join(home, "backend")))),
+    // run-8 (live): splitting on ":" made Windows start dirs impossible — a
+    // drive path IS "D:\…", so `D:\source` became "D" + "\source" and every
+    // Windows host was silently limited to the default ~/dpi-work. Use the
+    // platform's list separator (";" on win32, ":" elsewhere).
     startDirs: flag("--start-dirs", env.DPI_START_DIRS ?? "~/dpi-work")
-      .split(":")
+      .split(delimiter)
       .filter(Boolean)
       .map((p) => resolve(expand(p))),
     provider: (env.DPI_PROVIDER ?? "openrouter") === "faux" ? "faux" : "openrouter",

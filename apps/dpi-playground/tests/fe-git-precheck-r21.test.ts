@@ -173,6 +173,8 @@ test("run-8 (live report): the un-served-folder verdict is a callout, never a re
   assert.match(src, /const unserved = computed/, "the verdict is detected");
   assert.match(src, /v-if="unserved"/, "it renders its own branch");
   assert.match(src, /DPI_START_DIRS/, "it names the fix");
+  assert.match(src, /session and its history are intact/, "it says nothing has to be recreated");
+  assert.match(src, /winDevice \? .setx DPI_START_DIRS/, "it gives the platform-correct command");
   // the retry button must not be the only affordance for this verdict
   assert.match(src, /v-else-if="error"[\s\S]{0,80}retry/, "retry stays for transient errors only");
 });

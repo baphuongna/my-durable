@@ -48,6 +48,14 @@ const loading = computed(() => entry.value.loading);
 /** run-8 (live report): a folder the device does not serve is NOT a transient
  *  failure — a retry re-runs the same local verdict forever. Render it as a
  *  callout that names the served dirs and says what would actually fix it. */
+/** Device platform decides the DPI_START_DIRS separator in the hint. */
+const winDevice = computed(() =>
+  String(
+    (network.devices.value.find((d) => d.id === devId.value) as { info?: { platform?: unknown } } | undefined)?.info
+      ?.platform ?? "",
+  ).startsWith("win32"),
+);
+
 const unserved = computed(() => {
   const e = entry.value;
   if (!e.error || !/start dirs/i.test(e.error)) return "";
@@ -915,12 +923,17 @@ const laneX = (lane: number) => lane * 12 + 7;
            fixed by retrying — name the roots it does serve and the real fix. -->
       <div v-if="unserved" class="message-error">
         <p>
-          <strong>{{ cwd }}</strong> is not served by this device — its start dirs are
+          <strong>{{ cwd }}</strong> is outside the folders this device serves — it serves
           <code>{{ unserved }}</code>.
         </p>
         <p class="muted-line">
-          Add the folder to <code>DPI_START_DIRS</code> on the device (then restart it), or open a session under one of
-          the served folders. Retrying will not change this.
+          Your session and its history are intact, and the agent still runs in that folder; only the Git and Files panels
+          (the device's HTTP surface) are confined. Nothing has to be recreated: add the folder to
+          <code>DPI_START_DIRS</code> and restart the device, and this panel works again for the same session.
+        </p>
+        <p class="muted-line">
+          Example ({{ winDevice ? "Windows: separate with ;" : "Linux/macOS: separate with :" }}) —
+          <code>{{ winDevice ? "setx DPI_START_DIRS \"%USERPROFILE%\\dpi-work;D:\\source\"" : "DPI_START_DIRS=\"$HOME/dpi-work:/srv/src\"" }}</code>
         </p>
       </div>
       <p v-else-if="error" class="message-error">{{ error }} <button @click="refresh()">retry</button></p>

@@ -48,3 +48,21 @@ test("a user-provided short DPI_TOKEN is refused, never silently rotated", async
     /shorter than 32/,
   );
 });
+
+test("run-8 (live): DPI_START_DIRS uses the platform list separator — a Windows drive path is not split", async () => {
+  const { delimiter } = await import("node:path");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { loadConfig } = await import("../src/config.ts");
+  const home = mkdtempSync(join(tmpdir(), "dpi-cfg-"));
+  const work = mkdtempSync(join(tmpdir(), "dpi-work-"));
+  const other = mkdtempSync(join(tmpdir(), "dpi-work2-"));
+  const cfg = await loadConfig(["--port", "4799"], { DPI_HOME: home, DPI_START_DIRS: `${work}${delimiter}${other}` } as never);
+  assert.equal(cfg.startDirs.length, 2, `two entries, got ${JSON.stringify(cfg.startDirs)}`);
+  assert.ok(cfg.startDirs.some((d) => d.endsWith(work.split(/[\\/]/).pop()!)));
+  assert.ok(cfg.startDirs.some((d) => d.endsWith(other.split(/[\\/]/).pop()!)));
+  // a drive-letter shaped value must survive as ONE entry (the bug: "D:\x" -> ["D","\x"])
+  const driveCfg = await loadConfig(["--port", "4799"], { DPI_HOME: home, DPI_START_DIRS: "D:\\source" } as never);
+  assert.equal(driveCfg.startDirs.length, delimiter === ";" ? 1 : 2);
+});
