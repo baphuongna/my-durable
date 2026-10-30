@@ -2004,18 +2004,30 @@ export class Store {
     // version (git truth, not snapshots) and re-apply the recorded tool calls
     // in order; a turn's ±n is the net line delta at its boundary.
     const lines = (t: string | null | undefined) => (t == null ? 0 : t.split("\n").length - (t.endsWith("\n") ? 1 : 0));
-    let root = "";
+    // run-7 cold-2 M3: this was the ONE git effect skipping the confinement
+    // the store itself installs — discovery could walk up out of a start-dir
+    // slice (or a planted .git gitdir redirect) and make `git show HEAD:<rel>`
+    // an existence oracle over an OUTSIDE repo, with rel bounded against the
+    // foreign root. Resolve the pin through the same guard, pin both spawns,
+    // and bound rel against the PINNED (validated) worktree.
+    const { resolveRepoPin } = await import("./git.js");
+    let pin: Awaited<ReturnType<typeof resolveRepoPin>> = undefined;
     try {
-      root = (await git(row.cwd, ["rev-parse", "--show-toplevel"])).trim();
-    } catch {
-      root = row.cwd;
+      pin = await resolveRepoPin(row.cwd);
+    } catch (e) {
+      // Only the CONFINEMENT refusal ends the answer: outside the sandbox
+      // there are no git turns and no oracle. A plain non-repo (the common
+      // case before the first commit) keeps the old no-pin fallback.
+      if (String((e as Error).message).includes("start dirs")) return [];
     }
+    const root = pin?.workTree ?? row.cwd;
+    const gP = (args: string[]) => git(row.cwd, args, undefined, pin);
     const headOf = async (p: string) => {
       const abs = resolve(row.cwd, p);
       const rel = relative(root, abs);
       if (!rel || rel.startsWith("..")) return null;
       try {
-        return await git(row.cwd, ["show", `HEAD:${rel}`]);
+        return await gP(["show", `HEAD:${rel}`]);
       } catch {
         return null;
       }

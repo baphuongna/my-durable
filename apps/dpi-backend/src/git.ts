@@ -284,15 +284,20 @@ function ensureWatcher(root: string) {
  *  index/objects/status belong to the outside repo (leader-probed: ` D
  *  outside-secret.txt` leaked through). BOTH the toplevel and the absolute
  *  git dir must live under the start dirs. */
-async function resolveRepoPin(path: string): Promise<RepoPin | undefined> {
+export async function resolveRepoPin(path: string): Promise<RepoPin | undefined> {
   if (!repoRootAllowed) return undefined;
   const [topLevel, gitDir] = await Promise.all([
     git(path, ["rev-parse", "--show-toplevel"]),
     git(path, ["rev-parse", "--absolute-git-dir"]),
   ]);
   const pin: RepoPin = { gitDir: gitDir.trim(), workTree: topLevel.trim() };
-  if (!(await repoRootAllowed(pin.workTree)) || !(await repoRootAllowed(pin.gitDir)))
-    throw Error("repo root lives outside the start dirs");
+  // R23 (operator decision): durable-pi WRAPS pi/pi-durable — the agent is
+  // unsandboxed by design (full user shell/fs), so the gitdir-redirect class
+  // is not an escalation for it, and refusing gitdirs outside the start dirs
+  // broke legitimate linked worktrees. Confinement now scopes only the DEVICE
+  // REST surface: the walk-up case (git DISCOVERY adopts a toplevel outside
+  // the start dirs) — a viewer must not read a repo the device never served.
+  if (!(await repoRootAllowed(pin.workTree))) throw Error("repo root lives outside the start dirs");
   return pin;
 }
 
@@ -342,10 +347,10 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     // read as "not a repository" under a real repo.
     // The discovered root is an ATTACKER-REACHABLE fact (any contained
     // subdirectory of a repo reaches it): clamp before anything repo-wide
-    // runs. run-7 B3: BOTH the toplevel and the gitdir must sit under the
-    // start dirs (a planted .git gitdir redirect names the sandbox dir as
-    // toplevel while the index belongs outside). resolveRepoPin also PINS
-    // every later spawn (GIT_DIR/GIT_WORK_TREE) so discovery never re-runs.
+    // runs — a REMOTE VIEWER must not read a repo the device never served.
+    // R23: toplevel-only (the gitdir condition broke linked worktrees and
+    // treated the unsandboxed local agent as a racer — see resolveRepoPin).
+    // The pin rides GIT_DIR/GIT_WORK_TREE into every later spawn regardless.
     let pin: RepoPin | undefined;
     try {
       pin = await resolveRepoPin(path);
@@ -585,8 +590,9 @@ export async function gitOp(
     case "log-list": {
       // IntelliJ's log window: hash, refs, author, date, subject — structured.
       // %p = parents — the swimlane graph is computed from these on the UI.
-      const raw = await git(
-        path,
+      // run-7 cold-2 M1: pinned like every other spawn — the bare git() here
+      // re-ran .git discovery, reopening the TOCTOU M3 exists to close.
+      const raw = await g(
         ["--no-pager", "log", "-n", "50", "--date=short", "--pretty=format:%h%x1f%D%x1f%an%x1f%ad%x1f%s%x1f%p"],
       );
       return {
@@ -739,7 +745,7 @@ export async function gitOp(
       if (!title) throw Error("pr-create needs a title (message)");
       const args = ["pr", "create", "--title", title.slice(0, 200), "--body", (body ?? title).slice(0, 4000)];
       if (ref && safeRef(ref)) args.push("--base", ref);
-      return { text: (await gh(path, args, GIT_SLOW_TIMEOUT)).trim() };
+      return { text: (await ghP(args, GIT_SLOW_TIMEOUT)).trim() }; // run-7 cold-2 M2: pinned like its pr-* siblings
     }
     case "pr-list": {
       const raw = await ghP(["pr", "list", "--limit", "20", "--json", "number,title,state,isDraft,headRefName,url"]);

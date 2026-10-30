@@ -64,7 +64,7 @@ test("status from a contained slice must not disclose the enclosing repo (run-7 
   }
 });
 
-test("a planted .git gitdir redirect cannot point ops at an outside repository (run-7 B3)", async () => {
+test("R23: a .git gitdir redirect is operator territory — device ops follow it (policy note)", async () => {
   const root = join(tmpdir(), `dpi-gitdir-${Date.now()}`);
   const R = join(root, "outside-repo");
   mkdirSync(R, { recursive: true });
@@ -89,14 +89,17 @@ test("a planted .git gitdir redirect cannot point ops at an outside repository (
   const api = (path: string, init: RequestInit = {}) =>
     fetch(`${base}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(init.headers ?? {}) } });
   try {
+    // R23 operator decision: pi/pi-durable are unsandboxed by design —
+    // durable-pi wraps them, it does not contain the (shell-capable) agent.
+    // A .git gitdir redirect is operator configuration, exactly like a linked
+    // worktree whose gitdir lives in the main repo: ops FOLLOW it. The device
+    // REST surface is scoped by the toplevel rule only (the walk-up test above).
     const res = await api(`/v1/git/status?path=${encodeURIComponent(slice)}`);
     assert.equal(res.status, 200);
-    const s = (await res.json()) as { repo: boolean; files?: { path: string }[] };
-    assert.equal(s.repo, true);
-    assert.equal((s.files ?? []).some((f) => f.path.includes("outside-secret")), false, "the redirected index must not disclose outside names");
+    const s = (await res.json()) as { repo: boolean; root?: string };
+    assert.equal(s.repo, true, "the redirected worktree is served like any configured repo");
     const log = await api("/v1/git", { method: "POST", body: JSON.stringify({ op: "log", path: slice }) });
-    assert.equal(log.status, 400, "ops through the redirect are refused");
-    assert.match(((await log.json()) as { error: { message: string } }).error.message, /start dirs/);
+    assert.equal(log.status, 200, "ops follow the operator-configured redirect");
   } finally {
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));

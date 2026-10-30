@@ -113,6 +113,11 @@ function capLiveText(text: string): string {
 
 export function applyMessageChange(message: WireAssistantMessage, change: WireMessageChange): WireAssistantMessage {
   if (change.type === "message") return structuredClone(change.message);
+  // run-7 cold-2 m4: a hostile toolcall_delta path array builds one nested
+  // object PER element — bound the depth and each key before any allocation.
+  const p = (change as { path?: unknown }).path;
+  if (p !== undefined && (!Array.isArray(p) || p.length > 64 || p.some((k) => typeof k === "string" && k.length > 256)))
+    return message;
   const content = [...message.content] as WireAssistantBlock[];
   const i = change.contentIndex;
   // R19 (run-5 h10, leader-probed): the wire number was indexed raw — any
