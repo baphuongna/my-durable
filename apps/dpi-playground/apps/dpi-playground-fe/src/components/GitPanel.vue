@@ -45,6 +45,17 @@ const devId = computed(() => props.deviceId ?? deviceId.value);
 const entry = computed(() => gitEntry(devId.value || "?", cwd.value || "?"));
 const status = computed(() => entry.value.status);
 const loading = computed(() => entry.value.loading);
+/** run-8 (live report): a folder the device does not serve is NOT a transient
+ *  failure — a retry re-runs the same local verdict forever. Render it as a
+ *  callout that names the served dirs and says what would actually fix it. */
+const unserved = computed(() => {
+  const e = entry.value;
+  if (!e.error || !/start dirs/i.test(e.error)) return "";
+  const dirs = (network.devices.value.find((d) => d.id === devId.value) as
+    | { info?: { startDirs?: unknown } }
+    | undefined)?.info?.startDirs;
+  return Array.isArray(dirs) && dirs.length ? dirs.map(String).join(", ") : "";
+});
 const refreshing = computed(() => entry.value.refreshing);
 const error = computed(() => entry.value.error);
 const sessionId = computed(() => {
@@ -900,7 +911,19 @@ const laneX = (lane: number) => lane * 12 + 7;
     <template v-else>
       <p v-if="loading" class="hint">loading git…</p>
       <p v-else-if="refreshing" class="muted-line">refreshing…</p>
-      <p v-if="error" class="message-error">{{ error }} <button @click="refresh()">retry</button></p>
+      <!-- run-8 (live report): a folder the DEVICE does not serve can never be
+           fixed by retrying — name the roots it does serve and the real fix. -->
+      <div v-if="unserved" class="message-error">
+        <p>
+          <strong>{{ cwd }}</strong> is not served by this device — its start dirs are
+          <code>{{ unserved }}</code>.
+        </p>
+        <p class="muted-line">
+          Add the folder to <code>DPI_START_DIRS</code> on the device (then restart it), or open a session under one of
+          the served folders. Retrying will not change this.
+        </p>
+      </div>
+      <p v-else-if="error" class="message-error">{{ error }} <button @click="refresh()">retry</button></p>
 
       <div v-if="status" :class="{ stale: !!error || !!refreshing }">
         <p v-if="!status.repo" class="hint">Not a git repository — run <code>git init</code> (or open a session inside a repo).</p>

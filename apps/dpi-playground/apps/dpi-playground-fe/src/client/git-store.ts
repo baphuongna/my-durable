@@ -6,6 +6,7 @@ import { reactive, watch } from "vue";
 import type { GitStatus } from "@sdk/client";
 import { deviceClient } from "./hub";
 import { network } from "./store";
+import { pathUnderStartDirs } from "./git-rules";
 
 export interface GitEntry {
   at: number; // last settled fetch (0 = never)
@@ -39,16 +40,8 @@ function gitPathAllowed(deviceId: string, path: string): boolean {
   const dev = network.devices.value.find((d) => d.id === deviceId) as
     | { info?: { startDirs?: unknown; platform?: unknown } }
     | undefined;
-  const dirs = dev?.info?.startDirs;
-  if (!Array.isArray(dirs) || dirs.length === 0) return true;
-  const win = String(dev?.info?.platform ?? "").startsWith("win32");
-  const norm = (p: string) =>
-    win ? p.trim().replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase() : p.trim().replace(/\/+$/, "");
-  const a = norm(path);
-  return dirs.some((raw) => {
-    const b = norm(String(raw));
-    return !!b && (a === b || a.startsWith(win ? b + "\\" : b + "/"));
-  });
+  // One rule, shared with the client wrapper (client/git-rules.ts).
+  return pathUnderStartDirs(dev?.info, path);
 }
 
 /**

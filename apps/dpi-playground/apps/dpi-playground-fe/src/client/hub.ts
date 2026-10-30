@@ -3,14 +3,15 @@
 import { DpiClient } from "@sdk/client";
 import { DpiError } from "@sdk/errors";
 import type { ErrorCode, NetworkDevice } from "@sdk/api";
-import { notify } from "./store";
+import { network, notify } from "./store";
+import { outsideStartDirsReason, pathUnderStartDirs, type GitDeviceFacts } from "./git-rules";
 
 // R13 (R9-6.3 FE): the collapse of identical un-keyed creates is an accepted
 // retry-safety tradeoff — but it must be VISIBLE. The device's replay verdict
 // rides the tunnel envelope, the hub surfaces Idempotent-Replay, and the SDK
 // hook turns it into a toast naming the escape hatch (own idempotency-key).
 let replayToastAt = 0;
-export const deviceClient = (id: string) =>
+const rawDeviceClient = (id: string) =>
   new DpiClient(`/api/devices/${encodeURIComponent(id)}`, undefined, {
     onIdempotentReplay: (path) => {
       // Replays can arrive in bursts (a re-connected UI re-firing identical
@@ -20,6 +21,29 @@ export const deviceClient = (id: string) =>
       notify(`Replayed an earlier identical request (${path}) — send a custom idempotency key for deliberate repeats.`);
     },
   });
+
+/**
+ * run-8 (live console report): EVERY git caller goes through here, so the
+ * start-dirs pre-check belongs here too — not only in the git store. Panels
+ * that call gitOp directly (commit log, PR list, toolbar ops) used to send
+ * doomed requests for a project left over from other start dirs and answer 400
+ * on every mount and every network frame. A rejected call never leaves the tab:
+ * the operator sees the verdict instead of a network error storm.
+ */
+export const deviceClient = (id: string) => {
+  const client = rawDeviceClient(id);
+  const facts = (): GitDeviceFacts | undefined =>
+    (network.devices.value as { id: string; info?: GitDeviceFacts }[]).find((d) => d.id === id)?.info;
+  const rawGitOp = client.gitOp.bind(client);
+  client.gitOp = ((path: string, op: never, opts?: never) => {
+    const info = facts();
+    if (info && path && !pathUnderStartDirs(info, path)) {
+      return Promise.reject(new DpiError("invalid", `git ${op} skipped: ${outsideStartDirsReason(info)}`, 400));
+    }
+    return rawGitOp(path, op, opts);
+  }) as typeof client.gitOp;
+  return client;
+};
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const r = await fetch(`/api${path}`, {
