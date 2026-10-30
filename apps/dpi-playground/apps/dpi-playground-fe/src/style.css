@@ -2072,32 +2072,86 @@ textarea.app-state-json {
   }
 }
 @media (max-width: 740px) {
-  .shell {
-    height: auto;
-    min-height: 100dvh;
-    overflow: visible;
-  }
+  /* ONE compact header, NOTHING removed (user: tinh gọn, không lược tính
+     năng): brand · connection chip · bell · help · tree/inspector toggles ·
+     New session — all present on a single 42px row. Smaller logo, buttons
+     and gaps; chips ellipsize instead of wrapping (a wrapping auto-height
+     header used to win the cascade from later blocks and eat a quarter of
+     the screen). Every other ≤740 .topbar rule is deleted — this block and
+     the width≤1100 padding tweak above are the only ones. */
   .topbar {
     position: static;
-    padding: 0 12px;
-    height: 58px;
-    min-height: 58px;
+    flex-wrap: nowrap;
+    gap: 5px;
+    padding: 0 6px;
+    height: 42px;
+    min-height: 42px;
+    max-height: 42px;
     flex: 0 0 auto;
+    overflow: hidden;
   }
   .brand {
-    gap: 8px;
+    gap: 4px;
+    min-width: 0;
+  }
+  .brandmark {
+    width: 28px;
+    height: 16px;
+    margin-left: 0;
+    flex-shrink: 0;
   }
   .brand strong {
-    font-size: 1rem;
+    font-size: 0.875rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .brand-separator,
   .brand > .muted,
-  .version,
-  .connection {
+  .version {
     display: none;
   }
   .top-actions {
-    gap: 5px;
+    margin-left: auto;
+    gap: 3px;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .top-actions .icon-button {
+    width: 28px;
+    height: 28px;
+    padding: 3px;
+    flex-shrink: 0;
+  }
+  .chip.connection {
+    min-height: 24px;
+    padding: 0 7px;
+    gap: 4px;
+    font-size: 0.6875rem;
+    max-width: 116px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .usage-chip {
+    font-size: 0.6875rem;
+    max-width: 88px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .top-actions .primary.small {
+    padding: 0 8px;
+    min-height: 26px;
+    gap: 3px;
+    font-size: 0.8125rem;
+    flex-shrink: 0;
+  }
+  .error-banner {
+    padding: 6px 10px;
+    gap: 6px;
+    font-size: 0.8125rem;
   }
   .workspace {
     display: flex;
@@ -2409,16 +2463,7 @@ button:disabled {
   .inspector {
     max-height: 60vh;
   }
-  .topbar {
-    min-height: 68px;
-    height: 68px;
-  }
-  .top-actions .icon-button {
-    display: none;
-  }
-  .brand strong {
-    font-size: 1rem;
-  }
+  /* topbar height: owned by the compact block in the ≤740 shell section */
   .model-button img {
     width: 40px;
     height: 40px;
@@ -2865,17 +2910,9 @@ textarea::placeholder {
   min-height: 38px;
 }
 @media (max-width: 740px) {
-  .topbar {
-    height: auto;
-    flex-wrap: wrap;
-    gap: 12px;
-    padding: 12px 16px;
-  }
-  .top-actions {
-    margin-left: auto;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
+  /* topbar layout lives in ONE place (the compact block in the ≤740 shell
+     section above) — a wrapping auto-height header used to win the cascade
+     here and eat a quarter of the screen. */
   .chat-header-actions {
     width: 100%;
     justify-content: flex-start;

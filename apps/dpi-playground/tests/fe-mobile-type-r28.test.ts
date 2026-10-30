@@ -81,7 +81,7 @@ test("R28 ui scale: the 6-band zoom curve, --uiz per band, compensated heights o
     "≤740: fixed-height, non-scrolling shell",
   );
   assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.net-workspace\s*\{\s*overflow: hidden;/, "workspace never scrolls the page");
-  assert.match(s, /\.topbar\s*\{\s*position: static;\s*padding: 0 12px;\s*height: 58px;\s*min-height: 58px;\s*flex: 0 0 auto;/, "header is a pinned flex row");
+  assert.match(s, /\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;[\s\S]*?height: 42px;[\s\S]*?flex: 0 0 auto;/, "header is a pinned 42px flex row");
   assert.match(s, /max-height: calc\(55vh \/ 0\.82\)/, "inspector cap compensated ≤740");
   assert.match(s, /max-height: calc\(55vh \/ 0\.78\)/, "inspector cap compensated ≤550");
   assert.match(s, /@supports not \(zoom: 2\)\s*\{\s*@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
@@ -102,4 +102,24 @@ test("R28 keyboard: visual-viewport shell, 16px inputs, resize meta", () => {
   const main = readFileSync(join(FE, "main.ts"), "utf8");
   assert.match(main, /visualViewport/, "iOS: visualViewport is measured…");
   assert.match(main, /--vvh/, "…and fed to the shell heights");
+});
+
+test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed to wrap", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // the single compact row (user: tinh gọn chứ không lược tính năng)
+  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;\s*gap: 5px;\s*padding: 0 6px;\s*height: 42px;\s*min-height: 42px;\s*max-height: 42px;/, "one 42px pinned row");
+  // history: three competing ≤740 .topbar rules (58px, 68px, wrap+auto) used to
+  // fight over the cascade — the LAST one (wrap, auto height) ate a quarter of
+  // the screen. Only the base and the compact row may size the mobile topbar.
+  assert.equal([...s.matchAll(/min-height:\s*68px/g)].length, 0, "the 68px header is gone");
+  assert.doesNotMatch(s, /\.topbar\s*\{[^}]*height:\s*auto/, "no auto-height topbar anywhere");
+  assert.doesNotMatch(s, /\.topbar\s*\{[^}]*flex-wrap:\s*wrap/, "the topbar never wraps on any width");
+  // feature pin: the icon buttons are NEVER display:none on mobile (an old
+  // rule hid the bell + help there) and the chips/toggles stay
+  assert.doesNotMatch(s, /\.top-actions \.icon-button\s*\{\s*display:\s*none/, "bell/help/toggles stay visible");
+  assert.doesNotMatch(s, /\.chip\.connection,\s*\.usage-chip\s*\{\s*display:\s*none/, "connection + usage chips stay visible");
+  // compact sizing of every element that stays
+  assert.match(s, /\.brandmark\s*\{\s*width: 28px;\s*height: 16px;/, "smaller logo");
+  assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 116px;[^}]*text-overflow: ellipsis;/, "connection chip ellipsizes");
+  assert.match(s, /\.top-actions \.primary\.small\s*\{\s*padding: 0 8px;\s*min-height: 26px;/, "compact New session");
 });
