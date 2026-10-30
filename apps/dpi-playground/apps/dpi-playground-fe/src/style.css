@@ -3287,26 +3287,26 @@ select:focus {
    Engines without standardised zoom (Safari < 17.4) ignore it and fall back
    to the all-rem type scale at the bottom: text-only shrink, still coherent. */
 @media (max-width: 1599px) {
-  :root { zoom: 0.95; }
-  :root .shell { height: calc(100dvh / 0.95); }
+  :root { zoom: 0.95; --uiz: 0.95; }
+  :root .shell { height: var(--vvh, calc(100dvh / 0.95)); }
 }
 @media (max-width: 1199px) {
-  :root { zoom: 0.9; }
-  :root .shell { height: calc(100dvh / 0.9); }
+  :root { zoom: 0.9; --uiz: 0.9; }
+  :root .shell { height: var(--vvh, calc(100dvh / 0.9)); }
 }
 @media (max-width: 899px) {
-  :root { zoom: 0.85; }
-  :root .shell { height: calc(100dvh / 0.85); }
+  :root { zoom: 0.85; --uiz: 0.85; }
+  :root .shell { height: var(--vvh, calc(100dvh / 0.85)); }
 }
 @media (max-width: 740px) {
-  :root { zoom: 0.82; }
+  :root { zoom: 0.82; --uiz: 0.82; }
   /* The shell IS the screen: fixed height, never scrolls — the topbar and
      the bottom nav are ordinary flex rows so they stay pinned, and the
      active pane (chat-scroll / inspector / tree drawer) scrolls inside.
      The old height:auto + overflow:visible let the DOCUMENT scroll, which
      carried the bottom bar away with the content (live report). */
   :root .shell {
-    height: calc(100dvh / 0.82);
+    height: var(--vvh, calc(100dvh / 0.82));
     min-height: 0;
     overflow: hidden;
   }
@@ -3319,9 +3319,9 @@ select:focus {
   }
 }
 @media (max-width: 550px) {
-  :root { zoom: 0.78; }
+  :root { zoom: 0.78; --uiz: 0.78; }
   :root .shell {
-    height: calc(100dvh / 0.78);
+    height: var(--vvh, calc(100dvh / 0.78));
     min-height: 0;
   }
   .inspector {
@@ -3340,5 +3340,25 @@ select:focus {
     :root {
       font-size: 12.5px;
     }
+  }
+}
+
+/* ── Keyboard: the form must survive the soft keyboard ────────────────────
+   Two live failure modes when an input gets focus on a phone:
+   1. iOS auto-zooms the whole viewport when the focused control renders
+      under 16px — under the ui zoom every input did, so the page "exploded".
+      Raise inputs to a RENDERED 16px (16px / zoom in root coordinates).
+      Scoped component styles have higher specificity, hence !important.
+   2. The shell must shrink to the space ABOVE the keyboard, not stay
+      viewport-tall behind it. index.html declares
+      interactive-widget=resizes-content (Android/Chrome: the layout viewport
+      then resizes, so 100dvh follows); iOS never resizes its layout viewport,
+      so main.ts measures visualViewport and feeds --vvh, which the shell
+      heights above prefer over 100dvh. */
+@media (max-width: 1599px) {
+  input,
+  textarea,
+  select {
+    font-size: calc(16px / var(--uiz, 1)) !important;
   }
 }

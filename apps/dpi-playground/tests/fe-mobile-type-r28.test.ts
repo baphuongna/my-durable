@@ -1,14 +1,18 @@
-// R28 (live, two rounds of user verdicts): 16px type was oversized on phones;
-// a phone-only shrink was half-done (small words, desktop chrome); the final
-// ask was a uniformly smaller ui on EVERY screen. The shipped answer:
-//   - the whole app renders at a viewport-dependent zoom (6 bands, 0.05 steps);
-//   - every band divides the shell's viewport height by its own factor
-//     (zoom multiplies rendered lengths — an uncompensated 100dvh strands a
-//     dead strip above the tab bar);
-//   - the shell rules use `:root .shell`, because network.css' ≤760
-//     `.shell{height:100dvh}` loads later and dead-striped 741–760px;
-//   - engines without standardised zoom fall back to the all-rem type scale.
-// This file pins that contract on SOURCE, so it survives every refactor.
+// R28 (live, four rounds of user verdicts): oversized phone text; a
+// phone-only shrink was half-done; "make it uniformly small on every
+// screen"; the bottom bar/header/sidebar scrolled away on mobile; the form
+// broke when the soft keyboard opened. The shipped answer, all pinned here:
+//   1. every font-size rides rem (base 16px + the fallback knob = only px);
+//   2. the whole app renders at a 6-band zoom curve, steps of 0.05, no cliff;
+//   3. each band divides the shell viewport height by its factor
+//      (`:root .shell` — network.css' ≤760 .shell rule loads later);
+//   4. ≤740 the shell IS the screen (fixed height, overflow hidden) — the
+//      document never scrolls, topbar/mnav are pinned flex rows;
+//   5. the soft keyboard: shell height prefers the JS-measured visual
+//      viewport (--vvh), Android resizes the layout viewport via the
+//      interactive-widget meta, and inputs render a 16px minimum so iOS
+//      never auto-zooms the form on focus.
+// Static source contract — survives every refactor.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -27,62 +31,75 @@ function* walk(dir: string): Generator<string> {
 const files = [...walk(FE)];
 assert.ok(files.length > 10, `walked the real FE tree (${files.length} css/vue files)`);
 
-test("R28 type scale: every font-size is rem except the sanctioned :root base", () => {
+const BANDS: [number, string][] = [
+  [1599, "0.95"],
+  [1199, "0.9"],
+  [899, "0.85"],
+  [740, "0.82"],
+  [550, "0.78"],
+];
+const media = (mw: number) => `@media \\(max-width: ${mw}px\\)`;
+
+test("R28 type scale: every font-size is rem except sanctioned bases", () => {
   const offenders: string[] = [];
   for (const f of files) {
     const s = readFileSync(f, "utf8");
     for (const m of s.matchAll(/font-size:\s*([^;}\n]+)/g)) {
       const v = m[1]!.trim();
       const inStyle = f.endsWith("style.css");
-      const rem = /^[\d.]+rem( !important)?$/.test(v) || /^clamp\([\d.]+rem,/.test(v); // rem or rem-clamp
-      const sanctioned = (v === "16px" || v === "13.5px" || v === "12.5px") && inStyle;
+      const rem = /^[\d.]+rem( !important)?$/.test(v) || /^clamp\([\d.]+rem,/.test(v);
+      const sanctioned =
+        inStyle && (v === "16px" || v === "13.5px" || v === "12.5px" || v === "calc(16px / var(--uiz, 1)) !important");
       if (!rem && !sanctioned) offenders.push(`${f.replace(FE, "")}: ${v}`);
     }
   }
   assert.deepEqual(offenders, [], "non-rem font-size found (raw px ignores the scale; em/% compound)");
   const bases = files.filter((f) => readFileSync(f, "utf8").includes("font-size: 16px"));
   assert.deepEqual(bases, [join(FE, "style.css")], "the 16px base lives only in style.css");
-  // the hero clamp is rem too, so even the display headline follows the knob
   assert.doesNotMatch(readFileSync(join(FE, "style.css"), "utf8"), /font-size:\s*clamp\([^)]*px/);
 });
 
-test("R28 ui scale: one zoom curve for EVERY screen, heights compensated, fallback pinned", () => {
+test("R28 ui scale: the 6-band zoom curve, --uiz per band, compensated heights on :root .shell", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  const esc = (t: string) => t.replace(/\./g, "\\.");
-  // the curve itself — six bands, 0.05 apart, no cliff at 740
-  for (const [mw, z] of [[1599, "0.95"], [1199, "0.9"], [899, "0.85"], [740, "0.82"], [550, "0.78"]] as const)
+  for (const [mw, z] of BANDS) {
+    const zs = z.replace(".", "\\.");
+    // the band declares zoom AND its factor
+    assert.match(s, new RegExp(`${media(mw)}\\s*\\{\\s*:root\\s*\\{\\s*zoom: ${zs}; --uiz: ${zs};`), `≤${mw} band`);
+    // heights prefer --vvh (keyboard), fall back to the dvh calc
     assert.match(
       s,
-      new RegExp(`@media \\(max-width: ${mw}px\\)\\s*\\{\\s*:root\\s*\\{\\s*zoom: ${esc(z)};`),
-      `the ≤${mw} band must zoom ${z}`,
+      new RegExp(`height: var\\(--vvh, calc\\(100dvh \\/ ${zs}\\)\\)`),
+      `≤${mw}: shell height = var(--vvh, dvh-calc)`,
     );
-  // each band divides the shell viewport height by ITS factor, via
-  // `:root .shell` — plain `.shell` loses to network.css' ≤760
-  // `.shell{height:100dvh}` (later import) which dead-striped 741–760 live
-  for (const [mw, z] of [[1599, "0.95"], [1199, "0.9"], [899, "0.85"]] as const)
-    assert.match(
-      s,
-      new RegExp(`@media \\(max-width: ${mw}px\\)\\s*\\{\\s*:root\\s*\\{\\s*zoom: ${esc(z)};\\s*\\}\\s*:root \\.shell\\s*\\{\\s*height: calc\\(100dvh \\/ ${esc(z)}\\)`),
-      `≤${mw}: shell height ÷ ${z} on :root .shell`,
-    );
-  assert.match(s, /@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*zoom: 0\.82;[\s\S]*?:root \.shell\s*\{\s*height: calc\(100dvh \/ 0\.82\);\s*min-height: 0;\s*overflow: hidden;/, "≤740: the shell IS the screen (fixed height, never scrolls)");
-  assert.match(s, /@media \(max-width: 740px\)\s*\{[^@]*?\.net-workspace\s*\{\s*overflow: hidden;/s, "≤740: the workspace never scrolls the page — panes scroll inside");
-  assert.match(s, /\.topbar\s*\{\s*position: static;\s*padding: 0 12px;\s*height: 58px;\s*min-height: 58px;\s*flex: 0 0 auto;/, "≤740: the header is a pinned flex row (sticky died with the scrolling document)");
-  assert.match(s, /@media \(max-width: 550px\)\s*\{\s*:root\s*\{\s*zoom: 0\.78;\s*\}\s*:root \.shell\s*\{\s*height: calc\(100dvh \/ 0\.78\);\s*min-height: 0;/, "≤550: fixed shell height too");
+  }
+  // :root .shell specificity — plain .shell loses to network.css' ≤760 rule
+  assert.match(s, /:root \.shell \{ height: var\(--vvh, calc\(100dvh \/ 0\.95\)\); \}/);
+  // ≤740: the shell IS the screen
+  assert.match(
+    s,
+    /@media \(max-width: 740px\)\s*\{[\s\S]*?:root \.shell\s*\{\s*height: var\(--vvh, calc\(100dvh \/ 0\.82\)\);\s*min-height: 0;\s*overflow: hidden;\s*\}/,
+    "≤740: fixed-height, non-scrolling shell",
+  );
+  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.net-workspace\s*\{\s*overflow: hidden;/, "workspace never scrolls the page");
+  assert.match(s, /\.topbar\s*\{\s*position: static;\s*padding: 0 12px;\s*height: 58px;\s*min-height: 58px;\s*flex: 0 0 auto;/, "header is a pinned flex row");
   assert.match(s, /max-height: calc\(55vh \/ 0\.82\)/, "inspector cap compensated ≤740");
   assert.match(s, /max-height: calc\(55vh \/ 0\.78\)/, "inspector cap compensated ≤550");
-  // engines without standardised zoom still shrink, text-only
   assert.match(s, /@supports not \(zoom: 2\)\s*\{\s*@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
   assert.match(s, /@media \(max-width: 550px\)\s*\{\s*:root\s*\{\s*font-size: 12\.5px;\s*\}\s*\}/, "rem fallback ≤550");
+  assert.match(s, /text-size-adjust: 100%/, "Safari cannot re-inflate");
+  assert.doesNotMatch(readFileSync(join(FE, "components/GraphPanel.vue"), "utf8"), /font:\s*[\d.]+px\//, "no px font shorthand");
 });
 
-test("R28 type scale: text-size-adjust pinned so Safari cannot re-inflate", () => {
+test("R28 keyboard: visual-viewport shell, 16px inputs, resize meta", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, /text-size-adjust: 100%/);
-});
-
-test("R28 type scale: the graph mono shorthand follows the knob too", () => {
-  const s = readFileSync(join(FE, "components/GraphPanel.vue"), "utf8");
-  assert.doesNotMatch(s, /font:\s*[\d.]+px\//, "the old px shorthand bypassed the knob");
-  assert.match(s, /font:\s*[\d.]+rem\//);
+  assert.match(
+    s,
+    /@media \(max-width: 1599px\)\s*\{\s*input,\s*textarea,\s*select\s*\{\s*font-size: calc\(16px \/ var\(--uiz, 1\)\) !important;/,
+    "inputs render 16px on every zoomed band (iOS would focus-zoom otherwise)",
+  );
+  const html = readFileSync(join(FE, "../index.html"), "utf8");
+  assert.match(html, /interactive-widget=resizes-content/, "Android/Chrome resize the layout viewport for dvh");
+  const main = readFileSync(join(FE, "main.ts"), "utf8");
+  assert.match(main, /visualViewport/, "iOS: visualViewport is measured…");
+  assert.match(main, /--vvh/, "…and fed to the shell heights");
 });
