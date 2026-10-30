@@ -41,7 +41,11 @@ export type DeviceStatus =
   | "offline"
   | "unauthorized"
   | "mismatch"
-  | "incompatible";
+  | "incompatible"
+  /** run-7 B4: the hub faulted this device's status payload at the admission
+   *  seam (oversized/hostile tree frame) — the tree is dropped, the error
+   *  says why; UIs render it like any unknown-but-textual status. */
+  | "faulted";
 export type ErrorCode =
   | "unauthorized"
   | "not_found"

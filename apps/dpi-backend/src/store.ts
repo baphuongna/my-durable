@@ -680,7 +680,19 @@ export class Store {
     // must stay under the start dirs even when git's repo discovery walks up
     // from a contained slice to an enclosing repo rooted OUTSIDE the sandbox.
     // Installed before any gitStatus call below can seed projects from a walk-up.
-    configureGitRootGuard(async (root) => store.underRoots(root, await store.startDirRoots()));
+    configureGitRootGuard(async (root) => {
+      // run-7 cold-1 M2: git prints FORWARD-SLASHED, drive-case-variant paths
+      // on win32 while realpath roots are backslashed — compare normalized
+      // forms or every Windows repo fails confinement (all git features die).
+      const norm = (p: string) =>
+        process.platform === "win32" ? p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase() : p;
+      const sep = process.platform === "win32" ? "\\" : "/";
+      const n = norm(root);
+      return (await store.startDirRoots()).some((r) => {
+        const b = norm(r);
+        return !!b && (n === b || n.startsWith(b + sep));
+      });
+    });
     try {
       store.projects = await ProjectRegistry.open(store.projectsPath, {
         warn: (m) => process.emitWarning(`projects: ${m}`),
@@ -1710,7 +1722,17 @@ export class Store {
       // sessions/<id>/ husk that permanently blocks a later restore. When the
       // epoch proves archive ran in the window, remove the husk and refuse.
       if ((this.archiveEpoch.get(row.id) ?? 0) !== epoch) {
-        rmSync(dirname(row.dbPath), { recursive: true, force: true });
+        // run-7 cold-1 M4: ONLY remove the empty husk THIS call resurrected —
+        // a concurrent restore may have just moved the REAL bundle back into
+        // sessions/<id>/ (the archive copy is consumed by the move); deleting
+        // it would be unrecoverable data loss. A husk has no agent.sqlite.
+        const dir = dirname(row.dbPath);
+        let entries: string[] = [];
+        try {
+          entries = readdirSync(dir);
+        } catch {}
+        if (!entries.some((f) => f === "agent.sqlite" || f.endsWith(".sqlite-wal") || f.endsWith(".sqlite-shm")))
+          rmSync(dir, { recursive: true, force: true });
         throw new ApiFault("unavailable", "session was archived while opening");
       }
       throw e;

@@ -80,18 +80,26 @@ const childEnv = (): NodeJS.ProcessEnv => {
   const allow = process.platform === "win32" ? WIN32_CHILD_ENV_ALLOWLIST : CHILD_ENV_ALLOWLIST;
   return Object.fromEntries(allow.flatMap((k) => (process.env[k] ? [[k, process.env[k]]] : [])));
 }
-export const GIT_EXEC_OPTS = (timeout: number) => ({
+export interface RepoPin {
+  gitDir: string;
+  workTree: string;
+}
+/** run-7 cold-1 M3: pin the repo per request — GIT_DIR/GIT_WORK_TREE stop
+ *  every spawn re-running .git discovery, so an in-sandbox racer flipping the
+ *  .git file (gitdir redirect / core.worktree) between the guard's resolves
+ *  and the data spawns cannot redirect the operation. */
+export const GIT_EXEC_OPTS = (timeout: number, pin?: RepoPin) => ({
   timeout,
   maxBuffer: 8 * 1024 * 1024,
   windowsHide: true,
-  env: childEnv(),
+  env: { ...childEnv(), ...(pin ? { GIT_DIR: pin.gitDir, GIT_WORK_TREE: pin.workTree } : {}) } as ReturnType<typeof childEnv>,
 });
-export const GH_EXEC_OPTS = (cwd: string, timeout: number) => ({
+export const GH_EXEC_OPTS = (cwd: string, timeout: number, pin?: RepoPin) => ({
   cwd,
   timeout,
   maxBuffer: 4 * 1024 * 1024,
   windowsHide: true,
-  env: childEnv(),
+  env: { ...childEnv(), ...(pin ? { GIT_DIR: pin.gitDir, GIT_WORK_TREE: pin.workTree } : {}) } as ReturnType<typeof childEnv>,
 });
 
 /** Test seam for counting/driving spawns: `node:child_process`'s ESM namespace
@@ -112,10 +120,10 @@ export function isNotARepoError(e: unknown): boolean {
 }
 
 /** One git call; rejects on non-zero exit with stderr in the message. */
-export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise<string> {
+export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT, pin?: RepoPin): Promise<string> {
   return new Promise((ok, fail) => {
     // `-C` is ARGV, so the path goes out forward-slashed (see gitPath).
-    execFileImpl("git", ["-C", gitPath(cwd), ...args], GIT_EXEC_OPTS(timeout), (error, stdout, stderr) => {
+    execFileImpl("git", ["-C", gitPath(cwd), ...args], GIT_EXEC_OPTS(timeout, pin), (error, stdout, stderr) => {
       if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
       // git chats on stderr for worktree add/switch/fetch — keep both.
       else ok(`${String(stdout)}${String(stdout) && String(stderr) ? "\n" : ""}${String(stderr)}`);
@@ -126,11 +134,11 @@ export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise
 /** One GitHub CLI call — PRs, checks and comments are forge territory and gh
  *  is the least-token-ceremony way to reach them from a device. Same no-shell
  *  rule: argv only, plain text back. */
-export function gh(cwd: string, args: string[], timeout = GIT_TIMEOUT): Promise<string> {
+export function gh(cwd: string, args: string[], timeout = GIT_TIMEOUT, pin?: RepoPin): Promise<string> {
   return new Promise((ok, fail) => {
     // gh resolves the repo from cwd (a --repo flag wants a slug, not a path).
     // cwd is a Node spawn option, not argv — Node handles Windows paths here.
-    execFileImpl("gh", args, GH_EXEC_OPTS(cwd, timeout), (error, stdout, stderr) => {
+    execFileImpl("gh", args, GH_EXEC_OPTS(cwd, timeout, pin), (error, stdout, stderr) => {
       if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
       else ok(String(stdout));
     });
@@ -276,14 +284,16 @@ function ensureWatcher(root: string) {
  *  index/objects/status belong to the outside repo (leader-probed: ` D
  *  outside-secret.txt` leaked through). BOTH the toplevel and the absolute
  *  git dir must live under the start dirs. */
-async function assertRepoConfined(path: string): Promise<void> {
-  if (!repoRootAllowed) return;
+async function resolveRepoPin(path: string): Promise<RepoPin | undefined> {
+  if (!repoRootAllowed) return undefined;
   const [topLevel, gitDir] = await Promise.all([
     git(path, ["rev-parse", "--show-toplevel"]),
     git(path, ["rev-parse", "--absolute-git-dir"]),
   ]);
-  if (!(await repoRootAllowed(topLevel.trim())) || !(await repoRootAllowed(gitDir.trim())))
+  const pin: RepoPin = { gitDir: gitDir.trim(), workTree: topLevel.trim() };
+  if (!(await repoRootAllowed(pin.workTree)) || !(await repoRootAllowed(pin.gitDir)))
     throw Error("repo root lives outside the start dirs");
+  return pin;
 }
 
 // R21/run-7 D1: git's repo discovery WALKS UP from the contained request path —
@@ -330,37 +340,43 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     // Reach git at all before trusting any "empty" answer: git missing from
     // the daemon's PATH (seen on a Windows Startup-launched device) must NOT
     // read as "not a repository" under a real repo.
-    const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
     // The discovered root is an ATTACKER-REACHABLE fact (any contained
     // subdirectory of a repo reaches it): clamp before anything repo-wide
-    // runs. run-7 B3: the gitdir redirect variant names the SANDBOX dir as
-    // toplevel while the index belongs outside — both facts are checked.
-    const gitDirFact = (await git(path, ["rev-parse", "--absolute-git-dir"])).trim();
-    if (repoRootAllowed && (!(await repoRootAllowed(root)) || !(await repoRootAllowed(gitDirFact)))) {
+    // runs. run-7 B3: BOTH the toplevel and the gitdir must sit under the
+    // start dirs (a planted .git gitdir redirect names the sandbox dir as
+    // toplevel while the index belongs outside). resolveRepoPin also PINS
+    // every later spawn (GIT_DIR/GIT_WORK_TREE) so discovery never re-runs.
+    let pin: RepoPin | undefined;
+    try {
+      pin = await resolveRepoPin(path);
+    } catch (e) {
+      if (!String((e as Error).message).includes("start dirs")) throw e;
       out.repo = true; // repo presence only — no root, files, branches,
       // worktrees, remoteUrl, subject, identity; no watcher on foreign ground.
       statusCache.set(key, { at: Date.now(), s: out });
       statusFailCache.delete(key);
       return out;
     }
+    const g = (args: string[], t?: number) => git(path, args, t, pin);
+    const root = pin?.workTree ?? (await git(path, ["rev-parse", "--show-toplevel"])).trim();
     out.repo = true;
     out.root = root;
     // Everything after toplevel runs in PARALLEL — status is the long pole
     // (20s+ on big Windows checkouts) and must not wait for four fast calls.
     const [branchP, headP, statusP, gitDirP, wlP, branchesP, numWorkP, numIdxP, mergeP, nameP, emailP, remoteP] = await Promise.allSettled([
-      git(path, ["branch", "--show-current"]),
-      git(path, ["log", "-1", "--pretty=%h%x09%s"]),
-      git(path, ["--no-optional-locks", "status", "--porcelain=v1", "-b"], GIT_SLOW_TIMEOUT),
-      git(path, ["rev-parse", "--git-dir"]),
-      git(path, ["worktree", "list", "--porcelain"], GIT_SLOW_TIMEOUT),
-      git(path, ["for-each-ref", "refs/heads", "--format=%(refname:short)%09%(upstream:short)%09%(if)%(HEAD)%(then)1%(else)0%(end)"]),
-      git(path, ["--no-optional-locks", "diff", "--numstat", "--no-renames"], GIT_SLOW_TIMEOUT),
-      git(path, ["--no-optional-locks", "diff", "--numstat", "--cached", "--no-renames"]),
+      g(["branch", "--show-current"]),
+      g(["log", "-1", "--pretty=%h%x09%s"]),
+      g(["--no-optional-locks", "status", "--porcelain=v1", "-b"], GIT_SLOW_TIMEOUT),
+      g(["rev-parse", "--git-dir"]),
+      g(["worktree", "list", "--porcelain"], GIT_SLOW_TIMEOUT),
+      g(["for-each-ref", "refs/heads", "--format=%(refname:short)%09%(upstream:short)%09%(if)%(HEAD)%(then)1%(else)0%(end)"]),
+      g(["--no-optional-locks", "diff", "--numstat", "--no-renames"], GIT_SLOW_TIMEOUT),
+      g(["--no-optional-locks", "diff", "--numstat", "--cached", "--no-renames"]),
       // MERGE_HEAD exists ⇔ a merge is waiting to be resolved.
-      git(path, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]),
-      git(path, ["config", "user.name"]),
-      git(path, ["config", "user.email"]),
-      git(path, ["remote", "get-url", "origin"]),
+      g(["rev-parse", "-q", "--verify", "MERGE_HEAD"]),
+      g(["config", "user.name"]),
+      g(["config", "user.email"]),
+      g(["remote", "get-url", "origin"]),
     ]);
     const branch = branchP.status === "fulfilled" ? branchP.value : "";
     out.branch = branch.trim() || undefined;
@@ -554,17 +570,18 @@ export async function gitOp(
   prs?: { n: number; title: string; state: string; draft: boolean; branch: string; url: string }[];
 }> {
   const { ref, message, target, branch, files, create, staged, rebase, setUpstream, name, lines, method, body, n, side } = opts;
-  // run-7 B3 (extension of the D1 clamp): status/ignore were guarded, but every
-  // OTHER op spawns `git -C <contained>` whose EFFECTIVE worktree (a planted
-  // .git gitdir redirect or core.worktree) can sit outside the start dirs —
-  // reads would disclose outside content, writes would land outside. One
-  // rev-parse per op; refuse when the effective root escapes.
-  await assertRepoConfined(path);
+  // run-7 B3 + cold-1 M3: BOTH toplevel and gitdir must sit under the start
+  // dirs (gitdir redirects/extra worktrees otherwise leak or write outside),
+  // and the resolved pin rides GIT_DIR/GIT_WORK_TREE into EVERY spawn below —
+  // per-spawn .git discovery never re-runs, so the check cannot be raced.
+  const pin = await resolveRepoPin(path);
+  const g = (args: string[], t?: number) => git(path, args, t, pin);
+  const ghP = (args: string[], t?: number) => gh(path, args, t, pin);
   switch (op) {
     case "diff":
-      return { text: await git(path, ["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
+      return { text: await g(["--no-pager", "diff", ...(ref && safeRef(ref) ? [ref] : [])]) };
     case "log":
-      return { text: (await git(path, ["--no-pager", "log", "--oneline", "-n", "30", ...(ref && safeRef(ref) ? [ref] : [])])).trimEnd() };
+      return { text: (await g(["--no-pager", "log", "--oneline", "-n", "30", ...(ref && safeRef(ref) ? [ref] : [])])).trimEnd() };
     case "log-list": {
       // IntelliJ's log window: hash, refs, author, date, subject — structured.
       // %p = parents — the swimlane graph is computed from these on the UI.
@@ -591,69 +608,69 @@ export async function gitOp(
       };
     }
     case "fetch":
-      return { text: (await git(path, ["fetch", "--all", "--prune"])).trim() || "fetched" };
+      return { text: (await g(["fetch", "--all", "--prune"])).trim() || "fetched" };
     case "pull":
       // --ff-only stays the default; --rebase is an explicit opt-in the UI
       // offers only after a ff-only failure.
-      return { text: (await git(path, ["pull", ...(rebase ? ["--rebase"] : ["--ff-only"])])).trim() || "up to date" };
+      return { text: (await g(["pull", ...(rebase ? ["--rebase"] : ["--ff-only"])])).trim() || "up to date" };
     case "branch":
-      return { text: (await git(path, ["--no-pager", "branch", "-vv"])).trimEnd() };
+      return { text: (await g(["--no-pager", "branch", "-vv"])).trimEnd() };
     case "switch": {
       if (!ref || !safeRef(ref)) throw Error("switch needs a branch name (letters, digits, ./-_)");
       // create:true = git switch -c — IntelliJ's "new branch" action.
-      return { text: (await git(path, ["switch", ...(create ? ["-c"] : []), ref])).trim() };
+      return { text: (await g(["switch", ...(create ? ["-c"] : []), ref])).trim() };
     }
     case "push": {
       if (setUpstream) {
         if (!ref || !safeRef(ref)) throw Error("push -u needs a branch name");
-        return { text: (await git(path, ["push", "-u", "origin", ref], GIT_SLOW_TIMEOUT)).trim() || `pushed, upstream set to origin/${ref}` };
+        return { text: (await g(["push", "-u", "origin", ref], GIT_SLOW_TIMEOUT)).trim() || `pushed, upstream set to origin/${ref}` };
       }
-      return { text: (await git(path, ["push"], GIT_SLOW_TIMEOUT)).trim() || "pushed (or nothing to push)" };
+      return { text: (await g(["push"], GIT_SLOW_TIMEOUT)).trim() || "pushed (or nothing to push)" };
     }
     case "stage": {
       if (!files?.length) throw Error("stage needs files");
-      return { text: (await git(path, ["add", "--", ...gitPaths(files)])).trim() || `staged ${files.length} file(s)` };
+      return { text: (await g(["add", "--", ...gitPaths(files)])).trim() || `staged ${files.length} file(s)` };
     }
     case "discard": {
       // IntelliJ's Rollback: index AND worktree back to HEAD for these paths.
       if (!files?.length) throw Error("discard needs files");
-      return { text: (await git(path, ["checkout", "HEAD", "--", ...gitPaths(files)])).trim() || `discarded ${files.length} file(s)` };
+      return { text: (await g(["checkout", "HEAD", "--", ...gitPaths(files)])).trim() || `discarded ${files.length} file(s)` };
     }
     case "diff-file": {
       if (!target) throw Error("diff-file needs a file path");
-      return { text: (await git(path, ["--no-pager", "diff", ...(staged ? ["--cached"] : []), "HEAD", "--", gitPath(target)])).trim() || "no diff" };
+      return { text: (await g(["--no-pager", "diff", ...(staged ? ["--cached"] : []), "HEAD", "--", gitPath(target)])).trim() || "no diff" };
     }
     case "stash-push":
-      return { text: (await git(path, ["stash", "push", ...(message ? ["-m", message] : [])])).trim() || "stashed" };
+      return { text: (await g(["stash", "push", ...(message ? ["-m", message] : [])])).trim() || "stashed" };
     case "stash-pop":
-      return { text: (await git(path, ["stash", "pop"])).trim() || "stash popped" };
+      return { text: (await g(["stash", "pop"])).trim() || "stash popped" };
     case "unstage": {
       // IntelliJ's Unstage: index only, worktree keeps its changes.
       if (!files?.length) throw Error("unstage needs files");
       try {
-        return { text: (await git(path, ["reset", "-q", "HEAD", "--", ...gitPaths(files)])).trim() || `unstaged ${files.length} file(s)` };
+        return { text: (await g(["reset", "-q", "HEAD", "--", ...gitPaths(files)])).trim() || `unstaged ${files.length} file(s)` };
       } catch {
         // unborn branch: HEAD does not resolve yet — reset against the empty tree.
-        return { text: (await git(path, ["reset", "-q", "--", ...gitPaths(files)])).trim() || `unstaged ${files.length} file(s)` };
+        return { text: (await g(["reset", "-q", "--", ...gitPaths(files)])).trim() || `unstaged ${files.length} file(s)` };
       }
     }
     case "compare": {
       // ahead/behind vs ANY ref, not just the upstream (orca git-bridge).
       if (!ref || !safeRef(ref)) throw Error("compare needs a branch name");
-      const raw = await git(path, ["rev-list", "--left-right", "--count", `${ref}...HEAD`]);
+      const raw = await g(["rev-list", "--left-right", "--count", `${ref}...HEAD`]);
       const [behind = "0", ahead = "0"] = raw.trim().split(/\s+/);
       return { text: `${Number(ahead)} ahead, ${Number(behind)} behind of ${ref}`, ahead: Number(ahead), behind: Number(behind) };
     }
     case "merge-abort":
       try {
-        return { text: (await git(path, ["merge", "--abort"])).trim() || "merge aborted" };
+        return { text: (await g(["merge", "--abort"])).trim() || "merge aborted" };
       } catch {
-        return { text: (await git(path, ["rebase", "--abort"])).trim() || "rebase aborted" };
+        return { text: (await g(["rebase", "--abort"])).trim() || "rebase aborted" };
       }
     case "show-files": {
       // What one commit touched — the log row expander.
       if (!target || !/^[0-9a-f]{4,40}$/.test(target)) throw Error("show-files needs a commit hash");
-      const raw = await git(path, ["--no-pager", "show", "--name-status", "--pretty=format:", "--no-renames", "-m", "--first-parent", target]);
+      const raw = await g(["--no-pager", "show", "--name-status", "--pretty=format:", "--no-renames", "-m", "--first-parent", target]);
       return {
         text: "",
         changed: raw
@@ -672,8 +689,7 @@ export async function gitOp(
       if (!lines?.length) throw Error("ignore needs pattern lines");
       if (lines.length > 50) throw Error("ignore takes at most 50 lines");
       for (const l of lines) if (!l.trim() || l.length > 200 || /[\n\r\0]/.test(l)) throw Error("bad ignore pattern");
-      await assertRepoConfined(path);
-      const root = (await git(path, ["rev-parse", "--show-toplevel"])).trim();
+      const root = pin?.workTree ?? (await g(["rev-parse", "--show-toplevel"])).trim();
       await appendFile(join(root, ".gitignore"), `\n${lines.join("\n")}\n`, "utf8");
       return { text: `added to .gitignore: ${lines.join(", ")}` };
     }
@@ -681,11 +697,11 @@ export async function gitOp(
       // A named ref of HEAD — the rewind target. Never touches the worktree.
       if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw Error("checkpoint needs a name (letters, digits, ._-)");
       const refname = `refs/dpi/checkpoints/${name}`;
-      await git(path, ["update-ref", refname, "HEAD"]);
+      await g(["update-ref", refname, "HEAD"]);
       return { text: `checkpoint ${name} saved` };
     }
     case "checkpoints": {
-      const raw = await git(path, [
+      const raw = await g([
         "--no-pager", "for-each-ref", "refs/dpi/checkpoints",
         "--format=%(refname:strip=3)%09%(objectname:short)%09%(committerdate:short)%09%(contents:subject)",
       ]);
@@ -705,18 +721,18 @@ export async function gitOp(
       // reset --hard to one of OUR checkpoint refs only — never an arbitrary ref.
       if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw Error("rewind needs a checkpoint name");
       const refname = `refs/dpi/checkpoints/${name}`;
-      const sha = (await git(path, ["rev-parse", "--verify", refname])).trim();
-      return { text: (await git(path, ["reset", "--hard", sha])).trim().split("\n")[0] ?? `rewound to ${name}` };
+      const sha = (await g(["rev-parse", "--verify", refname])).trim();
+      return { text: (await g(["reset", "--hard", sha])).trim().split("\n")[0] ?? `rewound to ${name}` };
     }
     case "resolve": {
       // orca's conflicts section, one click: pick a side, stage the result.
       if (side !== "ours" && side !== "theirs") throw Error("resolve needs side=ours|theirs");
       if (!files?.length) throw Error("resolve needs files");
-      await git(path, ["checkout", `--${side}`, "--", ...gitPaths(files)]);
-      return { text: (await git(path, ["add", "--", ...gitPaths(files)])).trim() || `resolved ${files.length} file(s) with --${side}` };
+      await g(["checkout", `--${side}`, "--", ...gitPaths(files)]);
+      return { text: (await g(["add", "--", ...gitPaths(files)])).trim() || `resolved ${files.length} file(s) with --${side}` };
     }
     case "submodule-update":
-      return { text: (await git(path, ["submodule", "update", "--init", "--recursive"], GIT_SLOW_TIMEOUT)).trim() || "submodules up to date" };
+      return { text: (await g(["submodule", "update", "--init", "--recursive"], GIT_SLOW_TIMEOUT)).trim() || "submodules up to date" };
     case "pr-create": {
       // gh pr create — title from message, head = current branch. gh owns auth.
       const title = (message ?? "").trim();
@@ -726,7 +742,7 @@ export async function gitOp(
       return { text: (await gh(path, args, GIT_SLOW_TIMEOUT)).trim() };
     }
     case "pr-list": {
-      const raw = await gh(path, ["pr", "list", "--limit", "20", "--json", "number,title,state,isDraft,headRefName,url"]);
+      const raw = await ghP(["pr", "list", "--limit", "20", "--json", "number,title,state,isDraft,headRefName,url"]);
       const list = JSON.parse(raw || "[]") as { number: number; title: string; state: string; isDraft: boolean; headRefName: string; url: string }[];
       return {
         text: "",
@@ -735,17 +751,17 @@ export async function gitOp(
     }
     case "pr-merge": {
       if (!n || !Number.isInteger(n)) throw Error("pr-merge needs a PR number");
-      return { text: (await gh(path, ["pr", "merge", String(n), method === "merge" ? "--merge" : "--squash"], GIT_SLOW_TIMEOUT)).trim() || `PR #${n} merged` };
+      return { text: (await ghP(["pr", "merge", String(n), method === "merge" ? "--merge" : "--squash"], GIT_SLOW_TIMEOUT)).trim() || `PR #${n} merged` };
     }
     case "pr-checks": {
       if (!n || !Number.isInteger(n)) throw Error("pr-checks needs a PR number");
-      return { text: (await gh(path, ["pr", "checks", String(n)], GIT_SLOW_TIMEOUT)).trim() || "no checks reported" };
+      return { text: (await ghP(["pr", "checks", String(n)], GIT_SLOW_TIMEOUT)).trim() || "no checks reported" };
     }
     case "pr-comment": {
       if (!n || !Number.isInteger(n)) throw Error("pr-comment needs a PR number");
       const text = (body ?? "").trim();
       if (!text) throw Error("pr-comment needs a body");
-      return { text: (await gh(path, ["pr", "comment", String(n), "--body", text.slice(0, 4000)])).trim() };
+      return { text: (await ghP(["pr", "comment", String(n), "--body", text.slice(0, 4000)])).trim() };
     }
     case "commit": {
       const msg = (message ?? "").trim();
@@ -753,26 +769,26 @@ export async function gitOp(
       // IntelliJ-style: chosen files only, when the caller picked some.
       if (files?.length) {
         for (const f of files) if (f.includes("\0") || f === "") throw Error("bad file path");
-        return { text: (await git(path, ["commit", "-m", msg, "--", ...gitPaths(files)])).split("\n")[0]?.trim() ?? "committed" };
+        return { text: (await g(["commit", "-m", msg, "--", ...gitPaths(files)])).split("\n")[0]?.trim() ?? "committed" };
       }
-      return { text: (await git(path, ["commit", "-am", msg])).split("\n")[0]?.trim() ?? "committed" };
+      return { text: (await g(["commit", "-am", msg])).split("\n")[0]?.trim() ?? "committed" };
     }
     case "worktree-list":
-      return { text: (await git(path, ["--no-pager", "worktree", "list"])).trimEnd() };
+      return { text: (await g(["--no-pager", "worktree", "list"])).trimEnd() };
     case "worktree-add": {
       // branch = create a NEW branch for the worktree; ref = check out an
       // existing one. Both validated the same strict way — never a shell.
       if (!target || !isAbsolute(target)) throw Error("worktree-add needs an absolute target path");
       if (branch) {
         if (!safeRef(branch)) throw Error("worktree-add branch name is invalid (letters, digits, ./-_)");
-        return { text: (await git(path, ["worktree", "add", "-b", branch, gitPath(target)])).trim() };
+        return { text: (await g(["worktree", "add", "-b", branch, gitPath(target)])).trim() };
       }
       if (!ref || !safeRef(ref)) throw Error("worktree-add needs a branch (new) or ref (existing)");
-      return { text: (await git(path, ["worktree", "add", gitPath(target), ref])).trim() };
+      return { text: (await g(["worktree", "add", gitPath(target), ref])).trim() };
     }
     case "worktree-remove": {
       if (!target || !isAbsolute(target)) throw Error("worktree-remove needs an absolute path");
-      return { text: (await git(path, ["worktree", "remove", gitPath(target)])).trim() || `removed ${target}` };
+      return { text: (await g(["worktree", "remove", gitPath(target)])).trim() || `removed ${target}` };
     }
   }
 }

@@ -180,8 +180,10 @@ export function scrubSecrets(value: string): string {
   // probed): 2 rounds was one depth short — a 3x-percent-encoded capability
   // never presented a ≥20-char run in ANY pass and exited one decode away
   // from plaintext, persisting in the append-only row past the share's TTL.
-  // Four rounds reach any fixpoint a 200-char sample can carry.
-  for (let round = 0; round < 4; round++) {
+  // Eight rounds: denial samples are ≤200 chars, but scrubValue feeds
+  // 8192-char values where a 5x-encoded token (~5.8KB) still exits one
+  // decode short — loop-until-stable with a generous cap; input-bounded.
+  for (let round = 0; round < 8; round++) {
     try {
       const decoded = decodeURIComponent(out);
       if (decoded === out) break;

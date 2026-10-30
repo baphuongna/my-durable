@@ -92,7 +92,9 @@ function setPath(target: Record<string | number, unknown>, path: readonly (strin
     node = node[key] as Record<string | number, unknown>;
   }
   const last = path[path.length - 1];
-  node[last] = String(node[last] ?? "") + delta;
+  // run-7 cold-1 m1: the live toolCall arguments accumulator rode the same
+  // 16MiB wire ceiling per delta with no cap — fold into the 256Ki tail.
+  node[last] = capLiveText(String(node[last] ?? "") + delta);
 }
 
 /** run-7 D4-B: inbox items are wire JSON — non-array or null-element shapes
@@ -172,10 +174,18 @@ export class AgentModel extends Emitter {
         this.state.inbox = safeInbox(frame.inbox);
         break;
       case "batch":
-        // run-7 D4-B: non-iterable events threw inside apply(), which follow()
-        // turns into a reconnect loop re-receiving the same hostile frame.
-        for (const event of (Array.isArray(frame.events) ? frame.events : []).filter((e) => !!e && typeof e === "object"))
-          this.event(event);
+        // run-7 D4-B + cold-1 M6: non-iterable events AND hostile field shapes
+        // (message_start.message:null, message_update.changes:5, entry:null)
+        // threw inside apply(), which follow() turns into a reconnect loop
+        // re-receiving the same hostile frame forever. Drop the hostile
+        // EVENT, keep the stream alive.
+        for (const event of (Array.isArray(frame.events) ? frame.events : []).filter((e) => !!e && typeof e === "object")) {
+          try {
+            this.event(event);
+          } catch {
+            // one hostile event must not kill the stream for the session
+          }
+        }
         break;
       case "inbox":
         this.state.inbox = safeInbox(frame.items);
@@ -184,6 +194,9 @@ export class AgentModel extends Emitter {
         // run-7 D3 F2: docs was the ONE wire-driven map with neither a count
         // cap nor a byte cap — kind strings are device-chosen and values rode
         // the 16MiB wire ceiling verbatim, forever (no eviction either).
+        // cold-1 M5: the KIND is the map key — oversized kinds are dropped
+        // whole (the 4096-drop discipline), or 64 of them retain ~1GiB.
+        if (String(frame.kind).length > 256) break;
         const kinds: Record<string, unknown> = {
           ...this.state.docs,
           [String(frame.kind)]: this.capDocValue(frame.value),
