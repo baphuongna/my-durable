@@ -85,7 +85,14 @@ export interface GitStatus {
   branches?: { name: string; current?: boolean; upstream?: string }[];
   merge?: boolean;
   conflicts?: number;
+  /** The identity a commit would be authored with (git's own resolution). */
   identity?: { name?: string; email?: string };
+  /** False ⇔ git itself would refuse to commit here (no resolvable author). */
+  identityComplete?: boolean;
+  /** Which forge `origin` belongs to — the UI must not assume GitHub. */
+  forge?: "github" | "gitlab" | "bitbucket" | "other";
+  /** Browser URL of the origin repo (ssh/https/self-hosted/nested namespaces). */
+  webUrl?: string;
   remoteUrl?: string;
 }
 export type GitOpName =

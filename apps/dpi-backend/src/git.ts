@@ -77,13 +77,21 @@ const CHILD_ENV_ALLOWLIST = ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", 
 // execFile `env` REPLACES the whole environment, and on win32 git/gh resolve
 // home (USERPROFILE chain), config (APPDATA), temp (TEMP/TMP) and TLS
 // (SystemRoot) from these — without them commit identity and gh auth break.
+// git-for-windows resolves a commit identity from getpwuid(), which its compat
+// layer fills from USERNAME/USERDOMAIN and gethostname()→COMPUTERNAME. Leaving
+// those out made every device-side git call see "Author identity unknown" while
+// the same repo committed fine in a terminal (live report) — the identity was
+// there, the environment was not. They are not secrets; they are the account.
 const WIN32_CHILD_ENV_ALLOWLIST = [
   ...CHILD_ENV_ALLOWLIST,
+  "USERNAME", "USERDOMAIN", "LOGNAME", "COMPUTERNAME", "WINDIR",
   "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT",
   "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
   "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMDATA",
 ];
-const childEnv = (): NodeJS.ProcessEnv => {
+export const childEnvKeys = (): string[] =>
+  process.platform === "win32" ? WIN32_CHILD_ENV_ALLOWLIST : CHILD_ENV_ALLOWLIST;
+export const childEnv = (): NodeJS.ProcessEnv => {
   const allow = process.platform === "win32" ? WIN32_CHILD_ENV_ALLOWLIST : CHILD_ENV_ALLOWLIST;
   return Object.fromEntries(allow.flatMap((k) => (process.env[k] ? [[k, process.env[k]]] : [])));
 }
@@ -115,6 +123,70 @@ export const GH_EXEC_OPTS = (cwd: string, timeout: number, pin?: RepoPin) => ({
 let execFileImpl: typeof execFile = execFile;
 export function setGitExecForTests(fn?: typeof execFile) {
   execFileImpl = fn ?? execFile;
+}
+
+/** Forges the panel can speak to. Only GitHub has a CLI we drive; the rest
+ *  are link-first (the operator opens the MR/PR page), because `gh` is
+ *  GitHub-only and a GitLab origin silently produced empty PR lists. */
+export type Forge = "github" | "gitlab" | "bitbucket" | "other";
+
+export interface ParsedRemote {
+  host: string;
+  /** Everything after the host, without a trailing .git or leading slash. */
+  path: string;
+  forge: Forge;
+  webUrl: string;
+}
+
+/** Parse ANY git origin spelling into host + path + browser URL.
+ *  Handles `git@host:ns/repo.git`, `ssh://git@host:2222/ns/repo.git`,
+ *  `https://user:token@host/ns/sub/repo.git`, and path-only remotes (which
+ *  have no browser). GitLab namespaces nest arbitrarily — never slice to two. */
+export function parseRemote(url?: string): ParsedRemote | undefined {
+  const raw = (url ?? "").trim();
+  if (!raw) return undefined;
+  let host = "";
+  let path = "";
+  const scp = raw.match(/^(?:[A-Za-z0-9._~-]+@)?([^/:]+):(?!\/\/)(.+)$/); // git@host:ns/repo
+  if (scp && !/^[A-Za-z]:[\\/]/.test(raw)) {
+    host = scp[1]!;
+    path = scp[2]!;
+  } else if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(raw)) {
+    try {
+      const u = new URL(raw);
+      host = u.hostname;
+      path = u.pathname.replace(/^\/+/, "");
+    } catch {
+      return undefined;
+    }
+  } else {
+    return undefined; // a filesystem remote (/srv/git/x.git, ..\repo) has no browser
+  }
+  path = path.replace(/\/+$/, "").replace(/\.git$/, "");
+  if (!host || !path) return undefined;
+  const h = host.toLowerCase();
+  const forge: Forge = h === "github.com" || h.endsWith(".github.com") || /(^|\.)github\./.test(h)
+    ? "github"
+    : /gitlab/.test(h) || /(^|\.)gitlab\./.test(h)
+      ? "gitlab"
+      : /bitbucket/.test(h)
+        ? "bitbucket"
+        : "other";
+  const scheme = /^http:\/\//.test(raw) ? "http" : "https";
+  return { host, path, forge, webUrl: `${scheme}://${host}/${path}` };
+}
+
+/** The browser URL that starts a new merge/pull request for `branch` into
+ *  `base` on this forge — the only cross-forge action that needs no CLI. */
+export function newChangeUrl(remote: ParsedRemote | undefined, branch: string, base?: string): string | undefined {
+  if (!remote || !branch) return undefined;
+  const br = encodeURIComponent(branch);
+  const bs = base ? encodeURIComponent(base) : undefined;
+  if (remote.forge === "github") return `${remote.webUrl}/compare/${bs ?? "main"}...${br}?expand=1`;
+  if (remote.forge === "gitlab")
+    return `${remote.webUrl}/-/merge_requests/new?merge_request%5Bsource_branch%5D=${br}${bs ? `&merge_request%5Btarget_branch%5D=${bs}` : ""}`;
+  if (remote.forge === "bitbucket") return `${remote.webUrl}/pull-requests/new?source=${br}${bs ? `&dest=${bs}` : ""}`;
+  return undefined; // unknown forge: the UI offers the plain repo link instead
 }
 
 /** The ONE stderr that legitimately means "no repo here" — anything else
@@ -176,8 +248,14 @@ export interface GitStatus {
   merge?: boolean;
   /** Unmerged paths (UU/AA/DD/AU/UA/DU/UD). */
   conflicts?: number;
-  /** Commit identity from config — warn before committing without one. */
+  /** The identity a commit would be authored with, as GIT resolves it. */
   identity?: { name?: string; email?: string };
+  /** False ⇔ git itself would refuse to commit (no identity resolvable at all). */
+  identityComplete?: boolean;
+  /** Which forge the origin belongs to — the UI must not assume GitHub. */
+  forge?: Forge;
+  /** Browser URL of the repo on that forge ("" when origin is unparseable). */
+  webUrl?: string;
   /** `origin` URL, parsed by the UI into an open-in-remote link. */
   remoteUrl?: string;
   /** Local branches for pickers — nobody should TYPE a name that exists. */
@@ -374,7 +452,7 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     out.root = root;
     // Everything after toplevel runs in PARALLEL — status is the long pole
     // (20s+ on big Windows checkouts) and must not wait for four fast calls.
-    const [branchP, headP, statusP, gitDirP, wlP, branchesP, numWorkP, numIdxP, mergeP, nameP, emailP, remoteP] = await Promise.allSettled([
+    const [branchP, headP, statusP, gitDirP, wlP, branchesP, numWorkP, numIdxP, mergeP, identP, remoteP] = await Promise.allSettled([
       g(["branch", "--show-current"]),
       g(["log", "-1", "--pretty=%h%x09%s"]),
       g(["--no-optional-locks", "status", "--porcelain=v1", "-z", "-b"], GIT_SLOW_TIMEOUT),
@@ -385,8 +463,13 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
       g(["--no-optional-locks", "diff", "--numstat", "-z", "--cached", "--no-renames"]),
       // MERGE_HEAD exists ⇔ a merge is waiting to be resolved.
       g(["rev-parse", "-q", "--verify", "MERGE_HEAD"]),
-      g(["config", "user.name"]),
-      g(["config", "user.email"]),
+      // ONE authoritative probe: `git var GIT_AUTHOR_IDENT` is git's own
+      // resolution — every config level, GIT_AUTHOR_*/EMAIL env, and the
+      // getpwuid()/hostname fallback a plain commit would use. The old pair of
+      // `git config user.name/user.email` reads only saw config FILES, so a
+      // machine whose identity git derives (Windows account) was told to "set
+      // user.name" although `git commit` there works.
+      g(["var", "GIT_AUTHOR_IDENT"]),
       g(["remote", "get-url", "origin"]),
     ]);
     const branch = branchP.status === "fulfilled" ? branchP.value : "";
@@ -435,11 +518,23 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     }
     out.merge = mergeP.status === "fulfilled";
     out.conflicts = body.filter((r) => /^(UU|AA|DD|AU|UA|DU|UD)/.test(r)).length;
+    // "Name <email> 1730000000 +0700" — the timestamp/tz tail is not identity.
+    const identLine = identP.status === "fulfilled" ? identP.value.trim() : "";
+    const identMatch = identLine.match(/^(.*?)\s*<([^>]*)>/);
     out.identity = {
-      name: nameP.status === "fulfilled" ? nameP.value.trim() || undefined : undefined,
-      email: emailP.status === "fulfilled" ? emailP.value.trim() || undefined : undefined,
+      name: identMatch?.[1]?.trim() || undefined,
+      email: identMatch?.[2]?.trim() || undefined,
     };
+    // A commit would be REFUSED (not merely unconfigured) when git cannot
+    // resolve an identity at all. That is the only case worth warning about.
+    out.identityComplete = Boolean(identMatch?.[1]?.trim() && identMatch?.[2]?.trim());
+    if (!out.identityComplete) delete out.identity;
     if (remoteP.status === "fulfilled") out.remoteUrl = remoteP.value.trim() || undefined;
+    const parsed = parseRemote(out.remoteUrl);
+    if (parsed) {
+      out.forge = parsed.forge;
+      out.webUrl = parsed.webUrl;
+    }
     // ±n per file: worktree-vs-index numstat for unstaged paths, cached for staged.
     const numstat = (raw: string) => {
       const m = new Map<string, { a: number; d: number }>();

@@ -97,7 +97,7 @@ test("worktree-add/remove targets must live under a start dir (audit run-1)", as
 });
 
 test("run-8 (live): a session's own folder stays served after DPI_START_DIRS is narrowed; anything else is still refused", async () => {
-  const { tempStore } = await import("./helpers.ts");
+  const { tempStore } = await import("./helpers.js");
   const t = await tempStore();
   try {
     // 1. Session created while the folder WAS a start dir (the laptop's case).

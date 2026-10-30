@@ -130,7 +130,32 @@ const prs = ref<{ n: number; title: string; state: string; draft: boolean; branc
 const prsOpen = ref(false);
 const prChecks = ref<Map<number, string>>(new Map());
 const prBusy = ref(false);
-const isGitHub = computed(() => /github\.com|gitlab/i.test(status.value?.remoteUrl ?? ""));
+/** The forge decides which actions exist. `gh` only speaks GitHub; a GitLab
+ *  origin used to fall through the same regex, so its "list PRs" button ran
+ *  `gh pr list` and reported nothing. Non-GitHub forges get link-first
+ *  actions built from the origin URL — no CLI, no login, no assumption. */
+const forge = computed<"github" | "gitlab" | "bitbucket" | "other" | undefined>(() => status.value?.forge);
+const isGitHub = computed(() => forge.value === "github");
+const webUrl = computed(() => status.value?.webUrl ?? "");
+const changeLabel = computed(() =>
+  forge.value === "gitlab" ? "merge request" : forge.value === "bitbucket" ? "pull request" : forge.value === "github" ? "pull request" : "change request",
+);
+/** Open a new MR/PR on the forge's own website, source branch prefilled. */
+const newChangeHref = computed(() => {
+  const br = status.value?.branch;
+  const base = status.value?.upstream?.replace(/^[^/]+\//, "");
+  if (!br || !webUrl.value) return "";
+  const e = encodeURIComponent(br);
+  const b = base ? encodeURIComponent(base) : "";
+  if (forge.value === "gitlab")
+    return `${webUrl.value}/-/merge_requests/new?merge_request%5Bsource_branch%5D=${e}${b ? `&merge_request%5Btarget_branch%5D=${b}` : ""}`;
+  if (forge.value === "bitbucket") return `${webUrl.value}/pull-requests/new?source=${e}${b ? `&dest=${b}` : ""}`;
+  if (forge.value === "github") return `${webUrl.value}/compare/${b || "main"}...${e}?expand=1`;
+  return "";
+});
+const changesHref = computed(() =>
+  forge.value === "gitlab" ? `${webUrl.value}/-/merge_requests` : forge.value === "bitbucket" ? `${webUrl.value}/pull-requests` : `${webUrl.value}/pulls`,
+);
 const loadPRs = async () => {
   if (!devId.value || !cwd.value) return;
   const allowed = gitAllowedFor(devId.value, cwd.value);
@@ -313,12 +338,15 @@ const isConflict = (f: { x: string; y: string }) => "UAD".includes(f.x) && "UAD"
 const conflictFiles = computed(() => files.value.filter(isConflict));
 const atCap = computed(() => files.value.length >= 500);
 const dirty = computed(() => (status.value?.staged ?? 0) + (status.value?.unstaged ?? 0) + (status.value?.untracked ?? 0) > 0);
-const noIdentity = computed(() => !status.value?.identity?.name || !status.value?.identity?.email);
-const remoteWeb = computed(() => {
-  const u = status.value?.remoteUrl ?? "";
-  const m = u.match(/git@([^:]+):(.+?)(?:\.git)?$/) ?? u.match(/^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/);
-  return m ? `https://${m[1]}/${m[2]}` : "";
-});
+/** Only when git ITSELF cannot resolve an author — i.e. a commit would be
+ *  refused. An empty `git config user.name` is not the test: git also reads
+ *  the GIT_AUTHOR_ / EMAIL environment and falls back to the OS account
+ *  (Windows: USERNAME), so the old check told working machines to "set
+ *  user.name" while their commits were fine. */
+const noIdentity = computed(() => status.value?.repo === true && status.value?.identityComplete === false);
+/** The device parses the origin once (ssh/https/self-hosted/nested GitLab
+ *  namespaces) and reports the browser URL; a second FE parser drifted from it. */
+const remoteWeb = computed(() => status.value?.webUrl ?? "");
 const toggle = (p: string) => {
   const next = new Set(checked.value);
   if (next.has(p)) next.delete(p);
@@ -1011,7 +1039,11 @@ const laneX = (lane: number) => lane * 12 + 7;
                 turns
               </button>
             </div>
-            <p v-if="noIdentity" class="hintbox warn">git user.name/user.email is not set on the device — <code>dpi device config</code> or <code>git config --global</code> before committing.</p>
+            <p v-if="noIdentity" class="hintbox warn">
+              git on the device cannot resolve an author, so commits would be refused. Set one for the account that runs the device:
+              <code>git config --global user.name "Your Name"</code> and <code>git config --global user.email "you@example.com"</code>
+              (or just this repo: <code>git config user.name …</code>), then restart the device so it picks the new config up.
+            </p>
             <div v-if="turnsOpen" class="cps turns">
               <p v-if="!turns.length" class="hint">no turns recorded yet for this session.</p>
               <div v-for="(t, ti) in turns" :key="ti" class="cp-row">
@@ -1199,10 +1231,23 @@ const laneX = (lane: number) => lane * 12 + 7;
             </div>
           </section>
 
-          <!-- PULL REQUESTS (device gh CLI) -->
-          <section v-if="isGitHub" class="task-section" aria-label="Pull requests">
+          <!-- CODE REVIEW on ANY forge: gh panel on GitHub, links elsewhere -->
+          <section v-if="webUrl" class="task-section" aria-label="Code review">
             <div class="panel-heading">
-              <h4><GitMerge :size="16" /> Pull requests</h4>
+              <h4><GitMerge :size="16" /> {{ isGitHub ? "Pull requests" : changeLabel + "s" }}</h4>
+              <span class="grow" />
+              <a v-if="!isGitHub && newChangeHref" class="small btn-like" :href="newChangeHref" target="_blank" rel="noopener">new {{ changeLabel }}</a>
+              <a v-if="!isGitHub" class="small btn-like" :href="changesHref" target="_blank" rel="noopener">open {{ changeLabel }}s</a>
+              <a v-if="!isGitHub" class="small btn-like" :href="webUrl" target="_blank" rel="noopener">repo</a>
+            </div>
+            <template v-if="!isGitHub">
+              <p class="hint">
+                {{ forge === "gitlab" ? "GitLab" : forge === "bitbucket" ? "Bitbucket" : "this forge" }} — {{ changeLabel }}s open on the website:
+                review, approve and merge there (the device drives <code>git</code> itself; only GitHub has a CLI it can drive).
+              </p>
+            </template>
+            <template v-else>
+            <div class="panel-heading">
               <span class="grow" />
               <button class="small" :disabled="prBusy || !!busy" @click="prCreate">create PR</button>
               <button class="small" :disabled="prBusy" @click="prsOpen = !prsOpen">{{ prsOpen ? "hide" : "list" }}</button>
@@ -1222,6 +1267,7 @@ const laneX = (lane: number) => lane * 12 + 7;
               </div>
               <pre v-for="[n, text] in prChecks" :key="n" class="pr-checks">#{{ n }} checks:{{ "\n" }}{{ text }}</pre>
             </div>
+            </template>
           </section>
 
           <pre v-if="out" class="op-out">{{ out.slice(0, 6000) }}</pre>

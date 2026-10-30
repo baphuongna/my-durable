@@ -438,7 +438,10 @@ test("gitStatus: d:/repo, D:/repo/ and D:\\repo land on ONE entry — one spawn"
     // A fourth spelling inside the TTL is served from the SAME entry: no spawn.
     await withPlatform("win32", () => gitStatus("D:/REPO"));
     assert.equal(revParse, 1, "a case-only respelling must hit the cached entry");
-    assert.ok(calls.length >= 13, "the one statusOnce should have made its git calls");
+    // 12, not 13: identity is ONE probe (`git var GIT_AUTHOR_IDENT`) instead
+    // of a user.name + user.email pair — fewer spawns, and the single call is
+    // git's own resolution rather than config files only.
+    assert.ok(calls.length >= 12, `the one statusOnce should have made its git calls (got ${calls.length})`);
   } finally {
     restore();
     clearGitStatusCache();
@@ -486,6 +489,11 @@ test("R18 h8: git/gh children never inherit DPI_TOKEN (allowlist pinned, both pl
   const WIN32_EXTRA = new Set([
     "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "TEMP", "TMP",
     "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMDATA",
+    // R28: the account git-for-windows derives an author from (getpwuid reads
+    // USERNAME/USERDOMAIN, gethostname falls back to COMPUTERNAME). Their
+    // absence made device-side git report "identity unknown" on a machine
+    // whose terminal commits fine. Not secrets.
+    "USERNAME", "USERDOMAIN", "LOGNAME", "COMPUTERNAME", "WINDIR",
   ]);
   try {
     for (const [platform, allow] of [["linux", POSIX_ALLOW] as const, ["win32", new Set([...POSIX_ALLOW, ...WIN32_EXTRA])] as const]) {
