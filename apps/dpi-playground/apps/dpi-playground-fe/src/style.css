@@ -3272,49 +3272,60 @@ select:focus {
   background: var(--tree);
 }
 
-/* ── Mobile scale: ONE knob, the WHOLE ui ─────────────────────────────────
-   Reported live: 16px type reads oversized on phones — and shrinking only
-   the words (rem) while paddings, buttons and icons stayed desktop-sized
-   looked half-done. So ≤740px the entire app renders at ZOOM 0.85: type,
-   spacing, buttons, icons, radii — everything, uniformly, exactly like
-   stepping back from the desktop design. Engines without standardised zoom
-   (Safari < 17.4) ignore it and fall back to the rem type scale below:
-   text-only shrink, still coherent.
-   Viewport units need compensating under zoom (zoom multiplies rendered
-   lengths, so 100dvh would render 85dvh and strand a dead strip at the
-   bottom): every dvh/vh height the mobile layout uses is divided by the
-   zoom factor so it lands back at full viewport height. */
+/* ── UI scale: ONE knob, the WHOLE ui, EVERY screen size ──────────────────
+   Live verdicts, two rounds: 16px type was oversized on phones, and a
+   phone-only shrink was half-done (small words in desktop-sized chrome);
+   the user then asked for a uniformly smaller ui on ALL screens. So the
+   entire app now renders at a viewport-dependent ZOOM — type, spacing,
+   buttons, icons, radii, chrome scale TOGETHER, one factor per width band,
+   stepping 0.05 so resizing never jumps:
+     ≥1600 → 1 · ≤1599 → .95 · ≤1199 → .9 · ≤899 → .85 · ≤740 → .82 · ≤550 → .78
+   zoom multiplies rendered lengths, so full-viewport heights are divided by
+   the factor inside each band (uncompensated 100dvh would render 95dvh and
+   strand a dead strip at the bottom). The minifier constant-folds these
+   (calc(100dvh / .95) ships as 105.263dvh) — verify against the folded form.
+   Engines without standardised zoom (Safari < 17.4) ignore it and fall back
+   to the all-rem type scale at the bottom: text-only shrink, still coherent. */
+@media (max-width: 1599px) {
+  :root { zoom: 0.95; }
+  :root .shell { height: calc(100dvh / 0.95); }
+}
+@media (max-width: 1199px) {
+  :root { zoom: 0.9; }
+  :root .shell { height: calc(100dvh / 0.9); }
+}
+@media (max-width: 899px) {
+  :root { zoom: 0.85; }
+  :root .shell { height: calc(100dvh / 0.85); }
+}
 @media (max-width: 740px) {
-  :root {
-    zoom: 0.85;
-  }
-  .shell {
-    min-height: calc(100dvh / 0.85);
+  :root { zoom: 0.82; }
+  :root .shell {
+    height: auto;
+    min-height: calc(100dvh / 0.82);
   }
   .inspector {
-    max-height: calc(55vh / 0.85);
+    max-height: calc(55vh / 0.82);
   }
 }
-@media (max-width: 390px) {
-  :root {
-    zoom: 0.8;
-  }
-  .shell {
-    min-height: calc(100dvh / 0.8);
+@media (max-width: 550px) {
+  :root { zoom: 0.78; }
+  :root .shell {
+    min-height: calc(100dvh / 0.78);
   }
   .inspector {
-    max-height: calc(55vh / 0.8);
+    max-height: calc(55vh / 0.78);
   }
 }
 /* Fallback for engines without standardised zoom: shrink the (all-rem)
-   type scale instead — the single px base below is the only exception. */
+   type scale instead — the single px base above is the only exception. */
 @supports not (zoom: 2) {
   @media (max-width: 740px) {
     :root {
       font-size: 13.5px;
     }
   }
-  @media (max-width: 390px) {
+  @media (max-width: 550px) {
     :root {
       font-size: 12.5px;
     }
