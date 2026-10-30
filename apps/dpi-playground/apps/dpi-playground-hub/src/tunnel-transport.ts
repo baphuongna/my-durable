@@ -653,6 +653,7 @@ export class TunnelDispatcher {
     const queue: { frame: Frame; reservation: { release(): void } | null }[] = [];
     let wakeup: (() => void) | undefined;
     let closed: string | undefined;
+    let budgetFaulted = false;
     const sub: Subscription = {
       connectionId,
       deviceId,
@@ -660,15 +661,21 @@ export class TunnelDispatcher {
         const bytes = relayBytes(frame);
         const reservation = bytes > 0 ? this.budgetFor(connectionId).reserve(bytes) : null;
         if (bytes > 0 && !reservation) {
-          // No share left: fault THIS reader instead of stealing from the pool
-          // every other device and viewer draws on.
-          queue.push({
-            frame: {
-              type: "fault",
-              error: { code: "invalid", message: "device stream exceeded this device's relay budget" },
-            } as unknown as Frame,
-            reservation: null,
-          });
+          // No share left. One fault, then CLOSE: pushing a fault per dropped
+          // frame would put an uncharged entry in the queue for every device
+          // frame (the cap would stop bounding anything) and relay a fault to
+          // every tab until their viewer budgets cut them off.
+          if (!budgetFaulted) {
+            budgetFaulted = true;
+            queue.push({
+              frame: {
+                type: "fault",
+                error: { code: "invalid", message: "device stream exceeded this device's relay budget" },
+              } as unknown as Frame,
+              reservation: null,
+            });
+            closed = closed ?? "device stream exceeded this device's relay budget";
+          }
           wakeup?.();
           return;
         }
@@ -692,7 +699,10 @@ export class TunnelDispatcher {
         sub: input.path,
       });
       if (!sent) throw new DpiError("offline", "Tunnel connection closed while subscribing", 0);
-      while (!closed && !signal.aborted) {
+      // Frames already in the queue are CHARGED and delivered before a close
+      // takes effect — a budget fault must not swallow the frames that fit.
+      while (!signal.aborted) {
+        if (closed && queue.length === 0) break;
         const next = queue.shift();
         if (next) {
           try {

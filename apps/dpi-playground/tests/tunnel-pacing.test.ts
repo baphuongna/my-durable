@@ -456,3 +456,59 @@ test("run-8 U8: relayed device frames are charged to the device's connection sha
     await f.cleanup();
   }
 });
+
+test("run-8 cold-3 M1: relay-budget exhaustion yields ONE fault, then closes (no per-frame fault flood)", async () => {
+  // Unit level, through the REAL watch() generator (push lives inside it).
+  const { TunnelDispatcher } = await import("../apps/dpi-playground-hub/src/tunnel-transport.ts");
+  const sent: { subscriptionId?: string }[] = [];
+  const fakeServer = {
+    setHandlers() {},
+    send(_deviceId: string, message: { subscriptionId?: string }) {
+      sent.push(message);
+      return true;
+    },
+    hasConnection() {
+      return true;
+    },
+    connectionIdOf() {
+      return "c1";
+    },
+  };
+  const dispatcher = new TunnelDispatcher(fakeServer as never, {
+    connectionBudgetBytes: 200 * 1024,
+  } as never);
+  const ac = new AbortController();
+  const gen = dispatcher.watch("d1", { path: "dev/device" }, ac.signal);
+  const first = gen.next(); // enter the generator: registers the real subscription
+  await new Promise((r) => setTimeout(r, 20));
+  const subscriptionId = sent.find((m) => m.subscriptionId)!.subscriptionId!;
+  const conn = { connectionId: "c1", deviceId: "d1" } as never;
+  const route = (dispatcher as unknown as { route: (c: never, f: unknown) => void }).route.bind(dispatcher);
+  const frame = { type: "tree", tree: { blob: "z".repeat(40 * 1024) } };
+  for (let i = 0; i < 40; i++) route(conn, { type: "tunnel-data", subscriptionId, frame });
+
+  // Now drain: charged frames arrive, then exactly one fault, then the stream ends.
+  const got: string[] = [];
+  const drain = async () => {
+    try {
+      for (;;) {
+        const next = await Promise.race([
+          gen.next(),
+          new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 1000)),
+        ]);
+        if (next === "timeout" || next.done) break;
+        got.push((next.value as { type: string }).type);
+      }
+    } catch (e) {
+      // the generator ends by THROWING the close reason — that is the contract
+      assert.match(String((e as Error).message), /relay budget/);
+    }
+  };
+  await Promise.race([drain(), new Promise((r) => setTimeout(r, 6000))]);
+  ac.abort();
+  await first.catch(() => {});
+  const trees = got.filter((t) => t === "tree").length;
+  const faults = got.filter((t) => t === "fault").length;
+  assert.ok(trees > 0, `frames within the share relay first (trees=${trees})`);
+  assert.equal(faults, 1, `exactly one budget fault, got ${faults}`);
+});

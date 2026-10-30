@@ -539,6 +539,13 @@ function migrateV0(db: DatabaseSync, path: string, opts: MigrationOptions): Regi
     // The sanitized legacy values land on the NEW table, inside this
     // transaction: the v0 file is never modified by a migration that aborts.
     if (overrides.size) {
+      // cold-3 L11: dropping a legacy token is a behaviour change the operator
+      // must be able to see (the refused URL aborts loudly; this must not be
+      // silent). Ids + field names only, never the values.
+      const fields = [...overrides].map(([id, patch]) => `${id}(${Object.keys(patch).join(",")})`);
+      process.emitWarning(
+        `registry migration: sanitised ${overrides.size} legacy row(s) — ${fields.join(" ")}; those devices may need re-pairing`,
+      );
       const setUrl = db.prepare("UPDATE devices_v1_new SET url=? WHERE id=?");
       const setToken = db.prepare("UPDATE devices_v1_new SET token=? WHERE id=?");
       const setInfo = db.prepare("UPDATE devices_v1_new SET last_info_json=? WHERE id=?");

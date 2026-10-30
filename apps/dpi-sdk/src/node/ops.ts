@@ -39,22 +39,29 @@ export function run(cmd: string, args: string[], options: RunOptions = {}): Prom
     // run() accumulated them without limit, so `net status`/`up` could OOM or
     // hang forever (facts/register/logs passed no timeout at all).
     const cap = options.maxBytes ?? 1024 * 1024;
-    const take = (current: string, chunk: Buffer): string =>
-      current.length >= cap ? current : current + chunk.toString().slice(0, cap - current.length);
+    let truncatedStdout = false;
+    let truncatedStderr = false;
+    const take = (current: string, chunk: Buffer, mark: (v: boolean) => void): string => {
+      if (current.length >= cap) {
+        mark(true);
+        return current;
+      }
+      return current + chunk.toString().slice(0, cap - current.length);
+    };
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const timer = timeoutMs
       ? setTimeout(() => {
           child.kill("SIGTERM");
           setTimeout(() => child.kill("SIGKILL"), 2000).unref?.();
-          stderr = take(stderr, Buffer.from(`\n[timeout after ${timeoutMs}ms]`));
+          stderr = take(stderr, Buffer.from(`\n[timeout after ${timeoutMs}ms]`), (v) => (truncatedStderr = v));
         }, timeoutMs)
       : undefined;
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout = take(stdout, chunk);
+      stdout = take(stdout, chunk, (v) => (truncatedStdout = v));
       if (options.echo) process.stdout.write(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr = take(stderr, chunk);
+      stderr = take(stderr, chunk, (v) => (truncatedStderr = v));
       if (options.echo) process.stderr.write(chunk);
     });
     child.on("error", (e) => {
@@ -63,7 +70,13 @@ export function run(cmd: string, args: string[], options: RunOptions = {}): Prom
     });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      const result = { code: code ?? 1, stdout, stderr };
+      // cold-3 L10: a silent cut is indistinguishable from a complete log.
+      const marker = `\n[truncated at ${cap} bytes]`;
+      const result = {
+        code: code ?? 1,
+        stdout: truncatedStdout ? stdout + marker : stdout,
+        stderr: truncatedStderr ? stderr + marker : stderr,
+      };
       if (result.code !== 0 && !options.allowFail)
         reject(Object.assign(Error(`${cmd} ${args.slice(0, 3).join(" ")} … failed (exit ${result.code}): ${stderr.trim().slice(-800)}`), { result }));
       else resolve(result);

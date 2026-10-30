@@ -286,7 +286,14 @@ export class StreamMux {
           // monitor seam only). Serialize ONCE here, admit on its byte size,
           // and hand the same string to every tab.
           const text = JSON.stringify({ sub: sub.key, frame });
-          const cap = frame.type === "tree" ? RELAY_TREE_CAP_BYTES : RELAY_FRAME_CAP_BYTES;
+          // snapshot/agents/network carry whole-document payloads by design
+          // (a session snapshot includes entries + inbox) and legitimately
+          // exceed the per-event cap — capping them turned a large session's
+          // live view into a fault with no reconnect path.
+          const cap =
+            frame.type === "tree" || frame.type === "snapshot" || frame.type === "agents"
+              ? RELAY_TREE_CAP_BYTES
+              : RELAY_FRAME_CAP_BYTES;
           if (Buffer.byteLength(text) > cap) {
             stream.send({
               sub: sub.key,

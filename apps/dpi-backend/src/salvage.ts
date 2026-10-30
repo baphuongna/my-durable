@@ -59,7 +59,8 @@ export interface SalvageOutcome {
  */
 const WORKER_SRC = `
 const { parentPort, workerData } = require("node:worker_threads");
-const { copyFileSync, existsSync, lstatSync, readSync, openSync, closeSync, rmSync, writeSync } = require("node:fs");
+const { copyFileSync, existsSync, lstatSync, statSync, fstatSync, readSync, openSync, closeSync, rmSync, writeSync } = require("node:fs");
+const fsConstants = require("node:fs").constants;
 const { DatabaseSync } = require("node:sqlite");
 const main = workerData.dbPath;
 const copy = workerData.copyPath; // R10 5.2: unique per attempt — two workers never share scratch files
@@ -93,7 +94,31 @@ try {
     if (sideBad && sideBad !== "missing") return fail(sideBad);
   }
   rmSync(copy, { force: true });
-  copyFileSync(main, copy);
+  // cold-3 M4: the lstat above is a PATH pre-check; copyFileSync re-opens the
+  // path, so a same-user swap re-opened a different file (the exact race
+  // archived.ts pinned with O_NOFOLLOW). Pin the source fd, fstat THAT fd, and
+  // copy from it — a swap after the open cannot change what we read.
+  const srcFd = openSync(main, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const fst = fstatSync(srcFd);
+    if (!fst.isFile()) return fail("database is not a regular file");
+    if (fst.size > MAX_DB_BYTES) return fail("database is too large to salvage");
+    const dstFd = openSync(copy, "w", 0o600);
+    try {
+      const buf = Buffer.allocUnsafe(256 * 1024);
+      let pos = 0;
+      for (;;) {
+        const n = readSync(srcFd, buf, 0, buf.length, pos);
+        if (n <= 0) break;
+        writeSync(dstFd, buf, 0, n);
+        pos += n;
+      }
+    } finally {
+      closeSync(dstFd);
+    }
+  } finally {
+    closeSync(srcFd);
+  }
   for (const suffix of ["-wal", "-shm"]) {
     if (existsSync(main + suffix)) copyFileSync(main + suffix, copy + suffix);
     else rmSync(copy + suffix, { force: true });

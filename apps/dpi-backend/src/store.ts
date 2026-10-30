@@ -73,6 +73,7 @@ import {
 import {
   listArchived,
   findBundle,
+  BUNDLE_DIR_PATTERN,
   readArchiveManifest,
   archivedTranscript,
   restoreArchive,
@@ -82,7 +83,7 @@ import {
 import { NotifySinks, type DeliveryResult, type SinkInput, type SinkRecord } from "./notify-sinks.js";
 import { zipSync, EXPORT_RAW_LIMIT_BYTES, type ZipEntry } from "./zip.js";
 import { salvageFailureNote, salvageSessionDb } from "./salvage.js";
-import { mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, rmSync, statSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, rmSync, statSync, realpathSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { ensurePrivateDir } from "../../dpi-sdk/src/node/private-dir.js";
 import { join, dirname, relative, resolve, sep } from "node:path";
@@ -636,13 +637,17 @@ export class Store {
     } catch {
       return null;
     }
-    const prefix = `${sessionId}-`;
+    // cold-3 M3: the SAME grammar every other reader uses (BUNDLE_DIR_PATTERN,
+    // 13-digit ms). A looser prefix+Number() match accepted `<id>-17e5` /
+    // `<id>-0x1f` / `<id>-`, and this helper gates row DELETION — so a bundle
+    // restore cannot see was treated as "already archived" and the row went away
+    // with its name/cwd.
     let best: string | null = null;
     let bestTs = -1;
     for (const name of names) {
-      if (!name.startsWith(prefix)) continue;
-      const ts = Number(name.slice(prefix.length));
-      if (!Number.isFinite(ts)) continue;
+      const match = BUNDLE_DIR_PATTERN.exec(name);
+      if (!match || match[1] !== sessionId) continue;
+      const ts = Number(match[2]);
       if (ts > bestTs) {
         bestTs = ts;
         best = name;
@@ -671,10 +676,17 @@ export class Store {
    * Bounded: one readdir of sessions/ + one of archive/, no per-row spawns.
    */
   private reconcileArchiveWindows(): void {
-    let dirs: string[] = [];
+    let dirs: string[];
     try {
       dirs = readdirSync(this.sessionsDir);
-    } catch {}
+    } catch (e) {
+      // cold-3 L6: EACCES/EMFILE/EIO is NOT "no sessions exist" — reconciling on
+      // a transient readdir failure would complete-and-delete every row whose
+      // bundle exists, losing name/model/cwd. Only a genuinely absent dir is
+      // "nothing to do".
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+      return;
+    }
     const onDisk = new Set(dirs);
     const rows = this.list();
     const known = new Set(rows.map((r) => r.id));
@@ -1722,6 +1734,10 @@ export class Store {
       // immortal through the API (probe: ENOENT + row survives forever). An
       // earlier interrupted archive already holds the bundle, so finish the
       // row removal idempotently instead of minting an empty one.
+      // cold-3 L8: rename() also ENOENTs when the DESTINATION parent vanished
+      // (e.g. a concurrent gc of archive/), so require the source dir to be
+      // gone before the idempotent completion below can delete the row.
+      if (existsSync(dirname(row.dbPath))) throw e;
       const existing = this.findBundleDir(row.id);
       if (!existing) {
         this.errors.set(row.id, "session directory is missing (no archived bundle); row left in place");

@@ -421,8 +421,18 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
       out.behind = Number(ab.match(/behind (\d+)/)?.[1] ?? 0);
     }
     // Per record — NUL-delimited, so an embedded newline can never forge a
-    // record boundary (the old line-form regex was per-line).
-    const body = records.filter((r) => !r.startsWith("## "));
+    // record boundary (the old line-form regex was per-line). A rename/copy
+    // record is followed by its ORIGIN path as a separate record; that record
+    // is status text too, so it must be dropped ONCE here — leaving it in made
+    // the counters at the bottom count an old path that starts with M/A/U.
+    const raw = records.filter((r) => !r.startsWith("## "));
+    const body: string[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const rec = raw[i]!;
+      body.push(rec);
+      const x = rec[0] ?? " ";
+      if ((x === "R" || x === "C") && i + 1 < raw.length) i++;
+    }
     out.merge = mergeP.status === "fulfilled";
     out.conflicts = body.filter((r) => /^(UU|AA|DD|AU|UA|DU|UD)/.test(r)).length;
     out.identity = {
@@ -445,13 +455,10 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     const workNum = numstat(numWorkP.status === "fulfilled" ? numWorkP.value : "");
     const idxNum = numstat(numIdxP.status === "fulfilled" ? numIdxP.value : "");
     out.files = [];
-    for (let i = 0; i < body.length && out.files.length < 500; i++) {
-      const l = body[i]!;
+    for (const l of body.slice(0, 500)) {
       const x = l[0] ?? " ";
       const y = l[1] ?? " ";
       const p = l.slice(3);
-      // v1 -z rename/copy records carry the ORIGINAL path as the next record
-      if ((x === "R" || x === "C") && i + 1 < body.length) i++;
       const staged = x !== " " && x !== "?";
       const n = staged ? idxNum.get(p) : workNum.get(p);
       out.files.push({ path: p, x, y, ...(n ? { a: n.a, d: n.d } : {}) });

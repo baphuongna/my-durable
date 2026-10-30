@@ -138,13 +138,35 @@ function capLiveMessage(message: WireAssistantMessage): WireAssistantMessage {
   if (!Array.isArray(content)) return cloned;
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
-    const b = block as { text?: unknown; thinking?: unknown };
+    const b = block as { text?: unknown; thinking?: unknown; arguments?: unknown };
     if (typeof b.text === "string" && b.text.length > LIVE_TEXT_CAP)
       b.text = capLiveText(b.text.slice(-LIVE_TEXT_CAP));
     if (typeof b.thinking === "string" && b.thinking.length > LIVE_TEXT_CAP)
       b.thinking = capLiveText(b.thinking.slice(-LIVE_TEXT_CAP));
+    // cold-3 M5: a toolCall block's arguments rode the same frame ceiling in
+    // verbatim — the exact defect this clone cap exists for, one block type over.
+    if (b.arguments !== undefined) {
+      try {
+        if (JSON.stringify(b.arguments).length > MAX_LIVE_ARGS) b.arguments = capLiveArgs(b.arguments);
+      } catch {
+        b.arguments = { truncated: true };
+      }
+    }
   }
   return cloned;
+}
+
+/** cold-3 M5: bound for a cloned toolCall block's arguments (module scope: the
+ *  clone helper runs before the class body). */
+const MAX_LIVE_ARGS = 64 * 1024;
+function capLiveArgs(args: unknown): unknown {
+  try {
+    const text = JSON.stringify(args);
+    if (text.length <= MAX_LIVE_ARGS) return args;
+    return { truncated: true, preview: Buffer.from(text.slice(0, 4_096), "utf8").toString("utf8") };
+  } catch {
+    return { truncated: true };
+  }
 }
 
 function capLiveText(text: string): string {

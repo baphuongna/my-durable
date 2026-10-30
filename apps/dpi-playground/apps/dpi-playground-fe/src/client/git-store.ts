@@ -57,7 +57,11 @@ export function gitAllowedFor(
 ): { ok: true } | { ok: false; reason: string } {
   if (!gitPathAllowed(deviceId, path)) return { ok: false, reason: "outside the device's start dirs" };
   const entry = gitEntry(deviceId, path);
-  if (entry.status && entry.status.repo === false) return { ok: false, reason: "not a git repository" };
+  // cold-3 L9: `repo:false` is only advisory — a folder that became a repo
+  // after the page loaded (git init) must be reachable, or the panel reporting
+  // it can never refresh. A stale verdict stops blocking after 5s.
+  if (entry.status && entry.status.repo === false && Date.now() - entry.at < 5_000)
+    return { ok: false, reason: "not a git repository" };
   return { ok: true };
 }
 
