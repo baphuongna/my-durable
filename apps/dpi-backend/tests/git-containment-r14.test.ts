@@ -95,3 +95,42 @@ test("worktree-add/remove targets must live under a start dir (audit run-1)", as
     await b.close();
   }
 });
+
+test("run-8 (live): a session's own folder stays served after DPI_START_DIRS is narrowed; anything else is still refused", async () => {
+  const { tempStore } = await import("./helpers.ts");
+  const t = await tempStore();
+  try {
+    // 1. Session created while the folder WAS a start dir (the laptop's case).
+    const wide = { ...t.options, startDirs: [t.work, join(t.root, "other")] };
+    const mkdir = (await import("node:fs/promises")).mkdir;
+    await mkdir(join(t.root, "other"), { recursive: true });
+    const s1 = await Store.open(wide);
+    const row = await s1.create({ name: "legacy", cwd: join(t.root, "other"), model: { provider: "faux", modelId: "echo" } });
+    await s1.close();
+
+    // 2. Reopen with the start-dir list NARROWED to work only.
+    const s2 = await t.open();
+    const served = await s2.containedPath(join(t.root, "other"));
+    assert.equal(served, await (await import("node:fs/promises")).realpath(join(t.root, "other")), "the session folder is still served");
+    const nested = await s2.containedPath(join(t.root, "other", "sub"));
+    assert.ok(nested.endsWith("sub"), "children of a session folder are served too");
+
+    // 3. A folder that never hosted a session is still refused.
+    await mkdir(join(t.root, "elsewhere"), { recursive: true });
+    await assert.rejects(() => s2.containedPath(join(t.root, "elsewhere")), /start dir/);
+
+    // 4. Creating a NEW session outside the start dirs is still refused.
+    await assert.rejects(
+      () => s2.create({ name: "nope", cwd: join(t.root, "elsewhere"), model: { provider: "faux", modelId: "echo" } }),
+      /start dir/,
+    );
+
+    // 5. deviceInfo reports the same set the enforcer uses.
+    const info = s2.deviceInfo();
+    assert.ok(Array.isArray(info.gitDirs) && info.gitDirs.some((d) => d.includes("other")), `gitDirs carries the session folder: ${JSON.stringify(info.gitDirs)}`);
+    assert.equal(row.cwd.includes("other"), true);
+    await s2.close();
+  } finally {
+    await t.cleanup();
+  }
+});

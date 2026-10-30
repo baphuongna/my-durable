@@ -99,6 +99,10 @@ export interface DeviceInfo {
   startedAt: number;
   /** Where new sessions start: the directory browser opens here, relative cwds resolve against the first. */
   startDirs: string[];
+  /** Folders this device will serve git/files for: the start dirs plus the
+   * folders that already host a session (a narrowed start-dir list must not
+   * strand a live session's panels). Clients pre-check with this when present. */
+  gitDirs?: string[];
   models: ModelInfo[];
   defaultModel: string;
   /** Provider id of this device ("openrouter" | "faux"); FE model fallback. */

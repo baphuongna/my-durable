@@ -5,6 +5,9 @@
 // it without a cycle.
 export interface GitDeviceFacts {
   startDirs?: unknown;
+  /** run-8: the device's own served set (start dirs + session folders). Preferred
+   *  when present — the FE must judge with the same list the enforcer uses. */
+  gitDirs?: unknown;
   platform?: unknown;
 }
 
@@ -19,7 +22,7 @@ export function normGitPath(p: string, win: boolean): string {
 /** True when the device's start dirs are unknown (allow: the device decides) or
  *  `path` IS a start dir / lives under one. */
 export function pathUnderStartDirs(info: GitDeviceFacts | undefined, path: string): boolean {
-  const dirs = info?.startDirs;
+  const dirs = Array.isArray(info?.gitDirs) && info.gitDirs.length ? info.gitDirs : info?.startDirs;
   if (!Array.isArray(dirs) || dirs.length === 0) return true;
   const win = String(info?.platform ?? "").startsWith("win32");
   const a = normGitPath(path, win);
@@ -31,7 +34,8 @@ export function pathUnderStartDirs(info: GitDeviceFacts | undefined, path: strin
 
 /** Operator-facing sentence naming the roots the device actually serves. */
 export function outsideStartDirsReason(info: GitDeviceFacts | undefined): string {
-  const dirs = Array.isArray(info?.startDirs) ? (info!.startDirs as unknown[]).map(String) : [];
+  const source = Array.isArray(info?.gitDirs) && info.gitDirs.length ? info.gitDirs : info?.startDirs;
+  const dirs = Array.isArray(source) ? (source as unknown[]).map(String) : [];
   return dirs.length
     ? `outside the device's start dirs (it serves: ${dirs.join(", ")})`
     : "outside the device's start dirs";

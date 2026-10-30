@@ -965,6 +965,11 @@ export class Store {
           return d;
         }
       }),
+      // run-8 (live): folders this device will serve git/files for — the start
+      // dirs PLUS the folders that already host a session (a narrowed
+      // DPI_START_DIRS must not strand a live session's panels). Clients
+      // pre-check with THIS set, not with startDirs.
+      gitDirs: this.servedRootsSync(),
       models: this.modelList,
       defaultModel: this.defaultModel(),
       provider: this.options.provider,
@@ -1161,6 +1166,85 @@ export class Store {
     return roots;
   }
 
+  /** Folder names that must never become a served root on their own. */
+  private static isFilesystemRoot(p: string): boolean {
+    return p === "/" || /^[A-Za-z]:[\\/]?$/.test(p) || /^\\{2}[^\\]+[\\/]?$/.test(p);
+  }
+
+  /**
+   * The roots the READ surface (git + file browse) may serve: the start dirs
+   * PLUS every folder that already hosts a session.
+   *
+   * Why the union: the operator created those sessions, so that folder was
+   * served by intent — narrowing DPI_START_DIRS later must not strand a live
+   * session's git/files panels (the agent itself keeps running there, it is
+   * unsandboxed by design). Folder CREATION stays start-dirs-only
+   * (assertSessionCwdAllowed), so this cannot be used to widen the sandbox:
+   * it only re-states what the device already served.
+   *
+   * Cached: one realpath per session cwd, invalidated whenever the session set
+   * or cwds change. Filesystem roots are skipped so a session created at "/" or
+   * "D:\" can never expose a whole volume.
+   */
+  private servedCwds: { dirs: string[]; at: number } | null = null;
+  private servedCwdsStale(): void {
+    this.servedCwds = null;
+  }
+  async servedRoots(): Promise<string[]> {
+    const starts = await this.startDirRoots();
+    if (!this.servedCwds || Date.now() - this.servedCwds.at > 30_000) {
+      const dirs: string[] = [];
+      const seen = new Set(starts);
+      for (const row of this.list()) {
+        if (dirs.length >= 500) break;
+        let real: string;
+        try {
+          real = await realpath(row.cwd);
+        } catch {
+          continue; // offline mount / deleted folder: nothing to serve
+        }
+        if (Store.isFilesystemRoot(real) || seen.has(real)) continue;
+        seen.add(real);
+        dirs.push(real);
+      }
+      this.servedCwds = { dirs, at: Date.now() };
+    }
+    return [...new Set([...starts, ...this.servedCwds.dirs])];
+  }
+
+  /** Sync view of servedRoots() for deviceInfo(): start dirs (realpath'd where
+   *  possible) plus the session cwds already resolved by the last async call. */
+  private servedRootsSync(): string[] {
+    const dirs = this.startDirs.map((d) => {
+      try {
+        return realpathSync(d);
+      } catch {
+        return d;
+      }
+    });
+    if (!this.servedCwds) {
+      // Cold cache (a rejected create just invalidated it): build it here so
+      // deviceInfo never under-reports the served set the enforcer uses.
+      const cwds: string[] = [];
+      const seen = new Set(dirs);
+      for (const row of this.list()) {
+        if (cwds.length >= 500) break;
+        let real: string;
+        try {
+          real = realpathSync(row.cwd);
+        } catch {
+          continue;
+        }
+        if (Store.isFilesystemRoot(real) || seen.has(real)) continue;
+        seen.add(real);
+        cwds.push(real);
+      }
+      this.servedCwds = { dirs: cwds, at: Date.now() };
+    }
+    for (const d of this.servedCwds.dirs) if (!dirs.includes(d)) dirs.push(d);
+    return dirs;
+  }
+
   /** A resolved path IS a start dir root or lives under one. */
   private underRoots(candidate: string, roots: string[]): boolean {
     return roots.some((root) => candidate === root || candidate.startsWith(root + sep) || candidate.startsWith(root + "/"));
@@ -1224,7 +1308,7 @@ export class Store {
       }
       candidate = walked;
     }
-    if (!this.underRoots(candidate, await this.startDirRoots())) throw invalid("path must live under a start dir");
+    if (!this.underRoots(candidate, await this.servedRoots())) throw invalid("path must live under a start dir");
     return candidate;
   }
 
@@ -1280,7 +1364,7 @@ export class Store {
     }
     // Containment: only the start dirs and their subdirectories are listable —
     // `~` and ".." traversal count only when they land inside one.
-    const roots = await this.startDirRoots();
+    const roots = await this.servedRoots();
     if (!this.underRoots(real, roots)) throw invalid("path must live under a start dir");
     const dirs: { name: string; path: string }[] = [];
     try {
@@ -1600,6 +1684,7 @@ export class Store {
 
   /** `spawnKey` records which tool call created the session, in the same transaction as the session row. */
   async create(body: CreateSessionBody, spawnKey?: string): Promise<SessionSummary> {
+    this.servedCwdsStale(); // a new session cwd joins the served set
     if (typeof body?.name !== "string") throw invalid("name is required");
     if (typeof body.cwd !== "string" || !body.cwd.trim()) throw invalid("cwd is required");
     // One name rule for create and rename (assertSessionName, module scope): the old
@@ -1705,6 +1790,7 @@ export class Store {
 
   /** Stop all work, close the harness and move its files to archive/. Nothing is deleted. */
   async archive(row: SessionRow) {
+    this.servedCwdsStale();
     // FIRST act, before any await: reopens racing the window below compare
     // against this epoch and fail like any dead row (run-7 B1-A).
     this.archiveEpoch.set(row.id, (this.archiveEpoch.get(row.id) ?? 0) + 1);
@@ -1792,6 +1878,7 @@ export class Store {
   }
 
   async restoreArchivedSession(sessionId: string): Promise<SessionSummary> {
+    this.servedCwdsStale();
     // R19 (run-5 h4 hardening): normalize ONCE — the live-check used to be
     // case-sensitive while the pin was case-normalized and the move target
     // raw, so an uppercase-hex id could bypass the live-session refusal and
