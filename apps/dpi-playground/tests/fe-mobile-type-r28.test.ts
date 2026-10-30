@@ -123,3 +123,17 @@ test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed
   assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 116px;[^}]*text-overflow: ellipsis;/, "connection chip ellipsizes");
   assert.match(s, /\.top-actions \.primary\.small\s*\{\s*padding: 0 8px;\s*min-height: 26px;/, "compact New session");
 });
+
+test("R28 body headers: the chat header matches the topbar, no stale offsets", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // the chat header IS the second header on a phone — it rides the same 42px
+  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.chat-header\s*\{\s*padding: 0 10px;\s*min-height: 42px;\s*max-height: 42px;/, "chat header = 42px like the topbar");
+  // the 40px model avatar inflated the old 55px row
+  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.model-button img\s*\{\s*width: 26px;\s*height: 26px;/, "26px model avatar");
+  assert.doesNotMatch(s, /@media \(max-width: 740px\)\s*\{[^@]*\.model-button img\s*\{[^}]*40px/, "no 40px avatar anywhere on mobile");
+  // the tree drawer backdrop anchored to the OLD 68px header — stale offset
+  assert.match(s, /\.drawer-backdrop\s*\{\s*top: 42px;/, "drawer backdrop tracks the 42px header");
+  assert.doesNotMatch(s, /top:\s*68px/, "no 68px offsets left");
+  // the Details pane's own heading slims to match
+  assert.match(s, /\.session-heading\s*\{\s*padding: 10px 14px 8px;/, "slim session heading");
+});

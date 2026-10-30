@@ -2164,11 +2164,11 @@ textarea.app-state-json {
     min-height: 310px;
   }
   .session-heading {
-    padding: 17px 20px 10px;
+    padding: 10px 14px 8px;
   }
   .session-heading h1 {
-    font-size: 1.1875rem;
-    margin: 5px 0;
+    font-size: 1rem;
+    margin: 3px 0;
   }
   .session-heading > .eyebrow,
   .session-status,
@@ -2191,8 +2191,24 @@ textarea.app-state-json {
     min-height: 500px;
   }
   .chat-header {
-    padding: 0 13px;
-    min-height: 55px;
+    padding: 0 10px;
+    min-height: 42px;
+    max-height: 42px;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .model-button img {
+    width: 26px;
+    height: 26px;
+  }
+  .conversation-select select {
+    font-size: 0.875rem;
+    padding: 4px 2px;
+    max-width: 150px;
+  }
+  .chat-header-actions .icon-button {
+    width: 26px;
+    height: 26px;
   }
   .chat-scroll {
     padding: 24px 22px;
@@ -2463,11 +2479,7 @@ button:disabled {
   .inspector {
     max-height: 60vh;
   }
-  /* topbar height: owned by the compact block in the ≤740 shell section */
-  .model-button img {
-    width: 40px;
-    height: 40px;
-  }
+  /* chat-header + model avatar: owned by the compact ≤740 header block */
   .model-button small {
     display: block;
   }
@@ -2502,7 +2514,7 @@ button:disabled {
     padding: 0 10px;
   }
   .drawer-backdrop {
-    top: 68px;
+    top: 42px;
   }
   .composer-toolbar {
     padding-left: 9px;
