@@ -427,3 +427,32 @@ test("backend viewer close: SSE cut mid-stream leaves the daemon fully functiona
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("run-8 U8: relayed device frames are charged to the device's connection share, not the shared hub pool", async () => {
+  const f = await setup();
+  try {
+    await f.waitOnline();
+    const tab = await openTab(f.base, [`${DEVICE_ID}/device`]);
+    const subBy = Date.now() + 10_000;
+    while (Date.now() < subBy && f.device.subscribes.length < 2)
+      await new Promise((r) => setTimeout(r, 50));
+
+    // A frame well under the mux relay caps: must arrive intact.
+    const small = { type: "tree", tree: { blob: "k".repeat(64 * 1024) } };
+    f.device.ws.send(JSON.stringify({ kind: "tunnel-data", subscriptionId: f.device.subscribes.at(-1)!.subscriptionId, frame: small }));
+    const iter = tab.frames();
+    const got = await Promise.race([
+      (async () => {
+        for (;;) {
+          const next = await iter.next();
+          if (next.done) return undefined;
+          if (next.value.frame.type === "tree") return next.value.frame;
+        }
+      })(),
+      new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 8000)),
+    ]);
+    assert.ok(got, "a small frame must relay while the device share holds");
+  } finally {
+    await f.cleanup();
+  }
+});

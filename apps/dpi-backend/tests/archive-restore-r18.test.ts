@@ -177,3 +177,46 @@ test("run-7 B1-B: planted manifest names degrade through the restore choke point
     await t.cleanup();
   }
 });
+
+test("run-8 U1: a crash between the archive rename and the catalog DELETE is repaired at boot (zombie row, manifest-less bundle, orphan dir)", async () => {
+  const { mkdir, rename } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+
+  // A: row live, dir already moved AND manifest written (crash before DELETE)
+  const t = await tempStore();
+  try {
+    const s1 = await t.open();
+    const row = await s1.create({ name: "zombie", cwd: join(t.work, "project"), model: faux });
+    await s1.close();
+    const archiveDir = join(t.options.dataDir, "archive");
+    await mkdir(archiveDir, { recursive: true });
+    await rename(join(t.options.dataDir, "sessions", row.id), join(archiveDir, `${row.id}-${Date.now()}`));
+
+    const s2 = await t.open(); // boots -> reconcile completes the archive
+    assert.equal(s2.list().some((r) => r.id === row.id), false, "the zombie row must be completed, not immortal");
+    assert.ok(s2.archivedList().some((a) => a.sessionId === row.id), "the bundle stays browsable");
+    const restored = await s2.restoreArchivedSession(row.id); // was: 'a live session with this id already exists'
+    assert.equal(restored.name, "zombie", "the recovered manifest carries the row identity");
+    await s2.close();
+  } finally {
+    await t.cleanup();
+  }
+
+  // B: an orphan sessions/<uuid> dir with no catalog row is re-added
+  const t2 = await tempStore();
+  try {
+    const s1 = await t2.open();
+    const row = await s1.create({ name: "orphan", cwd: join(t2.work, "project"), model: faux });
+    await s1.close();
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(join(t2.options.dataDir, "catalog.sqlite"));
+    db.exec(`DELETE FROM sessions WHERE id = '${row.id}'`);
+    db.close();
+
+    const s2 = await t2.open();
+    assert.ok(s2.list().some((r) => r.id === row.id), "the orphan dir must be visible again (was: 404 forever)");
+    await s2.close();
+  } finally {
+    await t2.cleanup();
+  }
+});

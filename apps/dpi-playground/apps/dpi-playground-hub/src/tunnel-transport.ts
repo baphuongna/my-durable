@@ -62,10 +62,24 @@ interface PendingRest {
 interface Subscription {
   connectionId: string;
   deviceId: string;
+  /** run-8 U8: every relayed device frame is charged to THIS device's
+   *  connection share before it is queued (released when consumed), so a
+   *  hostile device exhausts its own 32 MiB — never the shared hub pool that
+   *  other devices' REST reservations and chunk assemblies draw from. */
   push: (frame: Frame) => void;
   close: (reason: string) => void;
   signal: AbortSignal;
   onAbort: () => void;
+}
+
+/** run-8 U8: the byte size a relayed frame holds in a viewer queue. One extra
+ *  serialization per device frame, bounded by the mux relay caps. */
+function relayBytes(frame: Frame): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(frame));
+  } catch {
+    return 0;
+  }
 }
 
 /** A grace-set entry: which connection owned the correlation, and when it left the pending maps. */
@@ -636,14 +650,29 @@ export class TunnelDispatcher {
       throw new DpiError("offline", "No tunnel connection is live", 0);
     const connectionId = this.server.connectionIdOf(deviceId)!;
     const subscriptionId = randomUUID();
-    const queue: Frame[] = [];
+    const queue: { frame: Frame; reservation: { release(): void } | null }[] = [];
     let wakeup: (() => void) | undefined;
     let closed: string | undefined;
     const sub: Subscription = {
       connectionId,
       deviceId,
       push: (frame) => {
-        queue.push(frame);
+        const bytes = relayBytes(frame);
+        const reservation = bytes > 0 ? this.budgetFor(connectionId).reserve(bytes) : null;
+        if (bytes > 0 && !reservation) {
+          // No share left: fault THIS reader instead of stealing from the pool
+          // every other device and viewer draws on.
+          queue.push({
+            frame: {
+              type: "fault",
+              error: { code: "invalid", message: "device stream exceeded this device's relay budget" },
+            } as unknown as Frame,
+            reservation: null,
+          });
+          wakeup?.();
+          return;
+        }
+        queue.push({ frame, reservation });
         wakeup?.();
       },
       close: (reason) => {
@@ -664,9 +693,13 @@ export class TunnelDispatcher {
       });
       if (!sent) throw new DpiError("offline", "Tunnel connection closed while subscribing", 0);
       while (!closed && !signal.aborted) {
-        const frame = queue.shift();
-        if (frame) {
-          yield frame;
+        const next = queue.shift();
+        if (next) {
+          try {
+            yield next.frame;
+          } finally {
+            next.reservation?.release();
+          }
           continue;
         }
         await new Promise<void>((resolve) => {
@@ -676,6 +709,9 @@ export class TunnelDispatcher {
       }
       if (closed && closed !== "consumer aborted") throw new DpiError("offline", closed, 0);
     } finally {
+      // Release every queued byte the device never got to deliver.
+      for (const pending of queue) pending.reservation?.release();
+      queue.length = 0;
       this.subs.delete(subscriptionId);
       this.rememberClosedSubscription(subscriptionId, connectionId);
       this.reassemblers

@@ -356,3 +356,38 @@ test("windows durability: syncDirectory and syncFile never throw EPERM on any pl
     assert.equal(process.platform !== "win32", true, "guard is POSIX here");
   }
 });
+
+test("run-8 U9: the v0->v1 copy enforces the live writers' per-field policy (caps, normalizeUrl, validateToken)", async () => {
+  const { NetworkRegistry } = await import("../src/node/registry.js");
+  const dir = await tempDir();
+  const path = join(dir, "network.sqlite");
+  const bigTree = JSON.stringify({ blob: "y".repeat(400 * 1024) }); // > 288KiB cap
+  makeClosedV0(path, [
+    {
+      id: "dev-big",
+      url: "http://10.0.0.6:7900",
+      token: "a".repeat(40),
+      last_tree_json: bigTree,
+      last_info_json: JSON.stringify({ ok: true }),
+    },
+    {
+      id: "dev-badtoken",
+      url: "http://10.0.0.7:7900",
+      token: "abc\r\nX-Injected: 1",
+    },
+  ]);
+  migrateRegistryFile(path);
+  const reg = new NetworkRegistry(path);
+  const big = reg.get("dev-big")!;
+  assert.ok(big.lastTree == null, "an oversized legacy tree blob must be dropped, not re-parsed forever");
+  assert.ok(big.lastInfo, "a within-cap blob survives");
+  assert.ok(reg.get("dev-badtoken")!.token == null, "a token the writer would refuse must not migrate");
+  reg.close();
+
+  // A url the live writer refuses fails the migration CLOSED (url is NOT NULL,
+  // and carrying an arbitrary scheme over would reach every consumer).
+  const dir2 = await tempDir();
+  const path2 = join(dir2, "network.sqlite");
+  makeClosedV0(path2, [{ id: "dev-badurl", url: "javascript:alert(1)", token: "b".repeat(40) }]);
+  assert.throws(() => migrateRegistryFile(path2), /url the live writer refuses|cannot be normalised|not an http/i);
+});

@@ -627,6 +627,127 @@ export class Store {
    * committed storage at boot; a session whose db fails to open keeps its row with the
    * boot loop's failure message. Names are placeholders — the transcript is intact.
    */
+  /** run-8 U1: the newest archive bundle for a session id, or null. Used by
+   *  archive() to finish an interrupted archive idempotently. */
+  private findBundleDir(sessionId: string): string | null {
+    let names: string[];
+    try {
+      names = readdirSync(this.archiveDir);
+    } catch {
+      return null;
+    }
+    const prefix = `${sessionId}-`;
+    let best: string | null = null;
+    let bestTs = -1;
+    for (const name of names) {
+      if (!name.startsWith(prefix)) continue;
+      const ts = Number(name.slice(prefix.length));
+      if (!Number.isFinite(ts)) continue;
+      if (ts > bestTs) {
+        bestTs = ts;
+        best = name;
+      }
+    }
+    return best ? join(this.archiveDir, best) : null;
+  }
+
+  /**
+   * run-8 U1: reconcile the two crash windows the archive lifecycle left open
+   * (leader-probed all three variants before this existed):
+   *
+   *  A. a row whose sessions/<id> dir is gone but whose bundle sits in
+   *     archive/ — the process died between the rename and the catalog
+   *     DELETEs. restore then refused forever ("a live session with this id
+   *     already exists") and DELETE /v1/sessions re-threw ENOENT, so the row
+   *     was immortal. Complete the archive: repair/write the manifest from the
+   *     row's own fields, then delete the row (one transaction).
+   *  A2. same window before the manifest was written — the bundle was
+   *     unrestorable even after manual row removal ("no usable cwd"). The row
+   *     carries every manifest field, so this is fully recoverable here.
+   *  B. a sessions/<uuid> dir with no catalog row (a restore that died
+   *     between the rename and the INSERT, or a rolled-back INSERT): invisible
+   *     to list() and a 404 on restore retry. Re-add a recovered row.
+   *
+   * Bounded: one readdir of sessions/ + one of archive/, no per-row spawns.
+   */
+  private reconcileArchiveWindows(): void {
+    let dirs: string[] = [];
+    try {
+      dirs = readdirSync(this.sessionsDir);
+    } catch {}
+    const onDisk = new Set(dirs);
+    const rows = this.list();
+    const known = new Set(rows.map((r) => r.id));
+
+    for (const row of rows) {
+      if (onDisk.has(row.id)) continue; // live dir present: nothing to repair
+      const bundle = this.findBundleDir(row.id);
+      if (!bundle) {
+        // Data genuinely gone (offline wipe / manual rm): a bounded, distinct
+        // fault instead of a permanent per-request ENOENT error row.
+        this.errors.set(row.id, "session data is missing and no archived bundle exists");
+        continue;
+      }
+      const manifest = readArchiveManifest(bundle);
+      if (!manifest || !manifest.cwd) {
+        try {
+          writeArchiveManifest(bundle, {
+            sessionId: row.id,
+            name: row.name,
+            cwd: row.cwd,
+            model: row.model,
+            provider: row.provider,
+            createdAt: row.createdAt,
+            archivedAt: Date.now(),
+            packageVersion: PACKAGE_VERSION,
+          });
+        } catch {
+          // Unwritable bundle: keep the row and the fault, never delete data.
+          this.errors.set(row.id, "interrupted archive: bundle is not writable");
+          continue;
+        }
+      }
+      this.catalog.exec("BEGIN");
+      try {
+        this.catalog.prepare("DELETE FROM conversation_names WHERE sessionId=?").run(row.id);
+        this.catalog.prepare("DELETE FROM sessions WHERE id=?").run(row.id);
+        this.catalog.exec("COMMIT");
+      } catch (e) {
+        this.catalog.exec("ROLLBACK");
+        this.errors.set(row.id, `interrupted archive: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    // Variant B: an orphan session dir with no row.
+    for (const name of onDisk) {
+      if (known.has(name)) continue;
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name)) continue;
+      const dbPath = join(this.sessionsDir, name, "agent.sqlite");
+      let createdAt = Date.now();
+      try {
+        createdAt = Math.round(statSync(dbPath).mtimeMs);
+      } catch {
+        continue; // no database in it: not a session
+      }
+      const fallback = this.defaultModelRef();
+      try {
+        this.catalog
+          .prepare(
+            "INSERT OR IGNORE INTO sessions(id,name,cwd,dbPath,createdAt,model,provider) VALUES(?,?,?,?,?,?,?)",
+          )
+          .run(
+            name,
+            `Recovered session ${name.slice(0, 8)}`,
+            this.startDirs[0] ?? homedir(),
+            dbPath,
+            createdAt,
+            fallback?.modelId ?? "unknown",
+            fallback?.provider ?? "unknown",
+          );
+      } catch {}
+    }
+  }
+
   private reseedCatalog(db: DatabaseSync): void {
     let entries;
     try {
@@ -736,6 +857,10 @@ export class Store {
       store.unlockShared = lockFile(`${store.sharedStatePath}.lock`);
       store.shared = await SharedState.open(store.sharedStatePath);
       store.shared.harness.subscribeCommits(() => store.notify());
+      // run-8 U1: repair the archive/restore crash windows BEFORE the open
+      // loop, so a zombie row is completed (or faulted) instead of producing a
+      // permanent ENOENT error session that search and the tree keep paying for.
+      store.reconcileArchiveWindows();
       for (const row of store.list()) {
         try {
           await store.openAgent(row);
@@ -1592,6 +1717,23 @@ export class Store {
       await renamePath(dirname(row.dbPath), target);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      // run-8 U1: a missing source dir used to be treated as success, and the
+      // manifest write then threw into a never-created target — the row was
+      // immortal through the API (probe: ENOENT + row survives forever). An
+      // earlier interrupted archive already holds the bundle, so finish the
+      // row removal idempotently instead of minting an empty one.
+      const existing = this.findBundleDir(row.id);
+      if (!existing) {
+        this.errors.set(row.id, "session directory is missing (no archived bundle); row left in place");
+        throw new Error("session directory is missing and no archived bundle exists");
+      }
+      this.catalog.prepare("DELETE FROM conversation_names WHERE sessionId=?").run(row.id);
+      this.catalog.prepare("DELETE FROM sessions WHERE id=?").run(row.id);
+      this.opened.delete(row.id);
+      this.salvageFailedSessions.delete(row.id);
+      this.errors.delete(row.id);
+      this.notify();
+      return { archived: existing };
     }
     // The bundle keeps its identity: from now on every archive carries a
     // session.json so the archive stays browsable years later (old bundles

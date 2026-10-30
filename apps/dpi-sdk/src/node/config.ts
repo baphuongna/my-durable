@@ -155,10 +155,21 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
       device.ssh = `${device.vm}.exe.xyz`;
       device.service ??= "systemd";
       const create = (d.create ?? {}) as Raw;
+      // run-8 U9: memory/disk were the ONLY config scalars with no charset gate
+      // and they ride `ssh exe.dev new --memory=<v>` argv, which OpenSSH joins
+      // into one remote command string the remote shell re-parses. Gate them at
+      // parse time like pathish does for every other shell-bound value.
+      const sized = (v: unknown, field: string): string | undefined => {
+        if (v === undefined) return undefined;
+        const text = String(v);
+        if (!/^[0-9]+(\.[0-9]+)?[KMGTP]?i?B?$/i.test(text))
+          throw Error(`${where}.create.${field} is not a size (e.g. 4G, 512M)`);
+        return text;
+      };
       device.create = {
         ...(create.cpu !== undefined ? { cpu: Number(create.cpu) } : {}),
-        ...(typeof create.memory === "string" ? { memory: create.memory } : {}),
-        ...(typeof create.disk === "string" ? { disk: create.disk } : {}),
+        ...(sized(create.memory, "memory") !== undefined ? { memory: sized(create.memory, "memory")! } : {}),
+        ...(sized(create.disk, "disk") !== undefined ? { disk: sized(create.disk, "disk")! } : {}),
       };
     }
     if ((kind === "ssh" || kind === "exe-dev") && !device.service) throw Error(`${where}.service is required for kind ${kind}`);

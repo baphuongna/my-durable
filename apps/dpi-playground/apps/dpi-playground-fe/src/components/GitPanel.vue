@@ -34,7 +34,7 @@ import {
 } from "lucide-vue-next";
 import { deviceId, network, sessionSummary, notify, select } from "../client/store";
 import { deviceClient } from "../client/hub";
-import { ensureGit, gitEntry, wireGitAutoRefresh } from "../client/git-store";
+import { ensureGit, gitAllowedFor, gitEntry, wireGitAutoRefresh } from "../client/git-store";
 import { addWorktree as gitAddWorktree, createSessionOn } from "../client/worktree";
 import type { GitStatus } from "@sdk/client";
 
@@ -114,6 +114,12 @@ const prBusy = ref(false);
 const isGitHub = computed(() => /github\.com|gitlab/i.test(status.value?.remoteUrl ?? ""));
 const loadPRs = async () => {
   if (!devId.value || !cwd.value) return;
+  const allowed = gitAllowedFor(devId.value, cwd.value);
+  if (!allowed.ok) {
+    prs.value = [];
+    notify(`pull requests unavailable: ${allowed.reason}`);
+    return;
+  }
   prBusy.value = true;
   try {
     const r = await deviceClient(devId.value).gitOp(cwd.value, "pr-list");
@@ -346,6 +352,11 @@ async function op(
   extra: { message?: string; rebase?: boolean; setUpstream?: boolean; ref?: string } = {},
 ) {
   if (!devId.value || !cwd.value) return;
+  const allowed = gitAllowedFor(devId.value, cwd.value);
+  if (!allowed.ok) {
+    notify(`git ${name} skipped: ${allowed.reason}`);
+    return;
+  }
   busy.value = name;
   out.value = "";
   try {
@@ -813,6 +824,16 @@ let logAt = 0;
 async function loadLog(force = false) {
   if (!devId.value || !cwd.value) return;
   if (!force && commits.value.length && Date.now() - logAt < 120_000) return;
+  // run-8 (live console report): this call bypassed the store's pre-check, so a
+  // project outside the device's start dirs (or a plain non-repo project) sent
+  // log-list on every mount/frame and answered 400 each time. Ask first.
+  const allowed = gitAllowedFor(devId.value, cwd.value);
+  if (!allowed.ok) {
+    commits.value = [];
+    logError.value = allowed.reason;
+    logAt = Date.now();
+    return;
+  }
   logLoading.value = true;
   try {
     const r = await deviceClient(devId.value).gitOp(cwd.value, "log-list");

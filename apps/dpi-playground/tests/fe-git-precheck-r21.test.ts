@@ -156,3 +156,12 @@ test("run-7 D2: only SENT keys are settled; >50 paths chunk to the device contra
     globalThis.fetch = realFetch;
   }
 });
+
+test("run-8 (live console report): direct gitOp callers are gated too — a foreign path settles without a request", async () => {
+  const { gitStore } = await setup();
+  const outside = gitStore.gitAllowedFor("dev1", "D:\\source\\reconcile-backend-v2");
+  assert.equal(outside.ok, false);
+  assert.match(!outside.ok ? outside.reason : "", /outside the device's start dirs/);
+  const inside = gitStore.gitAllowedFor("dev1", "C:\\Users\\phuongnb\\dpi-work\\proj");
+  assert.equal(inside.ok, true, "a path under a start dir may ask");
+});

@@ -21,6 +21,7 @@ import { chmodSync, closeSync, existsSync, fstatSync, fsyncSync, openSync, rmSyn
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ensurePrivateDir } from "./private-dir.js";
+import { normalizeUrl, validateToken } from "./registry.js";
 
 export const REGISTRY_SCHEMA_VERSION = 1;
 const UUID_CANONICAL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -373,9 +374,23 @@ function preflightV0(db: DatabaseSync): void {
       );
     }
   }
-  const rows = db.prepare("SELECT id, url, device_uid FROM devices").all() as {
+  // run-8 U9: the v0 rows predate the writer-side caps and normalisation, and
+  // the copy below is verbatim — a pre-run-7 registry could carry a hostile
+  // 16MiB last_tree_json (parsed by EVERY NetworkRegistry.list() forever) or a
+  // token with CRLF (breaking every client construction). Enforce the same
+  // per-field policy at the migration seam: cap the JSON blobs and NULL out a
+  // url/token that the live writers would have refused.
+  const rows = db.prepare(
+    "SELECT id, url, device_uid, token, last_info_json, last_tree_json FROM devices",
+  ).all() as {
     id: string; url: string | null; device_uid: string | null;
+    token: string | null; last_info_json: string | null; last_tree_json: string | null;
   }[];
+  const INFO_CAP = 64 * 1024;
+  const TREE_CAP = 288 * 1024;
+  const normalize = db.prepare(
+    "UPDATE devices SET url=?, token=?, last_info_json=?, last_tree_json=? WHERE id=?",
+  );
   const seenUid = new Set<string>();
   for (const row of rows) {
     if (!DEVICE_ID_PATTERN.test(row.id)) throw new MigrationError(`non-canonical device id ${JSON.stringify(row.id)} — resolve manually (no trim)`);
@@ -385,6 +400,28 @@ function preflightV0(db: DatabaseSync): void {
       if (seenUid.has(row.device_uid)) throw new MigrationError(`duplicate device_uid ${row.device_uid} — operator must resolve before migration`);
       seenUid.add(row.device_uid);
     }
+    let url: string = row.url;
+    try {
+      url = normalizeUrl(row.url);
+    } catch {
+      // The live writer would have refused this url; carrying it over would put
+      // an arbitrary scheme in every consumer. Fail closed (url is NOT NULL).
+      throw new MigrationError(`device ${row.id} has a url the live writer refuses — resolve manually`);
+    }
+    let token: string | null = row.token;
+    if (token !== null) {
+      try {
+        validateToken(token);
+      } catch {
+        token = null;
+      }
+    }
+    const capJson = (text: string | null, cap: number): string | null =>
+      text !== null && text.length > cap ? null : text;
+    const info = capJson(row.last_info_json, INFO_CAP);
+    const tree = capJson(row.last_tree_json, TREE_CAP);
+    if (url !== row.url || token !== row.token || info !== row.last_info_json || tree !== row.last_tree_json)
+      normalize.run(url, token, info, tree, row.id);
   }
 }
 

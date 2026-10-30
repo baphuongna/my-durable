@@ -59,14 +59,39 @@ export interface SalvageOutcome {
  */
 const WORKER_SRC = `
 const { parentPort, workerData } = require("node:worker_threads");
-const { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { copyFileSync, existsSync, lstatSync, readSync, openSync, closeSync, rmSync, writeSync } = require("node:fs");
 const { DatabaseSync } = require("node:sqlite");
 const main = workerData.dbPath;
 const copy = workerData.copyPath; // R10 5.2: unique per attempt — two workers never share scratch files
 const fail = (reason) => parentPort.postMessage({ ok: false, reason: String(reason).slice(0, 80) });
+/** run-8 U7: the copy source must be a REGULAR file of bounded size. Nothing
+ *  validated it (archived.ts lstats the same name for reads), so a planted
+ *  symlink to /dev/zero, a FIFO or a huge file turned this into an unbounded
+ *  synchronous copy — and the 5s ceiling only settles the parent promise, it
+ *  cannot recall a thread blocked in a native fs call. */
+const MAX_DB_BYTES = 256 * 1024 * 1024;
+function assertRegular(path, label) {
+  let st;
+  try {
+    st = lstatSync(path, { throwIfNoEntry: false });
+  } catch {
+    return "unreadable";
+  }
+  if (!st) return "missing";
+  if (!st.isFile()) return label + " is not a regular file";
+  if (st.size > MAX_DB_BYTES) return label + " is too large to salvage";
+  return null;
+}
 function run() {
 try {
   // 1. Copy main + sidecars aside. The original is only ever read.
+  const bad = assertRegular(main, "database");
+  if (bad) return fail(bad);
+  for (const suffix of ["-wal", "-shm"]) {
+    if (!existsSync(main + suffix)) continue;
+    const sideBad = assertRegular(main + suffix, "database" + suffix);
+    if (sideBad && sideBad !== "missing") return fail(sideBad);
+  }
   rmSync(copy, { force: true });
   copyFileSync(main, copy);
   for (const suffix of ["-wal", "-shm"]) {
@@ -74,7 +99,18 @@ try {
     else rmSync(copy + suffix, { force: true });
   }
   // 2. Patch the copy's header: only fields sqlite validates at open (see module doc).
-  const b = readFileSync(copy);
+  // run-8 U7: patch the first 100 header bytes positionally — reading and
+  // rewriting the WHOLE database cost ~2x its size in RSS for a 100-byte fix.
+  const HEADER_BYTES = 100;
+  const fd = openSync(copy, "r+");
+  let b;
+  try {
+    b = Buffer.alloc(HEADER_BYTES);
+    const n = readSync(fd, b, 0, HEADER_BYTES, 0);
+    if (n < HEADER_BYTES) return fail("truncated database header");
+  } finally {
+    closeSync(fd);
+  }
   const MAGIC = "SQLite format 3\\0";
   if (b.slice(0, 16).toString("latin1") !== MAGIC) b.write(MAGIC, 0, 16, "latin1");
   const pageSize = b.readUInt16BE(16);
@@ -90,7 +126,12 @@ try {
   b.writeUInt32BE(0, 52); // largest root b-tree page: nonzero garbage turns ptrmap validation on
   const encoding = b.readUInt32BE(56);
   if (!(encoding >= 1 && encoding <= 3)) b.writeUInt32BE(1, 56); // UTF-8
-  writeFileSync(copy, b);
+  const wfd = openSync(copy, "r+");
+  try {
+    writeSync(wfd, b, 0, b.length, 0);
+  } finally {
+    closeSync(wfd);
+  }
   // 3. Integrity is the ONLY gate for promotion.
   let db;
   try {

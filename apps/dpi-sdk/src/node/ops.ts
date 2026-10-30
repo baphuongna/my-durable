@@ -3,6 +3,10 @@
 import { spawn } from "node:child_process";
 import type { NetDevice } from "./config.js";
 
+/** run-8 U9: every device-facing step gets a deadline by default, so a hung or
+ *  hostile host cannot block the operator's CLI indefinitely. */
+const DEFAULT_TIMEOUT_MS = 60_000;
+
 export interface RunResult {
   code: number;
   stdout: string;
@@ -12,6 +16,8 @@ export interface RunResult {
 export interface RunOptions {
   stdin?: string;
   timeoutMs?: number;
+  /** run-8 U9: cap on captured stdout/stderr per stream (default 1 MiB). */
+  maxBytes?: number;
   /** Stream output to this process's stdout/stderr while capturing it. */
   echo?: boolean;
   cwd?: string;
@@ -29,18 +35,26 @@ export function run(cmd: string, args: string[], options: RunOptions = {}): Prom
     });
     let stdout = "";
     let stderr = "";
-    const timer = options.timeoutMs
+    // run-8 U9: a hostile/hung device controls every byte on these pipes and
+    // run() accumulated them without limit, so `net status`/`up` could OOM or
+    // hang forever (facts/register/logs passed no timeout at all).
+    const cap = options.maxBytes ?? 1024 * 1024;
+    const take = (current: string, chunk: Buffer): string =>
+      current.length >= cap ? current : current + chunk.toString().slice(0, cap - current.length);
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timer = timeoutMs
       ? setTimeout(() => {
           child.kill("SIGTERM");
-          stderr += `\n[timeout after ${options.timeoutMs}ms]`;
-        }, options.timeoutMs)
+          setTimeout(() => child.kill("SIGKILL"), 2000).unref?.();
+          stderr = take(stderr, Buffer.from(`\n[timeout after ${timeoutMs}ms]`));
+        }, timeoutMs)
       : undefined;
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk;
+      stdout = take(stdout, chunk);
       if (options.echo) process.stdout.write(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk;
+      stderr = take(stderr, chunk);
       if (options.echo) process.stderr.write(chunk);
     });
     child.on("error", (e) => {

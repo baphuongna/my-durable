@@ -38,11 +38,14 @@ test("R19 h1-a: a failed salvage runs at most ONCE — later scope=all searches 
     // a big body pushes integrity_check past the 5 s ceiling (leader-probe path).
     // The daemon holds the storage handle, so the corrupt file is only read on the
     // NEXT open (a fresh server instance below) — exactly the salvage path.
-    const buf = await readFile(db);
-    buf.write("This is not SQLite", 0);
+    // run-8 U7 note: this used to append 200 MiB of 0x07 AFTER an intact body,
+    // which only made the pre-fix WHOLE-FILE copy slow enough to hit the 5 s
+    // ceiling — the salvage then succeeded on the patched header (trailing
+    // garbage is ignored by integrity_check), so the test passed for a timing
+    // reason. The fixture now destroys the page content itself: no salvage can
+    // recover it, which is what the attempt-once memo is actually about.
     const fh = await open(db, "w");
-    await fh.writeFile(buf);
-    await fh.writeFile(Buffer.alloc(200 * 1024 * 1024, 7));
+    await fh.writeFile(Buffer.alloc(4 * 1024 * 1024, 7)); // header AND all pages garbage
     await fh.close();
     // First query on a fresh store instance: salvage fails, the note is set.
     const server2 = await bootServer({ home: join(t.root, "home"), startDirs: t.work, token, name: "r19a" }).catch(

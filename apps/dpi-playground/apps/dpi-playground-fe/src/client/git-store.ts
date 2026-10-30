@@ -51,6 +51,23 @@ function gitPathAllowed(deviceId: string, path: string): boolean {
   });
 }
 
+/**
+ * run-8 (live console report): panels that call gitOp DIRECTLY (the commit
+ * log, PR list, turn list) skipped the pre-check above, so a project left over
+ * from other start dirs — or a plain non-repo project — produced a 400 storm
+ * on every mount and every network frame. Exported so every git caller asks
+ * the same question. `reason` is the operator-facing sentence.
+ */
+export function gitAllowedFor(
+  deviceId: string,
+  path: string,
+): { ok: true } | { ok: false; reason: string } {
+  if (!gitPathAllowed(deviceId, path)) return { ok: false, reason: "outside the device's start dirs" };
+  const entry = gitEntry(deviceId, path);
+  if (entry.status && entry.status.repo === false) return { ok: false, reason: "not a git repository" };
+  return { ok: true };
+}
+
 /** Settle an entry from either a real status or the batch's `{error}` shape. */
 function settleEntry(e: GitEntry, s: GitStatus | { error: string } | undefined) {
   if (s && typeof (s as { error?: unknown }).error === "string") {
