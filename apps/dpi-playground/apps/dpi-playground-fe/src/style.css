@@ -2079,6 +2079,12 @@ textarea.app-state-json {
      header used to win the cascade from later blocks and eat a quarter of
      the screen). Every other ≤740 .topbar rule is deleted — this block and
      the width≤1100 padding tweak above are the only ones. */
+  :root {
+    --topbar-h: 42px;
+  }
+  .notif-panel {
+    top: 47px;
+  }
   .topbar {
     position: static;
     flex-wrap: nowrap;
@@ -3331,41 +3337,38 @@ select:focus {
   background: var(--tree);
 }
 
-/* ── UI scale: ONE knob, the WHOLE ui, EVERY screen size ──────────────────
-   Live verdicts, two rounds: 16px type was oversized on phones, and a
-   phone-only shrink was half-done (small words in desktop-sized chrome);
-   the user then asked for a uniformly smaller ui on ALL screens. So the
-   entire app now renders at a viewport-dependent ZOOM — type, spacing,
-   buttons, icons, radii, chrome scale TOGETHER, one factor per width band,
-   stepping 0.05 so resizing never jumps:
-     ≥1600 → 1 · ≤1599 → .95 · ≤1199 → .9 · ≤899 → .85 · ≤740 → .82 · ≤550 → .78
-   zoom multiplies rendered lengths, so full-viewport heights are divided by
-   the factor inside each band (uncompensated 100dvh would render 95dvh and
-   strand a dead strip at the bottom). The minifier constant-folds these
-   (calc(100dvh / .95) ships as 105.263dvh) — verify against the folded form.
-   Engines without standardised zoom (Safari < 17.4) ignore it and fall back
-   to the all-rem type scale at the bottom: text-only shrink, still coherent. */
+/* ── UI scale: the type knob, EVERY engine, one path ─────────────────────
+   The zoom-based curve (six rounds of fixes) still broke on engines where
+   @supports LIES: legacy Chrome/WebView report zoom as supported while
+   zoom-on-:root misbehaves — text rendered full desktop size and wrapped
+   (live, twice). So zoom is GONE. Every font-size in the codebase is rem
+   (the 16px base below is the only px), so ONE knob per width band scales
+   the type on every engine ever shipped — no @supports, no fallback split,
+   no compensation math. Icon/button px sizes are already compacted per band. */
 @media (max-width: 1599px) {
-  :root { zoom: 0.95; }
-  :root .shell { height: var(--vvh, calc(100dvh / 0.95)); }
+  :root { font-size: 15px; }
 }
 @media (max-width: 1199px) {
-  :root { zoom: 0.9; }
-  :root .shell { height: var(--vvh, calc(100dvh / 0.9)); }
+  :root { font-size: 14.5px; }
 }
 @media (max-width: 899px) {
-  :root { zoom: 0.85; }
-  :root .shell { height: var(--vvh, calc(100dvh / 0.85)); }
+  :root { font-size: 14px; }
 }
 @media (max-width: 740px) {
-  :root { zoom: 0.82; }
-  /* The shell IS the screen: fixed height, never scrolls — the topbar and
-     the bottom nav are ordinary flex rows so they stay pinned, and the
-     active pane (chat-scroll / inspector / tree drawer) scrolls inside.
-     The old height:auto + overflow:visible let the DOCUMENT scroll, which
-     carried the bottom bar away with the content (live report). */
+  :root { font-size: 13.5px; }
+}
+@media (max-width: 550px) {
+  :root { font-size: 13px; }
+}
+
+/* The mobile shell IS the screen: fixed height, never scrolls — the topbar
+   and the bottom nav are ordinary flex rows so they stay pinned, and the
+   active pane (chat-scroll / inspector / tree drawer) scrolls inside. The
+   keyboard shrinks it: --vvh (visualViewport, see main.ts) or the resized
+   dvh on Android. */
+@media (max-width: 740px) {
   :root .shell {
-    height: var(--vvh, calc(100dvh / 0.82));
+    height: var(--vvh, 100dvh);
     min-height: 0;
     overflow: hidden;
   }
@@ -3373,33 +3376,7 @@ select:focus {
     overflow: hidden;
   }
   .inspector {
-    max-height: calc(55vh / 0.82);
-    overflow: hidden;
-  }
-}
-@media (max-width: 550px) {
-  :root { zoom: 0.78; }
-  :root .shell {
-    height: var(--vvh, calc(100dvh / 0.78));
-    min-height: 0;
-  }
-  .inspector {
-    max-height: calc(55vh / 0.78);
-  }
-}
-/* Fallback for engines without standardised zoom: shrink the (all-rem)
-   type scale instead — the single px base above is the only exception. */
-@supports not (zoom: 2) {
-  /* no zoom applied — the rem type knob below is the whole fallback */
-  @media (max-width: 740px) {
-    :root {
-      font-size: 13.5px;
-    }
-  }
-  @media (max-width: 550px) {
-    :root {
-      font-size: 12.5px;
-    }
+    max-height: 55vh;
   }
 }
 

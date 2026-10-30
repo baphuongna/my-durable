@@ -1,6 +1,8 @@
-// R28 (live, six rounds of user verdicts) — the mobile/uniform-scale contract:
-//   1. every font-size rides rem (base 16px + fallback knob = the only px);
-//   2. the whole app renders at a 6-band zoom curve, steps of 0.05, no cliff;
+// R28 (live, seven rounds) — the mobile/uniform-scale contract:
+//   1. every font-size rides rem (the 16px base + band knobs = the only px);
+//   2. ONE code path on EVERY engine: rem type knobs per width band. The
+//      zoom architecture is BANNED — @supports lied on legacy Chrome/WebView
+//      (claimed zoom, zoom-on-:root misbehaved) and text rendered desktop-size;
 //   3. each band divides the shell viewport height by its factor
 //      (`:root .shell` — network.css' ≤760 .shell rule loads later);
 //   4. ≤740 the shell IS the screen — the document never scrolls, topbar and
@@ -32,11 +34,11 @@ const files = [...walk(FE)];
 assert.ok(files.length > 10, `walked the real FE tree (${files.length} css/vue files)`);
 
 const BANDS: [number, string][] = [
-  [1599, "0.95"],
-  [1199, "0.9"],
-  [899, "0.85"],
-  [740, "0.82"],
-  [550, "0.78"],
+  [1599, "15px"],
+  [1199, "14.5px"],
+  [899, "14px"],
+  [740, "13.5px"],
+  [550, "13px"],
 ];
 const media = (mw: number) => `@media \\(max-width: ${mw}px\\)`;
 
@@ -49,7 +51,7 @@ test("R28 type scale: every font-size is rem except sanctioned bases", () => {
       const inStyle = f.endsWith("style.css");
       const rem = /^[\d.]+rem( !important)?$/.test(v) || /^clamp\([\d.]+rem,/.test(v);
       const sanctioned =
-        inStyle && (v === "16px" || v === "13.5px" || v === "12.5px" || v === "1rem !important" || v === "16px !important");
+        inStyle && ["16px", "15px", "14.5px", "14px", "13.5px", "13px", "12.5px", "1rem !important", "16px !important"].includes(v);
       if (!rem && !sanctioned) offenders.push(`${f.replace(FE, "")}: ${v}`);
     }
   }
@@ -59,28 +61,30 @@ test("R28 type scale: every font-size is rem except sanctioned bases", () => {
   assert.doesNotMatch(readFileSync(join(FE, "style.css"), "utf8"), /font-size:\s*clamp\([^)]*px/);
 });
 
-test("R28 ui scale: the 6-band zoom curve, compensated heights on :root .shell", () => {
+test("R28 ui scale: rem knobs per band — one path, zoom banned", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  for (const [mw, z] of BANDS) {
-    const zs = z.replace(".", "\\.");
-    assert.match(s, new RegExp(`${media(mw)}\\s*\\{\\s*:root\\s*\\{\\s*zoom: ${zs};`), `≤${mw} band zooms ${z}`);
+  for (const [mw, fs] of BANDS) {
+    const esc = fs.replace(".", "\\.");
     assert.match(
       s,
-      new RegExp(`height: var\\(--vvh, calc\\(100dvh \\/ ${zs}\\)\\)`),
-      `≤${mw}: shell height = var(--vvh, dvh-calc)`,
+      new RegExp(`${media(mw)}\\s*\\{\\s*:root\\s*\\{\\s*font-size: ${esc};`),
+      `≤${mw} sets the type knob ${fs}`,
     );
   }
-  assert.match(s, /:root \.shell \{ height: var\(--vvh, calc\(100dvh \/ 0\.95\)\); \}/);
+  // the zoom architecture is GONE — @supports lied on legacy engines and the
+  // ui rendered desktop-size; nothing may reintroduce it or its math
+  assert.doesNotMatch(s, /(^|[^-])zoom\s*:/, "no zoom declarations anywhere");
+  assert.doesNotMatch(s, /100dvh \/ /, "no viewport-height compensation math");
+  assert.doesNotMatch(s, /55vh \/ /, "no vh compensation math");
+  assert.doesNotMatch(s, /@supports not \(zoom/, "no zoom fallback split — one path");
+  // shell heights: plain viewport height (keyboard via --vvh still); the
+  // desktop base .shell{height:100dvh} needs no band override anymore
   assert.match(
     s,
-    /@media \(max-width: 740px\)\s*\{[\s\S]*?:root \.shell\s*\{\s*height: var\(--vvh, calc\(100dvh \/ 0\.82\)\);\s*min-height: 0;\s*overflow: hidden;\s*\}/,
+    /@media \(max-width: 740px\)\s*\{[\s\S]*?:root \.shell\s*\{\s*height: var\(--vvh, 100dvh\);\s*min-height: 0;\s*overflow: hidden;/,
     "≤740: fixed-height, non-scrolling shell",
   );
   assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.net-workspace\s*\{\s*overflow: hidden;/, "workspace never scrolls the page");
-  assert.match(s, /max-height: calc\(55vh \/ 0\.82\)/, "inspector cap compensated ≤740");
-  assert.match(s, /max-height: calc\(55vh \/ 0\.78\)/, "inspector cap compensated ≤550");
-  assert.match(s, /@supports not \(zoom: 2\)\s*\{[\s\S]*?@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
-  assert.match(s, /@media \(max-width: 550px\)\s*\{\s*:root\s*\{\s*font-size: 12\.5px;\s*\}\s*\}/, "rem fallback ≤550");
   assert.match(s, /text-size-adjust: 100%/, "Safari cannot re-inflate");
   assert.doesNotMatch(readFileSync(join(FE, "components/GraphPanel.vue"), "utf8"), /font:\s*[\d.]+px\//, "no px font shorthand");
 });
@@ -112,20 +116,16 @@ test("R28 keyboard: inputs keep their designed sizes, iOS-only 16px at focus, ze
   assert.match(main, /--vvh/, "…and fed to the shell heights");
 });
 
-test("R28 no-zoom engines: the fallback shrinks text and never leaks desktop sizes", () => {
+test("R28 narrow screens: the toolbar swipes, dropdowns teleport, nothing wraps or hides", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, /@supports not \(zoom: 2\)\s*\{[\s\S]*?@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "rem fallback ≤740");
-  assert.match(s, /@media \(max-width: 550px\)\s*\{\s*:root\s*\{\s*font-size: 12\.5px;\s*\}\s*\}/, "rem fallback ≤550");
-  assert.doesNotMatch(s, /var\(--uiz/, "no --uiz left to leak a desktop-size divide");
-  // no-zoom engines have no shrink factor: the toolbar scrolls horizontally
-  // (nothing hidden, nothing wrapped) and the bell panel is teleported to
-  // <body> so no scroll container can clip it
   const tbBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
   assert.match(tbBlock, /overflow-x:\s*auto/, "the toolbar swipes horizontally instead of clipping");
   assert.match(s, /\.topbar::-webkit-scrollbar\s*\{\s*display: none;/, "hidden scrollbar");
   const topbar = readFileSync(join(FE, "components/TopBar.vue"), "utf8");
   assert.match(topbar, /Teleport to="body"/, "the bell panel escapes the scroll container");
   assert.match(topbar, /\.notif-panel\s*\{\s*position: fixed;/, "panel is viewport-pinned");
+  assert.match(topbar, /top: calc\(var\(--topbar-h, 65px\) \+ 5px\)/, "panel clears the bar at every width");
+  assert.match(s, /--topbar-h: 42px;/, "mobile declares its 42px bar height");
 });
 
 test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed to wrap", () => {

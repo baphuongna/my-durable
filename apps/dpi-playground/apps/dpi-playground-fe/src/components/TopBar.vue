@@ -176,7 +176,7 @@ const emit = defineEmits<{ newSession: [] }>();
   background: var(--warn, #e5a50a); color: #000; border-radius: 8px; padding: 0 4px;
 }
 .notif-panel {
-  position: fixed; top: 48px; right: 6px; z-index: 80; width: 320px; max-height: 340px;
+  position: fixed; top: calc(var(--topbar-h, 65px) + 5px); right: 6px; z-index: 80; width: 320px; max-height: 340px;
   overflow: auto; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 10px;
   padding: 10px 12px; box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
 }

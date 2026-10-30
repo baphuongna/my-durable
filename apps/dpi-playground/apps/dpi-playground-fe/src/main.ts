@@ -26,16 +26,14 @@ if (/^\/pair\/?$/.test(url.pathname)) {
 createApp(App).mount("#app");
 
 // Soft keyboard, iOS: the layout viewport never resizes, so measure the
-// VISUAL viewport and feed it to the shell heights as --vvh (in root zoom
-// coordinates: rendered = var × zoom = the real visible height). Android
-// follows interactive-widget=resizes-content instead, where this var simply
-// agrees with the resized dvh.
+// VISUAL viewport and feed it to the shell heights as --vvh. Android follows
+// interactive-widget=resizes-content instead, where this var simply agrees
+// with the resized dvh. Plain pixels — the ui rides rem now, no zoom math.
 {
   const vv = window.visualViewport;
   const root = document.documentElement;
   const apply = () => {
-    const z = parseFloat(getComputedStyle(root).zoom || "1") || 1;
-    root.style.setProperty("--vvh", `${(vv?.height ?? window.innerHeight) / z}px`);
+    root.style.setProperty("--vvh", `${(vv?.height ?? window.innerHeight)}px`);
   };
   vv?.addEventListener("resize", apply);
   vv?.addEventListener("scroll", apply);
