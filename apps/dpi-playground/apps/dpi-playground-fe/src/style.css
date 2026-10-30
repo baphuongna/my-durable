@@ -2138,24 +2138,36 @@ textarea.app-state-json {
     padding: 3px;
     flex-shrink: 0;
   }
-  .chip.connection {
-    min-height: 22px;
-    padding: 0 5px;
-    gap: 3px;
-    font-size: 0.6875rem;
-    max-width: 74px;
-    min-width: 0;
-    flex-shrink: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  /* Everything fits WITHOUT swiping — that was the real "lost content":
+     items past the right edge of a swipeable bar are invisible unless the
+     user discovers the swipe. Bar = brand + live-dot + New agent + New
+     session + bell + help; the toggles ARE the bottom tabs (Network/Details),
+     usage lives in the Details → Usage panel, and the connection chip
+     collapses to its colored dot (title carries the words). */
+  /* .topbar prefix beats network.css' ≤1100 '.inspector-toggle{display:
+     inline-flex}' which loads later and re-showed the toggle (beyond-edge at
+     320px). The tabs own these actions on phones. */
+  .topbar .tree-toggle,
+  .topbar .inspector-toggle {
+    display: none;
   }
   .usage-chip {
-    font-size: 0.6875rem;
-    max-width: 64px;
-    white-space: nowrap;
+    display: none;
+  }
+  .chip.connection {
+    width: 12px;
+    min-width: 12px;
+    height: 12px;
+    min-height: 12px;
+    padding: 0;
+    border-radius: 999px;
+    background: transparent;
     overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 0;
+  }
+  .chip.connection .dot {
+    width: 10px;
+    height: 10px;
   }
   .top-actions .primary.small {
     padding: 0 7px;
@@ -3408,5 +3420,13 @@ select:focus {
     :root select:focus {
       font-size: 16px;
     }
+  }
+}
+
+@media (max-width: 740px) {
+  input,
+  textarea,
+  select {
+    padding: 6px 9px;
   }
 }

@@ -51,7 +51,7 @@ test("R28 type scale: every font-size is rem except sanctioned bases", () => {
       const inStyle = f.endsWith("style.css");
       const rem = /^[\d.]+rem( !important)?$/.test(v) || /^clamp\([\d.]+rem,/.test(v);
       const sanctioned =
-        inStyle && ["16px", "15px", "14.5px", "14px", "13.5px", "13px", "12.5px", "1rem !important", "16px !important"].includes(v);
+        inStyle && ["16px", "15px", "14.5px", "14px", "13.5px", "13px", "12.5px", "0", "1rem !important", "16px !important"].includes(v);
       if (!rem && !sanctioned) offenders.push(`${f.replace(FE, "")}: ${v}`);
     }
   }
@@ -141,14 +141,18 @@ test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed
   assert.equal([...s.matchAll(/min-height:\s*68px/g)].length, 0, "the 68px header is gone");
   assert.doesNotMatch(s, /\.topbar\s*\{[^}]*height:\s*auto/, "no auto-height topbar anywhere");
   assert.doesNotMatch(s, /\.topbar\s*\{[^}]*flex-wrap:\s*wrap/, "the topbar never wraps on any width");
-  assert.doesNotMatch(s, /\.top-actions \.icon-button\s*\{\s*display:\s*none/, "bell/help/toggles stay visible");
-  assert.doesNotMatch(s, /\.chip\.connection,\s*\.usage-chip\s*\{\s*display:\s*none/, "connection + usage chips stay visible");
+  // bell/help/New session stay IN the bar; the toggles ARE the bottom tabs,
+  // usage lives in the Details→Usage panel, and the connection chip collapses
+  // to its live dot — nothing lost, nothing beyond the edge (no swipe bar)
+  assert.doesNotMatch(s, /\.top-actions \.icon-button\s*\{\s*display:\s*none/, "bell/help stay visible");
+  assert.match(s, /\.topbar \.tree-toggle,\s*\.topbar \.inspector-toggle\s*\{\s*display: none;/, "toggles defer to the bottom tabs (topbar-prefixed — network.css re-shows them otherwise)");
+  assert.match(s, /\.usage-chip\s*\{\s*display: none;/, "usage lives in the Usage panel on phones");
+  assert.match(s, /\.chip\.connection\s*\{[^}]*font-size: 0;/, "the connection chip collapses to its colored dot");
   const topbarBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
   assert.doesNotMatch(topbarBlock, /overflow:\s*hidden/, "topbar must not clip dropdown panels");
   assert.match(s, /\.brandmark\s*\{\s*width: 24px;\s*height: 14px;/, "24px logo");
   assert.match(s, /\.brand\s*\{\s*gap: 4px;\s*flex-shrink: 0;\s*\}/, "the brand never collapses to nothing (the lost-text bug)");
   assert.match(s, /\.brand strong\s*\{[^}]*flex-shrink: 0;/, "brand text never shrinks away");
-  assert.match(s, /\.chip\.connection\s*\{[^}]*max-width: 74px;/, "connection chip capped at 74px");
   assert.match(s, /\.top-actions \.primary\.small\s*\{\s*padding: 0 7px;\s*min-height: 26px;\s*gap: 2px;\s*font-size: 0\.75rem;/, "compact New session");
 });
 
@@ -160,4 +164,14 @@ test("R28 body headers: the chat header matches the topbar, no stale offsets", (
   assert.match(s, /\.drawer-backdrop\s*\{\s*top: 42px;/, "drawer backdrop tracks the 42px header");
   assert.doesNotMatch(s, /top:\s*68px/, "no 68px offsets left");
   assert.match(s, /\.session-heading\s*\{\s*padding: 10px 14px 8px;/, "slim session heading");
+});
+
+test("R28 mobile bar: everything visible without swiping (the real lost-content fix)", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // no control may sit beyond the right edge: a swipeable topbar HIDES items
+  // from users who never discover the swipe (live: "topbar mất nội dung")
+  assert.match(s, /\.topbar \.tree-toggle,\s*\.topbar \.inspector-toggle\s*\{\s*display: none;/, "no edge-overflowing toggles");
+  assert.match(s, /\.chip\.connection\s*\{[^}]*width: 12px;[^}]*font-size: 0;/, "chip is a 12px live dot");
+  // tighter input chrome on phones — the padded box read oversized
+  assert.match(s, /@media \(max-width: 740px\)\s*\{\s*input,\s*textarea,\s*select\s*\{\s*padding: 6px 9px;/, "6/9 input padding on phones");
 });
