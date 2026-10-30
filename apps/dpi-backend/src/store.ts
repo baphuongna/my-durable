@@ -821,7 +821,13 @@ export class Store {
         process.platform === "win32" ? p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase() : p;
       const sep = process.platform === "win32" ? "\\" : "/";
       const n = norm(root);
-      return (await store.startDirRoots()).some((r) => {
+      // SAME set as containedPath()/browse(): start dirs UNION the folders
+      // that already host a session. Guarding walk-up with start dirs alone
+      // left the git surface refusing a folder the device itself advertises
+      // in info.gitDirs — the panel then got {repo:true} with no branch, no
+      // files, no identity, and reported the folder as empty while the agent
+      // was committing in it (live: a D:\ session on a narrowed start-dir list).
+      return (await store.servedRoots()).some((r) => {
         const b = norm(r);
         return !!b && (n === b || n.startsWith(b + sep));
       });

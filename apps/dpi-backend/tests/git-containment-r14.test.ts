@@ -134,3 +134,45 @@ test("run-8 (live): a session's own folder stays served after DPI_START_DIRS is 
     await t.cleanup();
   }
 });
+
+test("run-8 (live): git status on a session's own folder returns the REAL status, not a bare repo flag", async () => {
+  const { gitStatus, clearGitStatusCache, configureGitRootGuard } = await import("../src/git.js");
+  const { realpath, mkdir } = await import("node:fs/promises");
+  const t = await tempStore();
+  const other = join(t.root, "other");
+  try {
+    await mkdir(other, { recursive: true });
+    sh("git", ["init", "-q", other], { cwd: other } as never);
+    sh("git", ["config", "user.email", "t@t"], { cwd: other } as never);
+    sh("git", ["config", "user.name", "t"], { cwd: other } as never);
+    await (await import("node:fs/promises")).writeFile(join(other, "a.txt"), "x\n");
+    sh("git", ["add", "a.txt"], { cwd: other } as never);
+    sh("git", ["commit", "-q", "-m", "first"], { cwd: other } as never);
+    await (await import("node:fs/promises")).writeFile(join(other, "dirty.txt"), "y\n"); // untracked
+
+    // Session created while `other` was a start dir, then the list is narrowed.
+    const wide = { ...t.options, startDirs: [t.work, other] };
+    const s1 = await Store.open(wide);
+    await s1.create({ name: "legacy", cwd: other, model: { provider: "faux", modelId: "echo" } });
+    await s1.close();
+
+    const s2 = await t.open();
+    try {
+      clearGitStatusCache();
+      const st = await gitStatus(other);
+      assert.equal(st.repo, true);
+      assert.equal(st.root, await realpath(other), "the repo root is reported (not the bare {repo:true} stub)");
+      assert.ok(st.head, `a commit is visible: ${JSON.stringify(st)}`);
+      assert.equal(st.identityComplete, true, "and the identity git would use is reported");
+      const files = st.files ?? [];
+      assert.equal(files.length, 1, `the untracked file is listed: ${JSON.stringify(files)}`);
+      assert.equal(files[0]?.path, "dirty.txt");
+    } finally {
+      await s2.close();
+    }
+  } finally {
+    configureGitRootGuard(undefined);
+    clearGitStatusCache();
+    await t.cleanup();
+  }
+});
