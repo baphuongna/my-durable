@@ -109,7 +109,10 @@ test("R28 keyboard: inputs keep their designed sizes, iOS-only 16px at focus, ze
   );
   // Android/Chrome: the layout viewport (dvh) follows the keyboard
   const html = readFileSync(join(FE, "../index.html"), "utf8");
-  assert.match(html, /interactive-widget=resizes-content/, "viewport meta opts into keyboard resize");
+  assert.match(html, /width=device-width, initial-scale=1\.0/, "the viewport meta pins the device width");
+  // interactive-widget=resizes-content REMOVED: a known trigger of Chrome
+  // scale/resize glitches on reload with a keyboard; the --vvh JS covers it
+  assert.doesNotMatch(html, /interactive-widget/, "no interactive-widget meta");
   // iOS: visualViewport is measured and fed to the shell heights
   const main = readFileSync(join(FE, "main.ts"), "utf8");
   assert.match(main, /visualViewport/, "iOS: visualViewport is measured…");
