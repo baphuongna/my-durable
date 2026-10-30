@@ -2078,11 +2078,11 @@ textarea.app-state-json {
     overflow: visible;
   }
   .topbar {
-    position: sticky;
-    top: 0;
+    position: static;
     padding: 0 12px;
     height: 58px;
     min-height: 58px;
+    flex: 0 0 auto;
   }
   .brand {
     gap: 8px;
@@ -3300,18 +3300,29 @@ select:focus {
 }
 @media (max-width: 740px) {
   :root { zoom: 0.82; }
+  /* The shell IS the screen: fixed height, never scrolls — the topbar and
+     the bottom nav are ordinary flex rows so they stay pinned, and the
+     active pane (chat-scroll / inspector / tree drawer) scrolls inside.
+     The old height:auto + overflow:visible let the DOCUMENT scroll, which
+     carried the bottom bar away with the content (live report). */
   :root .shell {
-    height: auto;
-    min-height: calc(100dvh / 0.82);
+    height: calc(100dvh / 0.82);
+    min-height: 0;
+    overflow: hidden;
+  }
+  .net-workspace {
+    overflow: hidden;
   }
   .inspector {
     max-height: calc(55vh / 0.82);
+    overflow: hidden;
   }
 }
 @media (max-width: 550px) {
   :root { zoom: 0.78; }
   :root .shell {
-    min-height: calc(100dvh / 0.78);
+    height: calc(100dvh / 0.78);
+    min-height: 0;
   }
   .inspector {
     max-height: calc(55vh / 0.78);

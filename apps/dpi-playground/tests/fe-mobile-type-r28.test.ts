@@ -65,8 +65,10 @@ test("R28 ui scale: one zoom curve for EVERY screen, heights compensated, fallba
       new RegExp(`@media \\(max-width: ${mw}px\\)\\s*\\{\\s*:root\\s*\\{\\s*zoom: ${esc(z)};\\s*\\}\\s*:root \\.shell\\s*\\{\\s*height: calc\\(100dvh \\/ ${esc(z)}\\)`),
       `≤${mw}: shell height ÷ ${z} on :root .shell`,
     );
-  assert.match(s, /@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*zoom: 0\.82;\s*\}\s*:root \.shell\s*\{\s*height: auto;\s*min-height: calc\(100dvh \/ 0\.82\)/, "≤740: auto height + compensated min-height");
-  assert.match(s, /:root \.shell\s*\{\s*min-height: calc\(100dvh \/ 0\.78\)/, "≤550: compensated min-height");
+  assert.match(s, /@media \(max-width: 740px\)\s*\{\s*:root\s*\{\s*zoom: 0\.82;[\s\S]*?:root \.shell\s*\{\s*height: calc\(100dvh \/ 0\.82\);\s*min-height: 0;\s*overflow: hidden;/, "≤740: the shell IS the screen (fixed height, never scrolls)");
+  assert.match(s, /@media \(max-width: 740px\)\s*\{[^@]*?\.net-workspace\s*\{\s*overflow: hidden;/s, "≤740: the workspace never scrolls the page — panes scroll inside");
+  assert.match(s, /\.topbar\s*\{\s*position: static;\s*padding: 0 12px;\s*height: 58px;\s*min-height: 58px;\s*flex: 0 0 auto;/, "≤740: the header is a pinned flex row (sticky died with the scrolling document)");
+  assert.match(s, /@media \(max-width: 550px\)\s*\{\s*:root\s*\{\s*zoom: 0\.78;\s*\}\s*:root \.shell\s*\{\s*height: calc\(100dvh \/ 0\.78\);\s*min-height: 0;/, "≤550: fixed shell height too");
   assert.match(s, /max-height: calc\(55vh \/ 0\.82\)/, "inspector cap compensated ≤740");
   assert.match(s, /max-height: calc\(55vh \/ 0\.78\)/, "inspector cap compensated ≤550");
   // engines without standardised zoom still shrink, text-only
