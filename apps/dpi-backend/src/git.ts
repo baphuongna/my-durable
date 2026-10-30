@@ -277,13 +277,12 @@ function ensureWatcher(root: string) {
   watchers.set(root, entry);
 }
 
-/** run-7 B3: TWO escapes exist past a contained request path — (1) discovery
- *  WALKS UP to an enclosing repo rooted outside (show-toplevel escapes), and
- *  (2) a planted .git GITDIR FILE (or core.worktree) points the effective
- *  repository elsewhere: show-toplevel then names the sandbox dir while the
- *  index/objects/status belong to the outside repo (leader-probed: ` D
- *  outside-secret.txt` leaked through). BOTH the toplevel and the absolute
- *  git dir must live under the start dirs. */
+/** R23 rule: confinement scopes the DEVICE REST surface only — git
+ *  discovery must not WALK UP to an enclosing repo whose toplevel sits
+ *  outside the start dirs (a remote viewer would read a repo the device
+ *  never served). The absolute git dir is NOT confined: redirects and linked
+ *  worktrees whose gitdir lives elsewhere are operator territory and are
+ *  followed via the returned pin (the agent itself is unsandboxed by design). */
 export async function resolveRepoPin(path: string): Promise<RepoPin | undefined> {
   if (!repoRootAllowed) return undefined;
   const [topLevel, gitDir] = await Promise.all([
@@ -575,10 +574,10 @@ export async function gitOp(
   prs?: { n: number; title: string; state: string; draft: boolean; branch: string; url: string }[];
 }> {
   const { ref, message, target, branch, files, create, staged, rebase, setUpstream, name, lines, method, body, n, side } = opts;
-  // run-7 B3 + cold-1 M3: BOTH toplevel and gitdir must sit under the start
-  // dirs (gitdir redirects/extra worktrees otherwise leak or write outside),
-  // and the resolved pin rides GIT_DIR/GIT_WORK_TREE into EVERY spawn below —
-  // per-spawn .git discovery never re-runs, so the check cannot be raced.
+  // R23: the TOPLEVEL must sit under the start dirs (gitdir redirects are
+  // operator territory — see resolveRepoPin); the resolved pin rides
+  // GIT_DIR/GIT_WORK_TREE into EVERY spawn below, so per-spawn .git discovery
+  // never re-runs and the check cannot be raced.
   const pin = await resolveRepoPin(path);
   const g = (args: string[], t?: number) => git(path, args, t, pin);
   const ghP = (args: string[], t?: number) => gh(path, args, t, pin);

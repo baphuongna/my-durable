@@ -2015,10 +2015,13 @@ export class Store {
     try {
       pin = await resolveRepoPin(row.cwd);
     } catch (e) {
-      // Only the CONFINEMENT refusal ends the answer: outside the sandbox
-      // there are no git turns and no oracle. A plain non-repo (the common
-      // case before the first commit) keeps the old no-pin fallback.
-      if (String((e as Error).message).includes("start dirs")) return [];
+      // Fail CLOSED on confinement AND on transient resolve failures (a
+      // timeout here with a later unpinned walk-up spawn succeeding would
+      // reopen the counts oracle for that request). Only a GENUINE non-repo
+      // (the common case before the first commit) keeps the no-pin fallback.
+      const msg = String((e as Error).message);
+      if (msg.includes("start dirs")) return [];
+      if (!msg.includes("not a git repository")) return [];
     }
     const root = pin?.workTree ?? row.cwd;
     const gP = (args: string[]) => git(row.cwd, args, undefined, pin);

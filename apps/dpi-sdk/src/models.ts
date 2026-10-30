@@ -138,6 +138,9 @@ export function applyMessageChange(message: WireAssistantMessage, change: WireMe
       thinking: capLiveText((block?.type === "thinking" ? block.thinking : "") + change.delta),
     };
   } else if (change.type === "toolcall_delta") {
+    // run-7 cold-3 LOW: a path-less toolcall_delta reached setPath(undefined)
+    // and threw (contained by the per-event catch, but drop it cleanly here).
+    if (!Array.isArray(change.path)) return message;
     const block = structuredClone(content[i] ?? { type: "toolCall", id: "", name: "", arguments: {} });
     setPath(block as unknown as Record<string, unknown>, change.path, change.delta);
     content[i] = block;
