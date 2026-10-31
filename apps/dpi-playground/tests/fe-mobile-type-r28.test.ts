@@ -81,10 +81,10 @@ test("R28 ui scale: rem knobs per band — one path, zoom banned", () => {
   // desktop base .shell{height:100dvh} needs no band override anymore
   assert.match(
     s,
-    /@media \(max-width: 740px\)\s*\{[\s\S]*?:root \.shell\s*\{\s*height: var\(--vvh, 100dvh\);\s*min-height: 0;\s*overflow: hidden;/,
+    /@media \(max-width: 780px\)\s*\{[\s\S]*?:root \.shell\s*\{\s*height: var\(--vvh, 100dvh\);\s*min-height: 0;\s*overflow: hidden;/,
     "≤740: fixed-height, non-scrolling shell",
   );
-  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.net-workspace\s*\{\s*overflow: hidden;/, "workspace never scrolls the page");
+  assert.match(s, /@media \(max-width: 780px\)\s*\{[\s\S]*?\.net-workspace\s*\{\s*overflow: hidden;/, "workspace never scrolls the page");
   assert.match(s, /text-size-adjust: 100%/, "Safari cannot re-inflate");
   assert.doesNotMatch(readFileSync(join(FE, "components/GraphPanel.vue"), "utf8"), /font:\s*[\d.]+px\//, "no px font shorthand");
 });
@@ -121,7 +121,9 @@ test("R28 keyboard: inputs keep their designed sizes, iOS-only 16px at focus, ze
 
 test("R28 narrow screens: the toolbar swipes, dropdowns teleport, nothing wraps or hides", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  const tbBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
+  const anchor = s.indexOf(".topbar {\n    position: static;");
+  assert.ok(anchor > 0, "the compact topbar block exists");
+  const tbBlock = s.slice(anchor, s.indexOf("\n  }", anchor)).replace(/\/\*[\s\S]*?\*\//g, "");
   assert.match(tbBlock, /overflow-x:\s*auto/, "the toolbar swipes horizontally instead of clipping");
   assert.match(s, /\.topbar::-webkit-scrollbar\s*\{\s*display: none;/, "hidden scrollbar");
   const topbar = readFileSync(join(FE, "components/TopBar.vue"), "utf8");
@@ -135,7 +137,7 @@ test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed
   const s = readFileSync(join(FE, "style.css"), "utf8");
   assert.match(
     s,
-    /@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;\s*gap: 4px;\s*padding: 0 5px;\s*height: 42px;\s*min-height: 42px;\s*max-height: 42px;/,
+    /@media \(max-width: 780px\)\s*\{[\s\S]*?\.topbar\s*\{\s*position: static;\s*flex-wrap: nowrap;\s*gap: 4px;\s*padding: 0 5px;\s*height: 42px;\s*min-height: 42px;\s*max-height: 42px;/,
     "one 42px pinned row",
   );
   assert.equal([...s.matchAll(/min-height:\s*68px/g)].length, 0, "the 68px header is gone");
@@ -148,7 +150,7 @@ test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed
   assert.match(s, /\.topbar \.tree-toggle,\s*\.topbar \.inspector-toggle\s*\{\s*display: none;/, "toggles defer to the bottom tabs (topbar-prefixed — network.css re-shows them otherwise)");
   assert.match(s, /\.usage-chip\s*\{\s*display: none;/, "usage lives in the Usage panel on phones");
   assert.match(s, /\.chip\.connection\s*\{[^}]*font-size: 0;/, "the connection chip collapses to its colored dot");
-  const topbarBlock = s.match(/@media \(max-width: 740px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
+  const topbarBlock = s.match(/@media \(max-width: 780px\)\s*\{[\s\S]*?\.topbar\s*\{([^}]*)\}/)![1].replace(/\/\*[\s\S]*?\*\//g, "");
   assert.doesNotMatch(topbarBlock, /overflow:\s*hidden/, "topbar must not clip dropdown panels");
   assert.match(s, /\.brandmark\s*\{\s*width: 24px;\s*height: 14px;/, "24px logo");
   assert.match(s, /\.brand\s*\{\s*gap: 4px;\s*flex-shrink: 0;\s*\}/, "the brand never collapses to nothing (the lost-text bug)");
@@ -158,9 +160,9 @@ test("R28 header: ONE compact mobile topbar — nothing removed, nothing allowed
 
 test("R28 body headers: the chat header matches the topbar, no stale offsets", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.chat-header\s*\{\s*padding: 0 10px;\s*min-height: 42px;\s*max-height: 42px;/, "chat header = 42px like the topbar");
-  assert.match(s, /@media \(max-width: 740px\)\s*\{[\s\S]*?\.model-button img\s*\{\s*width: 26px;\s*height: 26px;/, "26px model avatar");
-  assert.doesNotMatch(s, /@media \(max-width: 740px\)\s*\{[^@]*\.model-button img\s*\{[^}]*40px/, "no 40px avatar anywhere on mobile");
+  assert.match(s, /@media \(max-width: 780px\)\s*\{[\s\S]*?\.chat-header\s*\{\s*padding: 0 10px;\s*min-height: 42px;\s*max-height: 42px;/, "chat header = 42px like the topbar");
+  assert.match(s, /@media \(max-width: 780px\)\s*\{[\s\S]*?\.model-button img\s*\{\s*width: 26px;\s*height: 26px;/, "26px model avatar");
+  assert.doesNotMatch(s, /@media \(max-width: 780px\)\s*\{[^@]*\.model-button img\s*\{[^}]*40px/, "no 40px avatar anywhere on mobile");
   assert.match(s, /\.drawer-backdrop\s*\{\s*top: 42px;/, "drawer backdrop tracks the 42px header");
   assert.doesNotMatch(s, /top:\s*68px/, "no 68px offsets left");
   assert.match(s, /\.session-heading\s*\{\s*padding: 10px 14px 8px;/, "slim session heading");
@@ -173,5 +175,19 @@ test("R28 mobile bar: everything visible without swiping (the real lost-content 
   assert.match(s, /\.topbar \.tree-toggle,\s*\.topbar \.inspector-toggle\s*\{\s*display: none;/, "no edge-overflowing toggles");
   assert.match(s, /\.chip\.connection\s*\{[^}]*width: 12px;[^}]*font-size: 0;/, "chip is a 12px live dot");
   // tighter input chrome on phones — the padded box read oversized
-  assert.match(s, /@media \(max-width: 740px\)\s*\{\s*input,\s*textarea,\s*select\s*\{\s*padding: 6px 9px;/, "6/9 input padding on phones");
+  assert.match(s, /@media \(max-width: 780px\)\s*\{\s*input,\s*textarea,\s*select\s*\{\s*padding: 6px 9px;/, "6/9 input padding on phones");
+});
+
+test("R28 mid-band (781–1100, fold/tablet/landscape): nothing overflows, the composer is not a desktop block", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // the "oversized input" was .composer textarea (min-height 80 + 18px pad) —
+  // specificity 0,1,1 outranked every element-level rule through every
+  // release; the 741–1100 band never got a compact bar either
+  assert.match(s, /@media \(max-width: 1100px\)\s*\{\s*\.composer textarea\s*\{\s*min-height: 56px;\s*padding: 10px 14px 6px;/, "composer shrinks ≤1100");
+  assert.match(s, /@media \(max-width: 780px\)\s*\{\s*\.composer textarea\s*\{\s*min-height: 40px;[^}]*font-size: 0\.9375rem;/, "phone composer 40px, 0.9375rem");
+  // progressive bar: usage → panel, connection → dot
+  assert.match(s, /@media \(max-width: 1100px\)\s*\{\s*\.usage-chip\s*\{\s*display: none;/, "usage chip defers to the Usage panel ≤1100");
+  assert.match(s, /@media \(max-width: 900px\)\s*\{\s*\.chip\.connection\s*\{[^}]*font-size: 0;/, "connection chip is a dot ≤900");
+  // the mobile band is 780 now — the 741–780 gap sat on desktop rules
+  assert.match(s, /@media \(max-width: 780px\)\s*\{\s*\/\* ONE compact header/, "compact bar at ≤780");
 });

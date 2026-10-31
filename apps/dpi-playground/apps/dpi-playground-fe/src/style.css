@@ -1087,6 +1087,24 @@ svg {
   padding: 18px 20px 9px;
   font-size: 1rem;
 }
+/* The 'oversized input' was THIS BOX: .composer textarea outranked every
+   element-level input rule ever written (specificity 0,1,1) — a phone in the
+   741–1100 band kept the 80px-tall desktop composer through every release.
+   Shrink it progressively; ≤780 it is a slim phone composer. */
+@media (max-width: 1100px) {
+  .composer textarea {
+    min-height: 56px;
+    padding: 10px 14px 6px;
+  }
+}
+@media (max-width: 780px) {
+  .composer textarea {
+    min-height: 40px;
+    max-height: 150px;
+    padding: 8px 10px 6px;
+    font-size: 0.9375rem;
+  }
+}
 .composer-toolbar {
   display: flex;
   flex-wrap: wrap; /* narrow viewports: controls flow to a second line instead of overflowing */
@@ -2071,7 +2089,7 @@ textarea.app-state-json {
     padding-right: 16px;
   }
 }
-@media (max-width: 740px) {
+@media (max-width: 780px) {
   /* ONE compact header, NOTHING removed (user: tinh gọn, không lược tính
      năng): brand · connection chip · bell · help · tree/inspector toggles ·
      New session — all present on a single 42px row. Smaller logo, buttons
@@ -2223,7 +2241,8 @@ textarea.app-state-json {
     min-height: 42px;
     max-height: 42px;
     gap: 8px;
-    overflow: hidden;
+    flex-wrap: nowrap;
+    overflow: visible; /* never clip: a wrapped/clipped header loses content */
   }
   .model-button img {
     width: 26px;
@@ -2827,18 +2846,15 @@ textarea::placeholder {
 .conversation-choice.selected .choice-lineage > span:last-child {
   color: var(--accent);
 }
-@media (max-width: 740px) {
-  .chat-header {
-    flex-wrap: wrap;
-    padding: 8px 10px;
-    gap: 4px;
-  }
+@media (max-width: 780px) {
+  /* chat-header layout lives in ONE place (the compact 42px block above) —
+     this block's flex-wrap:wrap loaded later, wrapped the header, and the
+     compact block's max-height:42 + overflow:hidden then CLIPPED the wrapped
+     rows away (live: 'topbar mất nội dung', the same bug class as the old
+     wrapping topbar). Only the lineage full-width rule survives. */
   .lineage-picker {
     flex-basis: 100%;
     width: 100%;
-  }
-  .chat-header-actions {
-    margin-left: auto;
   }
   .conversation-picker {
     width: min(540px, calc(100vw - 20px));
@@ -3175,7 +3191,7 @@ textarea::placeholder {
 .mnav {
   display: none;
 }
-@media (max-width: 760px) {
+@media (max-width: 780px) {
   .daemon,
   .topbar-sep {
     display: none;
@@ -3378,7 +3394,7 @@ select:focus {
    active pane (chat-scroll / inspector / tree drawer) scrolls inside. The
    keyboard shrinks it: --vvh (visualViewport, see main.ts) or the resized
    dvh on Android. */
-@media (max-width: 740px) {
+@media (max-width: 780px) {
   :root .shell {
     height: var(--vvh, 100dvh);
     min-height: 0;
@@ -3423,7 +3439,7 @@ select:focus {
   }
 }
 
-@media (max-width: 740px) {
+@media (max-width: 780px) {
   input,
   textarea,
   select {
@@ -3437,4 +3453,31 @@ select:focus {
   letter-spacing: 0.08em;
   color: var(--faint);
   opacity: 0.7;
+}
+
+/* ── 781–1100 (fold/tablet/landscape): the desktop bar overflows here.
+   Progressive compaction — same information, smaller carriers: usage lives
+   in the Details → Usage panel; the connection chip becomes its dot. */
+@media (max-width: 1100px) {
+  .usage-chip {
+    display: none;
+  }
+}
+@media (max-width: 900px) {
+  .chip.connection {
+    width: 12px;
+    min-width: 12px;
+    height: 12px;
+    min-height: 12px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    overflow: hidden;
+    font-size: 0;
+  }
+  .chip.connection .dot {
+    width: 10px;
+    height: 10px;
+  }
 }
