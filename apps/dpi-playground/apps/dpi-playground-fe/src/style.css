@@ -3666,16 +3666,23 @@ select:focus {
     height: 1.625rem;
     padding: 0.25rem;
   }
+  /* r29 fix (user: 'Lỗi interrupt'): cả hai cùng CAO 1.625rem nhưng không
+     cùng DÀI — Send là icon-only (ô vuông 21px), Interrupt CHỮA CHỮ và cần
+     bề rộng tự giãn; ép cả hai thành ô vuông làm chữ tràn ra ngoài nút. */
   .composer-toolbar .send,
   .composer-toolbar button[title*="Stop foreground"] {
-    /* r29 (user chốt): Send cũ bị ghim 2.5rem (33px) vượt min-height —
-       cả hai cùng 1.625rem (21px) như Follow-up; icon 1.125em tự co theo. */
-    width: 1.625rem;
     height: 1.625rem;
     min-height: 1.625rem;
+    gap: 0.1875rem;
+    white-space: nowrap;
+  }
+  .composer-toolbar .send {
+    width: 1.625rem;
     min-width: 1.625rem;
     padding: 0;
-    gap: 0.1875rem;
+  }
+  .composer-toolbar button[title*="Stop foreground"] {
+    padding: 0 0.5rem;
   }
   .composer-toolbar .stop-sign {
     width: 0.875rem;
