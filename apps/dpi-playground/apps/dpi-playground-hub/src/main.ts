@@ -597,6 +597,14 @@ if (args.includes("--dev")) {
     next();
   });
   const dist = resolve(appDir, "apps/dpi-playground-fe/dist");
+  // ?fresh=1 — BEFORE static: the SPA fallback below never runs for "/",
+  // static serves the shell first, so the purge header must ride whatever
+  // response wins (asset or document — Clear-Site-Data clears the origin's
+  // cache either way, per spec, on any secure response).
+  app.use((req, res, next) => {
+    if (req.query?.fresh === "1") res.setHeader("Clear-Site-Data", '"cache"');
+    next();
+  });
   // Vite content-addresses /assets/* filenames, so they can cache forever; the
   // documents that reference them (index.html and the SPA shell) must
   // revalidate or a deploy would serve stale HTML pointing at dead hashes.
@@ -631,9 +639,6 @@ if (args.includes("--dev")) {
     // with the device: /API/NETWORK is a 404 miss, not the app shell).
     if (/^\/api(\/|$)/i.test(req.path)) return void next();
     res.setHeader("Cache-Control", "no-store");
-    // ?fresh=1 nukes every cache the browser holds for this origin (one-shot
-    // unfreeze for clients stuck on an old shell; harmless otherwise).
-    if (req.query.fresh === "1") res.setHeader("Clear-Site-Data", '"cache"');
     res.sendFile(join(dist, "index.html"));
   });
 }
