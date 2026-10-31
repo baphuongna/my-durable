@@ -604,7 +604,10 @@ if (args.includes("--dev")) {
   app.use(
     express.static(dist, {
       setHeaders: (res, filePath) => {
-        if (filePath.endsWith(".html")) res.setHeader("Cache-Control", "no-cache");
+        // no-store: in-app webviews (Zalo/Messenger) have been observed
+        // serving stale shells across deploys even under no-cache — the
+        // document is tiny, it can simply never be stored.
+        if (filePath.endsWith(".html")) res.setHeader("Cache-Control", "no-store");
       },
     }),
   );
@@ -627,7 +630,10 @@ if (args.includes("--dev")) {
     // An /api-shaped path is never a page — not even case-mangled (uniformity
     // with the device: /API/NETWORK is a 404 miss, not the app shell).
     if (/^\/api(\/|$)/i.test(req.path)) return void next();
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "no-store");
+    // ?fresh=1 nukes every cache the browser holds for this origin (one-shot
+    // unfreeze for clients stuck on an old shell; harmless otherwise).
+    if (req.query.fresh === "1") res.setHeader("Clear-Site-Data", '"cache"');
     res.sendFile(join(dist, "index.html"));
   });
 }

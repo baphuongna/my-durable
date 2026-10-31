@@ -3430,3 +3430,11 @@ select:focus {
     padding: 6px 9px;
   }
 }
+
+.build-stamp {
+  margin: 18px 0 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  opacity: 0.7;
+}

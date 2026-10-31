@@ -1,4 +1,5 @@
 <script setup lang="ts">
+const build = __DPI_BUILD__ as string;
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { Database, GitFork, Activity, Info, Plus, X } from "lucide-vue-next";
 import TopBar from "./components/TopBar.vue";
@@ -133,6 +134,7 @@ onBeforeUnmount(() => {
           ><span><GitFork :size="18" />Branch any agent</span
           ><span><Activity :size="18" />Watch from anywhere</span>
         </div>
+        <p class="build-stamp">ui {{ build }}</p>
       </section>
     </main>
 

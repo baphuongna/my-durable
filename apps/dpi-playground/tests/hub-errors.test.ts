@@ -843,7 +843,9 @@ test("R5: hashed /assets cache immutable; the shell revalidates", async () => {
     assert.match(asset.headers["cache-control"] ?? "", /max-age=31536000, immutable/);
     const shell = await raw(hub.base, "GET", "/");
     assert.equal(shell.status, 200);
-    assert.match(shell.headers["cache-control"] ?? "", /no-cache/);
+    // no-store (R28): in-app webviews have been observed serving stale shells
+    // across deploys even under no-cache — the document is tiny, never stored.
+    assert.match(shell.headers["cache-control"] ?? "", /no-store/);
   } finally {
     await hub.cleanup();
   }
