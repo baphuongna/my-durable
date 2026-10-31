@@ -2014,6 +2014,20 @@ textarea.app-state-json {
   margin: 20px 0;
   color: var(--fg);
 }
+/* The hero is display-size BY DESIGN on desktop — on the compact band it
+   read as 'desktop text' through every release (41px at a 900px touch
+   screen). Cap it: the headline is still the hero, just phone-sized. */
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
+  .welcome h1 {
+    font-size: clamp(1.5rem, 6vw, 1.9rem);
+    line-height: 1.15;
+  }
+  .welcome-symbol {
+    width: 84px;
+    height: 47px;
+    margin-bottom: 18px;
+  }
+}
 .welcome p {
   font-size: 1rem;
   color: var(--fg);
