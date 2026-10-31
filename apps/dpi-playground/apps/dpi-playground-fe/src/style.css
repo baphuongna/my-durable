@@ -2250,13 +2250,19 @@ textarea.app-state-json {
     height: 85dvh;
     min-height: 500px;
   }
+  /* Auto-height: the lineage carries a BRANCH row + crumb row (~2 lines).
+     The old max-height:42 overflowed that content ONTO the table below
+     (live screenshots) — the shell is a fixed-height frame now, so letting
+     the header grow cannot scroll the page; the chat just gets the rest. */
   .chat-header {
     padding: 0 10px;
+    height: auto;
     min-height: 42px;
-    max-height: 42px;
+    max-height: none;
     gap: 8px;
     flex-wrap: nowrap;
-    overflow: visible; /* never clip: a wrapped/clipped header loses content */
+    flex: 0 0 auto;
+    overflow: visible;
   }
   .model-button img {
     width: 26px;
@@ -3583,5 +3589,16 @@ select:focus {
     max-width: 100%;
     overflow-x: auto;
     white-space: nowrap;
+  }
+}
+
+/* Tight lineage internals so the auto-height header stays 2 slim rows. */
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
+  .crumb {
+    padding: 3px 2px;
+  }
+  .crumb .device-chip,
+  .crumb-name {
+    max-width: 34vw;
   }
 }

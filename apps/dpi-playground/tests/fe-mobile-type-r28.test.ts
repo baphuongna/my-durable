@@ -97,7 +97,10 @@ test("R28 header: ONE compact 42px row, nothing removed or beyond the edge", () 
 
 test("R28 body headers: the chat header matches, no stale offsets, no stray wraps", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, new RegExp(`${MOBILE}\\s*\\{[\\s\\S]*?\\.chat-header\\s*\\{\\s*padding: 0 10px;\\s*min-height: 42px;`), "chat header = 42px on the compact band");
+  assert.match(s, new RegExp(`${MOBILE}\\s*\\{[\\s\\S]*?\\.chat-header\\s*\\{\\s*padding: 0 10px;\\s*height: auto;\\s*min-height: 42px;\\s*max-height: none;`), "chat header GROWS with its content (branch row + crumbs) — a fixed 42px spilled onto the table");
+  // lineage internals tightened so the auto header stays slim
+  assert.match(s, /\.crumb\s*\{\s*padding: 3px 2px;\s*\}/, "tight crumb padding");
+  assert.match(s, /max-width: 34vw;/, "crumb text capped so the row stays one screen wide");
   assert.match(s, new RegExp(`${MOBILE}\\s*\\{[\\s\\S]*?\\.model-button img\\s*\\{\\s*width: 26px;`), "26px avatar");
   assert.match(s, /\.drawer-backdrop\s*\{\s*top: 42px;/, "drawer backdrop tracks the 42px header");
   // the stray BASE wrap (loaded last, overrode every band) stays dead
@@ -158,4 +161,9 @@ test("R28 unbreakable header: no 240px floor, crumbs never wrap, tables scroll i
   assert.match(s, /\.chat-header\s*\{[^}]*position: relative;[^}]*z-index: 2;[^}]*background: var\(--panel\);/, "header paints above escaped content");
   // wide transcript tables scroll INSIDE the chat — they never escape it
   assert.match(s, /\.markdown table\s*\{\s*display: block;\s*width: 100%;\s*max-width: 100%;\s*overflow-x: auto;/, "tables scroll inside the chat");
+});
+
+test("R28 chat header: auto-height (grow, never spill) — no fixed cap to overflow", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  assert.doesNotMatch(s, /\.chat-header\s*\{[^}]*max-height:\s*42px/, "no 42px cap on the chat header — it spilled onto the table");
 });
