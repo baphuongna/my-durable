@@ -1176,7 +1176,7 @@ svg {
   gap: 0.5rem;
   align-items: center;
   color: var(--fg);
-  font-size: 1rem;
+  font-size: 0.9375rem;
   letter-spacing: 0.08125rem;
   margin-bottom: 0.625rem;
 }
@@ -1187,7 +1187,7 @@ svg {
   font-size: 1rem;
 }
 .user-message {
-  font-size: 1rem;
+  font-size: 0.8125rem;
   line-height: 1.8;
   white-space: pre-wrap;
   color: var(--fg);
@@ -1205,7 +1205,7 @@ svg {
   /* r29 (user: 'body vẫn khá lớn'): chat prose 0.9375rem — nhỏ hơn trên MỌI
      băng (12.2px @412 · 12.7 @900t · 14.1 desktop), vẫn đi theo knob; headings
      giữ 1rem → có lại chút thứ bậc. Một giá trị cho mọi băng. */
-  font-size: 0.9375rem;
+  font-size: 0.8125rem;
   line-height: 1.85;
   color: var(--fg);
   overflow-wrap: anywhere;
@@ -1220,7 +1220,7 @@ svg {
 .markdown h2,
 .markdown h3 {
   color: var(--fg);
-  font-size: 1rem;
+  font-size: 0.9375rem;
   margin: 1.375rem 0 0.75rem;
 }
 .markdown ul,
@@ -1274,7 +1274,7 @@ svg {
 .fork-button {
   display: inline-flex;
   color: var(--fg);
-  font-size: 1rem;
+  font-size: 0.8125rem;
   letter-spacing: 0;
   margin-left: auto;
   opacity: 1;
@@ -1289,7 +1289,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 0.4375rem;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   color: var(--fg);
   padding: 0.5rem 0;
 }
@@ -1307,7 +1307,7 @@ svg {
   background: #251819;
   margin: 0.625rem 0;
   color: var(--fg);
-  font-size: 1rem;
+  font-size: 0.8125rem;
   overflow: hidden;
 }
 .tool-call summary,
@@ -1346,7 +1346,7 @@ svg {
   background: #201415;
 }
 .tool-result summary > span {
-  font-size: 1rem;
+  font-size: 0.8125rem;
   color: var(--fg);
 }
 .tool-result.failed {
@@ -1372,7 +1372,7 @@ svg {
   margin-left: auto;
 }
 .thinking {
-  font-size: 1rem;
+  font-size: 0.8125rem;
   color: var(--fg);
   margin: 0.5rem 0 1rem;
 }
@@ -1381,7 +1381,7 @@ svg {
 }
 .thinking div {
   white-space: pre-wrap;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   line-height: 1.8;
   margin-top: 0.75rem;
   padding-left: 0.75rem;
@@ -1389,7 +1389,7 @@ svg {
   color: var(--fg);
 }
 .message-error {
-  font-size: 1rem;
+  font-size: 0.8125rem;
   line-height: 1.7;
   color: var(--fg);
   border: 1px solid #6b4245;
@@ -1401,7 +1401,7 @@ svg {
 }
 .streaming {
   letter-spacing: 0;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   color: var(--accent);
   margin-left: auto;
 }
@@ -1434,13 +1434,13 @@ svg {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   color: var(--fg);
 }
 .live-tool > div > span {
   margin-left: auto;
   color: var(--fg);
-  font-size: 1rem;
+  font-size: 0.8125rem;
 }
 .live-tool pre {
   max-height: 9.375rem;
@@ -1458,7 +1458,7 @@ svg {
   display: flex;
   align-items: center;
   gap: 0.4375rem;
-  font-size: 1rem;
+  font-size: 0.8125rem;
   color: var(--fg);
 }
 .queue span {
@@ -1474,7 +1474,7 @@ svg {
   padding: 0.5rem 1.625rem;
   background: #33292a33;
   color: var(--fg);
-  font-size: 1rem;
+  font-size: 0.8125rem;
 }
 .empty-panel {
   padding: 1.875rem 0;
@@ -1483,7 +1483,7 @@ svg {
   flex-direction: column;
   gap: 0.75rem;
   color: var(--fg);
-  font-size: 1rem;
+  font-size: 0.8125rem;
 }
 .empty-panel strong {
   color: var(--fg);
@@ -1508,12 +1508,12 @@ svg {
 }
 .task-card strong {
   font-family: var(--font-mono);
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 400;
   overflow-wrap: anywhere;
 }
 .task-card p {
-  font-size: 1rem;
+  font-size: 0.8125rem;
   color: var(--fg);
   margin: 0.5rem 0 0.6875rem;
 }
@@ -1531,11 +1531,11 @@ svg {
   color: var(--fg);
 }
 .hook-card strong {
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 500;
 }
 .hook-card p {
-  font-size: 1rem;
+  font-size: 0.8125rem;
   line-height: 1.6;
   color: var(--fg);
   margin-top: 0.625rem;
@@ -1573,15 +1573,15 @@ svg {
 }
 .tool-row strong {
   font-family: var(--font-mono);
-  font-size: 1rem;
+  font-size: 0.8125rem;
   font-weight: 500;
 }
 .tool-row .tag {
   margin-left: auto;
-  font-size: 1rem;
+  font-size: 0.8125rem;
 }
 .tool-row p {
-  font-size: 1rem;
+  font-size: 0.8125rem;
   color: var(--fg);
   line-height: 1.75;
   margin: 0.75rem 0;
@@ -1634,7 +1634,7 @@ svg {
   width: 100%;
   justify-content: space-between;
   color: var(--fg);
-  font-size: 1rem;
+  font-size: 0.8125rem;
   text-align: left;
   border-bottom: 1px solid var(--line);
   padding: 0.875rem 0;
