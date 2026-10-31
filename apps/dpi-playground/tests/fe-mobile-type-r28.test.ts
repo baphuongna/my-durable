@@ -10,7 +10,7 @@
 //   - structural compaction stays: icon-only crumbs, dot chip, toggles defer
 //     to the bottom tabs, tables scroll inside the chat, teleported dropdown.
 // px survives ONLY in: @media conditions (viewport units), 1px hairlines,
-// box-shadows, and the sanctioned font sizes (base/knob/10px-toolbar/focus).
+// box-shadows, and the sanctioned font sizes (base/knob/iOS focus).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -52,7 +52,7 @@ test("R28 scale: no stray px anywhere — every dimension rides rem", () => {
     const styleOnly = f.endsWith(".vue") ? [...src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join("\n") : src;
     for (const v of pxViolations(styleOnly)) offenders.push(`${f.replace(FE, "")}: ${v}`);
   }
-  // the sanctioned NON-rem font sizes (base, knobs, 10px toolbar, iOS focus)
+  // the sanctioned NON-rem font sizes (base, knobs, iOS focus)
   const allowedFontPx = /font-size:\s*(16|15|14\.5|14|13\.5|13|12\.5|10)px\s*(!important)?\s*;/;
   offenders = offenders.filter((line) => !/font-size/.test(line) || !allowedFontPx.test(line));
   // box-shadows keep px (blur radii don't read as size)
@@ -118,7 +118,7 @@ test("r29 uniform: no band-dependent font-size restatements (one value per eleme
     ".welcome h1", // clamp fluid hero (0.0.99, user-approved)
     ".chip.connection", // dot: font-size 0 hides text
     ".mnav button", ".mnav .badge", // mobile-only element: single value, not a restatement
-    ".composer-left .queue-mode select", // 10px toolbar trio (0.0.105, user-requested)
+    ".composer-left .queue-mode select", // toolbar trio: 0.8125rem (rides the knob, user-approved balance 0.0.110)
     '.composer-toolbar button[title*="Stop foreground"]',
     ".composer-toolbar .send",
     "input:focus", "textarea:focus", "select:focus", // iOS 16px-at-focus
