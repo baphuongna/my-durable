@@ -1098,12 +1098,7 @@ svg {
   }
 }
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
-  .composer textarea {
-    min-height: 40px;
-    max-height: 150px;
-    padding: 8px 10px 6px;
-    font-size: 0.9375rem;
-  }
+  /* composer textarea: owned by the compact band block at the file end */
 }
 .composer-toolbar {
   display: flex;
@@ -3600,5 +3595,53 @@ select:focus {
   .crumb .device-chip,
   .crumb-name {
     max-width: 34vw;
+  }
+}
+
+/* ── Compact band, third pass (one-line lineage + slim composer) ───────────
+   From the user's screenshots: each crumb is a COLUMN (icon over its tiny
+   uppercase label) and the GitChip (branch name) stacks inside the workspace
+   crumb — the header became 2–3 rows. On the compact band the crumbs are a
+   single horizontal line: icon · name · branch side by side, labels hidden
+   (the icons carry the meaning), and the composer drops to one row. */
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
+  /* .crumbs .crumb — beats network.css' flex-direction:column (later import) */
+  .crumbs .crumb {
+    flex-direction: row;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 2px;
+  }
+  .crumb-kind {
+    display: none;
+  }
+  .crumb .device-chip,
+  .crumb-name {
+    max-width: 30vw;
+  }
+  .composer textarea {
+    height: 34px;
+    min-height: 34px;
+    max-height: 110px;
+    padding: 7px 9px;
+  }
+  .composer {
+    padding: 5px;
+  }
+  .composer-toolbar {
+    gap: 3px;
+  }
+  .composer-toolbar .icon-button {
+    width: 26px;
+    height: 26px;
+    padding: 3px;
+  }
+  .queue-mode select {
+    min-height: 30px;
+    padding: 4px 26px 4px 8px;
+    font-size: 0.8125rem;
+  }
+  .composer-footnote {
+    display: none;
   }
 }

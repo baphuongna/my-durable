@@ -110,7 +110,7 @@ test("R28 body headers: the chat header matches, no stale offsets, no stray wrap
 test("R28 composer + inputs: shrink progressively; iOS-only 16px at focus; zero !important", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
   assert.match(s, /@media \(max-width: 1100px\)\s*\{\s*\.composer textarea\s*\{\s*min-height: 56px;/, "composer ≤1100 → 56px");
-  assert.match(s, new RegExp(`${MOBILE}\\s*\\{\\s*\\.composer textarea\\s*\\{\\s*min-height: 40px;`), "compact band composer → 40px");
+  assert.match(s, new RegExp(`\\.composer textarea\\s*\\{\\s*height: 34px;\\s*min-height: 34px;\\s*max-height: 110px;\\s*padding: 7px 9px;`), "compact band composer → one 34px line (rows=2 inflated it)");
   assert.match(s, new RegExp(`${MOBILE}\\s*\\{\\s*input,\\s*textarea,\\s*select\\s*\\{\\s*padding: 6px 9px;`), "6/9 input padding");
   assert.equal([...s.matchAll(/font-size:[^;\n]*!important/g)].length, 0, "style.css carries zero font-size !important");
   assert.match(
@@ -166,4 +166,13 @@ test("R28 unbreakable header: no 240px floor, crumbs never wrap, tables scroll i
 test("R28 chat header: auto-height (grow, never spill) — no fixed cap to overflow", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
   assert.doesNotMatch(s, /\.chat-header\s*\{[^}]*max-height:\s*42px/, "no 42px cap on the chat header — it spilled onto the table");
+});
+
+test("R28 one-line lineage: crumbs are a horizontal row (network.css column loses by specificity)", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // network.css .crumb { flex-direction: column } loads after style.css — the
+  // icon-over-label column made the header 2–3 rows on phones
+  assert.match(s, /\.crumbs \.crumb\s*\{\s*flex-direction: row;\s*align-items: center;/, "crumbs .crumb row beats the later column");
+  assert.match(s, /\.crumb-kind\s*\{\s*display: none;/, "the tiny uppercase labels are decoration — hidden on phones");
+  assert.match(s, /\.crumb \.device-chip,\s*\.crumb-name\s*\{\s*max-width: 30vw;/, "names cap at 30vw");
 });
