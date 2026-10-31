@@ -3645,3 +3645,65 @@ select:focus {
     display: none;
   }
 }
+
+/* ── Composer controls, phone-compact (user-annotated screenshot) ──────────
+   Follow-up select + Interrupt read oversized on phones. Everything in the
+   toolbar drops to a 26px control row; the Interrupt label shrinks with it. */
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
+  .queue-mode {
+    min-width: 0;
+  }
+  .composer-left .queue-mode select {
+    min-height: 26px;
+    padding: 3px 22px 3px 7px;
+    font-size: 0.75rem;
+  }
+  .queue-mode > svg {
+    width: 13px;
+    height: 13px;
+  }
+  .composer-toolbar svg {
+    width: 14px;
+    height: 14px;
+  }
+  .composer-toolbar .icon-button {
+    width: 26px;
+    height: 26px;
+    padding: 4px;
+  }
+  .composer-toolbar .send,
+  .composer-toolbar button[title*="Stop foreground"] {
+    min-height: 26px;
+    min-width: 26px;
+    padding: 0 8px;
+    font-size: 0.75rem;
+    gap: 3px;
+  }
+  .composer-toolbar .stop-sign {
+    width: 14px;
+    height: 14px;
+  }
+}
+
+/* ── Crumbs icon-only + toolbar text 10px (user directive) ─────────────────
+   The crumb NAMES (device/workspace/session, and the branch chip) duplicated
+   what the icons + tooltips already say — on a phone they pushed the row
+   wide. Icons only; names stay in the tooltips and the Details pane.
+   The toolbar text drops to 10px as requested (buttons/selects never trigger
+   iOS focus-zoom — that dance is only for text inputs). */
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
+  .crumb .device-chip,
+  .crumb-name,
+  .git-chip .branch {
+    display: none;
+  }
+  .composer-left .queue-mode select {
+    font-size: 10px;
+  }
+  .composer-toolbar button[title*="Stop foreground"] {
+    font-size: 10px;
+  }
+  .composer-toolbar .send {
+    font-size: 10px;
+  }
+}

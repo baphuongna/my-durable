@@ -44,7 +44,7 @@ test("R28 type scale: every font-size is rem except sanctioned bases", () => {
       const inStyle = f.endsWith("style.css");
       const rem = /^[\d.]+rem( !important)?$/.test(v) || /^clamp\([\d.]+rem,/.test(v);
       const sanctioned =
-        inStyle && ["16px", "15px", "14.5px", "14px", "13.5px", "13px", "12.5px", "0", "1rem !important", "16px !important"].includes(v);
+        inStyle && ["16px", "15px", "14.5px", "14px", "13.5px", "13px", "12.5px", "10px", "0", "1rem !important", "16px !important"].includes(v);
       if (!rem && !sanctioned) offenders.push(`${f.replace(FE, "")}: ${v}`);
     }
   }
@@ -175,4 +175,18 @@ test("R28 one-line lineage: crumbs are a horizontal row (network.css column lose
   assert.match(s, /\.crumbs \.crumb\s*\{\s*flex-direction: row;\s*align-items: center;/, "crumbs .crumb row beats the later column");
   assert.match(s, /\.crumb-kind\s*\{\s*display: none;/, "the tiny uppercase labels are decoration — hidden on phones");
   assert.match(s, /\.crumb \.device-chip,\s*\.crumb-name\s*\{\s*max-width: 30vw;/, "names cap at 30vw");
+});
+
+test("R28 user-directed compaction: icon-only crumbs + 10px toolbar text", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // crumb NAMES duplicated the icons/tooltips — icon-only on phones
+  assert.match(
+    s,
+    /@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.crumb \.device-chip,\s*\.crumb-name,\s*\.git-chip \.branch\s*\{\s*display: none;/,
+    "crumb names + branch text hidden — icons only",
+  );
+  // toolbar text 10px (user number) — buttons/selects never trigger iOS zoom
+  assert.match(s, /\.composer-left \.queue-mode select\s*\{[^}]*font-size: 10px;/, "Follow-up select 10px");
+  assert.match(s, /\.composer-toolbar button\[title\*="Stop foreground"\]\s*\{[^}]*font-size: 10px;/, "Interrupt 10px");
+  assert.match(s, /\.composer-toolbar \.send\s*\{\s*font-size: 10px;/, "send 10px");
 });
