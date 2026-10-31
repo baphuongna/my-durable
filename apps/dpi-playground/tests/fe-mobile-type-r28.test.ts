@@ -106,3 +106,49 @@ test("R28 band semantics: the compact band is 780-or-touch, the wrap band starts
   assert.match(s, /@media \(max-width: 900px\)\s*\{\s*\.chip\.connection\s*\{[^}]*font-size: 0;/, "connection chip is a dot ≤900");
   assert.match(s, /\.drawer-backdrop\s*\{[^}]*inset: var\(--topbar-h\) 0 0;/, "drawer backdrop tracks the bar height");
 });
+
+// ── r29 uniform restatement ban: one font-size per element on EVERY band ──
+// The compact-band media blocks may not restate a font-size for an element
+// that already has one outside them — that double-shrinks (or grows) parts
+// of the UI against the knob. Only the sanctioned list survives.
+test("r29 uniform: no band-dependent font-size restatements (one value per element)", () => {
+  const css = readFileSync(FE + "style.css", "utf8");
+  const allowed = new Set([
+    ":root", // the knobs themselves
+    ".welcome h1", // clamp fluid hero (0.0.99, user-approved)
+    ".chip.connection", // dot: font-size 0 hides text
+    ".mnav button", ".mnav .badge", // mobile-only element: single value, not a restatement
+    ".composer-left .queue-mode select", // 10px toolbar trio (0.0.105, user-requested)
+    '.composer-toolbar button[title*="Stop foreground"]',
+    ".composer-toolbar .send",
+    "input:focus", "textarea:focus", "select:focus", // iOS 16px-at-focus
+    ":root input:focus", ":root textarea:focus", ":root select:focus",
+  ]);
+  const offenders: string[] = [];
+  // walk media blocks that are compact bands
+  const re = /@media \([^)]*max-width: 780px\)[^\{]*\{([\s\S]*?)\n\}\n/g;
+  let m: RegExpExecArray | null;
+  const seen = new Set();
+  while ((m = re.exec(css))) {
+    const block = m[1];
+    const fr = /([.:#\w\-\[\]"'=* ,()>]+)\s*\{[^}]*?font-size:\s*([^;]+);/g;
+    let f: RegExpExecArray | null;
+    while ((f = fr.exec(block))) {
+      const sel = f[1].trim();
+      const val = f[2].trim();
+      if (val === "0" || val.startsWith("clamp(")) continue; // dot-hiding + fluid hero are structural
+      const key = sel + "→" + val;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (![...allowed].some(a => sel === a || sel.includes(a))) offenders.push(key);
+    }
+  }
+  assert.deepStrictEqual(offenders, [], "band-dependent font-size restatements found (each element must keep ONE value across bands): " + offenders.join(", "));
+});
+
+test("r29 uniform: git lanes ride the scale (viewBox + rem, no px attrs)", () => {
+  const gp = readFileSync(FE + "components/GitPanel.vue", "utf8");
+  assert.match(gp, /class="lane" :viewBox=/, "lane svg must carry a viewBox so internals scale");
+  assert.match(gp, /height: '1\.5rem'/, "lane height must be rem (rides the knob)");
+  assert.doesNotMatch(gp, /class="lane"[^>]*height="24"/, "no px height attr on lanes");
+});

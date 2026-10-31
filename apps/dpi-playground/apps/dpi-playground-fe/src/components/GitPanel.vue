@@ -1176,7 +1176,7 @@ const laneX = (lane: number) => lane * 12 + 7;
             <div v-else-if="commits.length" class="commits">
               <template v-for="(c, i) in commits" :key="c.hash">
                 <div class="commit-row" :title="c.refs">
-                  <svg v-if="lanes[i]" class="lane" :width="lanes[i].width * 12 + 4" height="24" aria-hidden="true">
+                  <svg v-if="lanes[i]" class="lane" :viewBox="`0 0 ${lanes[i].width * 12 + 4} 24`" :style="{ width: `${lanes[i].width * 0.75 + 0.25}rem`, height: '1.5rem' }" aria-hidden="true">
                     <line v-for="l in lanes[i].width" :key="l" :x1="laneX(l - 1)" :x2="laneX(l - 1)" y1="0" y2="24" :stroke="'#3a3134'" stroke-width="2" />
                     <line v-for="(pl, j) in lanes[i].parents" :key="'p' + j" :x1="laneX(lanes[i].lane)" :x2="laneX(pl)" y1="12" y2="24" :stroke="LANE_COLORS[pl % LANE_COLORS.length]" stroke-width="2" />
                     <circle :cx="laneX(lanes[i].lane)" cy="12" r="4" :fill="LANE_COLORS[lanes[i].lane % LANE_COLORS.length]" />
