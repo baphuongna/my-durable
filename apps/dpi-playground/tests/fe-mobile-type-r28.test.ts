@@ -142,3 +142,20 @@ test("R28 session screen (from the user's screenshots): no icon rail, chat full 
     "chat body 0.9375rem / 1.6",
   );
 });
+
+test("R28 unbreakable header: no 240px floor, crumbs never wrap, tables scroll inside", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // network.css gives the picker flex-basis 240px — at phone widths that floor
+  // pushed the actions out/wrapped the header (the overlap in the screenshots)
+  assert.match(
+    s,
+    /@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.chat-header \.lineage-picker\s*\{\s*flex: 0 1 auto;\s*min-width: 0;/,
+    "the picker floor is lifted on the compact band",
+  );
+  assert.match(s, /\.chat-header \.crumbs\s*\{\s*flex-wrap: nowrap;\s*min-width: 0;/, "crumbs never wrap internally");
+  assert.match(s, /\.chat-header-actions\s*\{\s*flex-shrink: 0;/, "actions never shrink");
+  // the header paints above anything that escapes, with a solid background
+  assert.match(s, /\.chat-header\s*\{[^}]*position: relative;[^}]*z-index: 2;[^}]*background: var\(--panel\);/, "header paints above escaped content");
+  // wide transcript tables scroll INSIDE the chat — they never escape it
+  assert.match(s, /\.markdown table\s*\{\s*display: block;\s*width: 100%;\s*max-width: 100%;\s*overflow-x: auto;/, "tables scroll inside the chat");
+});

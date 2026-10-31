@@ -3548,3 +3548,40 @@ select:focus {
     margin-bottom: 6px;
   }
 }
+
+/* ── Compact-band header: unbreakable against ANY content width ───────────
+   From the user's screenshots: the lineage picker reserves flex-basis 240px
+   (network.css), the actions row + crumbs overflowed it, and markdown tables
+   in the transcript are wide. All four levers closed at once: the picker
+   may shrink (no 240px floor), the crumbs never wrap internally, the
+   actions never shrink, the header paints ABOVE escaped content, and wide
+   tables scroll INSIDE the chat instead of escaping it. */
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
+  .chat-header {
+    position: relative;
+    z-index: 2;
+    background: var(--panel);
+  }
+  .chat-header .lineage-picker {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .chat-header .crumbs {
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .chat-header .crumb {
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  .chat-header-actions {
+    flex-shrink: 0;
+  }
+  .markdown table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
