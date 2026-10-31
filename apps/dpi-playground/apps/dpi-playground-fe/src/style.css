@@ -3504,3 +3504,47 @@ select:focus {
     height: 10px;
   }
 }
+
+/* ── Compact band, second pass (from the user's actual screenshots) ────────
+   What the phone shows that no probe caught:
+   1. The Inspector's collapsed icon RAIL renders inline on phones, eating
+      ~100px of a 800px screen and pushing the chat into a sliver. On the
+      compact band the rail is HIDDEN — the Details tab opens the inspector
+      as the overlay it already is. The chat gets the full width.
+   2. The chat-header crumbs (device/workspace names) rendered 1.0625rem —
+      larger than the bar itself, hence the truncated 'PhuongNB-Laptop > New
+      s…' row.
+   3. The markdown chat body is 1rem with 1.85 line-height — desktop reading
+      measure. On the compact band it reads as body text, not a document. */
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
+  /* 1. the inspector rail: hidden — Details opens the overlay */
+  .net-workspace > .inspector {
+    display: none;
+  }
+  .net-workspace > .inspector.overlay {
+    display: flex;
+  }
+  /* 2. the chat header crumbs: same optical size as the bar */
+  .crumb-main {
+    font-size: 0.875rem;
+    gap: 5px;
+  }
+  .crumb .device-chip,
+  .crumb-name {
+    font-size: 0.875rem;
+  }
+  /* 3. the chat body reads as text, not a document */
+  .markdown {
+    font-size: 0.9375rem;
+    line-height: 1.6;
+  }
+  .markdown ul,
+  .markdown ol {
+    padding-left: 18px;
+    margin: 8px 0;
+  }
+  .message-label {
+    font-size: 0.8125rem;
+    margin-bottom: 6px;
+  }
+}

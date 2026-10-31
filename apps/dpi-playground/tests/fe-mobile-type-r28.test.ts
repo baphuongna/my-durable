@@ -123,3 +123,22 @@ test("R28 mid band (781–1100, mouse): progressive compaction, no desktop block
   assert.match(s, /@media \(max-width: 900px\)\s*\{\s*\.chip\.connection\s*\{[^}]*font-size: 0;/, "connection chip is a dot ≤900");
   assert.match(s, /@media \(min-width: 781px\) and \(max-width: 1599px\)/, "the wrap band starts at 781 — no seam with the compact band");
 });
+
+test("R28 session screen (from the user's screenshots): no icon rail, chat full width, readable sizes", () => {
+  const s = readFileSync(join(FE, "style.css"), "utf8");
+  // the collapsed inspector RAIL rendered inline on phones, eating ~100px of
+  // an 800px screen; Details opens the overlay it already is
+  assert.match(
+    s,
+    /@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.net-workspace > \.inspector\s*\{\s*display: none;[\s\S]*?\.net-workspace > \.inspector\.overlay\s*\{\s*display: flex;/,
+    "rail hidden on the compact band; the Details overlay still opens",
+  );
+  // chat-header crumbs rendered 1.0625rem — bigger than the bar itself
+  assert.match(s, /\.crumb-main\s*\{\s*font-size: 0\.875rem;/, "crumbs 0.875rem");
+  // the markdown body read as a desktop document (1rem, 1.85 line-height)
+  assert.match(
+    s,
+    /@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.markdown\s*\{\s*font-size: 0\.9375rem;\s*line-height: 1\.6;/,
+    "chat body 0.9375rem / 1.6",
+  );
+});
