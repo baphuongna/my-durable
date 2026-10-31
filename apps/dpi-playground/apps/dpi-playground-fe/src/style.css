@@ -1202,7 +1202,10 @@ svg {
   flex-shrink: 0;
 }
 .markdown {
-  font-size: 1rem;
+  /* r29 (user: 'body vẫn khá lớn'): chat prose 0.9375rem — nhỏ hơn trên MỌI
+     băng (12.2px @412 · 12.7 @900t · 14.1 desktop), vẫn đi theo knob; headings
+     giữ 1rem → có lại chút thứ bậc. Một giá trị cho mọi băng. */
+  font-size: 0.9375rem;
   line-height: 1.85;
   color: var(--fg);
   overflow-wrap: anywhere;
@@ -2636,9 +2639,8 @@ button:disabled {
   width: max-content;
   min-width: min(60rem, 100%);
 }
-.markdown :is(h4, h5, h6, small, sub, sup) {
-  font-size: 1rem;
-}
+/* r29: band-giữa ghim h4-h6/small = 1rem đã xóa — để em mặc định ride theo
+   prose mới (uniform mọi băng, small nhỏ hơn body như chữ nghĩa của nó) */
 
 /* Keep navigation fixed above the currently selected inspector panel. */
 .inspector > .inspector-tabs {
