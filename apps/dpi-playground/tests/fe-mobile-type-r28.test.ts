@@ -152,3 +152,30 @@ test("r29 uniform: git lanes ride the scale (viewBox + rem, no px attrs)", () =>
   assert.match(gp, /height: '1\.5rem'/, "lane height must be rem (rides the knob)");
   assert.doesNotMatch(gp, /class="lane"[^>]*height="24"/, "no px height attr on lanes");
 });
+
+// ── r29 spacing rhythm: content areas must not restate spacing per band ──
+// Same disease as fonts, second layer: compact-band gap/padding/margin
+// restatements double-shrank the rhythm (welcome gap 31→17 etc.). Fit zones
+// (topbar, composer, mnav, crumbs, chips, banners, tabs) stay allowed.
+test("r29 uniform: no compact-band spacing restatements outside the fit zones", () => {
+  const css = readFileSync(FE + "style.css", "utf8");
+  const rhythm = [".welcome-features", ".welcome-symbol", ".modal", ".markdown ul", ".markdown ol", ".message-label", ".inspector-body", ".session-heading,", ".model-section"];
+  const offenders: string[] = [];
+  const re = /@media \([^)]*max-width: 780px\)[^\{]*\{([\s\S]*?)\n\}\n/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(css))) {
+    for (const line of m[1].split("\n")) {
+      const t = line.trim();
+      if (!/(padding|margin|gap)[a-z-]*:/.test(t)) continue;
+      for (const sel of rhythm) {
+        if (css.slice(Math.max(0, m.index), m.index).length >= 0) break;
+      }
+      // attribute the decl to its selector: walk back to the nearest "{" header
+      const idx = m[1].split("\n").indexOf(line);
+      const head = m[1].split("\n").slice(0, idx).reverse().find((l) => l.includes("{"));
+      const owner = (head || "").trim().replace("{", "");
+      if (rhythm.some((r) => owner === r || owner.startsWith(r.replace(/,$/, "") + " {"))) offenders.push(owner + " → " + t);
+    }
+  }
+  assert.deepStrictEqual(offenders, [], "compact-band spacing restatements in rhythm selectors: " + offenders.join("; "));
+});

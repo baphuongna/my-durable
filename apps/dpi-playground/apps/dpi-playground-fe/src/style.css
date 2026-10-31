@@ -5,6 +5,12 @@
   background: var(--bg);
   font-synthesis: none;
   font-size: 16px;
+  /* r29: engine text-inflation defense — Android/WebView/Samsung Internet
+     accessibility "text zoom" scales ONLY text (boxes/padding stay), which
+     reads as "some parts small, some not" regardless of our rem scale.
+     100% = never inflate beyond our own knob. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   /* Desktop base. Every other font-size in the codebase is rem, so the
      mobile knob below retunes the whole type scale from this one value.
      100% stops mobile Safari's automatic text inflation, which fights a
@@ -2017,11 +2023,8 @@ textarea.app-state-json {
     font-size: clamp(1.5rem, 6vw, 1.9rem);
     line-height: 1.15;
   }
-  .welcome-symbol {
-    width: 5.25rem;
-    height: 2.9375rem;
-    margin-bottom: 1.125rem;
-  }
+  /* r29: welcome-symbol rides the knob — the compact override shrank it
+     0.67× on top of the knob (logo visibly "chỗ nhỏ" on the first screen) */
 }
 .welcome p {
   font-size: 1rem;
@@ -2069,15 +2072,8 @@ textarea.app-state-json {
   .workspace {
     grid-template-columns: 20.625rem minmax(0, 1fr);
   }
-  .session-heading,
-  .model-section {
-    padding-left: 1.25rem;
-    padding-right: 1.25rem;
-  }
-  .inspector-body {
-    padding-left: 1.25rem;
-    padding-right: 1.25rem;
-  }
+  /* r29: side paddings ride the knob — the ≤1050 tweak double-shrank the
+     inspector/heading rhythm on fold-class touch devices (900–1000px) */
   .chat-empty h2 {
     font-size: 1.4375rem;
   }
@@ -2286,16 +2282,14 @@ textarea.app-state-json {
     gap: 0.5rem;
   }
   .modal {
-    padding: 1.375rem;
+    /* r29: padding rides the knob */
   }
   .welcome {
     min-height: 90dvh;
   }
   .welcome-features {
     flex-direction: column;
-    gap: 1.25rem;
     align-items: center;
-    margin-top: 2.5rem;
   }
   .drawer-backdrop {
     top: 3.625rem;
@@ -3535,13 +3529,9 @@ select:focus {
   .markdown {
     line-height: 1.6;
   }
-  .markdown ul,
-  .markdown ol {
-    padding-left: 1.125rem;
-    margin: 0.5rem 0;
-  }
+  /* r29: list rhythm rides the knob */
   .message-label {
-    margin-bottom: 0.375rem;
+    /* r29: margin rides the knob */
   }
 }
 
