@@ -2489,7 +2489,7 @@ button:disabled {
   flex-wrap: wrap;
   justify-content: center;
 }
-@media (min-width: 741px) and (max-width: 1599px) {
+@media (min-width: 781px) and (max-width: 1599px) { /* 781 — the mobile band ends at 780 now */
   .workspace {
     grid-template-columns: minmax(410px, 36%) minmax(0, 1fr);
   }
@@ -2959,9 +2959,11 @@ textarea::placeholder {
   gap: 8px;
   justify-content: flex-end;
 }
-.chat-header {
-  flex-wrap: wrap;
-}
+/* (deleted) a stray BASE '.chat-header{flex-wrap:wrap}' loaded after every
+   band override and re-wrapped the header at ALL widths — with a real
+   session (crumbs + actions) the wrapped rows fought the compact 42px bar
+   (live: content lost/overlap). Wrapping now happens ONLY in the 781–1599
+   band where there is room for it. */
 .chat-header-actions .secondary {
   min-height: 38px;
 }
