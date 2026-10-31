@@ -1097,7 +1097,7 @@ svg {
     padding: 10px 14px 6px;
   }
 }
-@media (max-width: 780px) {
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   .composer textarea {
     min-height: 40px;
     max-height: 150px;
@@ -2089,7 +2089,7 @@ textarea.app-state-json {
     padding-right: 16px;
   }
 }
-@media (max-width: 780px) {
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   /* ONE compact header, NOTHING removed (user: tinh gọn, không lược tính
      năng): brand · connection chip · bell · help · tree/inspector toggles ·
      New session — all present on a single 42px row. Smaller logo, buttons
@@ -2307,7 +2307,7 @@ textarea.app-state-json {
     scroll-behavior: auto !important;
   }
 }
-@media (max-width: 740px) {
+@media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
   .model-section {
     display: block;
     padding: 9px 20px;
@@ -2522,7 +2522,7 @@ button:disabled {
     max-width: 205px;
   }
 }
-@media (max-width: 740px) {
+@media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
   .inspector {
     max-height: 60vh;
   }
@@ -2656,7 +2656,7 @@ button:disabled {
 .session-panel .model-section {
   padding: 22px 26px;
 }
-@media (max-width: 740px) {
+@media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
   .inspector > .inspector-tabs {
     padding: 0 4px;
   }
@@ -2846,7 +2846,7 @@ textarea::placeholder {
 .conversation-choice.selected .choice-lineage > span:last-child {
   color: var(--accent);
 }
-@media (max-width: 780px) {
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   /* chat-header layout lives in ONE place (the compact 42px block above) —
      this block's flex-wrap:wrap loaded later, wrapped the header, and the
      compact block's max-height:42 + overflow:hidden then CLIPPED the wrapped
@@ -2967,7 +2967,7 @@ textarea::placeholder {
 .chat-header-actions .secondary {
   min-height: 38px;
 }
-@media (max-width: 740px) {
+@media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
   /* topbar layout lives in ONE place (the compact block in the ≤740 shell
      section above) — a wrapping auto-height header used to win the cascade
      here and eat a quarter of the screen. */
@@ -3193,7 +3193,7 @@ textarea::placeholder {
 .mnav {
   display: none;
 }
-@media (max-width: 780px) {
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   .daemon,
   .topbar-sep {
     display: none;
@@ -3384,8 +3384,15 @@ select:focus {
 @media (max-width: 899px) {
   :root { font-size: 14px; }
 }
-@media (max-width: 740px) {
+@media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
   :root { font-size: 13.5px; }
+}
+/* Touch screens ≤1100 read as phones regardless of pixel width (live: a
+   fold-class viewport showed desktop-size text in a working topbar). */
+@media (max-width: 1100px) and (pointer: coarse) {
+  :root {
+    font-size: 13.5px;
+  }
 }
 @media (max-width: 550px) {
   :root { font-size: 13px; }
@@ -3396,7 +3403,7 @@ select:focus {
    active pane (chat-scroll / inspector / tree drawer) scrolls inside. The
    keyboard shrinks it: --vvh (visualViewport, see main.ts) or the resized
    dvh on Android. */
-@media (max-width: 780px) {
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   :root .shell {
     height: var(--vvh, 100dvh);
     min-height: 0;
@@ -3441,7 +3448,7 @@ select:focus {
   }
 }
 
-@media (max-width: 780px) {
+@media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   input,
   textarea,
   select {
