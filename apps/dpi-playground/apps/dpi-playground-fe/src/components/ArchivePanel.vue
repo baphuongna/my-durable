@@ -144,14 +144,14 @@ async function download(s: ArchivedView) {
 .archive-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 4px 2px 12px;
+  gap: 0.625rem;
+  padding: 0.25rem 0.125rem 0.75rem;
   font-size: 1rem;
 }
 .old-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0.375rem;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -159,15 +159,15 @@ async function download(s: ArchivedView) {
 .old {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 7px 10px;
+  gap: 0.1875rem;
+  padding: 0.4375rem 0.625rem;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .old .head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   flex-wrap: wrap;
 }
 .old .spacer {
@@ -175,7 +175,7 @@ async function download(s: ArchivedView) {
 }
 .old .facts {
   display: flex;
-  gap: 8px;
+  gap: 0.5rem;
   flex-wrap: wrap;
   font-size: 0.8125rem;
   opacity: 0.75;

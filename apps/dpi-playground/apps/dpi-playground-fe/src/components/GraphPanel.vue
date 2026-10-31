@@ -189,22 +189,22 @@ async function add() {
 .graph-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 4px 2px 12px;
+  gap: 0.625rem;
+  padding: 0.25rem 0.125rem 0.75rem;
   font-size: 1rem;
 }
 .graph {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 0.375rem;
+  padding: 0.5rem 0.625rem;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .graph .head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   flex-wrap: wrap;
 }
 .graph .spacer {
@@ -217,7 +217,7 @@ async function add() {
 .tasks {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 0.1875rem;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -225,13 +225,13 @@ async function add() {
 .tasks li {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 0.375rem;
   flex-wrap: wrap;
   font-size: 0.9375rem;
 }
 .tasks .dot {
-  width: 8px;
-  height: 8px;
+  width: 0.5rem;
+  height: 0.5rem;
   border-radius: 50%;
   background: var(--line);
   align-self: center;
@@ -267,30 +267,30 @@ async function add() {
 .add-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: 0.5rem;
+  padding: 0.625rem;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .add-form label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0.25rem;
   font-size: 0.8125rem;
   opacity: 0.85;
 }
 .add-form textarea {
   font: 0.78125rem/1.5 ui-monospace, monospace;
-  padding: 6px 8px;
+  padding: 0.375rem 0.5rem;
   color: var(--fg);
   background: transparent;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0.5rem;
   resize: vertical;
 }
 .add-form .row {
   display: flex;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .spin {
   animation: spin 1s linear infinite;

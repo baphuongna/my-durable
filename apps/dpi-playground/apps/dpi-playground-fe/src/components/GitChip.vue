@@ -40,7 +40,7 @@ watch([devId, cwd], () => void ensureGit(devId.value || "?", cwd.value || "?"));
 
 <style scoped>
 .git-chip-wrap { position: relative; display: inline-flex; align-items: center; }
-.git-chip { gap: 4px; }
+.git-chip { gap: 0.25rem; }
 .git-chip .branch { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dirty { color: var(--warn, #e5a50a); }
 .ahead { color: var(--ok, #2ea043); }

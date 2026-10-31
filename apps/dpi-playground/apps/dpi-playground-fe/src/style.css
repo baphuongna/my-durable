@@ -38,11 +38,11 @@
   --font-body: "DM Sans", "Segoe UI", sans-serif;
   --font-display: "Manrope", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
-  --topbar-h: 65px;
-  --tree-w: 300px;
-  --insp-w: 450px;
-  --radius: 10px;
-  --radius-sm: 6px;
+  --topbar-h: 4.0625rem;
+  --tree-w: 18.75rem;
+  --insp-w: 28.125rem;
+  --radius: 0.625rem;
+  --radius-sm: 0.375rem;
   --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
   --secondary: #c9a87c;
   --muted: var(--secondary);
@@ -77,7 +77,7 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 0.4375rem;
   background: none;
   color: inherit;
   border: 0;
@@ -91,8 +91,8 @@ button:not(:disabled):hover {
 }
 button:focus-visible,
 summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline: 0.125rem solid var(--accent);
+  outline-offset: 0.1875rem;
 }
 input,
 textarea,
@@ -100,8 +100,8 @@ select {
   color: inherit;
   background: var(--chat);
   border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 10px 12px;
+  border-radius: 0.4375rem;
+  padding: 0.625rem 0.75rem;
   outline: none;
   min-width: 0;
 }
@@ -109,7 +109,7 @@ input:focus,
 textarea:focus,
 select:focus {
   border-color: #856669;
-  box-shadow: 0 0 0 2px #cdadb00c;
+  box-shadow: 0 0 0 0.125rem #cdadb00c;
 }
 input::placeholder,
 textarea::placeholder {
@@ -167,7 +167,7 @@ svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 26px 0 17px;
+  padding: 0 1.625rem 0 1.0625rem;
   background: var(--panel);
   z-index: 10;
 }
@@ -175,73 +175,73 @@ svg {
 .top-actions {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 0.875rem;
 }
 .brand strong {
   font-size: 1rem;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.03125rem;
   font-family: var(--font-title);
   font-weight: 750;
 }
 .brandmark {
   display: block;
-  width: 45px;
-  height: 25px;
+  width: 2.8125rem;
+  height: 1.5625rem;
   flex-shrink: 0;
-  margin-left: 3px;
+  margin-left: 0.1875rem;
 }
 .brand-separator {
   color: var(--fg);
   font-weight: 400;
-  margin: 0 2px;
+  margin: 0 0.125rem;
 }
 .muted {
   color: var(--muted);
 }
 .icon-button {
-  width: 29px;
-  height: 29px;
-  padding: 4px;
+  width: 1.8125rem;
+  height: 1.8125rem;
+  padding: 0.25rem;
   color: var(--muted);
-  border-radius: 5px;
+  border-radius: 0.3125rem;
 }
 .icon-button:hover {
   background: #ffffff08;
   color: var(--fg);
 }
 .primary {
-  padding: 12px 18px;
+  padding: 0.75rem 1.125rem;
   background: var(--accent);
   color: var(--fg);
   border: 1px solid var(--accent);
   font-weight: 650;
-  border-radius: 7px;
-  box-shadow: 0 1px 2px #0002;
+  border-radius: 0.4375rem;
+  box-shadow: 0 1px 0.125rem #0002;
   white-space: nowrap;
 }
 .primary.small {
-  padding: 8px 12px;
+  padding: 0.5rem 0.75rem;
   font-size: 1rem;
 }
 .secondary {
   border: 1px solid #443738;
   background: #2b2021;
-  padding: 8px 12px;
-  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
   font-size: 1rem;
   font-weight: 500;
 }
 .connection {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   color: var(--muted);
   font-size: 1rem;
 }
 .connection i,
 .live-dot {
-  width: 5px;
-  height: 5px;
+  width: 0.3125rem;
+  height: 0.3125rem;
   border-radius: 100%;
   background: #756062;
   display: inline-block;
@@ -250,19 +250,19 @@ svg {
 .connection .online,
 .live-dot {
   background: var(--accent);
-  box-shadow: 0 0 7px #cdadb018;
+  box-shadow: 0 0 0.4375rem #cdadb018;
 }
 .version {
   font-family: var(--font-mono);
   color: var(--fg);
   font-size: 1rem;
   border: 1px solid #3b3031;
-  border-radius: 4px;
-  padding: 4px 6px;
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.375rem;
 }
 .workspace {
   display: grid;
-  grid-template-columns: minmax(340px, 34%) minmax(0, 1fr);
+  grid-template-columns: minmax(21.25rem, 34%) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
@@ -274,11 +274,11 @@ svg {
   background: var(--panel);
 }
 .session-heading {
-  padding: 25px 26px 21px;
+  padding: 1.5625rem 1.625rem 1.3125rem;
 }
 .eyebrow {
   font-size: 1rem;
-  letter-spacing: 1.8px;
+  letter-spacing: 0.1125rem;
   font-weight: 600;
   color: var(--fg);
 }
@@ -286,12 +286,12 @@ svg {
   font-size: 1rem;
   color: var(--fg);
   font-weight: 650;
-  letter-spacing: -0.7px;
+  letter-spacing: -0.04375rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin: 0 0 10px;
+  gap: 0.625rem;
+  margin: 0 0 0.625rem;
   overflow-wrap: anywhere;
 }
 .path {
@@ -300,29 +300,29 @@ svg {
   font-size: 1rem;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   overflow-wrap: anywhere;
 }
 .session-status {
   display: flex;
-  gap: 9px;
+  gap: 0.5625rem;
   align-items: center;
-  margin-top: 19px;
+  margin-top: 1.1875rem;
 }
 .status-pill {
   background: #352728;
   color: var(--fg);
   display: flex;
   align-items: center;
-  gap: 6px;
-  border-radius: 4px;
-  padding: 4px 8px;
+  gap: 0.375rem;
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
   font-size: 1rem;
   line-height: 1.3;
 }
 .status-pill i {
-  width: 4px;
-  height: 4px;
+  width: 0.25rem;
+  height: 0.25rem;
   border-radius: 50%;
   background: currentColor;
 }
@@ -336,7 +336,7 @@ svg {
 .saved {
   margin-left: auto;
   display: flex;
-  gap: 5px;
+  gap: 0.3125rem;
   align-items: center;
   font-size: 1rem;
   color: var(--fg);
@@ -346,16 +346,16 @@ svg {
   color: var(--fg);
 }
 .model-section {
-  padding: 18px 26px 22px;
+  padding: 1.125rem 1.625rem 1.375rem;
   border-top: 1px solid var(--line);
 }
 .section-label {
   display: flex;
   justify-content: space-between;
   font-size: 1rem;
-  letter-spacing: 1.3px;
+  letter-spacing: 0.08125rem;
   color: var(--fg);
-  margin-bottom: 13px;
+  margin-bottom: 0.8125rem;
 }
 .section-label span + span {
   letter-spacing: 0;
@@ -365,23 +365,23 @@ svg {
   width: 100%;
   background: #251c1d;
   border: 1px solid #423435;
-  padding: 11px 13px;
-  border-radius: 8px;
+  padding: 0.6875rem 0.8125rem;
+  border-radius: 0.5rem;
   text-align: left;
 }
 .model-button img,
 .model-list img {
-  width: 29px;
-  height: 29px;
+  width: 1.8125rem;
+  height: 1.8125rem;
   object-fit: contain;
-  border-radius: 6px;
+  border-radius: 0.375rem;
   background: #f0e8e9;
-  padding: 3px;
+  padding: 0.1875rem;
 }
 .model-button > div {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 0.1875rem;
   flex: 1;
   min-width: 0;
 }
@@ -399,31 +399,31 @@ svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 10px;
+  margin-top: 0.625rem;
   font-size: 1rem;
   color: var(--fg);
 }
 .thinking-row select {
   border: 0;
   background: none;
-  padding: 4px 2px;
+  padding: 0.25rem 0.125rem;
   font-size: 1rem;
   color: var(--fg);
 }
 .metrics {
   display: grid;
   grid-template-columns: 1fr 1.3fr 0.5fr;
-  margin-top: 21px;
+  margin-top: 1.3125rem;
 }
 .metrics > div {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 0.3125rem;
 }
 .metrics span {
   font-family: var(--font-title);
   font-size: 1.1875rem;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.03125rem;
   font-weight: 500;
 }
 .metrics small {
@@ -431,21 +431,21 @@ svg {
   font-size: 1rem;
 }
 .stats-section {
-  margin-top: 24px;
+  margin-top: 1.5rem;
 }
 .stats-section .metrics {
-  margin-top: 14px;
+  margin-top: 0.875rem;
 }
 .usage-breakdown {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 22px;
+  margin-top: 1.375rem;
   font-size: 1rem;
   font-variant-numeric: tabular-nums;
 }
 .usage-breakdown th,
 .usage-breakdown td {
-  padding: 10px 0;
+  padding: 0.625rem 0;
   text-align: right;
   border-bottom: 1px solid var(--line);
   font-weight: 400;
@@ -462,29 +462,29 @@ svg {
 .usage-breakdown td:first-child {
   text-align: left;
   overflow-wrap: anywhere;
-  padding-right: 10px;
+  padding-right: 0.625rem;
 }
 .usage-breakdown td {
   color: var(--fg);
 }
 .inspector-tabs {
   display: flex;
-  /* 13 tabs cannot fit one 450px row with whole labels (geometry-audited
+  /* 13 tabs cannot fit one 28.125rem row with whole labels (geometry-audited
      live): icons carry the strip, the ACTIVE tab names itself, every button
      has a title tooltip, and each panel has its own heading — no truncation
      and no four-row wrap. */
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  padding: 0 6px;
+  padding: 0 0.375rem;
   background: var(--tree);
 }
 .inspector-tabs button {
   color: var(--fg);
   font-size: 0.9375rem;
   flex: 0 0 auto;
-  padding: 10px 8px 8px;
-  gap: 6px;
-  border-bottom: 2px solid transparent;
+  padding: 0.625rem 0.5rem 0.5rem;
+  gap: 0.375rem;
+  border-bottom: 0.125rem solid transparent;
 }
 .inspector-tabs .tab-label {
   display: none;
@@ -498,14 +498,14 @@ svg {
 }
 .count {
   font-size: 1rem;
-  padding: 1px 4px;
+  padding: 1px 0.25rem;
   background: #462f31;
-  border-radius: 4px;
+  border-radius: 0.25rem;
 }
 .inspector-body {
   flex: 1;
   overflow: auto;
-  padding: 23px 26px 32px;
+  padding: 1.4375rem 1.625rem 2rem;
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
@@ -513,7 +513,7 @@ svg {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 9px;
+  gap: 0.5625rem;
 }
 .panel-heading svg {
   color: var(--fg);
@@ -523,8 +523,8 @@ svg {
   background: #302526;
   color: var(--fg);
   border: 1px solid #403536;
-  border-radius: 4px;
-  padding: 3px 5px;
+  border-radius: 0.25rem;
+  padding: 0.1875rem 0.3125rem;
   white-space: nowrap;
 }
 .tag.completed {
@@ -541,21 +541,21 @@ svg {
   font-size: 1rem;
   line-height: 1.65;
   color: var(--fg);
-  margin: 8px 0 18px;
+  margin: 0.5rem 0 1.125rem;
 }
 .field-label {
   display: block;
   font-size: 1rem;
   letter-spacing: 1px;
   color: var(--fg);
-  margin-bottom: 8px;
+  margin-bottom: 0.5rem;
 }
 .inline-input {
   display: flex;
   align-items: center;
   background: #181112;
   border: 1px solid #3a2d2e;
-  border-radius: 7px;
+  border-radius: 0.4375rem;
   overflow: hidden;
 }
 .inline-input input {
@@ -563,11 +563,11 @@ svg {
   background: none;
   width: 100%;
   box-shadow: none;
-  padding: 10px;
+  padding: 0.625rem;
   font-size: 1rem;
 }
 .inline-input .icon-button {
-  margin-right: 4px;
+  margin-right: 0.25rem;
 }
 .counter-card {
   display: flex;
@@ -575,19 +575,19 @@ svg {
   align-items: center;
   background: #261b1c;
   border: 1px solid #403031;
-  border-radius: 8px;
-  padding: 17px 15px;
-  margin: 16px 0;
+  border-radius: 0.5rem;
+  padding: 1.0625rem 0.9375rem;
+  margin: 1rem 0;
 }
 .app-state-json {
-  margin: 16px 0 24px;
-  padding: 16px;
-  max-height: 300px;
+  margin: 1rem 0 1.5rem;
+  padding: 1rem;
+  max-height: 18.75rem;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0.5rem;
   background: #140e10;
   font-size: 1rem;
   line-height: 1.6;
@@ -597,9 +597,9 @@ svg {
 }
 .state-field:not(.state-root) {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px;
-  margin: 10px 0;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  margin: 0.625rem 0;
 }
 .state-field .state-field {
   background: #25191c40;
@@ -607,8 +607,8 @@ svg {
 .state-field-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
 }
 .state-field-heading strong {
   flex: 1;
@@ -618,8 +618,8 @@ svg {
 }
 .state-field-heading select {
   width: auto;
-  max-width: 120px;
-  padding: 5px;
+  max-width: 7.5rem;
+  padding: 0.3125rem;
   color: var(--secondary);
 }
 .state-field-heading .icon-button {
@@ -634,7 +634,7 @@ svg {
 .state-number {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .state-number input {
   text-align: center;
@@ -645,13 +645,13 @@ svg {
   appearance: none;
 }
 .state-number button {
-  padding: 10px;
+  padding: 0.625rem;
   flex-shrink: 0;
 }
 .state-boolean {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .state-boolean > span {
   color: var(--secondary);
@@ -659,8 +659,8 @@ svg {
 .state-add {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 .state-add input {
   flex-basis: 100%;
@@ -670,7 +670,7 @@ svg {
   flex: 1;
 }
 .state-add-button {
-  margin-top: 8px;
+  margin-top: 0.5rem;
 }
 .counter-card .field-label {
   font-size: 1rem;
@@ -682,7 +682,7 @@ svg {
   color: var(--accent);
   font-size: 2rem;
   font-weight: 500;
-  margin-top: 4px;
+  margin-top: 0.25rem;
   line-height: 1.1;
 }
 .counter-card .secondary {
@@ -690,38 +690,38 @@ svg {
   color: var(--fg);
   border-color: #5a3c3f;
   font-size: 1rem;
-  padding: 7px 9px;
+  padding: 0.4375rem 0.5625rem;
 }
 .note {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 0.5rem;
   font-size: 1rem;
   line-height: 1.6;
-  margin: 0 0 10px;
+  margin: 0 0 0.625rem;
   color: var(--fg);
   overflow-wrap: anywhere;
 }
 .note > span {
-  width: 4px;
-  height: 4px;
+  width: 0.25rem;
+  height: 0.25rem;
   background: #836669;
   border-radius: 50%;
-  margin-top: 7px;
+  margin-top: 0.4375rem;
   flex-shrink: 0;
 }
 .notes {
-  margin-bottom: 14px;
+  margin-bottom: 0.875rem;
 }
 .raw {
-  margin-top: 16px;
+  margin-top: 1rem;
   border-top: 1px solid var(--line);
-  padding-top: 12px;
+  padding-top: 0.75rem;
 }
 .raw summary {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   list-style: none;
   cursor: pointer;
   color: var(--fg);
@@ -743,11 +743,11 @@ svg {
 }
 .raw pre {
   background: var(--chat);
-  padding: 11px;
+  padding: 0.6875rem;
   border: 1px solid #35292a;
-  border-radius: 6px;
+  border-radius: 0.375rem;
   color: var(--fg);
-  max-height: 340px;
+  max-height: 21.25rem;
   overflow: auto;
 }
 .raw textarea {
@@ -755,26 +755,26 @@ svg {
   font-size: 1rem;
 }
 .raw button {
-  margin-top: 8px;
+  margin-top: 0.5rem;
 }
 .section-divider {
   border-top: 1px solid var(--line);
-  margin: 25px 0 22px;
+  margin: 1.5625rem 0 1.375rem;
 }
 .demo-action {
   display: flex;
   align-items: center;
   width: 100%;
   text-align: left;
-  padding: 12px 0;
+  padding: 0.75rem 0;
   border-bottom: 1px solid #362829;
-  gap: 11px;
+  gap: 0.6875rem;
 }
 .demo-action > span:nth-child(2) {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 4px;
+  gap: 0.25rem;
 }
 .demo-action strong {
   font-size: 1rem;
@@ -788,11 +788,11 @@ svg {
   color: var(--fg);
 }
 .demo-icon {
-  width: 32px;
-  height: 32px;
+  width: 2rem;
+  height: 2rem;
   background: #3b292b;
   color: var(--accent);
-  border-radius: 7px;
+  border-radius: 0.4375rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -802,28 +802,28 @@ svg {
   color: var(--fg);
 }
 .job-card {
-  margin-top: 16px;
+  margin-top: 1rem;
   border: 1px solid #453536;
   background: #26191a;
-  border-radius: 7px;
-  padding: 13px;
+  border-radius: 0.4375rem;
+  padding: 0.8125rem;
 }
 .job-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 5px;
+  gap: 0.3125rem;
 }
 .job-title strong {
   font-size: 1rem;
   font-weight: 500;
 }
 .progress {
-  height: 3px;
+  height: 0.1875rem;
   background: #403031;
-  border-radius: 4px;
+  border-radius: 0.25rem;
   overflow: hidden;
-  margin: 14px 0 8px;
+  margin: 0.875rem 0 0.5rem;
 }
 .progress > div {
   height: 100%;
@@ -836,41 +836,41 @@ svg {
   font-family: var(--font-mono);
   font-size: 1rem;
   color: var(--fg);
-  gap: 6px;
+  gap: 0.375rem;
 }
 .approval {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
-  margin-top: 15px;
+  gap: 0.4375rem;
+  margin-top: 0.9375rem;
 }
 .approval > span {
   width: 100%;
   font-size: 1rem;
   color: var(--fg);
-  margin-bottom: 3px;
+  margin-bottom: 0.1875rem;
 }
 .approval button {
   font-size: 1rem;
-  padding: 6px 10px;
+  padding: 0.375rem 0.625rem;
 }
 .text-button {
   color: var(--accent);
   font-size: 1rem;
-  margin-top: 12px;
+  margin-top: 0.75rem;
   padding: 0;
 }
 .danger {
   color: var(--fg);
 }
 .inspector-footer {
-  height: 39px;
-  min-height: 39px;
+  height: 2.4375rem;
+  min-height: 2.4375rem;
   border-top: 1px solid #372728;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 22px;
+  gap: 0.5rem;
+  padding: 0 1.375rem;
   font-size: 1rem;
   color: var(--fg);
 }
@@ -888,33 +888,33 @@ svg {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 12px 24px;
+  gap: 0.75rem;
+  padding: 0.75rem 1.5rem;
   border-bottom: 1px solid var(--warn);
   color: var(--warn);
 }
 .agent-stream-status > div {
-  flex: 1 1 220px;
+  flex: 1 1 13.75rem;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 .agent-stream-status p {
-  margin: 4px 0 0;
+  margin: 0.25rem 0 0;
   font-size: 0.8125rem;
 }
 .chat-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 25px;
+  padding: 0 1.5625rem;
   border-bottom: 1px solid var(--line);
-  min-height: 63px;
+  min-height: 3.9375rem;
   background: #1c1415;
 }
 .conversation-select {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 0.5625rem;
   color: var(--fg);
   min-width: 0;
 }
@@ -924,13 +924,13 @@ svg {
   box-shadow: none;
   color: var(--fg);
   font-size: 1rem;
-  padding: 8px 3px;
-  max-width: 230px;
+  padding: 0.5rem 0.1875rem;
+  max-width: 14.375rem;
 }
 .fork-label {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 0.1875rem;
   font-size: 1rem;
   white-space: nowrap;
   color: var(--fg);
@@ -938,7 +938,7 @@ svg {
 .chat-header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .relative {
   position: relative;
@@ -946,21 +946,21 @@ svg {
 .dropdown {
   position: absolute;
   right: 0;
-  top: 36px;
+  top: 2.25rem;
   z-index: 20;
   border: 1px solid #4b3b3c;
   background: var(--line-soft);
-  border-radius: 8px;
-  box-shadow: 0 10px 35px #0005;
-  padding: 6px;
-  min-width: 205px;
+  border-radius: 0.5rem;
+  box-shadow: 0 0.625rem 2.1875rem #0005;
+  padding: 0.375rem;
+  min-width: 12.8125rem;
 }
 .dropdown button {
   display: flex;
   width: 100%;
   justify-content: flex-start;
-  padding: 10px 9px;
-  border-radius: 5px;
+  padding: 0.625rem 0.5625rem;
+  border-radius: 0.3125rem;
   color: var(--fg);
   font-size: 1rem;
 }
@@ -970,7 +970,7 @@ svg {
 .chat-scroll {
   flex: 1;
   overflow: auto;
-  padding: 32px clamp(24px, 5vw, 88px) 20px;
+  padding: 2rem clamp(1.5rem, 5vw, 5.5rem) 1.25rem;
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
   scroll-behavior: smooth;
@@ -982,45 +982,45 @@ svg {
   justify-content: center;
   min-height: 100%;
   text-align: center;
-  padding: 30px 0 48px;
+  padding: 1.875rem 0 3rem;
   overflow-wrap: anywhere; /* long cwds/paths must break, not bleed (narrow viewports) */
 }
 .agent-orb {
   position: relative;
-  width: 58px;
-  height: 58px;
+  width: 3.625rem;
+  height: 3.625rem;
   border: 1px solid #503a3c;
   background: radial-gradient(ellipse at top, #492d2f, #281a1b);
-  border-radius: 17px;
+  border-radius: 1.0625rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 26px;
-  box-shadow: 0 10px 50px #b07d820c;
+  margin-bottom: 1.625rem;
+  box-shadow: 0 0.625rem 3.125rem #b07d820c;
 }
 .agent-orb > img {
-  width: 45px;
-  height: 25px;
+  width: 2.8125rem;
+  height: 1.5625rem;
 }
 .agent-orb > i {
   position: absolute;
-  right: -2px;
+  right: -0.125rem;
   bottom: -1px;
-  width: 11px;
-  height: 11px;
-  border: 3px solid var(--chat);
+  width: 0.6875rem;
+  height: 0.6875rem;
+  border: 0.1875rem solid var(--chat);
   background: var(--accent);
   border-radius: 50%;
 }
 .chat-empty .eyebrow {
   font-size: 1rem;
-  letter-spacing: 2.1px;
+  letter-spacing: 0.13125rem;
 }
 .chat-empty h2 {
   font-size: 1.6875rem;
   font-weight: 500;
-  letter-spacing: -0.8px;
-  margin: 11px 0;
+  letter-spacing: -0.05rem;
+  margin: 0.6875rem 0;
 }
 .chat-empty p {
   font-size: 1rem;
@@ -1030,10 +1030,10 @@ svg {
 .starter-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 13px;
-  margin-top: 34px;
+  gap: 0.8125rem;
+  margin-top: 2.125rem;
   width: 100%;
-  max-width: 470px;
+  max-width: 29.375rem;
 }
 .starter-grid button {
   position: relative;
@@ -1041,15 +1041,15 @@ svg {
   flex-direction: column;
   align-items: flex-start;
   text-align: left;
-  padding: 18px;
+  padding: 1.125rem;
   border: 1px solid #3c2c2d;
-  border-radius: 8px;
+  border-radius: 0.5rem;
   background: var(--tree);
-  gap: 6px;
+  gap: 0.375rem;
 }
 .starter-grid button > svg:first-child {
   color: var(--fg);
-  margin-bottom: 13px;
+  margin-bottom: 0.8125rem;
 }
 .starter-grid strong {
   font-size: 1rem;
@@ -1061,40 +1061,40 @@ svg {
 }
 .starter-grid button > svg:last-child {
   position: absolute;
-  right: 13px;
-  top: 16px;
+  right: 0.8125rem;
+  top: 1rem;
   color: var(--fg);
 }
 .composer-region {
-  padding: 18px clamp(20px, 3vw, 46px) 16px;
+  padding: 1.125rem clamp(1.25rem, 3vw, 2.875rem) 1rem;
   background: linear-gradient(transparent, var(--chat) 15%);
 }
 .composer {
   background: #281c1d;
   border: 1px solid #513d3f;
-  border-radius: 11px;
-  box-shadow: 0 6px 30px #0002;
+  border-radius: 0.6875rem;
+  box-shadow: 0 0.375rem 1.875rem #0002;
 }
 .composer textarea {
   width: 100%;
   display: block;
   resize: none;
-  min-height: 80px;
-  max-height: 220px;
+  min-height: 5rem;
+  max-height: 13.75rem;
   border: 0;
   box-shadow: none;
   background: none;
-  padding: 18px 20px 9px;
+  padding: 1.125rem 1.25rem 0.5625rem;
   font-size: 1rem;
 }
 /* The 'oversized input' was THIS BOX: .composer textarea outranked every
    element-level input rule ever written (specificity 0,1,1) — a phone in the
-   741–1100 band kept the 80px-tall desktop composer through every release.
+   741–1100 band kept the 5rem-tall desktop composer through every release.
    Shrink it progressively; ≤780 it is a slim phone composer. */
 @media (max-width: 1100px) {
   .composer textarea {
-    min-height: 56px;
-    padding: 10px 14px 6px;
+    min-height: 3.5rem;
+    padding: 0.625rem 0.875rem 0.375rem;
   }
 }
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
@@ -1105,19 +1105,19 @@ svg {
   flex-wrap: wrap; /* narrow viewports: controls flow to a second line instead of overflowing */
   align-items: center;
   justify-content: space-between;
-  padding: 9px 11px 12px 17px;
-  gap: 7px;
+  padding: 0.5625rem 0.6875rem 0.75rem 1.0625rem;
+  gap: 0.4375rem;
 }
 .composer-left,
 .composer-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .context-indicator {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 0.3125rem;
   font-size: 1rem;
   color: var(--fg);
 }
@@ -1126,53 +1126,53 @@ svg {
   border: 0;
   background: none;
   color: var(--fg);
-  padding: 4px;
+  padding: 0.25rem;
 }
 .interrupt {
   color: var(--fg);
   font-size: 1rem;
-  padding: 6px 8px;
-  border-radius: 5px;
+  padding: 0.375rem 0.5rem;
+  border-radius: 0.3125rem;
   border: 1px solid #66414460;
   background: #452b2d24;
 }
 .send {
-  width: 33px;
-  height: 33px;
+  width: 2.0625rem;
+  height: 2.0625rem;
   background: var(--accent);
   color: var(--fg);
-  border-radius: 7px;
+  border-radius: 0.4375rem;
 }
 .composer-footnote {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 11px;
-  gap: 12px;
+  margin-top: 0.6875rem;
+  gap: 0.75rem;
   font-size: 1rem;
   color: var(--fg);
 }
 .composer-footnote > span:first-child {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .composer-footnote .live-dot {
-  height: 4px;
-  width: 4px;
+  height: 0.25rem;
+  width: 0.25rem;
 }
 .entry {
-  margin-bottom: 26px;
+  margin-bottom: 1.625rem;
   position: relative;
 }
 .message-label {
   display: flex;
-  gap: 8px;
+  gap: 0.5rem;
   align-items: center;
   color: var(--fg);
   font-size: 1rem;
-  letter-spacing: 1.3px;
-  margin-bottom: 10px;
+  letter-spacing: 0.08125rem;
+  margin-bottom: 0.625rem;
 }
 .message-label > span:not(.mini-pi):not(.streaming) {
   font-family: var(--font-mono);
@@ -1187,12 +1187,12 @@ svg {
   color: var(--fg);
 }
 .pi-user {
-  padding-bottom: 20px;
+  padding-bottom: 1.25rem;
   border-bottom: 1px solid #392628;
 }
 .mini-pi {
-  width: 36px;
-  height: 20px;
+  width: 2.25rem;
+  height: 1.25rem;
   flex-shrink: 0;
 }
 .markdown {
@@ -1202,7 +1202,7 @@ svg {
   overflow-wrap: anywhere;
 }
 .markdown p {
-  margin: 0 0 14px;
+  margin: 0 0 0.875rem;
 }
 .markdown p:last-child {
   margin-bottom: 0;
@@ -1212,15 +1212,15 @@ svg {
 .markdown h3 {
   color: var(--fg);
   font-size: 1rem;
-  margin: 22px 0 12px;
+  margin: 1.375rem 0 0.75rem;
 }
 .markdown ul,
 .markdown ol {
-  padding-left: 23px;
-  margin: 12px 0;
+  padding-left: 1.4375rem;
+  margin: 0.75rem 0;
 }
 .markdown li {
-  margin: 6px 0;
+  margin: 0.375rem 0;
 }
 .markdown strong {
   color: var(--fg);
@@ -1229,16 +1229,16 @@ svg {
 .markdown code {
   font-size: 1rem;
   background: #3a2628;
-  padding: 2px 5px;
-  border-radius: 4px;
+  padding: 0.125rem 0.3125rem;
+  border-radius: 0.25rem;
   color: var(--fg);
 }
 .markdown pre {
-  padding: 16px;
+  padding: 1rem;
   background: #251819;
   border: 1px solid #3d2b2d;
-  border-radius: 7px;
-  margin: 14px 0;
+  border-radius: 0.4375rem;
+  margin: 0.875rem 0;
   overflow: auto;
   white-space: pre;
 }
@@ -1256,7 +1256,7 @@ svg {
 .markdown td,
 .markdown th {
   border: 1px solid var(--line);
-  padding: 8px;
+  padding: 0.5rem;
   text-align: left;
 }
 .fork-button {
@@ -1266,7 +1266,7 @@ svg {
   letter-spacing: 0;
   margin-left: auto;
   opacity: 1;
-  padding: 3px 5px;
+  padding: 0.1875rem 0.3125rem;
   white-space: nowrap;
 }
 .entry:hover .fork-button,
@@ -1276,24 +1276,24 @@ svg {
 .event-line {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   font-size: 1rem;
   color: var(--fg);
-  padding: 8px 0;
+  padding: 0.5rem 0;
 }
 .event-line > span {
   flex: 1;
 }
 .pi-tool-result {
-  margin-top: -17px;
-  margin-bottom: 20px;
+  margin-top: -1.0625rem;
+  margin-bottom: 1.25rem;
 }
 .tool-call,
 .tool-result {
   border: 1px solid #453032;
-  border-radius: 6px;
+  border-radius: 0.375rem;
   background: #251819;
-  margin: 10px 0;
+  margin: 0.625rem 0;
   color: var(--fg);
   font-size: 1rem;
   overflow: hidden;
@@ -1301,10 +1301,10 @@ svg {
 .tool-call summary,
 .tool-result summary {
   display: flex;
-  gap: 9px;
+  gap: 0.5625rem;
   align-items: center;
   list-style: none;
-  padding: 10px 12px;
+  padding: 0.625rem 0.75rem;
   cursor: pointer;
 }
 .tool-call summary:after,
@@ -1322,11 +1322,11 @@ svg {
 }
 .tool-call pre,
 .tool-result pre {
-  padding: 11px;
+  padding: 0.6875rem;
   margin: 0;
   border-top: 1px solid #412b2d;
   color: var(--fg);
-  max-height: 340px;
+  max-height: 21.25rem;
   overflow: auto;
 }
 .tool-result {
@@ -1351,8 +1351,8 @@ svg {
 .tool-section-label {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
   border-top: 1px solid #412b2d;
   color: var(--secondary);
 }
@@ -1362,7 +1362,7 @@ svg {
 .thinking {
   font-size: 1rem;
   color: var(--fg);
-  margin: 8px 0 16px;
+  margin: 0.5rem 0 1rem;
 }
 .thinking summary {
   cursor: pointer;
@@ -1371,8 +1371,8 @@ svg {
   white-space: pre-wrap;
   font-size: 1rem;
   line-height: 1.8;
-  margin-top: 12px;
-  padding-left: 12px;
+  margin-top: 0.75rem;
+  padding-left: 0.75rem;
   border-left: 1px solid #5a3a3d;
   color: var(--fg);
 }
@@ -1382,9 +1382,9 @@ svg {
   color: var(--fg);
   border: 1px solid #6b4245;
   background: #39232550;
-  padding: 10px;
-  border-radius: 6px;
-  margin-top: 10px;
+  padding: 0.625rem;
+  border-radius: 0.375rem;
+  margin-top: 0.625rem;
   overflow-wrap: anywhere;
 }
 .streaming {
@@ -1395,12 +1395,12 @@ svg {
 }
 .typing {
   display: flex;
-  gap: 5px;
-  padding: 12px 0;
+  gap: 0.3125rem;
+  padding: 0.75rem 0;
 }
 .typing i {
-  height: 5px;
-  width: 5px;
+  height: 0.3125rem;
+  width: 0.3125rem;
   background: #af7c81;
   border-radius: 50%;
   animation: pulse 1.2s infinite;
@@ -1414,14 +1414,14 @@ svg {
 .live-tool {
   border: 1px solid #624346;
   background: #2c1d1e;
-  border-radius: 6px;
-  padding: 11px;
-  margin: 10px 0;
+  border-radius: 0.375rem;
+  padding: 0.6875rem;
+  margin: 0.625rem 0;
 }
 .live-tool > div {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   font-size: 1rem;
   color: var(--fg);
 }
@@ -1431,21 +1431,21 @@ svg {
   font-size: 1rem;
 }
 .live-tool pre {
-  max-height: 150px;
+  max-height: 9.375rem;
   overflow: auto;
   color: var(--fg);
 }
 .queue {
-  margin-bottom: 10px;
+  margin-bottom: 0.625rem;
   border: 1px solid #4a3537;
   background: #2e1f20;
-  border-radius: 7px;
-  padding: 5px 10px;
+  border-radius: 0.4375rem;
+  padding: 0.3125rem 0.625rem;
 }
 .queue > div {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   font-size: 1rem;
   color: var(--fg);
 }
@@ -1457,19 +1457,19 @@ svg {
 }
 .history-banner {
   display: flex;
-  gap: 7px;
+  gap: 0.4375rem;
   align-items: center;
-  padding: 8px 26px;
+  padding: 0.5rem 1.625rem;
   background: #33292a33;
   color: var(--fg);
   font-size: 1rem;
 }
 .empty-panel {
-  padding: 30px 0;
+  padding: 1.875rem 0;
   display: flex;
   align-items: center;
   flex-direction: column;
-  gap: 12px;
+  gap: 0.75rem;
   color: var(--fg);
   font-size: 1rem;
 }
@@ -1478,21 +1478,21 @@ svg {
   font-weight: 500;
 }
 .task-card {
-  padding: 13px;
+  padding: 0.8125rem;
   border: 1px solid #4d3537;
-  border-radius: 7px;
+  border-radius: 0.4375rem;
   background: #2a1b1c;
-  margin: 10px 0;
+  margin: 0.625rem 0;
 }
 .task-card.child {
-  margin-left: 14px;
-  border-left: 2px solid #84595d;
+  margin-left: 0.875rem;
+  border-left: 0.125rem solid #84595d;
 }
 .task-card > div:first-child {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .task-card strong {
   font-family: var(--font-mono);
@@ -1503,19 +1503,19 @@ svg {
 .task-card p {
   font-size: 1rem;
   color: var(--fg);
-  margin: 8px 0 11px;
+  margin: 0.5rem 0 0.6875rem;
 }
 .hook-card {
-  padding: 14px;
+  padding: 0.875rem;
   background: #2a2525;
   border: 1px solid #483c3d;
-  border-radius: 7px;
-  margin-bottom: 20px;
+  border-radius: 0.4375rem;
+  margin-bottom: 1.25rem;
 }
 .hook-card > div {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   color: var(--fg);
 }
 .hook-card strong {
@@ -1526,20 +1526,20 @@ svg {
   font-size: 1rem;
   line-height: 1.6;
   color: var(--fg);
-  margin-top: 10px;
+  margin-top: 0.625rem;
 }
 .switch {
   margin-left: auto;
-  width: 29px;
-  height: 17px;
+  width: 1.8125rem;
+  height: 1.0625rem;
   background: #544b4c;
-  border-radius: 12px;
-  padding: 2px;
+  border-radius: 0.75rem;
+  padding: 0.125rem;
   justify-content: flex-start;
 }
 .switch > span {
-  height: 13px;
-  width: 13px;
+  height: 0.8125rem;
+  width: 0.8125rem;
   background: #dbcccd;
   border-radius: 50%;
 }
@@ -1549,14 +1549,14 @@ svg {
 }
 .tool-row {
   border-bottom: 1px solid #3a2a2b;
-  padding: 12px 0;
+  padding: 0.75rem 0;
 }
 .tool-row summary {
   cursor: pointer;
   list-style: none;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   color: var(--fg);
 }
 .tool-row strong {
@@ -1572,7 +1572,7 @@ svg {
   font-size: 1rem;
   color: var(--fg);
   line-height: 1.75;
-  margin: 12px 0;
+  margin: 0.75rem 0;
   white-space: pre-wrap;
 }
 .tool-row small {
@@ -1580,11 +1580,11 @@ svg {
   line-height: 1.6;
 }
 .tool-signature {
-  margin: 0 0 12px;
-  padding: 12px 14px;
+  margin: 0 0 0.75rem;
+  padding: 0.75rem 0.875rem;
   background: #120d0e;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0.5rem;
   font-family: var(--font-mono);
   font-size: 0.875rem;
   line-height: 1.6;
@@ -1625,32 +1625,32 @@ svg {
   font-size: 1rem;
   text-align: left;
   border-bottom: 1px solid var(--line);
-  padding: 14px 0;
+  padding: 0.875rem 0;
 }
 .drawer-backdrop {
   position: fixed;
-  inset: 65px 0 0;
+  inset: var(--topbar-h) 0 0;
   z-index: 40;
   background: #0007;
-  backdrop-filter: blur(3px);
+  backdrop-filter: blur(0.1875rem);
 }
 .sessions-drawer {
-  width: 326px;
+  width: 20.375rem;
   max-width: 90vw;
   height: 100%;
   background: var(--card);
   border-right: 1px solid #513d3f;
-  box-shadow: 20px 0 70px #0004;
+  box-shadow: 1.25rem 0 4.375rem #0004;
   display: flex;
   flex-direction: column;
-  padding: 24px 18px;
+  padding: 1.5rem 1.125rem;
 }
 .sessions-drawer header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 22px;
-  padding: 0 7px;
+  margin-bottom: 1.375rem;
+  padding: 0 0.4375rem;
 }
 .sessions-drawer h2 {
   font-size: 1.0625rem;
@@ -1659,10 +1659,10 @@ svg {
 .sessions-drawer h2 span {
   font-size: 1rem;
   color: var(--fg);
-  margin-left: 6px;
+  margin-left: 0.375rem;
 }
 .sessions-drawer > .primary {
-  margin: 0 6px 22px;
+  margin: 0 0.375rem 1.375rem;
 }
 .session-list {
   flex: 1;
@@ -1673,12 +1673,12 @@ svg {
   flex-direction: column;
   align-items: stretch;
   text-align: left;
-  gap: 10px;
-  padding: 15px;
+  gap: 0.625rem;
+  padding: 0.9375rem;
   width: 100%;
   border: 1px solid transparent;
-  border-radius: 7px;
-  margin-bottom: 7px;
+  border-radius: 0.4375rem;
+  margin-bottom: 0.4375rem;
 }
 .session-item.active {
   background: #362527;
@@ -1700,29 +1700,29 @@ svg {
 .session-model {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   color: var(--fg);
   font-size: 1rem;
   overflow-wrap: anywhere;
 }
 .session-model img {
-  width: 15px;
-  height: 15px;
-  border-radius: 3px;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  border-radius: 0.1875rem;
   background: #ecdfe0;
   padding: 1px;
 }
 .active-dot {
   background: var(--accent);
-  width: 5px;
-  height: 5px;
+  width: 0.3125rem;
+  height: 0.3125rem;
   border-radius: 50%;
 }
 .sessions-drawer footer {
   display: flex;
-  gap: 8px;
+  gap: 0.5rem;
   align-items: center;
-  padding: 18px 8px 0;
+  padding: 1.125rem 0.5rem 0;
   font-size: 1rem;
   color: var(--fg);
 }
@@ -1731,19 +1731,19 @@ svg {
   inset: 0;
   z-index: 80;
   background: #0d0808bd;
-  backdrop-filter: blur(7px);
+  backdrop-filter: blur(0.4375rem);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 1.5rem;
 }
 .modal {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 24px 70px rgb(0 0 0 / 55%);
-  padding: 28px;
-  width: 460px;
+  border-radius: 0.75rem;
+  box-shadow: 0 1.5rem 4.375rem rgb(0 0 0 / 55%);
+  padding: 1.75rem;
+  width: 28.75rem;
   max-width: 100%;
   max-height: 90dvh;
   overflow: auto;
@@ -1752,20 +1752,20 @@ svg {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 27px;
-  gap: 12px;
+  margin-bottom: 1.6875rem;
+  gap: 0.75rem;
 }
 .modal header h2 {
   font-size: 1.375rem;
-  letter-spacing: -0.5px;
-  margin-top: 7px;
+  letter-spacing: -0.03125rem;
+  margin-top: 0.4375rem;
   font-weight: 550;
 }
 .modal label {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  margin-top: 20px;
+  gap: 0.5625rem;
+  margin-top: 1.25rem;
   font-size: 1rem;
   color: var(--fg);
 }
@@ -1773,7 +1773,7 @@ svg {
 .modal select {
   width: 100%;
   font-size: 1rem;
-  padding: 12px;
+  padding: 0.75rem;
 }
 .modal small.path {
   font-size: 1rem;
@@ -1784,11 +1784,11 @@ svg {
 .modal footer {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
-  margin-top: 26px;
+  gap: 0.625rem;
+  margin-top: 1.625rem;
 }
 .model-modal {
-  width: 500px;
+  width: 31.25rem;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1800,14 +1800,14 @@ svg {
   inset: 0;
   z-index: 100;
   background: #0d0808e0;
-  backdrop-filter: blur(7px);
+  backdrop-filter: blur(0.4375rem);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 1.5rem;
 }
 .login-card {
-  width: 400px;
+  width: 25rem;
 }
 .login-card .hint {
   color: var(--fg);
@@ -1819,7 +1819,7 @@ svg {
 }
 .model-list {
   overflow: auto;
-  margin-top: 12px;
+  margin-top: 0.75rem;
   max-height: 50vh;
 }
 .model-list button {
@@ -1827,9 +1827,9 @@ svg {
   display: flex;
   text-align: left;
   justify-content: flex-start;
-  padding: 12px 10px;
-  border-radius: 6px;
-  gap: 12px;
+  padding: 0.75rem 0.625rem;
+  border-radius: 0.375rem;
+  gap: 0.75rem;
 }
 .model-list button.selected,
 .model-list button:hover {
@@ -1838,7 +1838,7 @@ svg {
 .model-list button > div {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 0.3125rem;
   flex: 1;
 }
 /* The pinned current model outside this device's catalog: laid out like a
@@ -1848,16 +1848,16 @@ svg {
   display: flex;
   text-align: left;
   justify-content: flex-start;
-  padding: 12px 10px;
-  border-radius: 6px;
-  gap: 12px;
+  padding: 0.75rem 0.625rem;
+  border-radius: 0.375rem;
+  gap: 0.75rem;
   opacity: 0.75;
   cursor: default;
 }
 .model-list .model-row.off-catalog > div {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 0.3125rem;
   flex: 1;
 }
 .model-list strong {
@@ -1869,27 +1869,27 @@ svg {
   color: var(--fg);
 }
 .model-modal .hint {
-  margin: 14px 0 0;
+  margin: 0.875rem 0 0;
 }
 .learning-list {
   padding: 0;
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 23px;
+  gap: 1.4375rem;
 }
 .learning-list li {
   display: flex;
-  gap: 17px;
+  gap: 1.0625rem;
 }
 .learning-list li > span {
   font-family: var(--font-mono);
   font-size: 1rem;
   color: var(--fg);
   border: 1px solid #5a383b;
-  border-radius: 5px;
-  width: 28px;
-  height: 27px;
+  border-radius: 0.3125rem;
+  width: 1.75rem;
+  height: 1.6875rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1904,26 +1904,26 @@ svg {
   font-size: 1rem;
   color: var(--fg);
   line-height: 1.8;
-  margin-top: 5px;
+  margin-top: 0.3125rem;
 }
 .help-modal {
-  width: 530px;
+  width: 33.125rem;
 }
 .toast {
   position: fixed;
-  bottom: 28px;
+  bottom: 1.75rem;
   left: 50%;
   transform: translateX(-50%);
   z-index: 100;
   background: var(--card);
   color: var(--on-primary);
-  box-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+  box-shadow: 0 0.625rem 1.875rem rgb(0 0 0 / 45%);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 13px 19px;
+  gap: 0.625rem;
+  padding: 0.8125rem 1.1875rem;
   max-width: 90%;
   font-size: 1rem;
   font-weight: 600;
@@ -1942,9 +1942,9 @@ svg {
 .state-json-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 0.625rem;
   flex-wrap: wrap;
-  margin-bottom: 20px;
+  margin-bottom: 1.25rem;
 }
 .state-json-actions .hint {
   flex-basis: 100%;
@@ -1953,9 +1953,9 @@ svg {
 textarea.app-state-json {
   width: 100%;
   max-height: none;
-  min-height: 280px;
+  min-height: 17.5rem;
   resize: vertical;
-  margin-bottom: 10px;
+  margin-bottom: 0.625rem;
   font-family: var(--font-mono);
   color: var(--fg);
 }
@@ -1970,10 +1970,10 @@ textarea.app-state-json {
 .error-banner {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 0.625rem;
   background: #462b2d;
   color: var(--fg);
-  padding: 10px 25px;
+  padding: 0.625rem 1.5625rem;
   font-size: 1rem;
   z-index: 90;
 }
@@ -1987,30 +1987,30 @@ textarea.app-state-json {
   justify-content: center;
   flex: 1;
   text-align: center;
-  padding: 35px;
+  padding: 2.1875rem;
   background: radial-gradient(ellipse at center, #39232533, transparent 65%);
 }
 .welcome-symbol {
-  width: 126px;
-  height: 70px;
-  margin-bottom: 33px;
+  width: 7.875rem;
+  height: 4.375rem;
+  margin-bottom: 2.0625rem;
   position: relative;
 }
 .welcome .eyebrow {
   font-size: 1rem;
   color: var(--fg);
-  letter-spacing: 2.6px;
+  letter-spacing: 0.1625rem;
 }
 .welcome h1 {
   font-size: clamp(2.25rem, 4.6vw, 4rem);
   font-weight: 500;
   line-height: 1.15;
-  letter-spacing: -2.5px;
-  margin: 20px 0;
+  letter-spacing: -0.15625rem;
+  margin: 1.25rem 0;
   color: var(--fg);
 }
 /* The hero is display-size BY DESIGN on desktop — on the compact band it
-   read as 'desktop text' through every release (41px at a 900px touch
+   read as 'desktop text' through every release (2.5625rem at a 56.25rem touch
    screen). Cap it: the headline is still the hero, just phone-sized. */
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   .welcome h1 {
@@ -2018,26 +2018,26 @@ textarea.app-state-json {
     line-height: 1.15;
   }
   .welcome-symbol {
-    width: 84px;
-    height: 47px;
-    margin-bottom: 18px;
+    width: 5.25rem;
+    height: 2.9375rem;
+    margin-bottom: 1.125rem;
   }
 }
 .welcome p {
   font-size: 1rem;
   color: var(--fg);
-  margin: 4px 0 30px;
+  margin: 0.25rem 0 1.875rem;
 }
 .welcome-features {
   display: flex;
-  gap: 33px;
-  margin-top: 70px;
+  gap: 2.0625rem;
+  margin-top: 4.375rem;
   color: var(--fg);
   font-size: 1rem;
 }
 .welcome-features > span {
   display: flex;
-  gap: 8px;
+  gap: 0.5rem;
   align-items: center;
 }
 .selected {
@@ -2054,29 +2054,29 @@ textarea.app-state-json {
 }
 @media (min-width: 1600px) {
   .workspace {
-    grid-template-columns: 440px minmax(0, 1fr);
+    grid-template-columns: 27.5rem minmax(0, 1fr);
   }
   .chat-scroll {
-    padding-left: max(70px, calc((100% - 770px)/2));
-    padding-right: max(70px, calc((100% - 770px)/2));
+    padding-left: max(4.375rem, calc((100% - 48.125rem)/2));
+    padding-right: max(4.375rem, calc((100% - 48.125rem)/2));
   }
   .composer-region {
-    padding-left: max(46px, calc((100% - 830px)/2));
-    padding-right: max(46px, calc((100% - 830px)/2));
+    padding-left: max(2.875rem, calc((100% - 51.875rem)/2));
+    padding-right: max(2.875rem, calc((100% - 51.875rem)/2));
   }
 }
 @media (max-width: 1050px) {
   .workspace {
-    grid-template-columns: 330px minmax(0, 1fr);
+    grid-template-columns: 20.625rem minmax(0, 1fr);
   }
   .session-heading,
   .model-section {
-    padding-left: 20px;
-    padding-right: 20px;
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
   }
   .inspector-body {
-    padding-left: 20px;
-    padding-right: 20px;
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
   }
   .chat-empty h2 {
     font-size: 1.4375rem;
@@ -2086,40 +2086,40 @@ textarea.app-state-json {
   }
   .starter-grid {
     grid-template-columns: 1fr;
-    max-width: 300px;
+    max-width: 18.75rem;
   }
   .starter-grid button {
-    padding: 13px;
+    padding: 0.8125rem;
   }
   .starter-grid button > svg:first-child {
-    margin-bottom: 3px;
+    margin-bottom: 0.1875rem;
   }
   .topbar {
-    padding-right: 16px;
+    padding-right: 1rem;
   }
 }
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   /* ONE compact header, NOTHING removed (user: tinh gọn, không lược tính
      năng): brand · connection chip · bell · help · tree/inspector toggles ·
-     New session — all present on a single 42px row. Smaller logo, buttons
+     New session — all present on a single 2.625rem row. Smaller logo, buttons
      and gaps; chips ellipsize instead of wrapping (a wrapping auto-height
      header used to win the cascade from later blocks and eat a quarter of
      the screen). Every other ≤740 .topbar rule is deleted — this block and
      the width≤1100 padding tweak above are the only ones. */
   :root {
-    --topbar-h: 42px;
+    --topbar-h: 2.625rem;
   }
   .notif-panel {
-    top: 47px;
+    top: 2.9375rem;
   }
   .topbar {
     position: static;
     flex-wrap: nowrap;
-    gap: 4px;
-    padding: 0 5px;
-    height: 42px;
-    min-height: 42px;
-    max-height: 42px;
+    gap: 0.25rem;
+    padding: 0 0.3125rem;
+    height: 2.625rem;
+    min-height: 2.625rem;
+    max-height: 2.625rem;
     flex: 0 0 auto;
     /* engines without zoom have no shrink factor, so the row can exceed the
        screen: it scrolls horizontally instead (nothing hidden, nothing
@@ -2133,12 +2133,12 @@ textarea.app-state-json {
     display: none;
   }
   .brand {
-    gap: 4px;
+    gap: 0.25rem;
     flex-shrink: 0;
   }
   .brandmark {
-    width: 24px;
-    height: 14px;
+    width: 1.5rem;
+    height: 0.875rem;
     margin-left: 0;
     flex-shrink: 0;
   }
@@ -2154,15 +2154,15 @@ textarea.app-state-json {
   }
   .top-actions {
     margin-left: auto;
-    gap: 2px;
+    gap: 0.125rem;
     flex: 0 0 auto;
     flex-wrap: nowrap;
     min-width: 0;
   }
   .top-actions .icon-button {
-    width: 26px;
-    height: 26px;
-    padding: 3px;
+    width: 1.625rem;
+    height: 1.625rem;
+    padding: 0.1875rem;
     flex-shrink: 0;
   }
   /* Everything fits WITHOUT swiping — that was the real "lost content":
@@ -2173,7 +2173,7 @@ textarea.app-state-json {
      collapses to its colored dot (title carries the words). */
   /* .topbar prefix beats network.css' ≤1100 '.inspector-toggle{display:
      inline-flex}' which loads later and re-showed the toggle (beyond-edge at
-     320px). The tabs own these actions on phones. */
+     20rem). The tabs own these actions on phones. */
   .topbar .tree-toggle,
   .topbar .inspector-toggle {
     display: none;
@@ -2182,30 +2182,30 @@ textarea.app-state-json {
     display: none;
   }
   .chip.connection {
-    width: 12px;
-    min-width: 12px;
-    height: 12px;
-    min-height: 12px;
+    width: 0.75rem;
+    min-width: 0.75rem;
+    height: 0.75rem;
+    min-height: 0.75rem;
     padding: 0;
-    border-radius: 999px;
+    border-radius: 62.4375rem;
     background: transparent;
     overflow: hidden;
     font-size: 0;
   }
   .chip.connection .dot {
-    width: 10px;
-    height: 10px;
+    width: 0.625rem;
+    height: 0.625rem;
   }
   .top-actions .primary.small {
-    padding: 0 7px;
-    min-height: 26px;
-    gap: 2px;
+    padding: 0 0.4375rem;
+    min-height: 1.625rem;
+    gap: 0.125rem;
     font-size: 0.75rem;
     flex-shrink: 0;
   }
   .error-banner {
-    padding: 6px 10px;
-    gap: 6px;
+    padding: 0.375rem 0.625rem;
+    gap: 0.375rem;
     font-size: 0.8125rem;
   }
   .workspace {
@@ -2216,14 +2216,14 @@ textarea.app-state-json {
     border-right: 0;
     border-bottom: 1px solid var(--line);
     max-height: 55vh;
-    min-height: 310px;
+    min-height: 19.375rem;
   }
   .session-heading {
-    padding: 10px 14px 8px;
+    padding: 0.625rem 0.875rem 0.5rem;
   }
   .session-heading h1 {
     font-size: 1rem;
-    margin: 3px 0;
+    margin: 0.1875rem 0;
   }
   .session-heading > .eyebrow,
   .session-status,
@@ -2232,81 +2232,81 @@ textarea.app-state-json {
     display: none;
   }
   .inspector-tabs {
-    padding: 0 6px;
+    padding: 0 0.375rem;
   }
   .inspector-tabs button {
-    padding: 9px 6px 7px;
+    padding: 0.5625rem 0.375rem 0.4375rem;
   }
   .inspector-body {
-    padding: 17px 20px;
-    min-height: 150px;
+    padding: 1.0625rem 1.25rem;
+    min-height: 9.375rem;
   }
   .chat-panel {
     height: 85dvh;
-    min-height: 500px;
+    min-height: 31.25rem;
   }
   /* Auto-height: the lineage carries a BRANCH row + crumb row (~2 lines).
      The old max-height:42 overflowed that content ONTO the table below
      (live screenshots) — the shell is a fixed-height frame now, so letting
      the header grow cannot scroll the page; the chat just gets the rest. */
   .chat-header {
-    padding: 0 10px;
+    padding: 0 0.625rem;
     height: auto;
-    min-height: 42px;
+    min-height: 2.625rem;
     max-height: none;
-    gap: 8px;
+    gap: 0.5rem;
     flex-wrap: nowrap;
     flex: 0 0 auto;
     overflow: visible;
   }
   .model-button img {
-    width: 26px;
-    height: 26px;
+    width: 1.625rem;
+    height: 1.625rem;
   }
   .conversation-select select {
     font-size: 0.875rem;
-    padding: 4px 2px;
-    max-width: 150px;
+    padding: 0.25rem 0.125rem;
+    max-width: 9.375rem;
   }
   .chat-header-actions .icon-button {
-    width: 26px;
-    height: 26px;
+    width: 1.625rem;
+    height: 1.625rem;
   }
   .chat-scroll {
-    padding: 24px 22px;
+    padding: 1.5rem 1.375rem;
   }
   .chat-empty h2 {
     font-size: 1.375rem;
   }
   .composer-region {
-    padding: 12px;
+    padding: 0.75rem;
   }
   .composer-left {
-    gap: 3px;
+    gap: 0.1875rem;
   }
   .composer-left .context-indicator {
     display: none;
   }
   .composer-right {
-    gap: 8px;
+    gap: 0.5rem;
   }
   .modal {
-    padding: 22px;
+    padding: 1.375rem;
   }
   .welcome {
     min-height: 90dvh;
   }
   .welcome-features {
     flex-direction: column;
-    gap: 20px;
+    gap: 1.25rem;
     align-items: center;
-    margin-top: 40px;
+    margin-top: 2.5rem;
   }
   .drawer-backdrop {
-    top: 58px;
+    top: 3.625rem;
   }
   .toast {
-    bottom: 15px;
+    bottom: 0.9375rem;
     width: max-content;
     max-width: 90%;
     font-size: 1rem;
@@ -2325,7 +2325,7 @@ textarea.app-state-json {
 @media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
   .model-section {
     display: block;
-    padding: 9px 20px;
+    padding: 0.5625rem 1.25rem;
   }
   .model-section .section-label,
   .model-section .thinking-row,
@@ -2333,18 +2333,18 @@ textarea.app-state-json {
     display: none;
   }
   .model-button {
-    padding: 7px 10px;
+    padding: 0.4375rem 0.625rem;
   }
   .model-button img {
-    width: 24px;
-    height: 24px;
+    width: 1.5rem;
+    height: 1.5rem;
   }
   .model-button small {
     display: none;
   }
 }
 
-/* Accessible red theme: 16px minimum type and high-contrast provider marks. */
+/* Accessible red theme: 1rem minimum type and high-contrast provider marks. */
 .primary,
 .send {
   background: var(--primary);
@@ -2357,23 +2357,23 @@ textarea.app-state-json {
 }
 .model-button img,
 .model-list img {
-  width: 42px;
-  height: 42px;
-  padding: 5px;
+  width: 2.625rem;
+  height: 2.625rem;
+  padding: 0.3125rem;
   background: #fff;
   border: 1px solid #67575c;
   flex-shrink: 0;
 }
 .session-model img {
-  width: 32px;
-  height: 32px;
-  padding: 3px;
+  width: 2rem;
+  height: 2rem;
+  padding: 0.1875rem;
   background: #fff;
   flex-shrink: 0;
 }
 img[src$="openai.png"] {
   background: #242024;
-  padding: 3px;
+  padding: 0.1875rem;
   border-color: #81747a;
 }
 button:disabled {
@@ -2383,16 +2383,16 @@ button:disabled {
   border-color: #554249;
 }
 .icon-button {
-  width: 36px;
-  height: 36px;
+  width: 2.25rem;
+  height: 2.25rem;
   color: var(--fg);
 }
 .inspector-tabs {
-  padding: 0 10px;
+  padding: 0 0.625rem;
 }
 .inspector-tabs button {
   min-width: 0;
-  padding: 15px 7px 13px;
+  padding: 0.9375rem 0.4375rem 0.8125rem;
 }
 .session-heading h1 {
   line-height: 1.4;
@@ -2408,13 +2408,13 @@ button:disabled {
 }
 .metrics {
   grid-template-columns: 1fr 1.4fr 0.6fr;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .metrics small {
   line-height: 1.5;
 }
 .model-button {
-  min-height: 70px;
+  min-height: 4.375rem;
 }
 .model-button small {
   line-height: 1.5;
@@ -2423,16 +2423,16 @@ button:disabled {
   white-space: normal;
 }
 .inspector-footer {
-  min-height: 52px;
+  min-height: 3.25rem;
   height: auto;
-  padding: 8px 20px;
+  padding: 0.5rem 1.25rem;
 }
 .counter-card {
-  gap: 12px;
+  gap: 0.75rem;
   flex-wrap: wrap;
 }
 .counter-card .field-label {
-  max-width: 180px;
+  max-width: 11.25rem;
   line-height: 1.5;
 }
 .raw summary {
@@ -2462,16 +2462,16 @@ button:disabled {
   line-height: 1.6;
 }
 .sessions-drawer {
-  width: 420px;
+  width: 26.25rem;
 }
 .modal {
-  width: 560px;
+  width: 35rem;
 }
 .model-modal {
-  width: 650px;
+  width: 40.625rem;
 }
 .model-list button {
-  min-height: 78px;
+  min-height: 4.875rem;
 }
 .model-list small {
   line-height: 1.5;
@@ -2485,20 +2485,20 @@ button:disabled {
 .composer-left,
 .composer-right {
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .send {
-  width: 40px;
-  height: 40px;
+  width: 2.5rem;
+  height: 2.5rem;
 }
 .interrupt {
-  min-height: 40px;
+  min-height: 2.5rem;
 }
 .tag {
   line-height: 1.4;
 }
 .brand {
-  gap: 10px;
+  gap: 0.625rem;
 }
 .welcome-features {
   flex-wrap: wrap;
@@ -2506,19 +2506,19 @@ button:disabled {
 }
 @media (min-width: 781px) and (max-width: 1599px) { /* 781 — the mobile band ends at 780 now */
   .workspace {
-    grid-template-columns: minmax(410px, 36%) minmax(0, 1fr);
+    grid-template-columns: minmax(25.625rem, 36%) minmax(0, 1fr);
   }
   .chat-scroll {
-    padding-left: 30px;
-    padding-right: 30px;
+    padding-left: 1.875rem;
+    padding-right: 1.875rem;
   }
   .composer-footnote > span:last-child {
     display: none;
   }
   .chat-header {
-    gap: 10px;
+    gap: 0.625rem;
     flex-wrap: wrap;
-    padding: 10px 18px;
+    padding: 0.625rem 1.125rem;
   }
 }
 @media (max-width: 1100px) and (min-width: 741px) {
@@ -2534,7 +2534,7 @@ button:disabled {
     display: none;
   }
   .conversation-select select {
-    max-width: 205px;
+    max-width: 12.8125rem;
   }
 }
 @media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
@@ -2546,43 +2546,43 @@ button:disabled {
     display: block;
   }
   .model-button {
-    min-height: 64px;
+    min-height: 4rem;
   }
   .inspector-tabs {
-    padding: 0 4px;
+    padding: 0 0.25rem;
   }
   .inspector-tabs button {
-    gap: 4px;
-    padding: 12px 4px;
+    gap: 0.25rem;
+    padding: 0.75rem 0.25rem;
   }
   .inspector-body {
-    padding: 18px 16px;
+    padding: 1.125rem 1rem;
   }
   .conversation-select {
-    max-width: calc(100% - 94px);
-    gap: 6px;
+    max-width: calc(100% - 5.875rem);
+    gap: 0.375rem;
   }
   .conversation-select select {
-    max-width: 180px;
+    max-width: 11.25rem;
     width: 100%;
   }
   .chat-header-actions {
     gap: 0;
   }
   .chat-header-actions .icon-button {
-    width: 30px;
+    width: 1.875rem;
   }
   .chat-header {
-    padding: 0 10px;
+    padding: 0 0.625rem;
   }
   .drawer-backdrop {
-    top: 42px;
+    top: 2.625rem;
   }
   .composer-toolbar {
-    padding-left: 9px;
+    padding-left: 0.5625rem;
   }
   .composer-left select {
-    max-width: 120px;
+    max-width: 7.5rem;
     padding-left: 0;
   }
   .composer-footnote {
@@ -2596,16 +2596,16 @@ button:disabled {
     line-height: 1.5;
   }
   .chat-empty {
-    padding: 24px 0;
+    padding: 1.5rem 0;
   }
   .chat-panel {
-    min-height: 760px;
+    min-height: 47.5rem;
   }
   .modal {
-    padding: 20px;
+    padding: 1.25rem;
   }
   .top-actions .primary {
-    padding: 8px;
+    padding: 0.5rem;
   }
 }
 .session-heading .cwd-button {
@@ -2637,7 +2637,7 @@ button:disabled {
 }
 .modal.path-modal {
   width: max-content;
-  min-width: min(960px, 100%);
+  min-width: min(60rem, 100%);
 }
 .markdown :is(h4, h5, h6, small, sub, sup) {
   font-size: 1rem;
@@ -2646,38 +2646,38 @@ button:disabled {
 /* Keep navigation fixed above the currently selected inspector panel. */
 .inspector > .inspector-tabs {
   flex-shrink: 0;
-  min-height: 74px;
+  min-height: 4.625rem;
   border-top: 0;
-  padding: 0 8px;
+  padding: 0 0.5rem;
 }
 .inspector > .inspector-tabs button {
   position: relative;
   flex-direction: column;
-  gap: 5px;
-  padding: 10px 4px;
+  gap: 0.3125rem;
+  padding: 0.625rem 0.25rem;
   line-height: 1.4;
 }
 .inspector-tabs .count {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 0.25rem;
+  right: 0.25rem;
 }
 .inspector-body.session-panel {
-  padding: 0 0 24px;
+  padding: 0 0 1.5rem;
 }
 .session-panel .session-heading {
-  padding: 24px 26px;
+  padding: 1.5rem 1.625rem;
 }
 .session-panel .model-section {
-  padding: 22px 26px;
+  padding: 1.375rem 1.625rem;
 }
 @media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
   .inspector > .inspector-tabs {
-    padding: 0 4px;
+    padding: 0 0.25rem;
   }
   .session-panel .session-heading,
   .session-panel .model-section {
-    padding: 20px 16px;
+    padding: 1.25rem 1rem;
   }
   .session-panel .session-heading > .eyebrow {
     display: block;
@@ -2739,7 +2739,7 @@ textarea::placeholder {
 /* Root-to-fork navigation stays visible even when the picker is closed. */
 .chat-header {
   flex-wrap: nowrap;
-  gap: 14px;
+  gap: 0.875rem;
 }
 .chat-header-actions {
   flex-shrink: 0;
@@ -2748,18 +2748,18 @@ textarea::placeholder {
   position: relative;
   flex: 1;
   min-width: 0;
-  padding: 8px 0;
+  padding: 0.5rem 0;
 }
 .lineage-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   min-width: 0;
 }
 .conversation-lineage {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: thin;
@@ -2767,8 +2767,8 @@ textarea::placeholder {
 }
 .lineage-crumb {
   flex-shrink: 0;
-  padding: 7px 9px;
-  border-radius: 6px;
+  padding: 0.4375rem 0.5625rem;
+  border-radius: 0.375rem;
   color: var(--secondary);
   white-space: nowrap;
   font-size: 1rem;
@@ -2787,7 +2787,7 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 .lineage-source {
-  margin: 4px 9px 0;
+  margin: 0.25rem 0.5625rem 0;
   color: var(--secondary);
   font-size: 1rem;
   line-height: 1.5;
@@ -2803,28 +2803,28 @@ textarea::placeholder {
   top: 100%;
   left: 0;
   z-index: 30;
-  width: min(540px, calc(100vw - 48px));
-  max-height: min(65vh, 620px);
+  width: min(33.75rem, calc(100vw - 3rem));
+  max-height: min(65vh, 38.75rem);
   overflow-y: auto;
   background: #251b1e;
   border: 1px solid #68474e;
-  border-radius: 9px;
-  padding: 8px;
-  box-shadow: 0 16px 48px #0007;
+  border-radius: 0.5625rem;
+  padding: 0.5rem;
+  box-shadow: 0 1rem 3rem #0007;
 }
 .conversation-picker-heading {
   color: var(--secondary);
   font-size: 1rem;
-  padding: 10px 12px 14px;
+  padding: 0.625rem 0.75rem 0.875rem;
 }
 .conversation-choice {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  gap: 14px;
-  padding: 12px;
-  border-radius: 6px;
+  gap: 0.875rem;
+  padding: 0.75rem;
+  border-radius: 0.375rem;
   text-align: left;
 }
 .conversation-choice:hover,
@@ -2835,13 +2835,13 @@ textarea::placeholder {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .choice-lineage {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 0.3125rem;
   color: var(--fg);
   font-size: 1rem;
   line-height: 1.5;
@@ -2862,7 +2862,7 @@ textarea::placeholder {
   color: var(--accent);
 }
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
-  /* chat-header layout lives in ONE place (the compact 42px block above) —
+  /* chat-header layout lives in ONE place (the compact 2.625rem block above) —
      this block's flex-wrap:wrap loaded later, wrapped the header, and the
      compact block's max-height:42 + overflow:hidden then CLIPPED the wrapped
      rows away (live: 'topbar mất nội dung', the same bug class as the old
@@ -2872,25 +2872,25 @@ textarea::placeholder {
     width: 100%;
   }
   .conversation-picker {
-    width: min(540px, calc(100vw - 20px));
+    width: min(33.75rem, calc(100vw - 1.25rem));
   }
   .lineage-crumb {
-    padding: 7px;
+    padding: 0.4375rem;
   }
 }
 
 .queue-mode {
   position: relative;
-  min-width: 150px;
+  min-width: 9.375rem;
 }
 .composer-left .queue-mode select {
   appearance: none;
   width: 100%;
   max-width: none;
-  min-height: 40px;
-  padding: 7px 36px 7px 12px;
+  min-height: 2.5rem;
+  padding: 0.4375rem 2.25rem 0.4375rem 0.75rem;
   border: 1px solid #77515a;
-  border-radius: 8px;
+  border-radius: 0.5rem;
   background: #342329;
   color: #f8eeee;
   font-size: 1rem;
@@ -2899,7 +2899,7 @@ textarea::placeholder {
 }
 .queue-mode > svg {
   position: absolute;
-  right: 10px;
+  right: 0.625rem;
   top: 50%;
   transform: translateY(-50%);
   pointer-events: none;
@@ -2911,38 +2911,38 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 .switch {
-  width: 58px;
-  height: 34px;
-  border-radius: 20px;
-  padding: 4px;
+  width: 3.625rem;
+  height: 2.125rem;
+  border-radius: 1.25rem;
+  padding: 0.25rem;
   flex-shrink: 0;
 }
 .switch > span {
-  width: 26px;
-  height: 26px;
+  width: 1.625rem;
+  height: 1.625rem;
 }
 .state-boolean .switch {
   margin-left: 0;
 }
 .task-section {
-  margin-top: 24px;
-  padding-top: 20px;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
   border-top: 1px solid var(--line);
 }
 .task-section h3,
 .task-example h4 {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0 0 10px;
+  gap: 0.5rem;
+  margin: 0 0 0.625rem;
   font-size: 1rem;
   font-weight: 650;
 }
 .task-example {
-  padding: 16px;
-  margin-top: 12px;
+  padding: 1rem;
+  margin-top: 0.75rem;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0.5rem;
   background: #25191c;
 }
 .task-example p,
@@ -2951,13 +2951,13 @@ textarea::placeholder {
   color: var(--secondary);
   font-size: 1rem;
   line-height: 1.6;
-  margin: 8px 0 14px;
+  margin: 0.5rem 0 0.875rem;
 }
 .task-decision-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 16px 0;
+  gap: 0.5rem;
+  margin: 1rem 0;
 }
 .approval-card {
   border-color: #c68957;
@@ -2966,21 +2966,21 @@ textarea::placeholder {
   margin-bottom: 0;
 }
 .tasks-panel .task-card .raw {
-  margin-top: 12px;
+  margin-top: 0.75rem;
 }
 .chat-header-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 0.5rem;
   justify-content: flex-end;
 }
 /* (deleted) a stray BASE '.chat-header{flex-wrap:wrap}' loaded after every
    band override and re-wrapped the header at ALL widths — with a real
-   session (crumbs + actions) the wrapped rows fought the compact 42px bar
+   session (crumbs + actions) the wrapped rows fought the compact 2.625rem bar
    (live: content lost/overlap). Wrapping now happens ONLY in the 781–1599
    band where there is room for it. */
 .chat-header-actions .secondary {
-  min-height: 38px;
+  min-height: 2.375rem;
 }
 @media (max-width: 740px), (max-width: 1100px) and (pointer: coarse) {
   /* topbar layout lives in ONE place (the compact block in the ≤740 shell
@@ -2998,16 +2998,16 @@ textarea::placeholder {
 
 /* Slim scrollbars in the brand line color. */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 0.625rem;
+  height: 0.625rem;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--line);
-  border-radius: 10px;
-  border: 2px solid transparent;
+  border-radius: 0.625rem;
+  border: 0.125rem solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -3028,14 +3028,14 @@ textarea::placeholder {
 /* TopBar stats row: real numbers from the client store, daemon-strip look. */
 .topbar-sep {
   width: 1px;
-  height: 22px;
+  height: 1.375rem;
   background: var(--line);
   flex-shrink: 0;
 }
 .daemon {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   font-size: 0.9375rem;
   color: var(--faint);
   min-width: 0;
@@ -3051,13 +3051,13 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 .dot {
-  width: 8px;
-  height: 8px;
+  width: 0.5rem;
+  height: 0.5rem;
   border-radius: 50%;
   display: inline-block;
-  flex: 0 0 8px;
+  flex: 0 0 0.5rem;
   background: var(--ok);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ok) 16%, transparent);
+  box-shadow: 0 0 0 0.1875rem color-mix(in oklab, var(--ok) 16%, transparent);
 }
 .dot.off {
   background: var(--offline);
@@ -3068,11 +3068,11 @@ textarea::placeholder {
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 12px;
+  gap: 0.375rem;
+  height: 1.75rem;
+  padding: 0 0.75rem;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   color: var(--faint);
@@ -3088,9 +3088,9 @@ textarea::placeholder {
   color: var(--accent);
 }
 .chip .dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 7px;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex: 0 0 0.4375rem;
   box-shadow: none;
 }
 
@@ -3114,23 +3114,23 @@ textarea::placeholder {
   z-index: 80;
   display: grid;
   place-items: center;
-  padding: 20px;
+  padding: 1.25rem;
 }
 .dialog {
-  width: min(560px, 100%);
-  max-height: calc(100dvh - 40px);
+  width: min(35rem, 100%);
+  max-height: calc(100dvh - 2.5rem);
   overflow-y: auto;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 0.75rem;
   background: var(--panel);
-  box-shadow: 0 24px 70px rgb(0 0 0 / 55%);
+  box-shadow: 0 1.5rem 4.375rem rgb(0 0 0 / 55%);
 }
 .dialog-head {
-  padding: 18px 20px 0;
+  padding: 1.125rem 1.25rem 0;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .dialog-eyebrow {
   font-family: var(--font-display);
@@ -3141,23 +3141,23 @@ textarea::placeholder {
   color: var(--accent);
 }
 .dialog h3 {
-  margin: 5px 0 0;
+  margin: 0.3125rem 0 0;
   font-family: var(--font-display);
   font-size: 1.25rem;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
 .dialog-body {
-  padding: 16px 20px;
+  padding: 1rem 1.25rem;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .help-step {
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
-  gap: 10px;
-  padding: 7px 0;
+  grid-template-columns: 1.625rem minmax(0, 1fr);
+  gap: 0.625rem;
+  padding: 0.4375rem 0;
   border-bottom: 1px solid var(--line-soft);
   font-size: 1rem;
 }
@@ -3173,35 +3173,35 @@ textarea::placeholder {
 }
 .help-step .body {
   color: var(--muted);
-  margin-top: 2px;
+  margin-top: 0.125rem;
   line-height: 1.6;
 }
 .help-callout {
-  margin-top: 4px;
-  padding: 10px 12px;
+  margin-top: 0.25rem;
+  padding: 0.625rem 0.75rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
   background: var(--chat);
   font-size: 1rem;
   color: var(--muted);
   display: flex;
-  gap: 10px;
+  gap: 0.625rem;
   align-items: flex-start;
 }
 .help-callout svg {
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 0.125rem;
 }
 .dialog-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 20px 18px;
+  gap: 0.5rem;
+  padding: 0 1.25rem 1.125rem;
 }
 .dialog-foot .right {
   margin-left: auto;
   display: flex;
-  gap: 8px;
+  gap: 0.5rem;
 }
 
 /* mobile nav: one of three views visible at phone width. Hidden otherwise. */
@@ -3216,8 +3216,8 @@ textarea::placeholder {
   .mnav {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 2px;
-    padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+    gap: 0.125rem;
+    padding: 0.25rem 0.375rem calc(0.25rem + env(safe-area-inset-bottom));
     border-top: 1px solid var(--line);
     background: var(--panel);
   }
@@ -3227,10 +3227,10 @@ textarea::placeholder {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2px;
-    min-height: 48px;
+    gap: 0.125rem;
+    min-height: 3rem;
     border: 0;
-    border-radius: 8px;
+    border-radius: 0.5rem;
     background: transparent;
     color: var(--faint);
     font-size: 0.75rem;
@@ -3241,17 +3241,17 @@ textarea::placeholder {
   }
   .mnav .badge {
     position: absolute;
-    top: 5px;
-    right: calc(50% - 22px);
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 999px;
+    top: 0.3125rem;
+    right: calc(50% - 1.375rem);
+    min-width: 1rem;
+    height: 1rem;
+    padding: 0 0.25rem;
+    border-radius: 62.4375rem;
     background: var(--primary);
     color: var(--on-primary);
     font-family: var(--font-mono);
     font-size: 0.6875rem;
-    line-height: 16px;
+    line-height: 1rem;
   }
 }
 
@@ -3262,28 +3262,28 @@ textarea::placeholder {
 /* Composer: focus-within ring. */
 .composer:focus-within {
   border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 10%, transparent);
+  box-shadow: 0 0 0 0.1875rem color-mix(in oklab, var(--accent) 10%, transparent);
 }
 .send {
   border: 1px solid var(--primary-line);
-  border-radius: 8px;
+  border-radius: 0.5rem;
   transition: background 120ms var(--ease);
 }
 
 /* Chat entries: user turns become right-aligned card bubble. */
 .pi-user {
   border-bottom: 0;
-  padding-bottom: 12px;
+  padding-bottom: 0.75rem;
   align-items: flex-end;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .pi-user .user-message {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 10px 14px;
+  padding: 0.625rem 0.875rem;
   max-width: 78%;
 }
 
@@ -3301,7 +3301,7 @@ textarea::placeholder {
   color: var(--accent);
 }
 .insp-tab-active-line {
-  border-bottom: 2px solid var(--accent);
+  border-bottom: 0.125rem solid var(--accent);
 }
 
 /* Switch: on-state in the primary brand red. */
@@ -3338,7 +3338,7 @@ textarea::placeholder {
 }
 .metrics > div {
   background: var(--chat);
-  padding: 9px 12px;
+  padding: 0.5625rem 0.75rem;
 }
 .metrics span {
   font-family: var(--font-mono);
@@ -3365,7 +3365,7 @@ input:focus,
 textarea:focus,
 select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 10%, transparent);
+  box-shadow: 0 0 0 0.1875rem color-mix(in oklab, var(--accent) 10%, transparent);
 }
 
 /* Chat panel + inspector: token-driven panel surfaces. */
@@ -3387,7 +3387,7 @@ select:focus {
    @supports LIES: legacy Chrome/WebView report zoom as supported while
    zoom-on-:root misbehaves — text rendered full desktop size and wrapped
    (live, twice). So zoom is GONE. Every font-size in the codebase is rem
-   (the 16px base below is the only px), so ONE knob per width band scales
+   (the 1rem base below is the only px), so ONE knob per width band scales
    the type on every engine ever shipped — no @supports, no fallback split,
    no compensation math. Icon/button px sizes are already compacted per band. */
 @media (max-width: 1599px) {
@@ -3435,8 +3435,8 @@ select:focus {
 /* ── Keyboard: the form must survive the soft keyboard ────────────────────
    Two live failure modes when an input gets focus on a phone:
    1. iOS auto-zooms the whole viewport when the focused control renders
-      under 16px — under the ui zoom every input did, so the page "exploded".
-      Raise inputs to a RENDERED 16px (16px / zoom in root coordinates).
+      under 1rem — under the ui zoom every input did, so the page "exploded".
+      Raise inputs to a RENDERED 1rem (1rem / zoom in root coordinates).
       Scoped component styles have higher specificity, hence !important.
    2. The shell must shrink to the space ABOVE the keyboard, not stay
       viewport-tall behind it. index.html declares
@@ -3448,8 +3448,8 @@ select:focus {
    fields…) — they scale with the type system like every other element, no
    !important, no blanket override (a forced 1rem read bigger than the
    designed sizes around it — live report). The ONE exception is iOS-only:
-   Safari zooms the viewport when a FOCUSED control computes under 16px, so
-   on iOS alone the focused control computes 16px while editing. `:root`
+   Safari zooms the viewport when a FOCUSED control computes under 1rem, so
+   on iOS alone the focused control computes 1rem while editing. `:root`
    lifts specificity above scoped component styles WITHOUT !important, and
    -webkit-touch-callout scopes it to iOS — Android never zooms on focus and
    keeps its designed size even while typing. */
@@ -3467,12 +3467,12 @@ select:focus {
   input,
   textarea,
   select {
-    padding: 6px 9px;
+    padding: 0.375rem 0.5625rem;
   }
 }
 
 .build-stamp {
-  margin: 18px 0 0;
+  margin: 1.125rem 0 0;
   font-size: 0.625rem;
   letter-spacing: 0.08em;
   color: var(--faint);
@@ -3489,27 +3489,27 @@ select:focus {
 }
 @media (max-width: 900px) {
   .chip.connection {
-    width: 12px;
-    min-width: 12px;
-    height: 12px;
-    min-height: 12px;
+    width: 0.75rem;
+    min-width: 0.75rem;
+    height: 0.75rem;
+    min-height: 0.75rem;
     padding: 0;
     border: 0;
-    border-radius: 999px;
+    border-radius: 62.4375rem;
     background: transparent;
     overflow: hidden;
     font-size: 0;
   }
   .chip.connection .dot {
-    width: 10px;
-    height: 10px;
+    width: 0.625rem;
+    height: 0.625rem;
   }
 }
 
 /* ── Compact band, second pass (from the user's actual screenshots) ────────
    What the phone shows that no probe caught:
    1. The Inspector's collapsed icon RAIL renders inline on phones, eating
-      ~100px of a 800px screen and pushing the chat into a sliver. On the
+      ~6.25rem of a 50rem screen and pushing the chat into a sliver. On the
       compact band the rail is HIDDEN — the Details tab opens the inspector
       as the overlay it already is. The chat gets the full width.
    2. The chat-header crumbs (device/workspace names) rendered 1.0625rem —
@@ -3528,7 +3528,7 @@ select:focus {
   /* 2. the chat header crumbs: same optical size as the bar */
   .crumb-main {
     font-size: 0.875rem;
-    gap: 5px;
+    gap: 0.3125rem;
   }
   .crumb .device-chip,
   .crumb-name {
@@ -3541,20 +3541,20 @@ select:focus {
   }
   .markdown ul,
   .markdown ol {
-    padding-left: 18px;
-    margin: 8px 0;
+    padding-left: 1.125rem;
+    margin: 0.5rem 0;
   }
   .message-label {
     font-size: 0.8125rem;
-    margin-bottom: 6px;
+    margin-bottom: 0.375rem;
   }
 }
 
 /* ── Compact-band header: unbreakable against ANY content width ───────────
-   From the user's screenshots: the lineage picker reserves flex-basis 240px
+   From the user's screenshots: the lineage picker reserves flex-basis 15rem
    (network.css), the actions row + crumbs overflowed it, and markdown tables
    in the transcript are wide. All four levers closed at once: the picker
-   may shrink (no 240px floor), the crumbs never wrap internally, the
+   may shrink (no 15rem floor), the crumbs never wrap internally, the
    actions never shrink, the header paints ABOVE escaped content, and wide
    tables scroll INSIDE the chat instead of escaping it. */
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
@@ -3590,7 +3590,7 @@ select:focus {
 /* Tight lineage internals so the auto-height header stays 2 slim rows. */
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   .crumb {
-    padding: 3px 2px;
+    padding: 0.1875rem 0.125rem;
   }
   .crumb .device-chip,
   .crumb-name {
@@ -3609,8 +3609,8 @@ select:focus {
   .crumbs .crumb {
     flex-direction: row;
     align-items: center;
-    gap: 5px;
-    padding: 3px 2px;
+    gap: 0.3125rem;
+    padding: 0.1875rem 0.125rem;
   }
   .crumb-kind {
     display: none;
@@ -3620,25 +3620,25 @@ select:focus {
     max-width: 30vw;
   }
   .composer textarea {
-    height: 34px;
-    min-height: 34px;
-    max-height: 110px;
-    padding: 7px 9px;
+    height: 2.125rem;
+    min-height: 2.125rem;
+    max-height: 6.875rem;
+    padding: 0.4375rem 0.5625rem;
   }
   .composer {
-    padding: 5px;
+    padding: 0.3125rem;
   }
   .composer-toolbar {
-    gap: 3px;
+    gap: 0.1875rem;
   }
   .composer-toolbar .icon-button {
-    width: 26px;
-    height: 26px;
-    padding: 3px;
+    width: 1.625rem;
+    height: 1.625rem;
+    padding: 0.1875rem;
   }
   .queue-mode select {
-    min-height: 30px;
-    padding: 4px 26px 4px 8px;
+    min-height: 1.875rem;
+    padding: 0.25rem 1.625rem 0.25rem 0.5rem;
     font-size: 0.8125rem;
   }
   .composer-footnote {
@@ -3648,48 +3648,48 @@ select:focus {
 
 /* ── Composer controls, phone-compact (user-annotated screenshot) ──────────
    Follow-up select + Interrupt read oversized on phones. Everything in the
-   toolbar drops to a 26px control row; the Interrupt label shrinks with it. */
+   toolbar drops to a 1.625rem control row; the Interrupt label shrinks with it. */
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   .queue-mode {
     min-width: 0;
   }
   .composer-left .queue-mode select {
-    min-height: 26px;
-    padding: 3px 22px 3px 7px;
+    min-height: 1.625rem;
+    padding: 0.1875rem 1.375rem 0.1875rem 0.4375rem;
     font-size: 0.75rem;
   }
   .queue-mode > svg {
-    width: 13px;
-    height: 13px;
+    width: 0.8125rem;
+    height: 0.8125rem;
   }
   .composer-toolbar svg {
-    width: 14px;
-    height: 14px;
+    width: 0.875rem;
+    height: 0.875rem;
   }
   .composer-toolbar .icon-button {
-    width: 26px;
-    height: 26px;
-    padding: 4px;
+    width: 1.625rem;
+    height: 1.625rem;
+    padding: 0.25rem;
   }
   .composer-toolbar .send,
   .composer-toolbar button[title*="Stop foreground"] {
-    min-height: 26px;
-    min-width: 26px;
-    padding: 0 8px;
+    min-height: 1.625rem;
+    min-width: 1.625rem;
+    padding: 0 0.5rem;
     font-size: 0.75rem;
-    gap: 3px;
+    gap: 0.1875rem;
   }
   .composer-toolbar .stop-sign {
-    width: 14px;
-    height: 14px;
+    width: 0.875rem;
+    height: 0.875rem;
   }
 }
 
-/* ── Crumbs icon-only + toolbar text 10px (user directive) ─────────────────
+/* ── Crumbs icon-only + toolbar text 0.625rem (user directive) ─────────────────
    The crumb NAMES (device/workspace/session, and the branch chip) duplicated
    what the icons + tooltips already say — on a phone they pushed the row
    wide. Icons only; names stay in the tooltips and the Details pane.
-   The toolbar text drops to 10px as requested (buttons/selects never trigger
+   The toolbar text drops to 0.625rem as requested (buttons/selects never trigger
    iOS focus-zoom — that dance is only for text inputs). */
 @media (max-width: 780px), (max-width: 1100px) and (pointer: coarse) {
   .crumb .device-chip,
@@ -3706,4 +3706,14 @@ select:focus {
   .composer-toolbar .send {
     font-size: 10px;
   }
+}
+
+/* ── Icons ride the scale too ──────────────────────────────────────────────
+   Lucide icons carry px width/height ATTRIBUTES; CSS wins over attributes, so
+   one em rule ties every icon to the surrounding text size — icons shrink and
+   grow WITH the ui instead of staying fixed while everything else scales. */
+svg.lucide {
+  width: 1.125em;
+  height: 1.125em;
+  flex-shrink: 0;
 }

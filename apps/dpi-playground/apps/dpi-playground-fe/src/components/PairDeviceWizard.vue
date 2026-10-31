@@ -487,7 +487,7 @@ onBeforeUnmount(() => {
 .pair-wizard .pair-steps li {
   padding: 0.15rem 0.6rem;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: 62.4375rem;
 }
 .pair-wizard .pair-steps li.on {
   color: var(--fg, #eee);
@@ -512,7 +512,7 @@ onBeforeUnmount(() => {
 }
 .pair-wizard .pair-qr svg {
   border: 1px solid var(--border, #333);
-  border-radius: 6px;
+  border-radius: 0.375rem;
 }
 .pair-wizard .pair-side {
   display: flex;
@@ -526,7 +526,7 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
   background: var(--bg2, #222);
   padding: 0.4rem;
-  border-radius: 6px;
+  border-radius: 0.375rem;
 }
 .pair-wizard .pair-confirm {
   display: flex;
@@ -547,17 +547,17 @@ onBeforeUnmount(() => {
 }
 
 .pair-pending {
-  margin: 0 0 18px;
-  padding: 14px 16px;
+  margin: 0 0 1.125rem;
+  padding: 0.875rem 1rem;
   border: 1px solid #2a3442;
-  border-radius: 12px;
+  border-radius: 0.75rem;
 }
-.pair-pending h3 { margin: 0 0 10px; font-size: 0.875rem; }
-.pair-pending ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.pair-pending li { display: grid; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid #222b36; }
+.pair-pending h3 { margin: 0 0 0.625rem; font-size: 0.875rem; }
+.pair-pending ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.625rem; }
+.pair-pending li { display: grid; gap: 0.25rem; padding-bottom: 0.625rem; border-bottom: 1px solid #222b36; }
 .pair-pending li:last-child { border-bottom: 0; padding-bottom: 0; }
-.pair-pending .who { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.pair-pending .who { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
 .pair-pending .fp { font-family: ui-monospace, monospace; font-size: 0.75rem; word-break: break-all; color: #7ee2a8; }
-.pair-pending .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.pair-pending .row { display: flex; gap: 0.625rem; align-items: center; justify-content: space-between; }
 .pair-pending .phase { font-size: 0.75rem; color: #8fa0b5; }
 </style>

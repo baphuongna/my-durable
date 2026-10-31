@@ -215,14 +215,14 @@ async function refresh() {
 .usage-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 4px 2px 12px;
+  gap: 0.625rem;
+  padding: 0.25rem 0.125rem 0.75rem;
   font-size: 1rem;
 }
 .usage-block {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .block-label {
   font-size: 0.8125rem;
@@ -235,16 +235,16 @@ async function refresh() {
 }
 .totals {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(8.75rem, 1fr));
+  gap: 0.625rem;
 }
 .total {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
+  gap: 0.125rem;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .total .label {
   color: var(--fg-dim, var(--fg));
@@ -265,7 +265,7 @@ async function refresh() {
 .table-scroll {
   overflow-x: auto;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .usage-table {
   width: 100%;
@@ -276,7 +276,7 @@ async function refresh() {
 }
 .usage-table th,
 .usage-table td {
-  padding: 6px 8px;
+  padding: 0.375rem 0.5rem;
   text-align: left;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
@@ -300,7 +300,7 @@ async function refresh() {
 .usage-table .dim {
   opacity: 0.7;
 }
-/* A 390px inspector cannot hold four full-width columns: fixed layout plus a
+/* A 24.375rem inspector cannot hold four full-width columns: fixed layout plus a
    single-line ellipsis, with the full figures in the row's tooltip. */
 .usage-table col:nth-child(1) { width: 44%; }
 .usage-table col:nth-child(2) { width: 17%; }
@@ -316,12 +316,12 @@ async function refresh() {
 .share {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .share .bar {
   flex: 1;
-  height: 6px;
-  border-radius: 999px;
+  height: 0.375rem;
+  border-radius: 62.4375rem;
   background: var(--line);
   overflow: hidden;
 }
@@ -345,22 +345,22 @@ async function refresh() {
 .rows {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0.125rem;
   margin: 0;
-  padding: 4px 10px;
+  padding: 0.25rem 0.625rem;
   list-style: none;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .rows.scroll {
-  max-height: 280px;
+  max-height: 17.5rem;
   overflow: auto;
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 0;
+  gap: 0.625rem;
+  padding: 0.25rem 0;
   font-size: 0.875rem;
 }
 .row + .row {

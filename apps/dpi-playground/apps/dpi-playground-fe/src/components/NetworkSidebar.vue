@@ -463,17 +463,17 @@ function keydown(e: KeyboardEvent) {
 
 <style scoped>
 .tree-search {
-  display: flex; align-items: center; gap: 6px; margin: 4px 6px 2px;
-  padding: 0 8px; border: 1px solid var(--line); border-radius: 8px;
+  display: flex; align-items: center; gap: 0.375rem; margin: 0.25rem 0.375rem 0.125rem;
+  padding: 0 0.5rem; border: 1px solid var(--line); border-radius: 0.5rem;
 }
 .tree-search:focus-within { border-color: var(--accent); }
 .tree-search .search-icon { opacity: 0.6; flex: none; }
 .search-input {
   flex: 1; min-width: 0; border: 0; background: transparent; color: var(--fg);
-  font-size: 0.875rem; padding: 6px 0; outline: none;
+  font-size: 0.875rem; padding: 0.375rem 0; outline: none;
 }
 .search-input::-webkit-search-cancel-button { display: none; }
-.tree-search .clear { padding: 2px; }
+.tree-search .clear { padding: 0.125rem; }
 .searching { opacity: 0.6; font-size: 0.8125rem; }
 .hit-line {
   display: block;
@@ -485,18 +485,18 @@ function keydown(e: KeyboardEvent) {
   text-overflow: ellipsis;
   max-width: 100%;
 }
-.hit-head { margin: 6px 2px 2px; }
+.hit-head { margin: 0.375rem 0.125rem 0.125rem; }
 .hit {
   display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left;
-  background: none; border: 1px solid transparent; border-radius: 8px;
-  padding: 5px 8px; color: var(--fg); font-size: 0.9375rem; cursor: pointer;
+  background: none; border: 1px solid transparent; border-radius: 0.5rem;
+  padding: 0.3125rem 0.5rem; color: var(--fg); font-size: 0.9375rem; cursor: pointer;
 }
 .hit:hover { border-color: var(--line); background: var(--hover, rgba(127,127,127,0.08)); }
 .hit-cwd { font-size: 0.75rem; opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hit-where { font-style: normal; font-size: 0.6875rem; opacity: 0.5; text-transform: uppercase; letter-spacing: 0.04em; }
 .bulk-bar {
-  display: flex; gap: 8px; align-items: center; padding: 6px 10px; margin: 4px 0;
-  border: 1px solid var(--line); border-radius: 8px; font-size: 0.875rem;
+  display: flex; gap: 0.5rem; align-items: center; padding: 0.375rem 0.625rem; margin: 0.25rem 0;
+  border: 1px solid var(--line); border-radius: 0.5rem; font-size: 0.875rem;
 }
 .bulk-bar .danger { border-color: var(--warn, #e5a50a); }
 </style>

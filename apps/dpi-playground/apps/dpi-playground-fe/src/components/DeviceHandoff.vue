@@ -71,24 +71,24 @@ async function copy() {
 <style scoped>
 .device-handoff {
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px 16px;
-  margin-bottom: 14px;
+  border-radius: 0.75rem;
+  padding: 0.875rem 1rem;
+  margin-bottom: 0.875rem;
   background: var(--panel);
 }
 header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   font-weight: 650;
-  margin-bottom: 6px;
+  margin-bottom: 0.375rem;
 }
 h3 {
   margin: 0;
   font-size: 0.90625rem;
 }
 .what {
-  margin: 0 0 10px;
+  margin: 0 0 0.625rem;
   font-size: 0.8125rem;
   color: var(--muted);
 }
@@ -99,19 +99,19 @@ code {
 .row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 0.5rem;
   align-items: end;
 }
 label {
   display: grid;
-  gap: 4px;
+  gap: 0.25rem;
   font-size: 0.75rem;
   color: var(--muted);
 }
 input {
-  width: 90px;
-  padding: 7px 9px;
-  border-radius: 8px;
+  width: 5.625rem;
+  padding: 0.4375rem 0.5625rem;
+  border-radius: 0.5rem;
   border: 1px solid var(--border);
   background: var(--panel);
   color: inherit;
@@ -120,10 +120,10 @@ input {
 .err {
   color: var(--danger, #f28b82);
   font-size: 0.78125rem;
-  margin: 8px 0 0;
+  margin: 0.5rem 0 0;
 }
 .target {
-  margin: 10px 0 0;
+  margin: 0.625rem 0 0;
   font-family: ui-monospace, monospace;
   font-size: 0.75rem;
   color: var(--muted);

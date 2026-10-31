@@ -1,11 +1,11 @@
 /* The Extensions tab: one card per custom harness extension. */
 
 .ext-card {
-  margin-top: 12px;
-  padding: 13px 14px;
+  margin-top: 0.75rem;
+  padding: 0.8125rem 0.875rem;
   border: 1px solid #453536;
-  border-left: 3px solid #5a3a3e;
-  border-radius: 8px;
+  border-left: 0.1875rem solid #5a3a3e;
+  border-radius: 0.5rem;
   background: #241819;
 }
 .ext-card.on {
@@ -14,13 +14,13 @@
 .ext-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .ext-head > div {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 10px;
+  gap: 0.25rem 0.625rem;
   min-width: 0;
 }
 .ext-head strong {
@@ -32,30 +32,30 @@
   color: var(--secondary);
 }
 .ext-card > p {
-  margin: 8px 0 0;
+  margin: 0.5rem 0 0;
   font-size: 1rem;
   line-height: 1.5;
 }
 .ext-prompts {
   list-style: none;
-  margin: 12px 0 0;
-  padding: 10px 0 0;
+  margin: 0.75rem 0 0;
+  padding: 0.625rem 0 0;
   border-top: 1px solid #3c2b2d;
   display: grid;
-  gap: 10px;
+  gap: 0.625rem;
 }
 .ext-prompts.off {
   opacity: 0.6;
 }
 .ext-prompts li {
   display: grid;
-  gap: 4px;
+  gap: 0.25rem;
   font-size: 1rem;
 }
 .ext-prompts label {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   cursor: pointer;
 }
 .ext-prompts code {
@@ -63,25 +63,25 @@
   font-size: 1rem;
 }
 .ext-prompts li > span {
-  padding-left: 26px;
+  padding-left: 1.625rem;
   color: var(--secondary);
   line-height: 1.45;
 }
 .ext-prompts details {
-  padding-left: 26px;
+  padding-left: 1.625rem;
 }
 .ext-prompts summary {
   cursor: pointer;
   color: var(--accent);
 }
 .ext-prompts pre {
-  max-height: 260px;
+  max-height: 16.25rem;
   overflow: auto;
-  margin: 6px 0 0;
-  padding: 9px;
+  margin: 0.375rem 0 0;
+  padding: 0.5625rem;
   white-space: pre-wrap;
   background: #180f10;
-  border-radius: 6px;
+  border-radius: 0.375rem;
   font-size: 1rem;
 }
 
@@ -95,7 +95,7 @@
 }
 /* Sits right after the name; the replay tag keeps the row's right edge. */
 .tool-row summary .tag.tool-disabled {
-  margin-left: 2px;
+  margin-left: 0.125rem;
   margin-right: auto;
   color: var(--warn);
   border-color: #6b5a24;

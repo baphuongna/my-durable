@@ -257,15 +257,15 @@ function withdraw(id: number) {
 <style scoped>
 .lib-wrap { position: relative; }
 .lib {
-  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 70; width: 300px; max-height: 260px;
-  overflow: auto; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 10px;
-  padding: 10px 12px; box-shadow: 0 10px 30px rgb(0 0 0 / 50%); display: grid; gap: 8px;
+  position: absolute; bottom: calc(100% + 0.5rem); left: 0; z-index: 70; width: 18.75rem; max-height: 16.25rem;
+  overflow: auto; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 0.625rem;
+  padding: 0.625rem 0.75rem; box-shadow: 0 0.625rem 1.875rem rgb(0 0 0 / 50%); display: grid; gap: 0.5rem;
 }
 .lib header { display: flex; justify-content: space-between; align-items: center; }
-.lib .save-row { display: flex; gap: 6px; }
+.lib .save-row { display: flex; gap: 0.375rem; }
 .lib .save-row input { flex: 1; min-width: 0; font: inherit; }
-.lib ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.lib li { display: flex; align-items: center; gap: 4px; }
-.lib li .use { flex: 1; text-align: left; background: none; border: none; cursor: pointer; font: inherit; padding: 4px 6px; border-radius: 6px; color: inherit; }
+.lib ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
+.lib li { display: flex; align-items: center; gap: 0.25rem; }
+.lib li .use { flex: 1; text-align: left; background: none; border: none; cursor: pointer; font: inherit; padding: 0.25rem 0.375rem; border-radius: 0.375rem; color: inherit; }
 .lib li .use:hover { background: #403536; }
 </style>

@@ -1294,48 +1294,48 @@ const laneX = (lane: number) => lane * 12 + 7;
 </template>
 
 <style scoped>
-.git-pane { display: grid; gap: 4px; }
-.git-top { gap: 8px; flex-wrap: wrap; }
+.git-pane { display: grid; gap: 0.25rem; }
+.git-top { gap: 0.5rem; flex-wrap: wrap; }
 .branch-wrap { position: relative; }
-.branch-btn { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.branch-btn { display: inline-flex; align-items: center; gap: 0.4375rem; padding: 0.375rem 0.75rem; border: 1px solid var(--line); border-radius: 0.375rem; }
 .branch-btn strong { font-size: 1rem; }
 .menu {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 300px; max-height: 280px; overflow: auto;
-  background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 8px; padding: 4px;
-  box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
+  position: absolute; top: calc(100% + 0.375rem); left: 0; z-index: 40; min-width: 18.75rem; max-height: 17.5rem; overflow: auto;
+  background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 0.5rem; padding: 0.25rem;
+  box-shadow: 0 0.625rem 1.875rem rgb(0 0 0 / 50%);
 }
-.menu button { display: flex; gap: 10px; align-items: center; width: 100%; padding: 7px 10px; border-radius: 6px; text-align: left; font-size: 0.9375rem; }
+.menu button { display: flex; gap: 0.625rem; align-items: center; width: 100%; padding: 0.4375rem 0.625rem; border-radius: 0.375rem; text-align: left; font-size: 0.9375rem; }
 .menu button:hover, .menu button.cur { background: #403536; }
-.menu .new-branch { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+.menu .new-branch { display: flex; gap: 0.375rem; padding: 0.5rem; border-top: 1px solid var(--line); }
 .menu .new-branch input { flex: 1; min-width: 0; }
-.auto-stash { display: flex; gap: 8px; align-items: center; padding: 8px 10px; font-size: 0.875rem; opacity: 0.85; }
+.auto-stash { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem 0.625rem; font-size: 0.875rem; opacity: 0.85; }
 .muted-line { opacity: 0.65; font-size: 0.8125rem; }
-.cap { padding: 4px 0; }
-.row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; align-items: center; }
-.hintbox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 6px 10px; border-radius: 6px; margin: 4px 0; }
+.cap { padding: 0.25rem 0; }
+.row { display: flex; gap: 0.375rem; flex-wrap: wrap; margin: 0.5rem 0; align-items: center; }
+.hintbox { display: flex; gap: 0.625rem; align-items: center; flex-wrap: wrap; padding: 0.375rem 0.625rem; border-radius: 0.375rem; margin: 0.25rem 0; }
 .hintbox.warn { border: 1px solid var(--warn, #e5a50a); color: var(--warn, #e5a50a); }
-.merge-banner { padding: 8px 10px; border-radius: 6px; }
+.merge-banner { padding: 0.5rem 0.625rem; border-radius: 0.375rem; }
 .files.conflicts { border-color: var(--warn, #e5a50a); }
 .conflict-head { color: var(--warn, #e5a50a); }
-.files { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; }
-.file { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 0; }
+.files { max-height: 16.25rem; overflow: auto; border: 1px solid var(--line); border-radius: 0.5rem; padding: 0.25rem 0.625rem; }
+.file { display: flex; align-items: center; justify-content: space-between; gap: 0.375rem; padding: 0.1875rem 0; }
 .file.all { border-bottom: 1px solid var(--line); }
-.file-label { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; cursor: pointer; }
+.file-label { display: flex; gap: 0.5rem; align-items: center; flex: 1; min-width: 0; cursor: pointer; }
 .file .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; }
 .file .xy { opacity: 0.7; font-size: 0.75rem; }
 .nums { font-size: 0.6875rem; opacity: 0.8; color: var(--ok, #2ea043); white-space: nowrap; }
 .nums.bin { color: var(--warn, #e5a50a); }
-.dir-row { display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 0; font-size: 0.8125rem; opacity: 0.8; }
+.dir-row { display: flex; align-items: center; gap: 0.375rem; width: 100%; padding: 0.1875rem 0; font-size: 0.8125rem; opacity: 0.8; }
 .dir-row .open { transform: rotate(90deg); }
-.file-acts { display: flex; gap: 2px; }
-.file-diff { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.file-diff pre { max-height: 260px; overflow: auto; font-size: 0.75rem; margin: 6px 0 0; width: 100%; }
-.mode-chips { display: inline-flex; gap: 2px; }
-.mode-chips button { font-size: 0.75rem; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); }
+.file-acts { display: flex; gap: 0.125rem; }
+.file-diff { border: 1px solid var(--line); border-radius: 0.5rem; padding: 0.5rem 0.625rem; margin: 0.5rem 0; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.file-diff pre { max-height: 16.25rem; overflow: auto; font-size: 0.75rem; margin: 0.375rem 0 0; width: 100%; }
+.mode-chips { display: inline-flex; gap: 0.125rem; }
+.mode-chips button { font-size: 0.75rem; padding: 0.125rem 0.5rem; border-radius: 0.625rem; border: 1px solid var(--line); }
 .mode-chips button.on { background: #403536; }
-textarea { width: 100%; resize: vertical; min-height: 76px; font: inherit; margin-top: 8px; }
-.commits { max-height: 340px; overflow: auto; display: grid; gap: 3px; }
-.commit-row { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+textarea { width: 100%; resize: vertical; min-height: 4.75rem; font: inherit; margin-top: 0.5rem; }
+.commits { max-height: 21.25rem; overflow: auto; display: grid; gap: 0.1875rem; }
+.commit-row { display: flex; gap: 0.5rem; align-items: center; white-space: nowrap; }
 .commit-row .lane { flex-shrink: 0; }
 .commit-row .hash { color: var(--ok, #2ea043); font-size: 0.8125rem; }
 .hash-btn svg { transition: transform 0.1s; }
@@ -1343,29 +1343,29 @@ textarea { width: 100%; resize: vertical; min-height: 76px; font: inherit; margi
 .commit-row .refs { color: var(--warn, #e5a50a); font-size: 0.75rem; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
 .commit-row .subject { overflow: hidden; text-overflow: ellipsis; max-width: 40%; font-size: 0.875rem; }
 .commit-row .who { font-size: 0.75rem; }
-.commit-files { padding: 2px 0 6px 34px; border-left: 2px solid var(--line); margin-left: 16px; }
-.cf { display: flex; gap: 10px; font-size: 0.8125rem; padding: 1px 0; }
+.commit-files { padding: 0.125rem 0 0.375rem 2.125rem; border-left: 0.125rem solid var(--line); margin-left: 1rem; }
+.cf { display: flex; gap: 0.625rem; font-size: 0.8125rem; padding: 1px 0; }
 .cf-status { font-size: 0.6875rem; opacity: 0.8; width: 2ch; }
-.cps { border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; margin-bottom: 6px; }
-.cp-row { display: flex; gap: 10px; align-items: center; padding: 2px 0; font-size: 0.875rem; }
+.cps { border: 1px solid var(--line); border-radius: 0.5rem; padding: 0.25rem 0.625rem; margin-bottom: 0.375rem; }
+.cp-row { display: flex; gap: 0.625rem; align-items: center; padding: 0.125rem 0; font-size: 0.875rem; }
 .cp-row code { color: var(--warn, #e5a50a); }
 .cp-subj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
-.wt { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.wt { display: flex; gap: 0.5rem; align-items: center; padding: 0.125rem 0; }
 .wt code { font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
 .wt.main code { font-weight: 650; }
 .grow { flex: 1; }
-.tag-x { margin-left: 4px; opacity: 0.7; display: inline-flex; }
-.pr-row { display: flex; gap: 8px; align-items: center; padding: 2px 0; white-space: nowrap; }
+.tag-x { margin-left: 0.25rem; opacity: 0.7; display: inline-flex; }
+.pr-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.125rem 0; white-space: nowrap; }
 .pr-row .tag.open { color: var(--ok, #2ea043); }
-.pr-checks { font-size: 0.75rem; background: rgb(0 0 0 / 25%); padding: 8px; border-radius: 6px; margin: 4px 0; white-space: pre-wrap; }
-.turns { max-height: 180px; overflow: auto; }
+.pr-checks { font-size: 0.75rem; background: rgb(0 0 0 / 25%); padding: 0.5rem; border-radius: 0.375rem; margin: 0.25rem 0; white-space: pre-wrap; }
+.turns { max-height: 11.25rem; overflow: auto; }
 .modal-veil { position: fixed; inset: 0; z-index: 90; background: rgb(0 0 0 / 55%); display: flex; align-items: center; justify-content: center; }
-.modal { min-width: 340px; max-width: 520px; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.modal { min-width: 21.25rem; max-width: 32.5rem; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 0.625rem; padding: 1rem 1.125rem; }
 .modal.danger { border-color: var(--warn, #e5a50a); }
-.modal h5 { margin: 0 0 6px; font-size: 1.0625rem; }
-.modal p { margin: 0 0 10px; font-size: 0.9375rem; }
-.modal textarea { min-height: 56px; }
+.modal h5 { margin: 0 0 0.375rem; font-size: 1.0625rem; }
+.modal p { margin: 0 0 0.625rem; font-size: 0.9375rem; }
+.modal textarea { min-height: 3.5rem; }
 .modal .danger { border-color: var(--warn, #e5a50a); }
-.op-out { max-height: 300px; overflow: auto; background: rgb(0 0 0 / 25%); padding: 10px; border-radius: 6px; font-size: 0.75rem; margin-top: 8px; }
-h4 { display: flex; align-items: center; gap: 8px; font-size: 1rem; margin: 0; }
+.op-out { max-height: 18.75rem; overflow: auto; background: rgb(0 0 0 / 25%); padding: 0.625rem; border-radius: 0.375rem; font-size: 0.75rem; margin-top: 0.5rem; }
+h4 { display: flex; align-items: center; gap: 0.5rem; font-size: 1rem; margin: 0; }
 </style>

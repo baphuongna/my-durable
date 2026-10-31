@@ -198,15 +198,15 @@ async function test() {
 .notify-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 4px 2px 12px;
+  gap: 0.625rem;
+  padding: 0.25rem 0.125rem 0.75rem;
   font-size: 1rem;
 }
 .sink-list,
 .results {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0.5rem;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -214,10 +214,10 @@ async function test() {
 .sink {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
+  gap: 0.25rem;
+  padding: 0.5rem 0.625rem;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .sink.off {
   opacity: 0.6;
@@ -225,7 +225,7 @@ async function test() {
 .sink .head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   flex-wrap: wrap;
 }
 .sink .next {
@@ -243,13 +243,13 @@ async function test() {
 .sink .row,
 .add-form .row {
   display: flex;
-  gap: 6px;
+  gap: 0.375rem;
   flex-wrap: wrap;
 }
 .results li {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   font-size: 0.9375rem;
 }
 .results li.failed {
@@ -258,15 +258,15 @@ async function test() {
 .add-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: 0.5rem;
+  padding: 0.625rem;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .add-form label {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 0.1875rem;
   font-size: 0.8125rem;
   opacity: 0.85;
 }
@@ -274,11 +274,11 @@ async function test() {
 .add-form select {
   font: inherit;
   font-size: 0.9375rem;
-  padding: 5px 8px;
+  padding: 0.3125rem 0.5rem;
   color: var(--fg);
   background: transparent;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0.5rem;
 }
 .spin {
   animation: spin 1s linear infinite;

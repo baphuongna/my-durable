@@ -4,12 +4,12 @@
 
 .job-run {
   min-width: 0;
-  margin: 14px 0 6px;
+  margin: 0.875rem 0 0.375rem;
   border: 1px solid #5a3a3e;
-  border-left: 4px solid var(--accent);
+  border-left: 0.25rem solid var(--accent);
   background: linear-gradient(180deg, #2a1b1d, #221617);
-  border-radius: 9px;
-  padding: 16px 18px 14px;
+  border-radius: 0.5625rem;
+  padding: 1rem 1.125rem 0.875rem;
   color: var(--fg);
 }
 .job-run.is-completed {
@@ -26,15 +26,15 @@
 .job-run-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .job-run-icon {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 2.5rem;
+  height: 2.5rem;
   flex: none;
-  border-radius: 9px;
+  border-radius: 0.5625rem;
   background: #3d2629;
   color: var(--accent);
 }
@@ -43,7 +43,7 @@
   flex: 1;
 }
 .job-run-titles h3 {
-  margin: 2px 0 0;
+  margin: 0.125rem 0 0;
   font-family: var(--font-title);
   font-size: 1.1875rem;
   font-weight: 750;
@@ -52,31 +52,31 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 12px;
+  gap: 0.25rem 0.75rem;
   font-size: 1rem;
-  letter-spacing: 1.2px;
+  letter-spacing: 0.075rem;
   color: var(--secondary);
 }
 .job-run-repeat {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 0.3125rem;
   letter-spacing: 0;
   color: var(--fg);
 }
 .job-run-status {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   flex: none;
-  padding: 4px 9px;
-  border-radius: 5px;
+  padding: 0.25rem 0.5625rem;
+  border-radius: 0.3125rem;
   background: #352728;
   font-size: 1rem;
 }
 .job-run-status i {
-  width: 7px;
-  height: 7px;
+  width: 0.4375rem;
+  height: 0.4375rem;
   border-radius: 50%;
   background: currentColor;
 }
@@ -93,14 +93,14 @@
   color: var(--ok);
 }
 .job-run-about {
-  margin: 12px 0 8px;
+  margin: 0.75rem 0 0.5rem;
   font-size: 1rem;
   line-height: 1.55;
 }
 .job-run-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 14px;
+  gap: 0.375rem 0.875rem;
   font-family: var(--font-mono);
   font-size: 1rem;
   color: var(--secondary);
@@ -118,9 +118,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 0;
+  gap: 0.5rem 0;
   list-style: none;
-  margin: 16px 0 12px;
+  margin: 1rem 0 0.75rem;
   padding: 0;
 }
 .job-stepper li {
@@ -129,24 +129,24 @@
 }
 .job-stepper li:not(:last-child)::after {
   content: "→";
-  margin: 0 8px;
+  margin: 0 0.5rem;
   color: #8d6a6d;
 }
 .job-chip {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 11px 4px 4px;
+  gap: 0.4375rem;
+  padding: 0.25rem 0.6875rem 0.25rem 0.25rem;
   border: 1px solid #4a3638;
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   background: #241819;
   font-size: 1rem;
 }
 .job-step-dot {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 1.5rem;
+  height: 1.5rem;
   border-radius: 50%;
   background: #3a2a2c;
   font-family: var(--font-mono);
@@ -161,7 +161,7 @@
 }
 .ph-running .job-chip {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px #ff899722;
+  box-shadow: 0 0 0 0.1875rem #ff899722;
 }
 .ph-running .job-step-dot {
   background: #5a2a31;
@@ -169,7 +169,7 @@
 }
 .ph-waiting .job-chip {
   border-color: var(--warn);
-  box-shadow: 0 0 0 3px #f2c94c22;
+  box-shadow: 0 0 0 0.1875rem #f2c94c22;
 }
 .ph-waiting .job-step-dot {
   background: #574719;
@@ -190,11 +190,11 @@
 .job-phases {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
+  gap: 0.375rem;
 }
 .job-phase {
   border: 1px solid #3c2b2d;
-  border-radius: 7px;
+  border-radius: 0.4375rem;
   background: #1f1415;
 }
 .job-phase.ph-running {
@@ -211,8 +211,8 @@
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 4px 10px;
-  padding: 9px 12px;
+  gap: 0.25rem 0.625rem;
+  padding: 0.5625rem 0.75rem;
   list-style: none;
   cursor: pointer;
   font-size: 1rem;
@@ -226,7 +226,7 @@
 }
 .job-phase-summary {
   flex: 1;
-  min-width: 160px;
+  min-width: 10rem;
   color: #e6d7d8;
 }
 .job-phase-time {
@@ -237,17 +237,17 @@
 .job-phase-about,
 .job-phase-empty {
   margin: 0;
-  padding: 0 12px 8px 34px;
+  padding: 0 0.75rem 0.5rem 2.125rem;
   font-size: 1rem;
   color: var(--secondary);
 }
 .job-steps {
   list-style: none;
   margin: 0;
-  padding: 0 12px 10px 34px;
+  padding: 0 0.75rem 0.625rem 2.125rem;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 5px;
+  gap: 0.3125rem;
 }
 .job-steps > li {
   display: block;
@@ -257,7 +257,7 @@
 .job-step-line {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 0.5625rem;
   min-width: 0;
   list-style: none;
 }
@@ -266,7 +266,7 @@
 }
 .job-steps summary::after {
   content: "⌄";
-  margin-left: 2px;
+  margin-left: 0.125rem;
   color: var(--secondary);
 }
 .job-steps details[open] summary::after {
@@ -280,8 +280,8 @@
   font-family: var(--font-mono);
   font-size: 1rem;
   background: #2c1e20;
-  border-radius: 4px;
-  padding: 1px 6px;
+  border-radius: 0.25rem;
+  padding: 1px 0.375rem;
 }
 .job-steps .k-tool code {
   flex: none;
@@ -309,7 +309,7 @@
 .job-step-state {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 0.3125rem;
   flex: none;
   font-family: var(--font-mono);
   color: var(--secondary);
@@ -324,73 +324,73 @@
   color: var(--warn);
 }
 .job-steps pre {
-  margin: 4px 0 2px 25px;
-  padding: 7px 9px;
-  max-height: 180px;
+  margin: 0.25rem 0 0.125rem 1.5625rem;
+  padding: 0.4375rem 0.5625rem;
+  max-height: 11.25rem;
   overflow: auto;
   white-space: pre-wrap;
   background: #180f10;
-  border-radius: 5px;
+  border-radius: 0.3125rem;
   font-size: 1rem;
   color: #e6d7d8;
 }
 .job-step-link {
-  margin: 2px 0 0 25px;
+  margin: 0.125rem 0 0 1.5625rem;
 }
 
 .job-approval {
-  margin-top: 12px;
-  padding: 12px 14px;
+  margin-top: 0.75rem;
+  padding: 0.75rem 0.875rem;
   border: 1px solid #8a7330;
   background: #2c2514;
-  border-radius: 8px;
+  border-radius: 0.5rem;
 }
 .job-approval > div:first-child {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   color: var(--warn);
 }
 .job-approval p {
-  margin: 6px 0 10px;
+  margin: 0.375rem 0 0.625rem;
   font-size: 1rem;
   line-height: 1.5;
 }
 .job-approval-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .job-run-foot {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 14px;
-  margin-top: 12px;
-  padding-top: 10px;
+  gap: 0.5rem 0.875rem;
+  margin-top: 0.75rem;
+  padding-top: 0.625rem;
   border-top: 1px solid #3c2b2d;
   font-size: 1rem;
   color: var(--secondary);
 }
 .job-run-foot span {
   flex: 1;
-  min-width: 220px;
+  min-width: 13.75rem;
 }
 
 /* ------------------------------------------------------------------ Tasks tab */
 
 .job-def {
-  margin-top: 12px;
-  padding: 13px;
+  margin-top: 0.75rem;
+  padding: 0.8125rem;
   border: 1px solid #453536;
-  border-radius: 8px;
+  border-radius: 0.5rem;
   background: #241819;
 }
 .job-def-head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .job-def-head svg {
   color: var(--accent);
@@ -400,32 +400,32 @@
   font-size: 1rem;
 }
 .job-def p {
-  margin: 8px 0;
+  margin: 0.5rem 0;
   font-size: 1rem;
   line-height: 1.5;
 }
 .job-chain {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 4px;
+  gap: 0.375rem 0.25rem;
   list-style: none;
-  margin: 8px 0;
+  margin: 0.5rem 0;
   padding: 0;
 }
 .job-chain li {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 9px 3px 3px;
+  gap: 0.3125rem;
+  padding: 0.1875rem 0.5625rem 0.1875rem 0.1875rem;
   border: 1px solid #4a3638;
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   font-size: 1rem;
 }
 .job-chain li span {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 1.25rem;
+  height: 1.25rem;
   border-radius: 50%;
   background: #3a2a2c;
   font-family: var(--font-mono);
@@ -433,13 +433,13 @@
 }
 .job-chain li:not(:last-child)::after {
   content: "→";
-  margin-left: 4px;
+  margin-left: 0.25rem;
   color: #8d6a6d;
 }
 .job-def-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .job-def-meta code {
   font-family: var(--font-mono);
@@ -451,34 +451,34 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 10px;
-  margin-top: 10px;
+  gap: 0.375rem 0.625rem;
+  margin-top: 0.625rem;
   font-size: 1rem;
 }
 .job-def-last .text-button {
   margin-top: 0;
 }
 .job-def-run {
-  margin-top: 12px;
+  margin-top: 0.75rem;
 }
 
 .task-tree {
   list-style: none;
-  margin: 0 0 12px;
+  margin: 0 0 0.75rem;
   padding: 0;
   display: grid;
-  gap: 4px;
+  gap: 0.25rem;
 }
 .task-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
-  padding: 7px 10px;
-  margin-left: calc(var(--depth) * 18px);
+  gap: 0.25rem 0.5rem;
+  padding: 0.4375rem 0.625rem;
+  margin-left: calc(var(--depth) * 1.125rem);
   border: 1px solid #3c2b2d;
-  border-left: 3px solid #5a3a3e;
-  border-radius: 6px;
+  border-left: 0.1875rem solid #5a3a3e;
+  border-radius: 0.375rem;
   background: #211617;
   font-size: 1rem;
 }
@@ -505,13 +505,13 @@
 /* ------------------------------------------------------------------ context bar */
 
 .context-section {
-  margin-top: 18px;
+  margin-top: 1.125rem;
 }
 .context-numbers {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 6px 8px;
+  gap: 0.375rem 0.5rem;
   font-size: 1rem;
 }
 .context-numbers strong {
@@ -525,22 +525,22 @@
 .context-compacting {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   margin-left: auto;
   color: var(--warn);
 }
 .context-compacting i {
-  width: 7px;
-  height: 7px;
+  width: 0.4375rem;
+  height: 0.4375rem;
   border-radius: 50%;
   background: currentColor;
   animation: pulse 1.2s infinite;
 }
 .context-bar {
   position: relative;
-  height: 14px;
-  margin: 40px 0 44px;
-  border-radius: 7px;
+  height: 0.875rem;
+  margin: 2.5rem 0 2.75rem;
+  border-radius: 0.4375rem;
   background: #2d2122;
   border: 1px solid #453536;
   touch-action: none;
@@ -551,7 +551,7 @@
 .context-fill {
   position: absolute;
   inset: 0 auto 0 0;
-  border-radius: 7px 0 0 7px;
+  border-radius: 0.4375rem 0 0 0.4375rem;
   background: linear-gradient(90deg, #8a3a45, var(--accent));
   transition: width 0.3s;
 }
@@ -563,18 +563,18 @@
   top: 0;
   right: 0;
   bottom: 0;
-  border-radius: 0 7px 7px 0;
-  background: repeating-linear-gradient(135deg, #ffffff10 0 5px, transparent 5px 10px);
+  border-radius: 0 0.4375rem 0.4375rem 0;
+  background: repeating-linear-gradient(135deg, #ffffff10 0 0.3125rem, transparent 0.3125rem 0.625rem);
   border-left: 1px solid #8d6a6d;
 }
 .context-marker {
   position: absolute;
-  top: -7px;
-  width: 4px;
-  height: 26px;
+  top: -0.4375rem;
+  width: 0.25rem;
+  height: 1.625rem;
   padding: 0;
-  margin-left: -2px;
-  border-radius: 2px;
+  margin-left: -0.125rem;
+  border-radius: 0.125rem;
   background: var(--warn);
   cursor: ew-resize;
   touch-action: none;
@@ -582,7 +582,7 @@
 .context-marker::before {
   content: "";
   position: absolute;
-  inset: -4px -10px;
+  inset: -0.25rem -0.625rem;
 }
 .context-marker.wait {
   background: var(--fg);
@@ -598,44 +598,44 @@
   pointer-events: none;
 }
 .context-marker.auto .context-marker-label {
-  bottom: calc(100% + 4px);
+  bottom: calc(100% + 0.25rem);
 }
 .context-marker.wait .context-marker-label {
-  top: calc(100% + 4px);
+  top: calc(100% + 0.25rem);
   color: var(--fg);
 }
 /* Labels near either end grow inward so they stay inside the panel. */
 .context-marker.label-start .context-marker-label {
-  left: -2px;
+  left: -0.125rem;
   transform: none;
 }
 .context-marker.label-end .context-marker-label {
   left: auto;
-  right: -2px;
+  right: -0.125rem;
   transform: none;
 }
 .context-hint {
-  margin: 0 0 10px;
+  margin: 0 0 0.625rem;
 }
 .context-details-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   padding: 0;
   color: var(--warn);
   font-size: 1rem;
   letter-spacing: 0;
 }
 .compaction-modal p {
-  margin: 0 0 12px;
+  margin: 0 0 0.75rem;
   font-size: 1rem;
   line-height: 1.6;
 }
 .modal .context-toggle {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 0.5rem;
+  margin-top: 0.375rem;
 }
 .modal .context-toggle input {
   width: auto;
@@ -645,7 +645,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: 0.25rem 0.5rem;
   font-size: 1rem;
 }
 .context-toggle small {

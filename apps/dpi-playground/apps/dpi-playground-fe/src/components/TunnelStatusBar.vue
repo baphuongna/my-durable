@@ -76,7 +76,7 @@ const tunnelLive = computed(() => props.device.tunnel?.state === "connected");
   align-items: center;
   gap: 0.25rem;
   padding: 0.1rem 0.5rem;
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   border: 1px solid var(--border, #333);
 }
 .tunnel-status .axis.transport {

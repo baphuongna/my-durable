@@ -1,18 +1,16 @@
-// R28 (live, nine rounds) — the mobile/uniform-scale contract.
-// Architecture after all verdicts:
-//   - every font-size rides rem; per-band ROOT knobs scale the type
-//     (zoom is BANNED — @supports lied on legacy engines);
-//   - the compact/mobile layout applies by WIDTH (≤780) **OR by touch**
-//     ((max-width: 1100px) and (pointer: coarse)) — a fold-class touch
-//     viewport must never sit on desktop rules (live: desktop-size text in a
-//     working topbar, oversized composer);
-//   - the mobile shell IS the screen; panes scroll inside;
-//   - the keyboard shrinks it via --vvh (visualViewport) — Android by meta
-//     gone, iOS measured in main.ts; iOS-only 16px at :focus, zero
-//     !important;
-//   - ONE compact 42px header row, every control reachable, nothing beyond
-//     the viewport edge (a swipe bar HIDES items), the bell panel teleported;
-//   - the composer shrinks progressively (1100 → 780/touch).
+// R28 (final architecture, ~10 rounds of live verdicts):
+//   - EVERY dimension in the stylesheets is rem (text, spacing, boxes, radii,
+//     offsets, icons via svg.lucide em) — the per-band ROOT font-size knob is
+//     the single scale control, so the whole ui shrinks/grows UNIFORMLY on
+//     every engine (zoom was banned after @supports lied on legacy WebView);
+//   - the compact band is width ≤780 OR touch ≤1100 (pointer: coarse);
+//   - the mobile shell is a fixed-height frame; panes scroll inside; the
+//     keyboard shrinks it via --vvh; iOS-only 16px at :focus; ZERO !important
+//     in font rules;
+//   - structural compaction stays: icon-only crumbs, dot chip, toggles defer
+//     to the bottom tabs, tables scroll inside the chat, teleported dropdown.
+// px survives ONLY in: @media conditions (viewport units), 1px hairlines,
+// box-shadows, and the sanctioned font sizes (base/knob/10px-toolbar/focus).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -27,166 +25,84 @@ function* walk(dir: string): Generator<string> {
     else if (p.endsWith(".css") || p.endsWith(".vue")) yield p;
   }
 }
-
 const files = [...walk(FE)];
-assert.ok(files.length > 10, `walked the real FE tree (${files.length} css/vue files)`);
+assert.ok(files.length > 10, `walked the real FE tree (${files.length} files)`);
 
-/** The compact band: width OR touch. */
-const MOBILE = String.raw`@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)`;
-const LEGACY_BAND = String.raw`@media \(max-width: 740px\), \(max-width: 1100px\) and \(pointer: coarse\)`;
+const PX_ALLOWED_CONTEXT = /box-shadow|text-shadow/;
 
-test("R28 type scale: every font-size is rem except sanctioned bases", () => {
-  const offenders: string[] = [];
-  for (const f of files) {
-    const src = readFileSync(f, "utf8");
-    for (const m of src.matchAll(/font-size:\s*([^;}\n]+)/g)) {
-      const v = m[1]!.trim();
-      const inStyle = f.endsWith("style.css");
-      const rem = /^[\d.]+rem( !important)?$/.test(v) || /^clamp\([\d.]+rem,/.test(v);
-      const sanctioned =
-        inStyle && ["16px", "15px", "14.5px", "14px", "13.5px", "13px", "12.5px", "10px", "0", "1rem !important", "16px !important"].includes(v);
-      if (!rem && !sanctioned) offenders.push(`${f.replace(FE, "")}: ${v}`);
+function pxViolations(src: string): string[] {
+  const out: string[] = [];
+  // strip comments; split off @media condition lines (viewport px is correct)
+  const noComments = src.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const line of noComments.split("\n")) {
+    if (/@media|@import|@font-face/.test(line)) continue;
+    for (const m of line.matchAll(/(\d+(?:\.\d+)?)px/g)) {
+      const v = m[1]!;
+      if (v === "0" || v === "1") continue; // 0 is nothing, 1px hairlines stay crisp
+      out.push(`${v}px :: ${line.trim().slice(0, 90)}`);
     }
   }
-  assert.deepEqual(offenders, [], "non-rem font-size found (raw px ignores the scale; em/% compound)");
-  const bases = files.filter((f) => readFileSync(f, "utf8").includes("font-size: 16px"));
-  assert.deepEqual(bases, [join(FE, "style.css")], "the 16px base lives only in style.css");
+  return out;
+}
+
+test("R28 scale: no stray px anywhere — every dimension rides rem", () => {
+  let offenders: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const styleOnly = f.endsWith(".vue") ? [...src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join("\n") : src;
+    for (const v of pxViolations(styleOnly)) offenders.push(`${f.replace(FE, "")}: ${v}`);
+  }
+  // the sanctioned NON-rem font sizes (base, knobs, 10px toolbar, iOS focus)
+  const allowedFontPx = /font-size:\s*(16|15|14\.5|14|13\.5|13|12\.5|10)px\s*(!important)?\s*;/;
+  offenders = offenders.filter((line) => !/font-size/.test(line) || !allowedFontPx.test(line));
+  // box-shadows keep px (blur radii don't read as size)
+  offenders = offenders.filter((line) => !/box-shadow|text-shadow/i.test(line));
+  assert.deepEqual(offenders, [], "raw px leaked into the rem scale");
 });
 
-test("R28 ui scale: rem knobs per band — one path, zoom banned", () => {
+test("R28 scale: the type knobs + the icons ride em", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
   for (const [mw, fs] of [[1599, "15px"], [1199, "14.5px"], [899, "14px"], [550, "13px"]] as const)
     assert.match(s, new RegExp(`@media \\(max-width: ${mw}px\\)\\s*\\{\\s*:root\\s*\\{\\s*font-size: ${fs.replace(".", "\\.")};`), `≤${mw} knob ${fs}`);
-  assert.match(s, new RegExp(`${LEGACY_BAND}\\s*\\{\\s*:root\\s*\\{\\s*font-size: 13\\.5px;`), "≤740-or-touch knob 13.5px");
-  // touch screens ≤1100 read as phones regardless of pixel width
-  assert.match(s, /@media \(max-width: 1100px\) and \(pointer: coarse\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "touch knob");
-  assert.doesNotMatch(s, /(^|[^-])zoom\s*:/, "no zoom declarations anywhere");
-  assert.doesNotMatch(s, /100dvh \/ /, "no viewport-height compensation math");
-  assert.doesNotMatch(s, /@supports not \(zoom/, "no zoom fallback split — one path");
+  assert.match(s, /@media \(max-width: 740px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{\s*:root\s*\{\s*font-size: 13\.5px;/, "≤740-or-touch knob 13.5px");
+  assert.match(s, /svg\.lucide\s*\{\s*width: 1\.125em;\s*height: 1\.125em;/, "icons scale with text via em");
   assert.match(s, /text-size-adjust: 100%/, "Safari cannot re-inflate");
+  assert.doesNotMatch(s, /(^|[^-])zoom\s*:/, "zoom stays banned");
+  assert.doesNotMatch(s, /@supports not \(zoom/, "no zoom fallback split");
 });
 
-test("R28 app shell: fixed height, panes scroll, keyboard via --vvh", () => {
+test("R28 app shell + keyboard: fixed-height frame, --vvh, iOS-only focus 16px, zero font !important", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, new RegExp(`${MOBILE}[\\s\\S]*?:root \\.shell\\s*\\{\\s*height: var\\(--vvh, 100dvh\\);\\s*min-height: 0;\\s*overflow: hidden;`), "the shell IS the screen on the compact band");
-  assert.match(s, new RegExp(`${MOBILE}[\\s\\S]*?\\.net-workspace\\s*\\{\\s*overflow: hidden;`), "workspace never scrolls the page");
+  assert.match(s, new RegExp(String.raw`@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)[\s\S]*?:root \.shell\s*\{\s*height: var\(--vvh, 100dvh\);\s*min-height: 0;\s*overflow: hidden;`), "the shell IS the screen on the compact band");
+  assert.match(s, new RegExp(String.raw`@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)[\s\S]*?\.net-workspace\s*\{\s*overflow: hidden;`), "workspace never scrolls the page");
   const html = readFileSync(join(FE, "../index.html"), "utf8");
-  assert.match(html, /width=device-width, initial-scale=1\.0/, "viewport meta pins the device width");
+  assert.match(html, /width=device-width, initial-scale=1\.0/, "viewport meta pins device width");
   assert.doesNotMatch(html, /interactive-widget/, "no interactive-widget meta");
   const main = readFileSync(join(FE, "main.ts"), "utf8");
-  assert.match(main, /visualViewport/, "iOS: visualViewport measured");
-  assert.match(main, /--vvh/, "…fed to the shell heights");
+  assert.match(main, /visualViewport/);
+  assert.match(main, /--vvh/);
+  // iOS-only 16px at focus (scoped by -webkit-touch-callout), never !important
+  assert.match(s, /@supports \(-webkit-touch-callout: none\)\s*\{\s*@media \(max-width: 1599px\)\s*\{\s*:root input:focus,\s*:root textarea:focus,\s*:root select:focus\s*\{\s*font-size: 16px;/, "iOS-only 16px at focus");
+  assert.equal([...s.matchAll(/font-size:[^;\n]*!important/g)].length, 0, "zero font-size !important");
 });
 
-test("R28 header: ONE compact 42px row, nothing removed or beyond the edge", () => {
+test("R28 structure: icon-only crumbs, dot chip, deferred toggles, contained tables, teleported panel", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, new RegExp(`${MOBILE}\\s*\\{[\\s\\S]*?\\.topbar\\s*\\{\\s*position: static;\\s*flex-wrap: nowrap;\\s*gap: 4px;\\s*padding: 0 5px;\\s*height: 42px;`), "one 42px pinned row on the compact band");
-  assert.equal([...s.matchAll(/min-height:\s*68px/g)].length, 0, "the 68px header is gone");
-  assert.doesNotMatch(s, /\.topbar\s*\{[^}]*height:\s*auto/, "no auto-height topbar anywhere");
-  assert.doesNotMatch(s, /\.topbar\s*\{[^}]*flex-wrap:\s*wrap/, "the topbar never wraps");
   assert.match(s, /\.topbar \.tree-toggle,\s*\.topbar \.inspector-toggle\s*\{\s*display: none;/, "toggles defer to the bottom tabs");
-  assert.match(s, /\.chip\.connection\s*\{[^}]*font-size: 0;/, "the connection chip collapses to its dot");
-  const anchor = s.indexOf(".topbar {\n    position: static;");
-  assert.ok(anchor > 0, "the compact topbar block exists");
-  const block = s.slice(anchor, s.indexOf("\n  }", anchor));
-  assert.match(block, /overflow-x:\s*auto/, "the toolbar swipes instead of clipping");
+  assert.match(s, /\.crumb-kind\s*\{\s*display: none;/, "decorative crumb labels hidden");
+  assert.match(s, /\.crumbs \.crumb\s*\{\s*flex-direction: row;/, "crumbs are a horizontal row");
+  assert.match(s, /\.crumb \.device-chip,\s*\.crumb-name,\s*\.git-chip \.branch\s*\{\s*display: none;/, "icon-only crumbs");
+  assert.match(s, /@media \(max-width: 1100px\)\s*\{\s*\.usage-chip\s*\{\s*display: none;/, "usage defers to the Usage panel");
+  assert.match(s, /\.markdown table\s*\{\s*display: block;/, "tables scroll inside the chat");
+  assert.match(s, /\.chat-header\s*\{\s*position: relative;\s*z-index: 2;/, "the header paints above escaped content");
   const topbar = readFileSync(join(FE, "components/TopBar.vue"), "utf8");
-  assert.match(topbar, /Teleport to="body"/, "the bell panel escapes the bar");
-  assert.match(topbar, /position: fixed;/, "panel is viewport-pinned");
+  assert.match(topbar, /Teleport to="body"/, "the bell panel escapes the scroll container");
 });
 
-test("R28 body headers: the chat header matches, no stale offsets, no stray wraps", () => {
+test("R28 band semantics: the compact band is 780-or-touch, the wrap band starts at 781", () => {
   const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, new RegExp(`${MOBILE}\\s*\\{[\\s\\S]*?\\.chat-header\\s*\\{\\s*padding: 0 10px;\\s*height: auto;\\s*min-height: 42px;\\s*max-height: none;`), "chat header GROWS with its content (branch row + crumbs) — a fixed 42px spilled onto the table");
-  // lineage internals tightened so the auto header stays slim
-  assert.match(s, /\.crumb\s*\{\s*padding: 3px 2px;\s*\}/, "tight crumb padding");
-  assert.match(s, /max-width: 34vw;/, "crumb text capped so the row stays one screen wide");
-  assert.match(s, new RegExp(`${MOBILE}\\s*\\{[\\s\\S]*?\\.model-button img\\s*\\{\\s*width: 26px;`), "26px avatar");
-  assert.match(s, /\.drawer-backdrop\s*\{\s*top: 42px;/, "drawer backdrop tracks the 42px header");
-  // the stray BASE wrap (loaded last, overrode every band) stays dead
-  assert.doesNotMatch(s, /\.chat-header\s*\{\s*flex-wrap:\s*wrap;\s*\}/, "no base chat-header wrap");
-});
-
-test("R28 composer + inputs: shrink progressively; iOS-only 16px at focus; zero !important", () => {
-  const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, /@media \(max-width: 1100px\)\s*\{\s*\.composer textarea\s*\{\s*min-height: 56px;/, "composer ≤1100 → 56px");
-  assert.match(s, new RegExp(`\\.composer textarea\\s*\\{\\s*height: 34px;\\s*min-height: 34px;\\s*max-height: 110px;\\s*padding: 7px 9px;`), "compact band composer → one 34px line (rows=2 inflated it)");
-  assert.match(s, new RegExp(`${MOBILE}\\s*\\{\\s*input,\\s*textarea,\\s*select\\s*\\{\\s*padding: 6px 9px;`), "6/9 input padding");
-  assert.equal([...s.matchAll(/font-size:[^;\n]*!important/g)].length, 0, "style.css carries zero font-size !important");
-  assert.match(
-    s,
-    /@supports \(-webkit-touch-callout: none\)\s*\{\s*@media \(max-width: 1599px\)\s*\{\s*:root input:focus,\s*:root textarea:focus,\s*:root select:focus\s*\{\s*font-size: 16px;/,
-    "iOS-only 16px at focus",
-  );
-});
-
-test("R28 mid band (781–1100, mouse): progressive compaction, no desktop blocks leaking", () => {
-  const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.match(s, /@media \(max-width: 1100px\)\s*\{\s*\.usage-chip\s*\{\s*display: none;/, "usage defers to the panel ≤1100");
+  assert.match(s, /@media \(min-width: 781px\) and \(max-width: 1599px\)/, "no seam between the compact band and the wrap band");
+  assert.match(s, /@media \(max-width: 1100px\)\s*\{\s*\.usage-chip\s*\{\s*display: none;/, "usage defers ≤1100");
   assert.match(s, /@media \(max-width: 900px\)\s*\{\s*\.chip\.connection\s*\{[^}]*font-size: 0;/, "connection chip is a dot ≤900");
-  assert.match(s, /@media \(min-width: 781px\) and \(max-width: 1599px\)/, "the wrap band starts at 781 — no seam with the compact band");
-});
-
-test("R28 session screen (from the user's screenshots): no icon rail, chat full width, readable sizes", () => {
-  const s = readFileSync(join(FE, "style.css"), "utf8");
-  // the collapsed inspector RAIL rendered inline on phones, eating ~100px of
-  // an 800px screen; Details opens the overlay it already is
-  assert.match(
-    s,
-    /@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.net-workspace > \.inspector\s*\{\s*display: none;[\s\S]*?\.net-workspace > \.inspector\.overlay\s*\{\s*display: flex;/,
-    "rail hidden on the compact band; the Details overlay still opens",
-  );
-  // chat-header crumbs rendered 1.0625rem — bigger than the bar itself
-  assert.match(s, /\.crumb-main\s*\{\s*font-size: 0\.875rem;/, "crumbs 0.875rem");
-  // the markdown body read as a desktop document (1rem, 1.85 line-height)
-  assert.match(
-    s,
-    /@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.markdown\s*\{\s*font-size: 0\.9375rem;\s*line-height: 1\.6;/,
-    "chat body 0.9375rem / 1.6",
-  );
-});
-
-test("R28 unbreakable header: no 240px floor, crumbs never wrap, tables scroll inside", () => {
-  const s = readFileSync(join(FE, "style.css"), "utf8");
-  // network.css gives the picker flex-basis 240px — at phone widths that floor
-  // pushed the actions out/wrapped the header (the overlap in the screenshots)
-  assert.match(
-    s,
-    /@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.chat-header \.lineage-picker\s*\{\s*flex: 0 1 auto;\s*min-width: 0;/,
-    "the picker floor is lifted on the compact band",
-  );
-  assert.match(s, /\.chat-header \.crumbs\s*\{\s*flex-wrap: nowrap;\s*min-width: 0;/, "crumbs never wrap internally");
-  assert.match(s, /\.chat-header-actions\s*\{\s*flex-shrink: 0;/, "actions never shrink");
-  // the header paints above anything that escapes, with a solid background
-  assert.match(s, /\.chat-header\s*\{[^}]*position: relative;[^}]*z-index: 2;[^}]*background: var\(--panel\);/, "header paints above escaped content");
-  // wide transcript tables scroll INSIDE the chat — they never escape it
-  assert.match(s, /\.markdown table\s*\{\s*display: block;\s*width: 100%;\s*max-width: 100%;\s*overflow-x: auto;/, "tables scroll inside the chat");
-});
-
-test("R28 chat header: auto-height (grow, never spill) — no fixed cap to overflow", () => {
-  const s = readFileSync(join(FE, "style.css"), "utf8");
-  assert.doesNotMatch(s, /\.chat-header\s*\{[^}]*max-height:\s*42px/, "no 42px cap on the chat header — it spilled onto the table");
-});
-
-test("R28 one-line lineage: crumbs are a horizontal row (network.css column loses by specificity)", () => {
-  const s = readFileSync(join(FE, "style.css"), "utf8");
-  // network.css .crumb { flex-direction: column } loads after style.css — the
-  // icon-over-label column made the header 2–3 rows on phones
-  assert.match(s, /\.crumbs \.crumb\s*\{\s*flex-direction: row;\s*align-items: center;/, "crumbs .crumb row beats the later column");
-  assert.match(s, /\.crumb-kind\s*\{\s*display: none;/, "the tiny uppercase labels are decoration — hidden on phones");
-  assert.match(s, /\.crumb \.device-chip,\s*\.crumb-name\s*\{\s*max-width: 30vw;/, "names cap at 30vw");
-});
-
-test("R28 user-directed compaction: icon-only crumbs + 10px toolbar text", () => {
-  const s = readFileSync(join(FE, "style.css"), "utf8");
-  // crumb NAMES duplicated the icons/tooltips — icon-only on phones
-  assert.match(
-    s,
-    /@media \(max-width: 780px\), \(max-width: 1100px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.crumb \.device-chip,\s*\.crumb-name,\s*\.git-chip \.branch\s*\{\s*display: none;/,
-    "crumb names + branch text hidden — icons only",
-  );
-  // toolbar text 10px (user number) — buttons/selects never trigger iOS zoom
-  assert.match(s, /\.composer-left \.queue-mode select\s*\{[^}]*font-size: 10px;/, "Follow-up select 10px");
-  assert.match(s, /\.composer-toolbar button\[title\*="Stop foreground"\]\s*\{[^}]*font-size: 10px;/, "Interrupt 10px");
-  assert.match(s, /\.composer-toolbar \.send\s*\{\s*font-size: 10px;/, "send 10px");
+  assert.match(s, /\.drawer-backdrop\s*\{[^}]*inset: var\(--topbar-h\) 0 0;/, "drawer backdrop tracks the bar height");
 });

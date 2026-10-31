@@ -238,18 +238,18 @@ defineExpose({ reload: load });
 .project-bar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 2px 6px 4px;
+  gap: 0.375rem;
+  margin: 0.125rem 0.375rem 0.25rem;
 }
 .project-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .project-title {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   font-size: 0.75rem;
   letter-spacing: 0.06em;
   opacity: 0.6;
@@ -259,22 +259,22 @@ defineExpose({ reload: load });
   opacity: 0.6;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.25rem;
   margin: 0;
 }
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 0.3125rem;
 }
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 0.3125rem;
   max-width: 100%;
-  padding: 3px 8px;
+  padding: 0.1875rem 0.5rem;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   background: none;
   color: var(--fg);
   font-size: 0.875rem;
@@ -294,7 +294,7 @@ defineExpose({ reload: load });
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 160px;
+  max-width: 10rem;
 }
 .chip-count {
   font-style: normal;
@@ -304,19 +304,19 @@ defineExpose({ reload: load });
 }
 .chip-label {
   font-size: 0.6875rem;
-  padding: 0 5px;
-  border-radius: 6px;
+  padding: 0 0.3125rem;
+  border-radius: 0.375rem;
   border: 1px solid var(--line);
   opacity: 0.75;
 }
 .project-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.375rem;
   flex-wrap: wrap;
 }
 .icon-button.tiny {
-  padding: 2px;
+  padding: 0.125rem;
 }
 .labels-hint {
   flex-wrap: wrap;

@@ -101,7 +101,7 @@ async function revoke(): Promise<void> {
 <style>
 .token-manager {
   border: 1px solid var(--border, #333);
-  border-radius: 8px;
+  border-radius: 0.5rem;
   padding: 0.6rem 0.8rem;
   display: flex;
   flex-direction: column;
@@ -123,7 +123,7 @@ async function revoke(): Promise<void> {
   margin-left: auto;
   font-size: 0.7rem;
   padding: 0.05rem 0.5rem;
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   border: 1px solid var(--border, #333);
 }
 .token-manager .pairing-status.paired {

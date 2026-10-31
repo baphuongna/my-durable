@@ -169,20 +169,20 @@ const emit = defineEmits<{ newSession: [] }>();
 </template>
 
 <style scoped>
-.usage-chip { font-size: 0.75rem; opacity: 0.8; margin-right: 6px; white-space: nowrap; }
+.usage-chip { font-size: 0.75rem; opacity: 0.8; margin-right: 0.375rem; white-space: nowrap; }
 .bell-host, .icon-button:has(.bell-dot) { position: relative; }
 .bell-dot {
-  position: absolute; top: -4px; right: -4px; font-size: 0.5625rem; font-style: normal;
-  background: var(--warn, #e5a50a); color: #000; border-radius: 8px; padding: 0 4px;
+  position: absolute; top: -0.25rem; right: -0.25rem; font-size: 0.5625rem; font-style: normal;
+  background: var(--warn, #e5a50a); color: #000; border-radius: 0.5rem; padding: 0 0.25rem;
 }
 .notif-panel {
-  position: fixed; top: calc(var(--topbar-h, 65px) + 5px); right: 6px; z-index: 80; width: 320px; max-height: 340px;
-  overflow: auto; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 10px;
-  padding: 10px 12px; box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
+  position: fixed; top: calc(var(--topbar-h, 4.0625rem) + 0.3125rem); right: 0.375rem; z-index: 80; width: 20rem; max-height: 21.25rem;
+  overflow: auto; background: var(--bg-2, #221a1c); border: 1px solid var(--line); border-radius: 0.625rem;
+  padding: 0.625rem 0.75rem; box-shadow: 0 0.625rem 1.875rem rgb(0 0 0 / 50%);
 }
-.notif-panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.notif-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.notif-panel li { display: flex; gap: 8px; font-size: 0.875rem; opacity: 0.85; }
+.notif-panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.375rem; }
+.notif-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.375rem; }
+.notif-panel li { display: flex; gap: 0.5rem; font-size: 0.875rem; opacity: 0.85; }
 .notif-panel li.unread { opacity: 1; font-weight: 550; }
 .notif-panel .when { opacity: 0.6; font-size: 0.75rem; min-width: 3ch; text-align: right; }
 </style>

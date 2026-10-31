@@ -82,7 +82,7 @@ test("usage panel (fe-host-2): three blocks, share meter, a11y labels", async ()
   assert.match(panel, /var\(--accent\)/, "bars must use var(--accent)");
   assert.match(panel, /var\(--warn, #e5a50a\)/, "high shares must use the warn colour");
   assert.match(panel, /var\(--line\)/, "borders must use var(--line)");
-  assert.match(panel, /border-radius: 10px/, "cards must be 10px rounded");
+  assert.match(panel, /border-radius: 0\.625rem/, "cards rounded (10px-designed, now rem so it scales with the ui)");
   assert.match(panel, /font-variant-numeric: tabular-nums/, "numbers must be tabular");
   assert.match(panel, /<style scoped>/, "styles must be scoped");
 

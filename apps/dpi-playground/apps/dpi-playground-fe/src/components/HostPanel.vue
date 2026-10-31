@@ -159,22 +159,22 @@ async function refresh() {
 .host-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 4px 2px 12px;
+  gap: 0.75rem;
+  padding: 0.25rem 0.125rem 0.75rem;
   font-size: 1rem;
 }
 .vitals-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(9.375rem, 1fr));
+  gap: 0.625rem;
 }
 .vital {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
+  gap: 0.125rem;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0.625rem;
 }
 .vital .label,
 .meter .label {
@@ -196,17 +196,17 @@ async function refresh() {
 .meter {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .meter-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 12px;
+  gap: 0.75rem;
 }
 .bar {
-  height: 8px;
-  border-radius: 999px;
+  height: 0.5rem;
+  border-radius: 62.4375rem;
   background: var(--line);
   overflow: hidden;
 }

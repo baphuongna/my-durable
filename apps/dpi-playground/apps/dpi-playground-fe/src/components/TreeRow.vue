@@ -261,7 +261,7 @@ const title = computed(() => {
 
 <style scoped>
 .bulk-check {
-  margin-left: 2px;
+  margin-left: 0.125rem;
   flex-shrink: 0;
 }
 </style>
