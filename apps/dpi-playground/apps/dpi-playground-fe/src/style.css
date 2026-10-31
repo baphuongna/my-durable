@@ -1233,7 +1233,10 @@ svg {
   font-weight: 600;
 }
 .markdown code {
-  font-size: 1rem;
+  /* r29 (user screenshot): mono at the same px reads BIGGER than the prose
+     around it (taller x-height + chip background) — 0.875em restores optical
+     parity on every band; em rides the surrounding context. */
+  font-size: 0.875em;
   background: #3a2628;
   padding: 0.125rem 0.3125rem;
   border-radius: 0.25rem;
@@ -3568,7 +3571,10 @@ select:focus {
     width: 100%;
     max-width: 100%;
     overflow-x: auto;
-    white-space: nowrap;
+    /* r29 (user screenshot): nowrap clipped long worktree paths at the edge
+       — a scroll the user must discover is lost content. Let cells wrap. */
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 
