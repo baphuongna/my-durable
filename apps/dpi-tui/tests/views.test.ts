@@ -161,7 +161,7 @@ test("renderStatusbar: NORMAL chip, per-view keymap, ctx + device on the right",
   }
   assert.match(
     stripAnsi(renderStatusbar(100, { view: "herd", device: "d" })),
-    /j\/k move.*1-4 views/,
+    /j\/k move.*1-5 views/,
     "herd keymap on the dashboard",
   );
   // Usability pass: the viewbar TEACHES the digit keys — active or not, every

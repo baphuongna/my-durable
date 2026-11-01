@@ -10,14 +10,16 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { VIEW_TABS, renderViewbar, type View } from "../src/views.ts";
 import { stripAnsi } from "./harness/strip.ts";
 
-test("VIEW_TABS: order and labels are exactly network/herd/agent/log", () => {
+// Run-12: VIEW_TABS gained a 5th tab ("ops" — the device-ops dashboard), so
+// the pin now expects network/herd/agent/log/ops in that digit order.
+test("VIEW_TABS: order and labels are exactly network/herd/agent/log/ops", () => {
   assert.deepEqual(
     VIEW_TABS.map((t) => t.id),
-    ["network", "herd", "agent", "log"],
+    ["network", "herd", "agent", "log", "ops"],
   );
   assert.deepEqual(
     VIEW_TABS.map((t) => t.label),
-    ["network", "herd", "agent", "log"],
+    ["network", "herd", "agent", "log", "ops"],
   );
 });
 

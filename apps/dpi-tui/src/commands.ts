@@ -4,7 +4,7 @@ import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import type { App } from "./app.ts";
 import { sanitizeTerminal, oneLine } from "./sanitize.ts";
 export { oneLine };
-import { Panel, pickAgent, pickDevice, pickModel, pickSession, pickThinking } from "./pickers.ts";
+import { Panel, pickAgent, pickDevice, pickEnv, pickModel, pickNotify, pickSession, pickSchedules, pickThinking } from "./pickers.ts";
 import { parsePairArgs, runPairing } from "./pairing.ts";
 import { gitStateSuffix } from "./views.ts";
 import { c } from "./theme.ts";
@@ -39,6 +39,14 @@ export const COMMANDS: SlashCommand[] = [
         .filter((s) => s.startsWith(prefix))
         .map((s) => ({ value: s, label: s })),
   },
+  // run-12 device-ops doors. None takes an argument — each opens a picker
+  // (or, for :usage/:vitals, dumps straight to the toast + log view), so there
+  // are no subcommands to complete; the row hotkeys live in the pickers.
+  { name: "schedules", description: "scheduled sessions: run now, toggle, delete, create" },
+  { name: "env", description: "the device's env file: view, edit, set, remove" },
+  { name: "notify", description: "notify sinks: list them and fire a test event" },
+  { name: "usage", description: "token/cost rollup — toast + log view" },
+  { name: "vitals", description: "device health: uptime, memory, disk, lag, git spawns" },
   { name: "help", description: "keys and commands" },
   { name: "quit", description: "exit (the agent keeps running)" },
 ];
@@ -102,6 +110,97 @@ async function gitCommand(app: App, arg: string) {
     app.notify(`${op} ✓ (log view: L)`);
   } catch (e) {
     app.notify(`git ${op}: ${(e as Error).message.slice(0, 80)}`);
+  }
+}
+
+// ---------------------------------------------- run-12: :usage and :vitals
+
+/** Bytes → "8.0G" / "512M" / "42B" — one toast/log line, not a spreadsheet. */
+export function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  const units = ["K", "M", "G", "T"];
+  let v = n;
+  let i = -1;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return i < 0 ? `${n}B` : `${v >= 100 ? Math.round(v) : v.toFixed(1)}${units[i]}`;
+}
+
+/** Seconds → "2d3h" / "5h01m" / "12m" / "45s" (run-12 vitals rows). */
+export function fmtDur(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return `${d}d${h}h`;
+  if (h) return `${h}h${String(m).padStart(2, "0")}m`;
+  if (m) return `${m}m`;
+  return `${s}s`;
+}
+
+/** /vitals (run-12) — the :git status shape: headline toast, full report in
+ * the log view. Read-only, so there is nothing to confirm anywhere here. */
+async function vitalsCommand(app: App) {
+  try {
+    const v = await app.client.vitals();
+    // r12 review m2: a device on a pre-0.0.117 build omits eventLoop/gitSpawns
+    // — degrade to 0s instead of throwing the whole command away (the ops
+    // view's renderer already defends the same way).
+    const lag1m = Number(v.eventLoop?.lagMsMax1m) || 0;
+    const lagLast = Number(v.eventLoop?.lagMsLast) || 0;
+    const samples = Number(v.eventLoop?.samples) || 0;
+    const gitLive = Number(v.gitSpawns?.live) || 0;
+    const gitQ = Number(v.gitSpawns?.queued) || 0;
+    const gitQh = Number(v.gitSpawns?.queuedHigh) || 0;
+    app.notify(
+      `up ${fmtDur(v.uptime)} · mem ${fmtBytes(v.memory.usedBytes)}/${fmtBytes(v.memory.totalBytes)} · disk ${fmtBytes(v.disk.freeBytes)} free · lag ${lag1m}ms (log view: L)`,
+    );
+    app.logEvent("vitals", `uptime ${fmtDur(v.uptime)} · process ${fmtDur(v.processUptime)} · pid ${v.pid} · ${v.cpuCount} cpu`);
+    app.logEvent("vitals", `load ${v.loadavg.join(" / ")}`);
+    app.logEvent(
+      "vitals",
+      `mem used ${fmtBytes(v.memory.usedBytes)} · free ${fmtBytes(v.memory.freeBytes)} · rss ${fmtBytes(v.memory.processRssBytes)} · heap ${fmtBytes(v.memory.heapUsedBytes)} of ${fmtBytes(v.memory.totalBytes)}`,
+    );
+    app.logEvent(
+      "vitals",
+      `disk ${oneLine(v.disk.path)} — ${fmtBytes(v.disk.freeBytes)} free of ${fmtBytes(v.disk.totalBytes)}${v.disk.known ? "" : " (size unknown)"}`,
+    );
+    app.logEvent("vitals", `event-loop lag ${lagLast}ms last · ${lag1m}ms max/1m · ${samples} samples`);
+    app.logEvent("vitals", `git spawns ${gitLive} live · ${gitQ} queued · ${gitQh} queued-high`);
+    if (v.counts) app.logEvent("vitals", `sessions ${v.counts.sessions} live · ${v.counts.archived} archived`);
+  } catch (e) {
+    app.notify(`vitals: ${(e as Error).message.slice(0, 80)}`, true);
+  }
+}
+
+/** /usage (run-12) — same shape: tokens/cost headline, per-model/-session/
+ * -project detail in the log view. Each list is top-sliced so one command
+ * cannot flood the 500-entry log ring. */
+async function usageCommand(app: App) {
+  try {
+    const u = await app.client.deviceUsage();
+    const tok = (n: number) => n.toLocaleString("en-US");
+    const usd = (n: number) => `$${n.toFixed(2)}`;
+    app.notify(
+      `usage: ${tok(u.totals.tokens)} tokens · ${usd(u.totals.cost)} · ${u.sessions.length} session${u.sessions.length === 1 ? "" : "s"} (log view: L)`,
+    );
+    app.logEvent(
+      "usage",
+      `device rollup · ${u.sessions.length} sessions · ${u.projects.length} projects · ${u.models.length} models`,
+    );
+    for (const m of u.models.slice(0, 12))
+      app.logEvent(
+        "usage",
+        `  ${oneLine(m.key)} — ${tok(m.tokens)} tok · ${usd(m.cost)} (in ${tok(m.input)} · out ${tok(m.output)} · cache ${tok(m.cacheRead)})`,
+      );
+    for (const s of [...u.sessions].sort((a, b) => b.tokens - a.tokens).slice(0, 8))
+      app.logEvent("usage", `  ${oneLine(s.name)} — ${tok(s.tokens)} tok · ${usd(s.cost)} · ${s.agents} agent${s.agents === 1 ? "" : "s"} · ${oneLine(s.cwd)}`);
+    for (const p of u.projects.slice(0, 8))
+      app.logEvent("usage", `  ${oneLine(p.name)} — ${tok(p.tokens)} tok · ${usd(p.cost)} · ${p.sessions} session${p.sessions === 1 ? "" : "s"} · ${oneLine(p.rootPath)}`);
+  } catch (e) {
+    app.notify(`usage: ${(e as Error).message.slice(0, 80)}`, true);
   }
 }
 
@@ -235,6 +334,22 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
     }
     case "git":
       await gitCommand(app, arg);
+      break;
+    // run-12: the five device-ops doors — the pickers own their row hotkeys.
+    case "schedules":
+      await pickSchedules(app);
+      break;
+    case "env":
+      await pickEnv(app);
+      break;
+    case "notify":
+      await pickNotify(app);
+      break;
+    case "usage":
+      await usageCommand(app);
+      break;
+    case "vitals":
+      await vitalsCommand(app);
       break;
     case "pair":
       await runPairing(app, parsePairArgs(arg));

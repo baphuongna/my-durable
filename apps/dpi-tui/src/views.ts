@@ -3,22 +3,32 @@
 // App chrome. Pure string builders — no TTY, no timers — so every line is
 // unit-testable exactly like the reference's frame(w, h).
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import type { SessionSummary } from "../../dpi-sdk/src/api.ts";
+import type {
+  DeviceUsageReport,
+  DeviceVitals,
+  EnvFileView,
+  NotifySinkView,
+  ScheduleView,
+  SessionSummary,
+} from "../../dpi-sdk/src/api.ts";
 import type { GitStatus } from "../../dpi-sdk/src/client.ts";
 import type { DeviceRow } from "../../dpi-sdk/src/node/registry.ts";
 import { c, STATE_COLOR, STATE_GLYPH, type RowState } from "./theme.ts";
 import { oneLine, sanitizeTerminal } from "./sanitize.ts";
 
-export type View = "herd" | "network" | "agent" | "log";
+export type View = "herd" | "network" | "agent" | "log" | "ops";
 
 export const VIEW_TABS: { id: View; label: string }[] = [
   // Order = the user's journey (and the digit keys): land in the network
   // (hub-first boot), pick a session into the herd dashboard, converse in the
-  // agent view, watch the log. Tab cycles the same order.
+  // agent view, watch the log. Tab cycles the same order. Run-12 adds view 5
+  // "ops" — the device-ops surfaces (vitals/usage/schedules/env/notify) the
+  // SDK already exposed but no view rendered; digit 5 rides the same tab.
   { id: "network", label: "network" },
   { id: "herd", label: "herd" },
   { id: "agent", label: "agent" },
   { id: "log", label: "log" },
+  { id: "ops", label: "ops" },
 ];
 
 const rep = (ch: string, n: number) => ch.repeat(Math.max(0, n));
@@ -257,9 +267,9 @@ export function renderNetwork(
 
 /**
  * The one-line viewbar under the header: active tab inverse + a right-aligned
- * hint. Every view carries its digit (1 network · 2 herd · 3 agent · 4 log) —
- * the digit keys work EVERYWHERE, so view switching is one glance away instead
- * of three mnemonics (g/N/L) to memorize.
+ * hint. Every view carries its digit (1 network · 2 herd · 3 agent · 4 log ·
+ * 5 ops) — the digit keys work EVERYWHERE, so view switching is one glance
+ * away instead of three mnemonics (g/N/L) to memorize.
  */
 export function renderViewbar(w: number, view: View, right: string): string {
   const tabs = VIEW_TABS.map((t, i) =>
@@ -280,7 +290,9 @@ export function renderStatusbar(
     ? ["tab complete", "↑ history", "enter send", "esc cancel"]
     : opts.view === "agent"
       ? ["g herd", "N network", "L log", "[ ] tabs", "m message"]
-      : ["j/k move", "↵ open", "1-4 views", "⇥ tabs", "esc agent"];
+      : opts.view === "ops"
+        ? ["j/k scroll", "R refresh", "1-5 views", ": palette", "esc herd"]
+        : ["j/k move", "↵ open", "1-5 views", "⇥ tabs", "esc agent"];
   // Catalog miss degrades to "?" (R5 finding 5): "—" read as "no usage yet",
   // when it actually means the window is unknown — a different problem.
   const right = `${c.muted("ctx")} ${opts.ctxLeft === undefined ? c.muted("?") : c.text(`${opts.ctxLeft}%`)}${opts.background ? c.muted(` · ${opts.background} bg`) : ""}  ${c.muted("dev")} ${c.text(fit(oneLine(String(opts.device ?? "")), 18))}`;
@@ -386,4 +398,160 @@ export function joinPanel(
       `${padTo(table[i] ?? "", tableW)}${c.muted("│")}${panel[i] ?? rep(" ", Math.max(0, w - tableW - 1))}`,
     );
   return out;
+}
+
+// ------------------------------------------------------------------- ops
+
+/**
+ * View 5 "ops" data (run-12): the five device-ops reads the SDK client
+ * already exposed (vitals/deviceUsage/schedules/envView/notifySinks) but no
+ * TUI surface rendered. Each section is optional and fails ALONE — a 500 on
+ * /v1/schedules must not blank vitals — so the app fetches them
+ * independently and renderOps degrades per section.
+ */
+export interface OpsData {
+  vitals?: DeviceVitals;
+  usage?: DeviceUsageReport;
+  schedules?: ScheduleView[];
+  env?: EnvFileView;
+  sinks?: NotifySinkView[];
+}
+
+/** Per-section fetch failures (run-12): keyed like OpsData, shown inline. */
+export type OpsErrors = Partial<Record<keyof OpsData, string>>;
+
+/** Host-health seconds → "3d 4h" / "5h 12m" / "42m" — compact, like ageOf. */
+const uptimeOf = (seconds: number) => {
+  const t = Math.max(0, Math.floor(Number(seconds) || 0));
+  const d = Math.floor(t / 86400);
+  const h = Math.floor((t % 86400) / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  return `${m}m`;
+};
+
+/** Bytes → "512MiB"-style, 1 decimal under 100 (the vitals mem/disk rows). */
+const humanBytes = (n: number) => {
+  let v = Math.max(0, Number(n) || 0);
+  let u = 0;
+  while (v >= 1024 && u < 4) {
+    v /= 1024;
+    u += 1;
+  }
+  return `${u === 0 || v >= 100 ? Math.round(v) : v.toFixed(1)}${["B", "KiB", "MiB", "GiB", "TiB"][u]}`;
+};
+
+/** The schedule clock the device computed → "in 42m" / "due" / "—". */
+const nextIn = (at: number | null | undefined, now: number) => {
+  if (at === null || at === undefined) return "—";
+  const s = Math.floor((at - now) / 1000);
+  if (s <= 0) return "due";
+  if (s < 60) return `in ${s}s`;
+  if (s < 3600) return `in ${Math.floor(s / 60)}m`;
+  if (s < 86400) return `in ${Math.floor(s / 3600)}h`;
+  return `in ${Math.floor(s / 86400)}d`;
+};
+
+/**
+ * The ops view body (run-12): stacked compact sections — VITALS (uptime ·
+ * mem/disk · event-loop lag · gitSpawns live/queued+high), USAGE, SCHEDULES
+ * (●/○ enabled glyph, device-computed next run), ENV (key=masked, truncated
+ * to width), NOTIFY sinks. Section headers ride the theme accent like the
+ * herd panel's OVERVIEW. Pure builder like every other render* here: every
+ * line is width-exact and SINGLE-LINE (run-9 invariant) — device-authored
+ * fields (schedule names, env keys/values, sink urls, disk paths) pass
+ * oneLine at this data boundary exactly like herdRows/networkRows do.
+ */
+export function renderOps(
+  w: number,
+  data: OpsData,
+  opts: { errors?: OpsErrors; loading?: boolean; now?: number } = {},
+): string[] {
+  const now = opts.now ?? Date.now();
+  const lines: string[] = [];
+  const section = (title: string, key: keyof OpsData, rows: () => string[]) => {
+    lines.push(` ${c.accent(title)}`);
+    const err = opts.errors?.[key];
+    if (err !== undefined) lines.push(`  ${c.err(`✗ ${oneLine(String(err ?? ""))}`)}`);
+    else if (data[key] === undefined)
+      // Missing ≠ empty: an unset section is still loading (or never fetched);
+      // an empty one says so in its own rows below.
+      lines.push(`  ${c.muted(opts.loading ? "◌ loading…" : "— no data")}`);
+    else lines.push(...rows());
+    lines.push("");
+  };
+
+  section("VITALS", "vitals", () => {
+    const v = data.vitals!;
+    const out = [
+      `  ${c.muted("up")} ${c.text(uptimeOf(v.uptime))} ${c.muted("proc")} ${c.text(uptimeOf(v.processUptime))} ${c.muted("load")} ${c.text(v.loadavg.map((n) => (Number(n) || 0).toFixed(2)).join(" "))} ${c.muted(`×${Number(v.cpuCount) || 0}`)}`,
+      `  ${c.muted("mem")} ${c.text(`${humanBytes(v.memory.usedBytes)}/${humanBytes(v.memory.totalBytes)}`)} ${c.muted("free")} ${c.text(humanBytes(v.memory.freeBytes))} ${c.muted("rss")} ${c.text(humanBytes(v.memory.processRssBytes))} ${c.muted("heap")} ${c.text(humanBytes(v.memory.heapUsedBytes))}`,
+      `  ${c.muted("disk")} ${v.disk.known ? `${c.text(`${humanBytes(v.disk.freeBytes)}/${humanBytes(v.disk.totalBytes)}`)} ${c.muted("free")} ${c.muted(oneLine(String(v.disk.path ?? "")))}` : c.muted("unknown")}`,
+      // run-12 phase 1 typed these into the SDK: event-loop lag is the stall
+      // loadavg cannot express, and gitSpawns' queued(+high) is the number
+      // that says "a status fan-out is stalling the panel" (run-11 h2-2).
+      `  ${c.muted("evlag")} ${c.text(`${Math.round(Number(v.eventLoop?.lagMsLast) || 0)}ms`)} ${c.muted("last")} ${c.text(`${Math.round(Number(v.eventLoop?.lagMsMax1m) || 0)}ms`)} ${c.muted("max 1m")} ${c.muted(`${Number(v.eventLoop?.samples) || 0} samples`)}`,
+      `  ${c.muted("git")} ${c.text(`${Number(v.gitSpawns?.live) || 0} live`)} ${c.muted("·")} ${c.text(`${Number(v.gitSpawns?.queued) || 0} queued`)}${Number(v.gitSpawns?.queuedHigh) > 0 ? c.warn(` · ${Number(v.gitSpawns.queuedHigh)} high`) : ""}`,
+    ];
+    if (v.counts)
+      out.push(
+        `  ${c.muted("sessions")} ${c.text(String(Number(v.counts.sessions) || 0))} ${c.muted("archived")} ${c.text(String(Number(v.counts.archived) || 0))}`,
+      );
+    return out;
+  });
+
+  section("USAGE", "usage", () => {
+    const u = data.usage!;
+    const sessions = Array.isArray(u.sessions) ? u.sessions : [];
+    const out = [
+      `  ${c.text(`${compact(Number(u.totals?.tokens) || 0)} tokens`)} ${c.muted("·")} ${c.text(`$${(Number(u.totals?.cost) || 0).toFixed(2)}`)} ${c.muted(`· ${sessions.length} session${sessions.length === 1 ? "" : "s"}`)}`,
+    ];
+    for (const s of [...sessions].sort((a, b) => (Number(b.tokens) || 0) - (Number(a.tokens) || 0)).slice(0, 3))
+      out.push(
+        `  ${c.text(oneLine(String(s.name ?? s.id ?? "")))} ${c.muted(`${compact(Number(s.tokens) || 0)} · $${(Number(s.cost) || 0).toFixed(2)}`)}`,
+      );
+    return out;
+  });
+
+  section("SCHEDULES", "schedules", () => {
+    const list = Array.isArray(data.schedules) ? data.schedules : [];
+    if (!list.length) return [`  ${c.muted("no schedules — :schedules to manage")}`];
+    return list.map((s) => {
+      // Exactly one trigger is set (ScheduleRecord); hostile wire data falls
+      // back to "daily ?" instead of throwing.
+      const trigger = s.everyMinutes
+        ? `every ${Number(s.everyMinutes)}m`
+        : `daily ${oneLine(String(s.dailyAt ?? "?"))}`;
+      const glyph = s.enabled ? c.ok("●") : c.muted("○");
+      return `  ${glyph} ${c.text(oneLine(String(s.name ?? s.id)))} ${c.muted(trigger)} ${c.muted(nextIn(s.nextRunAt, now))}${s.running ? c.warn(" · running") : ""}`;
+    });
+  });
+
+  section("ENV", "env", () => {
+    const e = data.env!;
+    const out = [
+      `  ${c.muted(oneLine(String(e.envFile ?? "")))}${e.restartRequired ? c.warn(" · restart required") : ""}`,
+    ];
+    const vars = Array.isArray(e.vars) ? e.vars : [];
+    if (!vars.length) out.push(`  ${c.muted("no env vars")}`);
+    // Values arrive MASKED from the device (EnvVarView); the operator trusts
+    // their own terminal, so the masked form renders as-is, truncated to width.
+    for (const v of vars)
+      out.push(
+        `  ${c.text(oneLine(String(v.key ?? "")))}${c.muted("=")}${c.text(oneLine(String(v.masked ?? "")))}${v.managed ? c.muted(" (managed)") : ""}${v.source === "process" ? c.muted(" (process)") : ""}`,
+      );
+    return out;
+  });
+
+  section("NOTIFY", "sinks", () => {
+    const list = Array.isArray(data.sinks) ? data.sinks : [];
+    if (!list.length) return [`  ${c.muted("no sinks — :notify to test")}`];
+    return list.map((s) => {
+      const glyph = s.enabled ? c.ok("●") : c.muted("○");
+      return `  ${glyph} ${c.muted(oneLine(String(s.kind ?? "")))} ${c.text(oneLine(String(s.url ?? "")))}${s.silencedUntil && s.silencedUntil > now ? c.warn(" · silenced") : ""}`;
+    });
+  });
+
+  return lines.map((l) => fit(l, w));
 }

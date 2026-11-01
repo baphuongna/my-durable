@@ -457,6 +457,21 @@ export interface DeviceUsageReport {
   projects: Array<{ rootPath: string; name: string; tokens: number; cost: number; sessions: number }>;
 }
 
+/**
+ * Event-loop lag vitals (run-12): the wire copy of dpi-backend's
+ * `EventLoopLagVitals` (R7 perf lane). api.ts duplicates wire types by design
+ * — no cross-package imports — so this mirrors the backend shape exactly.
+ * `loadavg` is host-wide and cannot see the device's own stalls; these can.
+ */
+export interface EventLoopLagVitals {
+  /** Worst event-loop delay in the most recent 1 s window, ms (0 before the first window completes). */
+  lagMsLast: number;
+  /** Worst delay across the last 60 windows (a rolling minute), ms. */
+  lagMsMax1m: number;
+  /** Windows sampled so far — grows to 60 as the process ages; <60 right after boot. */
+  samples: number;
+}
+
 /** One device's live host health — asked for on demand, never polled. */
 export interface DeviceVitals {
   /** Seconds the host has been up. */
@@ -475,6 +490,20 @@ export interface DeviceVitals {
   };
   /** Free/total bytes for the volume holding the device's data dir. */
   disk: { path: string; totalBytes: number; freeBytes: number; known: boolean };
+  /**
+   * Event-loop lag (run-12): how long ready JS actually waited to run — the
+   * number `loadavg` cannot express. Backend-side since the R7 perf lane;
+   * typed here now so the run-12 TUI ops view renders it with real SDK types.
+   */
+  eventLoop: EventLoopLagVitals;
+  /**
+   * Git spawn semaphore (run-11 h2-2, typed here in run-12): children live
+   * now, callers waiting for a slot, and how many waiters sit in the
+   * interactive "high" lane — the number that says "a status-batch fan-out
+   * is stalling the panel". Required: the backend always returns it (0.0.117+,
+   * pinned by dpi-backend/tests/git-priority-r11.test.ts).
+   */
+  gitSpawns: { live: number; queued: number; queuedHigh: number };
   pid: number;
   at: number;
   /** Sessions this device knows about; `archived` counts the archive directories. */

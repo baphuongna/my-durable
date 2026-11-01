@@ -12,6 +12,7 @@ import {
   type SelectItem,
 } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
+import type { EnvFileView, NotifySinkView, ScheduleView } from "../../dpi-sdk/src/api.ts";
 import { agentTree, type TreeNode } from "../../dpi-sdk/src/models.ts";
 import { oneLine, sanitizeTerminal } from "./sanitize.ts";
 import type { App } from "./app.ts";
@@ -39,7 +40,9 @@ class Title implements Component {
  */
 export class Picker extends Box {
   list: SelectList;
-  private filter = "";
+  // run-12: protected so ActionPicker can tell "no filter yet" from "typed
+  // something" — its row hotkeys (t/d/n) must yield to an active filter.
+  protected filter = "";
   private title: Title;
   private readonly hintText: string;
   constructor(
@@ -116,6 +119,36 @@ export class Picker extends Box {
       return this.applyFilter();
     }
     this.list.handleInput(data);
+  }
+}
+
+/** A picker whose rows take action hotkeys (run-12 ops surfaces: t/d/n on
+ * /schedules and /env). The hotkey fires on the highlighted row only, and it
+ * yields to an active filter — once the user has typed anything, letters
+ * belong to the filter until backspace empties it, so "find the schedule
+ * whose name has a t in it" still works. */
+export class ActionPicker extends Picker {
+  constructor(
+    label: string,
+    items: SelectItem[],
+    onPick: (item: SelectItem) => void,
+    onCancel: () => void,
+    hint: string,
+    private readonly hotkeys: Record<string, (item: SelectItem) => void>,
+    subtitle?: string,
+  ) {
+    super(label, items, onPick, onCancel, hint, subtitle);
+  }
+  handleInput(data: string) {
+    const act = data.length === 1 ? this.hotkeys[data] : undefined;
+    if (act && !this.filter) {
+      // SelectList reports "nothing selected" as null (empty list) — a
+      // hotkey with no row is a no-op, not a crash.
+      const item = this.list.getSelectedItem();
+      if (item) act(item);
+      return;
+    }
+    super.handleInput(data);
   }
 }
 
@@ -260,7 +293,7 @@ export class Panel extends Box {
 export async function pickSession(app: App) {
   const tree = await app.client.tree();
   const items: SelectItem[] = [
-    { value: "+new", label: "＋ New session", description: `choose a directory on ${sanitizeTerminal(app.device.id)}` },
+    { value: "+new", label: "＋ New session", description: `choose a directory on ${oneLine(app.device.id)}` },
     ...tree.sessions.map((s) => {
       const agents = Array.isArray(s.agents) ? s.agents : [];
       return {
@@ -271,7 +304,7 @@ export async function pickSession(app: App) {
     }),
   ];
   app.overlay(
-    new Picker(`Sessions on ${sanitizeTerminal(app.device.id)}`, items, (item) => {
+    new Picker(`Sessions on ${oneLine(app.device.id)}`, items, (item) => {
       app.closeOverlay();
       if (item.value === "+new") return void newSession(app);
       const s = tree.sessions.find((x) => x.id === item.value)!;
@@ -474,6 +507,323 @@ export function pickDevice(app: App) {
         void app.switchDevice(item.value);
       },
       () => app.closeOverlay(),
+    ),
+  );
+}
+
+// --------------------------------------------- run-12: device-ops pickers
+// The SDK already spoke schedules/env/notify (and the FE already had panels
+// for them) — run-12 gives the SSH operator the same doors from the palette.
+// Every row is composed through oneLine: names, urls, errors and paths below
+// are device-authored and must never split their rendered row (run-9).
+
+/** Wall clock for schedule rows — the device computed the epoch, the operator
+ * reads it in the terminal's own timezone. */
+const fmtClock = (ms: number) => {
+  const d = new Date(ms);
+  const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${d.getDate()} ${d.toLocaleString("en", { month: "short" })} ${hhmm}`;
+};
+
+/** The trigger half of a schedule row: "every 30m" or "daily 09:30".
+ *  dailyAt is device-authored — oneLine at this compose boundary (r12
+ *  review m1: LF here would split the picker row). */
+const triggerOf = (s: Pick<ScheduleView, "everyMinutes" | "dailyAt">) =>
+  s.everyMinutes != null
+    ? `every ${s.everyMinutes}m`
+    : s.dailyAt
+      ? `daily ${oneLine(s.dailyAt)}`
+      : "no trigger";
+
+/**
+ * The /schedules n trigger grammar (run-12): the device clock supports exactly
+ * two triggers — `every <minutes>` (5–1440) and `daily HH:MM` local time. A
+ * cron expression is deliberately NOT accepted: the device would refuse it
+ * anyway, so the palette refuses it first with a re-ask instead of a lost
+ * create call. Exported for unit tests.
+ */
+export function parseScheduleTrigger(text: string): { everyMinutes: number } | { dailyAt: string } | undefined {
+  const t = text.trim().toLowerCase();
+  const every = t.match(/^every\s+(\d+)\s*m?(?:in)?s?$/);
+  if (every) {
+    const n = Number(every[1]);
+    return n >= 5 && n <= 1440 ? { everyMinutes: n } : undefined;
+  }
+  const daily = t.match(/^daily\s+(\d{1,2}):(\d{2})$/);
+  if (daily) {
+    const h = Number(daily[1]);
+    const m = Number(daily[2]);
+    if (h <= 23 && m <= 59) return { dailyAt: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}` };
+  }
+  return undefined;
+}
+
+/** Prompts until the text parses as a trigger; esc (undefined) cancels the
+ * whole new-schedule chain. A bad answer re-asks instead of dead-ending. */
+async function promptScheduleTrigger(app: App) {
+  for (;;) {
+    const text = await app.prompt("Trigger — `every <minutes>` (5-1440) or `daily HH:MM`", "");
+    if (text === undefined) return undefined;
+    const parsed = parseScheduleTrigger(text);
+    if (parsed) return parsed;
+    app.flash("trigger must be `every <minutes>` (5-1440) or `daily HH:MM`", true);
+  }
+}
+
+/**
+ * The /schedules n chain (run-12): name → trigger → cwd (the SAME walkDirs the
+ * new-session flow uses) → prompt text, then one createSchedule call. Model
+ * and retention stay on their device defaults — the palette is a keyboard,
+ * not a form (run-12 Unit B scope).
+ */
+async function newScheduleFlow(app: App) {
+  const name = ((await app.prompt("Schedule name", "")) ?? "").trim();
+  if (!name) return app.flash("new schedule cancelled"), undefined;
+  const trigger = await promptScheduleTrigger(app);
+  if (!trigger) return app.flash("new schedule cancelled"), undefined;
+  const cwd = await walkDirs(app, "");
+  // undefined = esc, null = the device listing failed (already flashed — R4
+  // finding 8 sentinels). Either way the chain stops HERE, honestly.
+  if (cwd === undefined) return app.flash("new schedule cancelled"), undefined;
+  if (cwd === null) return;
+  const text = (await app.prompt("Prompt text for each run", ""))?.trim();
+  if (!text) return app.flash("new schedule cancelled"), undefined;
+  await app.run(async () => {
+    app.setPending(`creating schedule ${name}…`);
+    try {
+      const s = await app.client.createSchedule({ name, cwd, prompt: text, ...trigger });
+      app.flash(`schedule ${oneLine(s.name)} created — ${triggerOf(s)}`);
+      app.logEvent("sched", `created ${oneLine(s.name)} · ${triggerOf(s)} · ${oneLine(cwd)}`);
+    } finally {
+      app.setPending(null);
+    }
+  });
+}
+
+/** /schedules (run-12): list · enter run now · t toggle · d delete · n new. */
+export async function pickSchedules(app: App) {
+  let list: ScheduleView[];
+  try {
+    list = (await app.client.schedules()).schedules;
+  } catch (e) {
+    return app.notify(`schedules: ${(e as Error).message.slice(0, 80)}`, true);
+  }
+  const items: SelectItem[] = [
+    { value: "+new", label: "＋ New schedule", description: "the device runs each one on its own clock" },
+    ...list.map((s) => ({
+      value: s.id,
+      label: `${s.enabled ? "●" : "○"} ${oneLine(s.name)}`,
+      description: `${triggerOf(s)} · next ${s.nextRunAt ? fmtClock(s.nextRunAt) : "—"}${s.running ? " · running now" : ""}${s.lastOutcome ? ` · last ${oneLine(String(s.lastOutcome))}` : ""}`,
+    })),
+  ];
+  app.overlay(
+    new ActionPicker(
+      `Schedules on ${oneLine(app.device.id)}`,
+      items,
+      async (item) => {
+        app.closeOverlay();
+        if (item.value === "+new") {
+          await newScheduleFlow(app);
+          return void pickSchedules(app);
+        }
+        const s = list.find((x) => x.id === item.value)!;
+        await app.run(async () => {
+          const after = await app.client.runSchedule(s.id);
+          app.notify(`▶ ${oneLine(after.name)} — session started (log view: L)`);
+          app.logEvent("sched", `${oneLine(after.name)} triggered by hand · ${triggerOf(after)}`);
+        });
+        // next/last changed — reopen on fresh state rather than showing a stale row.
+        void pickSchedules(app);
+      },
+      () => app.closeOverlay(),
+      "enter run now · t on/off · d delete · n new · esc close",
+      {
+        t: async (item) => {
+          if (item.value === "+new") return;
+          const s = list.find((x) => x.id === item.value)!;
+          app.closeOverlay();
+          await app.run(async () => {
+            const after = await app.client.updateSchedule(s.id, { enabled: !s.enabled });
+            app.notify(`${oneLine(after.name)} ${after.enabled ? "enabled ●" : "disabled ○"}`);
+            app.logEvent("sched", `${oneLine(after.name)} ${after.enabled ? "enabled" : "disabled"}`);
+          });
+          void pickSchedules(app);
+        },
+        d: async (item) => {
+          if (item.value === "+new") return;
+          const s = list.find((x) => x.id === item.value)!;
+          // The same y/n gate /reset asks (R4 finding 4): a destructive door
+          // confirms; esc or anything not starting with y keeps the schedule.
+          const ok = await app.prompt(`Delete schedule ${oneLine(s.name)}? y/n`, "");
+          if (ok === undefined || !ok.trim().toLowerCase().startsWith("y"))
+            return app.flash("delete cancelled"), undefined;
+          app.closeOverlay();
+          await app.run(async () => {
+            await app.client.removeSchedule(s.id);
+            app.notify(`deleted ${oneLine(s.name)}`);
+            app.logEvent("sched", `deleted ${oneLine(s.name)} · ${triggerOf(s)}`);
+          });
+          void pickSchedules(app);
+        },
+        n: async () => {
+          app.closeOverlay();
+          await newScheduleFlow(app);
+          void pickSchedules(app);
+        },
+      },
+    ),
+  );
+}
+
+/** /env (run-12): the device's env file — list, edit, set, remove. Secrets
+ * arrive masked from the backend and are never round-tripped: editing a
+ * secret prefills BLANK (a prefilled mask would overwrite the real value). */
+export async function pickEnv(app: App) {
+  let view: EnvFileView;
+  try {
+    view = await app.client.envView();
+  } catch (e) {
+    return app.notify(`env: ${(e as Error).message.slice(0, 80)}`, true);
+  }
+  const items: SelectItem[] = [
+    { value: "+new", label: "＋ Set variable", description: "add or overwrite one key in the env file" },
+    ...view.vars.map((v) => ({
+      value: v.key,
+      label: `${oneLine(v.key)}=${oneLine(v.masked)}`,
+      description: v.source === "process" || v.managed ? "read-only" : "file · editable",
+    })),
+  ];
+  const editable = (v: { source: string; managed: boolean }) => !(v.source === "process" || v.managed);
+  const editVar = async (key: string) => {
+    const v = view.vars.find((x) => x.key === key);
+    if (!v) return;
+    if (!editable(v))
+      return app.notify(
+        `${oneLine(v.key)} is read-only (${v.managed ? "managed by the device" : "inherited from the process env"})`,
+      );
+    const value = await app.prompt(
+      `Value for ${oneLine(v.key)}${v.secret ? " (secret — the file keeps it masked)" : ""}`,
+      v.secret ? "" : oneLine(v.masked),
+    );
+    if (value === undefined) return app.flash("edit cancelled"), undefined;
+    // An empty submit on a masked row is far more likely a stray enter than an
+    // intent to blank the variable — removing has its own confirmed door (d).
+    if (!value) return app.flash("cancelled — an empty value would clear the variable (d removes)"), undefined;
+    app.closeOverlay();
+    await app.run(async () => {
+      await app.client.setEnvVar(v.key, value);
+      app.notify(`${oneLine(v.key)} saved`);
+      app.logEvent("env", `set ${oneLine(v.key)}`);
+    });
+    void pickEnv(app);
+  };
+  app.overlay(
+    new ActionPicker(
+      `Device env${view.envFile ? ` — ${oneLine(view.envFile)}` : ""}`,
+      items,
+      (item) => {
+        if (item.value === "+new") {
+          app.closeOverlay();
+          void setNewVar(app).then(() => pickEnv(app));
+          return;
+        }
+        void editVar(item.value);
+      },
+      () => app.closeOverlay(),
+      "enter edit · d remove · n set new · esc close",
+      {
+        d: async (item) => {
+          if (item.value === "+new") return;
+          const v = view.vars.find((x) => x.key === item.value);
+          if (!v) return;
+          if (!editable(v)) return app.notify(`${oneLine(v.key)} is read-only`);
+          const ok = await app.prompt(`Remove ${oneLine(v.key)} from the env file? y/n`, "");
+          if (ok === undefined || !ok.trim().toLowerCase().startsWith("y"))
+            return app.flash("remove cancelled"), undefined;
+          app.closeOverlay();
+          await app.run(async () => {
+            await app.client.removeEnvVar(v.key);
+            app.notify(`removed ${oneLine(v.key)}`);
+            app.logEvent("env", `removed ${oneLine(v.key)}`);
+          });
+          void pickEnv(app);
+        },
+        n: async () => {
+          app.closeOverlay();
+          await setNewVar(app);
+          void pickEnv(app);
+        },
+      },
+      // The backend flags this — surfacing it where the edit happens beats a
+      // separate "did my change apply?" trip to the FE.
+      view.restartRequired ? "changed since boot — restart the device to apply" : undefined,
+    ),
+  );
+}
+
+/** The /env n chain: key → value → one setEnvVar call. Re-asks on a key that
+ * could not live in an env file, mirroring promptScheduleTrigger. */
+async function setNewVar(app: App) {
+  let key = "";
+  for (;;) {
+    key = ((await app.prompt("Key (letters, digits, _ — e.g. MY_TOOL_TOKEN)", "")) ?? "").trim();
+    if (!key) return app.flash("set cancelled"), undefined;
+    if (/^[A-Za-z_][A-Za-z0-9_.]*$/.test(key)) break;
+    app.flash("keys start with a letter or _ and carry letters, digits, _ and . only", true);
+  }
+  const value = (await app.prompt(`Value for ${oneLine(key)}`, ""))?.trim();
+  if (!value) return app.flash("set cancelled"), undefined;
+  await app.run(async () => {
+    await app.client.setEnvVar(key, value);
+    app.notify(`${oneLine(key)} saved`);
+    app.logEvent("env", `set ${oneLine(key)}`);
+  });
+}
+
+/** /notify (run-12): list the sinks and fire a test event. NO sink CRUD from
+ * the TUI — sinks hold credentials (webhook URLs, ntfy topics), and the web
+ * FE is their managed home; the palette only proves the pipe works. */
+export async function pickNotify(app: App) {
+  let sinks: NotifySinkView[];
+  try {
+    sinks = (await app.client.notifySinks()).sinks;
+  } catch (e) {
+    return app.notify(`notify: ${(e as Error).message.slice(0, 80)}`, true);
+  }
+  if (!sinks.length)
+    return app.notify("no notify sinks on this device — manage them in the web FE (they hold credentials)");
+  const test = async () => {
+    try {
+      const { results } = await app.client.testNotifySinks();
+      const sent = results.filter((r) => r.status === "sent").length;
+      const failed = results.filter((r) => r.status === "failed").length;
+      const skipped = results.length - sent - failed;
+      app.notify(
+        `notify test: ${sent} sent${failed ? ` · ${failed} failed` : ""}${skipped ? ` · ${skipped} skipped` : ""}${failed ? " (log view: L)" : ""}`,
+      );
+      for (const r of results)
+        app.logEvent(
+          "notify",
+          `${oneLine(r.kind)} ${oneLine(r.id)} — ${r.status}${r.detail ? ` · ${oneLine(r.detail).slice(0, 60)}` : ""}${r.ms != null ? ` · ${r.ms}ms` : ""}`,
+        );
+    } catch (e) {
+      app.notify(`notify test: ${(e as Error).message.slice(0, 80)}`, true);
+    }
+  };
+  app.overlay(
+    new ActionPicker(
+      "Notify sinks (testing only — CRUD lives in the web FE)",
+      sinks.map((s) => ({
+        value: s.id,
+        // kind is device-authored and sits in a LABEL (never LF-normalized
+        // by pi-tui — r12 review m1) — oneLine here, not just the description.
+        label: `${s.enabled ? "●" : "○"} ${oneLine(String(s.kind))}${s.label ? ` ${oneLine(s.label)}` : ""}`,
+        description: `${oneLine(s.url)}${s.lastStatus ? ` · last ${oneLine(String(s.lastStatus))}` : ""}${s.lastError ? ` · ${oneLine(s.lastError).slice(0, 40)}` : ""}${s.silencedUntil && s.silencedUntil > Date.now() ? " · silenced" : ""}`,
+      })),
+      () => void test(),
+      () => app.closeOverlay(),
+      "enter/t test every enabled sink · esc close",
+      { t: () => void test() },
     ),
   );
 }

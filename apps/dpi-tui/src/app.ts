@@ -35,6 +35,7 @@ import {
   renderHerd,
   renderHerdPanel,
   renderNetwork,
+  renderOps,
   renderStatusbar,
   renderViewbar,
   gitStateSuffix,
@@ -42,6 +43,9 @@ import {
   joinPanel,
   networkRows,
   VIEW_TABS,
+  type OpsData,
+  type OpsErrors,
+  type View,
 } from "./views.ts";
 import { appendFileSync } from "node:fs";
 import { fetchHubNetwork } from "./hub-feed.ts";
@@ -58,7 +62,10 @@ export interface DeviceRef {
   token: string;
 }
 
-type View = "herd" | "network" | "agent" | "log";
+// VIEW_TABS and the View union live in views.ts — ONE source of truth shared
+// by the viewbar labels, the digit keys and this app's view state (live-
+// caught: a local copy here kept the old order while the viewbar taught the
+// new one, so 1 printed "network" but opened herd).
 type AgentTab = "transcript" | "tasks" | "tools" | "state" | "config";
 type InputKind = "message" | "filter" | "palette" | "new" | "kill";
 
@@ -98,6 +105,7 @@ const PALETTE: { name: string; hint: string; run: (a: App) => void }[] = [
   { name: "network", hint: "devices and sessions", run: (a) => a.setView("network") },
   { name: "agent", hint: "back to the conversation", run: (a) => a.setView("agent") },
   { name: "log", hint: "device events", run: (a) => a.setView("log") },
+  { name: "ops", hint: "vitals · usage · schedules · env · notify", run: (a) => a.setView("ops") },
   { name: "sessions", hint: "switch or create a session", run: (a) => void a.command("sessions") },
   { name: "agents", hint: "switch agent: roots, forks, subagents", run: (a) => void a.command("agents") },
   { name: "model", hint: "choose this agent's model", run: (a) => void a.command("model") },
@@ -265,6 +273,54 @@ export class App {
   private selectedId?: string;
   /** Long-running fetch note (dirs on a cold tunnel, R4 finding 8): message line. */
   private pendingNote: string | null = null;
+
+  // ops view (run-12) -----------------------------------------------------
+  /** The five device-ops reads, each failing ALONE (see refreshOps). */
+  private opsData: OpsData = {};
+  private opsErrors: OpsErrors = {};
+  private opsLoading = false;
+  /** ~30 s auto-refresh counter while the ops view is on screen (see tick). */
+  private opsTick = 0;
+  /** Rendered ops body lines / height — scrollBy needs them at keypress time. */
+  private lastOpsLen = 0;
+  private lastOpsInner = 0;
+
+  /**
+   * Fetch all five ops sections (run-12): vitals, usage, schedules, env,
+   * notify sinks. One flight at a time — enter, R and the 30 s tick all ride
+   * this door. Loading follows the per-view pattern (setPending on the first
+   * load only); a failing section degrades to its own ✗ line in the view, and
+   * a total outage toasts once (notify) instead of five toasts.
+   */
+  private refreshOps() {
+    if (this.opsLoading) return;
+    this.opsLoading = true;
+    if (!Object.keys(this.opsData).length) this.setPending("loading device ops…");
+    const grab = <K extends keyof OpsData>(key: K, p: Promise<OpsData[K]>) =>
+      p
+        .then((v) => {
+          this.opsData[key] = v;
+          delete this.opsErrors[key];
+          this.requestRender();
+        })
+        .catch((e) => {
+          this.opsErrors[key] = oneLine((e as Error).message || String(e));
+          this.requestRender();
+        });
+    void Promise.allSettled([
+      grab("vitals", this.client.vitals()),
+      grab("usage", this.client.deviceUsage()),
+      grab("schedules", this.client.schedules().then((r) => r.schedules)),
+      grab("env", this.client.envView()),
+      grab("sinks", this.client.notifySinks().then((r) => r.sinks)),
+    ]).then(() => {
+      this.opsLoading = false;
+      this.setPending(null);
+      if (!Object.keys(this.opsData).length && Object.keys(this.opsErrors).length)
+        this.notify(`ops: ${Object.values(this.opsErrors)[0] ?? "device unreachable"}`, true);
+      this.requestRender();
+    });
+  }
 
   constructor(
     device: DeviceRef,
@@ -481,7 +537,11 @@ export class App {
   setView(view: View) {
     this.view = view;
     this.cursor = 0;
-    this.scrollState = FOLLOW_TAIL;
+    // r12 review m4: every other view is a feed (tail = newest), but ops is a
+    // DOCUMENT with VITALS on top — entering at the bottom (NOTIFY) hid the
+    // section an operator opens the view for. Anchor the ops view at the
+    // document top (offset>0 pins viewportTop to the recorded `top` = 0).
+    this.scrollState = view === "ops" ? { offset: 1, top: 0 } : FOLLOW_TAIL;
     if (view === "herd") void this.refreshSessions();
     if (view === "herd") this.refreshBranches();
     if (view === "network") {
@@ -490,6 +550,9 @@ export class App {
       // lost with a reconnecting hub — poll once instead of waiting out the tick.
       if (!this.devicesCache.length && this.mux?.live) this.refreshHubNetwork();
     }
+    // run-12: entering ops loads the device-ops bundle on demand (the backend
+    // serves vitals on request, never polled — same contract as the web panel).
+    if (view === "ops") this.refreshOps();
     this.requestRender();
   }
 
@@ -587,18 +650,17 @@ export class App {
     });
   }
 
-  /** 1-4 switch views (see jump). */
   /**
-   * 1-4 switch views — everywhere, matching the digits printed in the
+   * 1-5 switch views — everywhere, matching the digits printed in the
    * viewbar. Usability pass: digits used to jump the nth session, which only
    * made sense in the herd list and left view switching to three mixed-case
    * mnemonics (g/N/L). Sessions open with j/k + enter, which every list
-   * already teaches in its status line.
+   * already teaches in its status line. Run-12: view 5 is the ops dashboard.
    */
   private jump(n: number) {
     const tab = VIEW_TABS[n - 1];
     if (tab) this.setView(tab.id);
-    else this.notify("views are 1-4 (network · herd · agent · log)");
+    else this.notify("views are 1-5 (network · herd · agent · log · ops)");
   }
 
   private async submit(text: string, mode?: "followUp") {
@@ -720,6 +782,13 @@ export class App {
     else if (data === "g") this.setView("herd");
     else if (data === "N") this.setView("network");
     else if (data === "L") this.setView("log");
+    // run-12: R re-fetches the ops bundle. Verified unbound before use (the
+    // uppercase aliases were g/N/L only); scoped to the ops view anyway so the
+    // four existing views keep their exact keyboard behavior.
+    else if (data === "R" && this.view === "ops") {
+      this.opsTick = 0;
+      this.refreshOps();
+    }
     else if (data === "j" || matchesKey(data, "down")) this.move(1);
     else if (data === "k" || matchesKey(data, "up")) this.move(-1);
     else if (matchesKey(data, "enter")) this.enter();
@@ -886,7 +955,7 @@ export class App {
     if (this.filter) {
       this.filter = "";
       this.notify("filter cleared");
-    } else if (this.view === "agent" || this.view === "log") {
+    } else if (this.view === "agent" || this.view === "log" || this.view === "ops") {
       this.setView("herd");
     }
   }
@@ -906,6 +975,13 @@ export class App {
       // line instead: j/↓ = +1 = toward newer, k/↑ = -1 = toward older — the
       // directions the help panel has always promised.
       this.scrollState = scrollBy(this.scrollState, delta, this.lastContentLen, this.lastInner);
+      this.requestRender();
+      return;
+    }
+    // run-12: the ops body is one stacked document, not a selectable list — j/k
+    // scroll it with the same viewport math the transcript uses (scroll.ts).
+    if (this.view === "ops") {
+      this.scrollState = scrollBy(this.scrollState, delta, this.lastOpsLen, this.lastOpsInner);
       this.requestRender();
       return;
     }
@@ -1103,6 +1179,13 @@ export class App {
       this.hubTick = 0;
       this.refreshHubNetwork();
     }
+    // run-12: the ops view re-reads the device every ~30 s (250 × 120 ms) while
+    // it is the active view — same cadence pattern as the hub feed above, and
+    // gated on the view so background tabs never poll a health endpoint.
+    if (this.view === "ops" && ++this.opsTick >= 250) {
+      this.opsTick = 0;
+      this.refreshOps();
+    }
     this.requestRender();
   }
 
@@ -1167,7 +1250,9 @@ export class App {
         ? `${oneLine(this.device.id)}:${oneLine(session.name)}:${this.agentId ?? 1}` // R20 cold-1 M4
         : this.view === "agent"
           ? "no workspace"
-          : "j/k move · ↵ open";
+          : this.view === "ops"
+            ? "j/k scroll · R refresh"
+            : "j/k move · ↵ open";
     return " " + renderViewbar(w - 2, this.view === "log" ? "log" : this.view, right);
   }
 
@@ -1176,6 +1261,7 @@ export class App {
     if (this.view === "agent") return this.agentBody(w, h);
     if (this.view === "network") return this.networkBody(w, h);
     if (this.view === "log") return this.logBody(w, h);
+    if (this.view === "ops") return this.opsBody(w, h);
     return this.herdBody(w, h);
   }
 
@@ -1208,6 +1294,22 @@ export class App {
       currentSessionId: this.sessionId,
       filter: this.filter,
     }).slice(0, h);
+  }
+
+  // ------------------------------------------------------------------- ops
+
+  /**
+   * The ops view body (run-12): one stacked document, scrolled j/k like the
+   * transcript (scroll.ts absolute-anchor math — new frames must not slide
+   * the page under the operator who scrolled up).
+   */
+  private opsBody(w: number, h: number): string[] {
+    const content = renderOps(w, this.opsData, { errors: this.opsErrors, loading: this.opsLoading });
+    const view = viewportTop(this.scrollState, content.length, h);
+    this.scrollState = view.state;
+    this.lastOpsLen = content.length;
+    this.lastOpsInner = h;
+    return content.slice(view.from, view.from + h);
   }
 
   // ----------------------------------------------------------------- agent
@@ -1419,6 +1521,8 @@ export class App {
           : "esc herd · [ ] tabs · m message";
       return " " + c.muted(hint).slice(0, w);
     }
+    if (this.view === "ops")
+      return " " + c.muted("j/k scroll · R refresh · : palette · / msg · ? help").slice(0, w);
     return " " + c.muted("j/k move · ↵ open · : palette · n new · f filter · / msg · ? help").slice(0, w);
   }
 
@@ -1462,7 +1566,7 @@ export class App {
     // rows drifted every time a label changed — "↵"-style keys made raw
     // padding lie, so pad on visibleWidth before styling.
     const keys: { k1: string; d1: string; k2?: string; d2?: string; muted?: boolean }[] = [
-      { k1: "j k ↑ ↓", d1: "move/scroll", k2: "1-4", d2: "views: net/herd/agent/log" },
+      { k1: "j k ↑ ↓", d1: "move/scroll", k2: "1-5", d2: "views: net/herd/agent/log/ops" },
       { k1: "↵", d1: "open", k2: "g N L", d2: "same views, aliases" },
       { k1: "[ ] t", d1: "agent tabs", k2: "m", d2: "message (enter sends)" },
       // esc is BACK only (R5 finding 7): it never interrupts (the 0.0.52/0.0.58
