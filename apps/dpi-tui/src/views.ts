@@ -492,10 +492,17 @@ export function renderOps(
 
   section("VITALS", "vitals", () => {
     const v = data.vitals!;
+    // run-15 u3-2 (MED): vitals ride the wire as a JSON.parse cast — typed
+    // only by convention, so EVERY shape deref degrades instead of throwing
+    // (the section builder runs on every frame; one bad payload used to kill
+    // the whole ops view). loadavg via Array.isArray; memory/disk via ?.
+    // (humanBytes/uptimeOf already Number-coerce their inputs, eventLoop and
+    // gitSpawns were already optional-chained).
+    const load = Array.isArray(v.loadavg) ? v.loadavg : [];
     const out = [
-      `  ${c.muted("up")} ${c.text(uptimeOf(v.uptime))} ${c.muted("proc")} ${c.text(uptimeOf(v.processUptime))} ${c.muted("load")} ${c.text(v.loadavg.map((n) => (Number(n) || 0).toFixed(2)).join(" "))} ${c.muted(`×${Number(v.cpuCount) || 0}`)}`,
-      `  ${c.muted("mem")} ${c.text(`${humanBytes(v.memory.usedBytes)}/${humanBytes(v.memory.totalBytes)}`)} ${c.muted("free")} ${c.text(humanBytes(v.memory.freeBytes))} ${c.muted("rss")} ${c.text(humanBytes(v.memory.processRssBytes))} ${c.muted("heap")} ${c.text(humanBytes(v.memory.heapUsedBytes))}`,
-      `  ${c.muted("disk")} ${v.disk.known ? `${c.text(`${humanBytes(v.disk.freeBytes)}/${humanBytes(v.disk.totalBytes)}`)} ${c.muted("free")} ${c.muted(oneLine(String(v.disk.path ?? "")))}` : c.muted("unknown")}`,
+      `  ${c.muted("up")} ${c.text(uptimeOf(v.uptime))} ${c.muted("proc")} ${c.text(uptimeOf(v.processUptime))} ${c.muted("load")} ${c.text(load.map((n) => (Number(n) || 0).toFixed(2)).join(" ") || c.muted("—"))} ${c.muted(`×${Number(v.cpuCount) || 0}`)}`,
+      `  ${c.muted("mem")} ${c.text(`${humanBytes(v.memory?.usedBytes)}/${humanBytes(v.memory?.totalBytes)}`)} ${c.muted("free")} ${c.text(humanBytes(v.memory?.freeBytes))} ${c.muted("rss")} ${c.text(humanBytes(v.memory?.processRssBytes))} ${c.muted("heap")} ${c.text(humanBytes(v.memory?.heapUsedBytes))}`,
+      `  ${c.muted("disk")} ${v.disk?.known ? `${c.text(`${humanBytes(v.disk?.freeBytes)}/${humanBytes(v.disk?.totalBytes)}`)} ${c.muted("free")} ${c.muted(oneLine(String(v.disk?.path ?? "")))}` : c.muted("unknown")}`,
       // run-12 phase 1 typed these into the SDK: event-loop lag is the stall
       // loadavg cannot express, and gitSpawns' queued(+high) is the number
       // that says "a status fan-out is stalling the panel" (run-11 h2-2).

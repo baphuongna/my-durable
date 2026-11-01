@@ -237,6 +237,15 @@ let gitSpawnLive = 0;
 // between arrays, holds no slot, wakes nobody, refuses nobody, and changes
 // nothing for waiters that are not aged.
 const GIT_SPAWN_AGE_MS = 10_000;
+/** Run-15 (u2-1): promotion is BOUNDED — at most this many waiters move per
+ *  promoteAgedLowWaiters() call. run-13 promoted the ENTIRE aged prefix at
+ *  once, so a burst of aged fan-out waiters (a big status-batch caught at
+ *  the 10 s line) could splice ahead of EVERY fresh high waiter in one go
+ *  and invert f4's starvation onto interactive traffic. Bounding the batch
+ *  to 2 keeps the inversion two slots deep per release while progress is
+ *  still guaranteed: every acquire(low)/release re-runs the promotion scan,
+ *  so the remaining aged prefix keeps draining at ≤2 per release. */
+const GIT_SPAWN_AGE_BATCH = 2;
 /** Queued waiters — run-13 (f4) gave the low lane an aging clock: a bare
  *  `() => void` could not say HOW LONG it had waited. The high lane shares
  *  the shape so both queues stay one type; its timestamp is unused. */
@@ -281,16 +290,25 @@ function acquireGitSpawn(priority?: "high" | "low"): Promise<void> {
   );
 }
 
-/** run-13 (run-11 cold-review f4): move every low waiter older than
+/** run-13 (run-11 cold-review f4): move low waiters older than
  *  GIT_SPAWN_AGE_MS into the high lane. enqueuedAt is monotone along the
  *  low queue (FIFO tail push), so the aged waiters are always a PREFIX —
  *  spliced off whole, arrival order intact, and inserted behind the
  *  already-promoted head so promotions stay globally FIFO among themselves
- *  while still waking ahead of fresh high traffic. */
+ *  while still waking ahead of fresh high traffic.
+ *  Run-15 (u2-1): the prefix scan stops at GIT_SPAWN_AGE_BATCH waiters per
+ *  call — a bounded inversion (≤2 promoted slots splice ahead of fresh high
+ *  traffic per release) that still guarantees progress, because the scan
+ *  re-runs on every acquire(low) and every release until the prefix drains. */
 function promoteAgedLowWaiters(): void {
   const now = gitSpawnNow();
   let aged = 0;
-  while (aged < gitSpawnQueueLow.length && now - gitSpawnQueueLow[aged]!.enqueuedAt > GIT_SPAWN_AGE_MS) aged++;
+  while (
+    aged < GIT_SPAWN_AGE_BATCH &&
+    aged < gitSpawnQueueLow.length &&
+    now - gitSpawnQueueLow[aged]!.enqueuedAt > GIT_SPAWN_AGE_MS
+  )
+    aged++;
   if (!aged) return;
   const moving = gitSpawnQueueLow.splice(0, aged);
   gitSpawnQueueHigh.splice(gitSpawnPromotedHead, 0, ...moving);

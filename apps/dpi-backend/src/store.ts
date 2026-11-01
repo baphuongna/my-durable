@@ -3239,10 +3239,11 @@ export class Store {
   }
 
   private scheduleView(record: ScheduleRecord): ScheduleView {
-    // The SDK's ScheduleView union (dpi-sdk/src/api.ts) still lists only
-    // "ok" | "failed"; the intermediate outcomes are ordinary wire strings and
-    // dpi-sdk is not this fix's file, so carry the recorded value through with
-    // a narrowing cast. UIs treat the field as opaque text.
+    // Run-15 (u4-2): the SDK's ScheduleView union now carries the registry's
+    // full outcome set ("started"/"interrupted"/"timeout" included — the
+    // intermediate states dispatchSchedule stamps), so the recorded value
+    // passes through typed; the old narrowing cast is gone. UIs treat the
+    // field as opaque text.
     const { lastOutcome, ...rest } = record;
     // R10 Design A: derived count of ring ids no longer live (archived or gone)
     // so the UI can render "keeping last N" truthfully. Bounded: ring ≤ 100.
@@ -3254,7 +3255,7 @@ export class Store {
     }
     return {
       ...rest,
-      ...(lastOutcome === undefined ? {} : { lastOutcome: lastOutcome as ScheduleView["lastOutcome"] }),
+      ...(lastOutcome === undefined ? {} : { lastOutcome }),
       ...(archivedRuns !== undefined ? { archivedRuns } : {}),
       nextRunAt: this.schedules.nextRunAt(record, Date.now()) ?? null,
       running: this.scheduleInFlight.has(record.id),

@@ -309,7 +309,25 @@ export class DeviceMonitor {
             const sessions = Array.isArray(frame.tree?.sessions) ? frame.tree.sessions : [];
             // R9 cold review: bytes, not UTF-16 units — mirrored with the mux
             // relay seam so a multibyte payload cannot pass one and fail the other.
-            const treeText = JSON.stringify(frame.tree);
+            // run-15 u1-4 (LOW): JSON.stringify of a wire-legal deeply-nested
+            // tree (well under TREE_MAX_BYTES on the wire) throws RangeError
+            // past the stack — that used to escape as a device fault: status →
+            // offline, backoff, re-probe, repeat (a disconnected churn loop
+            // driven by ONE hostile frame). Skip the frame + log instead: the
+            // monitor keeps its last good tree, the device keeps its status —
+            // no flap, no churn.
+            let treeText: string;
+            try {
+              treeText = JSON.stringify(frame.tree);
+            } catch (e) {
+              if (e instanceof RangeError) {
+                console.warn(
+                  `[monitor] skipping unserializable tree frame from device ${id}: ${e.message}`,
+                );
+                continue;
+              }
+              throw e;
+            }
             const size = treeText ? Buffer.byteLength(treeText) : 0;
             if (size > TREE_MAX_BYTES || sessions.length > TREE_MAX_SESSIONS) {
               this.update(id, {

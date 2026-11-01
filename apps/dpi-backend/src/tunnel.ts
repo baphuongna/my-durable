@@ -131,12 +131,17 @@ async function readBodyCapped(
 const TEXTUAL_CT_RE = /^(?:text\/|application\/(?:json|javascript|xml|x-www-form-urlencoded)(?:;|$))/i;
 /** base64 inflates by 4/3 and the serialized envelope must still fit the chunk budget
  *  (CHUNK_RAW_BYTES × MAX_CHUNKS_PER_MESSAGE = 16 MiB), so binaries get their own headroom.
- *  R11 3.2 (doc): this 12 MB is the ceiling for EVERY tunnelled binary — an export
+ *  R11 3.2 (doc): this 12 MiB is the ceiling for EVERY tunnelled binary — an export
  *  larger than this refuses with response_too_large (deflate ≈ 3-5× on transcripts,
  *  so most sessions fit; the LOCAL device ceiling is the 256 MiB streaming one in
  *  zip.ts). The asymmetry is physics: textual frames get 16 MiB logical because
- *  they never carry the 4/3 inflation; binaries pay it, so they get 12 MB pre-base64. */
-const BINARY_RESPONSE_MAX_BYTES = 12_000_000;
+ *  they never carry the 4/3 inflation; binaries pay it, so they get 12 MiB pre-base64.
+ *  Run-15 (u4-1): unified to the exact 12 MiB (12_582_912 = 12*1024*1024) that the
+ *  SDK client (BINARY_BODY_MAX) and the hub's LanTransport
+ *  (BINARY_RESPONSE_MAX_BYTES) enforce — the old 12_000_000 was 582_912 bytes
+ *  apart, so a binary could pass one leg and be refused by another.
+ *  binary-caps-parity-r15.test.ts pins all three legs equal. */
+const BINARY_RESPONSE_MAX_BYTES = 12_582_912;
 const safeHeaderValue = (value: string | null | undefined): string | undefined => {
   if (!value) return undefined;
   const clean = value.replace(/[^\x20-\x7E]/g, "").slice(0, 200).trim();
@@ -746,7 +751,7 @@ export class DeviceConnector {
                 ? `Device response exceeds ${LOGICAL_MESSAGE_MAX_BYTES} bytes`
                 : `Binary response exceeds the ${BINARY_RESPONSE_MAX_BYTES}-byte tunnel budget` +
                     // R11 1.3: the two export ceilings must tell ONE story — the
-                    // tunnel cap is 12 MB compressed, the local one 256 MiB raw;
+                    // tunnel cap is 12 MiB compressed, the local one 256 MiB raw;
                     // name the remedies instead of a bare byte count.
                     (frame.path.endsWith("/export")
                       ? " — compact the session (archive old agents), or export it directly from the device"

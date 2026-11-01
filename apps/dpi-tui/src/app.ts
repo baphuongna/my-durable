@@ -518,20 +518,23 @@ export class App {
       // stale rows through an outage, and sessions born while the hub was down
       // only appeared after a manual switch. Refresh once per live transition;
       // the in-flight guard collapses concurrent hellos into one /tree.
+      // run-15 u3-8: the /device re-fetch (R5 finding 5) rides the SAME
+      // single-flight guard — it used to fire per live transition, so a
+      // flapping hub stampeded /tree AND /device in lockstep.
       if (!this.muxSessionsBusy) {
         this.muxSessionsBusy = true;
-        void this.refreshSessions().finally(() => (this.muxSessionsBusy = false));
+        void this.refreshSessions()
+          // …and re-fetch the device info (R5 finding 5): the model catalog rode
+          // the boot-time /device fetch, so after a reconnect the cached catalog
+          // could miss the session's model and the ctx bar died ("ctx —").
+          .then(() => this.client.device({ timeoutMs: 10_000 }))
+          .then((info) => {
+            this.info = info;
+            this.requestRender();
+          })
+          .catch(() => {})
+          .finally(() => (this.muxSessionsBusy = false));
       }
-      // …and re-fetch the device info (R5 finding 5): the model catalog rode
-      // the boot-time /device fetch, so after a reconnect the cached catalog
-      // could miss the session's model and the ctx bar died ("ctx —").
-      void this.client
-        .device({ timeoutMs: 10_000 })
-        .then((info) => {
-          this.info = info;
-          this.requestRender();
-        })
-        .catch(() => {});
     }
     this.requestRender();
   }
@@ -1497,7 +1500,11 @@ export class App {
     if (this.tab === "state") {
       const u = sumUsage(s.usage);
       const state = {
-        device: this.device.id,
+        // run-15 u3-5: the device id is registry/hub-supplied and rides the
+        // JSON.stringify below RAW — the C1 range (OSC/CSI 8-bit) survives both
+        // stringify and the muted() paint, so oneLine at the data boundary like
+        // every other chrome row (R20 cold-1 M4 discipline).
+        device: oneLine(this.device.id),
         session: this.sessionId,
         agent: this.agentId,
         connection: this.connection,

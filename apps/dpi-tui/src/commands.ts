@@ -445,25 +445,35 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       if (!arg) return app.flash("usage: /find <text> — searches every session's transcript", true), true;
       await app.run(async () => {
         const result = await app.client.searchSessions(arg, "all");
-        const shown = result.matches.slice(0, 12);
+        // run-15 u3-3 (MED): the search response is a JSON.parse cast — a
+        // missing/non-array `matches` threw in .slice()/.length and a missing
+        // `where` threw in the Panel body (which re-runs EVERY render, so the
+        // crash looped the whole TUI). Normalize once HERE; the closure below
+        // reads only the coerced list. Sanitize/hit-slicing discipline (R18/R19/R20)
+        // is unchanged.
+        const matches = Array.isArray(result?.matches) ? result.matches : [];
+        const shown = matches.slice(0, 12);
         app.overlay(
           new Panel(() => {
             const lines = [
-              c.bold(c.accent(`"${sanitizeTerminal(arg)}" — ${sanitizeTerminal(String(result.matches.length))} session${result.matches.length === 1 ? "" : "s"}`)),
+              c.bold(c.accent(`"${sanitizeTerminal(arg)}" — ${sanitizeTerminal(String(matches.length))} session${matches.length === 1 ? "" : "s"}`)),
               "",
             ];
-            if (!result.matches.length) lines.push(c.muted("No matches (names, folders, models or transcripts)."));
+            if (!matches.length) lines.push(c.muted("No matches (names, folders, models or transcripts)."));
             for (const m of shown) {
               lines.push(
                 // R20 h5: the match header is in the SAME panel as the fixed hit
               // lines — a \n in a session name split the row above the hits.
-              `${c.secondary(oneLine(m.name))} ${c.muted(oneLine(m.cwd))}${m.where.includes("transcript") ? " " + c.warn("◍ transcript") : ""}`,
+              // run-15 u3-3: `where` is wire-borne too — guard the membership
+              // test so a missing/hostile value renders no marker instead of
+              // throwing (String() keeps array membership semantics).
+              `${c.secondary(oneLine(m.name))} ${c.muted(oneLine(m.cwd))}${String(m.where ?? "").includes("transcript") ? " " + c.warn("◍ transcript") : ""}`,
               );
               for (const hit of (m.hits ?? []).slice(0, 3))
                 lines.push(c.muted(findHitLine(m.name, hit)));
             }
-            if (result.matches.length > shown.length) lines.push(c.muted(`… ${sanitizeTerminal(String(result.matches.length - shown.length))} more`));
-            if (result.scanned?.truncated)
+            if (matches.length > shown.length) lines.push(c.muted(`… ${sanitizeTerminal(String(matches.length - shown.length))} more`));
+            if (result?.scanned?.truncated)
               lines.push(c.muted(`scan budget reached (${sanitizeTerminal(String(result.scanned.entries))} entries) — refine the query`));
             lines.push("", c.muted("esc close"));
             return lines;

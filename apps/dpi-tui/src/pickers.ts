@@ -591,11 +591,16 @@ const fmtClock = (ms: number) => {
 };
 
 /** The trigger half of a schedule row: "every 30m" or "daily 09:30".
- *  dailyAt is device-authored — oneLine at this compose boundary (r12
- *  review m1: LF here would split the picker row). */
+ *  Both halves are device-authored — oneLine at this compose boundary (r12
+ *  review m1: LF here would split the picker row). run-15 u3-1 (HIGH): the
+ *  everyMinutes half used to ride the row RAW while dailyAt was oneLine'd one
+ *  line below — the field is typed number by convention only, and a hostile
+ *  device rode a string OSC payload (␛]0;pwned␇) straight into the terminal.
+ *  Number-coerce exactly like renderOps' SCHEDULES row: a hostile string
+ *  degrades to `every ?m`, never to an escape sequence. */
 const triggerOf = (s: Pick<ScheduleView, "everyMinutes" | "dailyAt">) =>
   s.everyMinutes != null
-    ? `every ${s.everyMinutes}m`
+    ? `every ${Number(s.everyMinutes) || "?"}m`
     : s.dailyAt
       ? `daily ${oneLine(s.dailyAt)}`
       : "no trigger";

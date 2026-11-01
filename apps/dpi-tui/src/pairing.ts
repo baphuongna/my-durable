@@ -160,7 +160,11 @@ export function pairingViewLines(
   lines.push(c.muted(oneLine(`device: ${status.deviceName ?? status.deviceUid ?? "?"} · uid ${status.deviceUid ?? "?"}`)));
   lines.push("");
   lines.push(c.bold("key fingerprint (compare with the hub wizard):"));
-  for (const line of wrapFingerprint(status.fingerprint, width)) lines.push(`  ${c.secondary(oneLine(line))}`);
+  // run-15 u3-7: fingerprint is typed string by convention only — a hostile
+  // pairing status rode a non-string straight into the fingerprint block. A
+  // non-string renders NO chunk rows instead of leaking the raw value.
+  const fpRows = typeof status.fingerprint === "string" ? wrapFingerprint(status.fingerprint, width) : [];
+  for (const line of fpRows) lines.push(`  ${c.secondary(oneLine(line))}`);
   lines.push("");
   if (status.pending) {
     lines.push(c.warn("Awaiting approval on the hub…"));

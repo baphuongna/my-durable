@@ -233,7 +233,14 @@ export interface ProjectPatchBody {
   model?: { provider: string; modelId: string } | "";
 }
 
-/** One row of the device's env-file view. Secrets arrive masked, never verbatim. */
+/**
+ * One row of the device's env-file view. Masking is a NAME heuristic, not a
+ * value classifier: keys matching the device's secret-name list (TOKEN /
+ * SECRET / PASSWORD / PASSWD / API_KEY / *_KEY / CREDENTIAL) arrive masked;
+ * every other key rides verbatim by design — the device cannot know an
+ * unlisted key holds a credential (run-15 u4-3 softened the old "secrets
+ * arrive masked, never verbatim" promise to match this heuristic).
+ */
 export interface EnvVarView {
   key: string;
   masked: string;
@@ -275,6 +282,11 @@ export interface PiAuthWriteResult {
   restartRequired: true;
 }
 
+/**
+ * The whole env-file view. Same masking contract as EnvVarView: only keys
+ * matching the device's secret-name list arrive masked; other values are
+ * verbatim by design (run-15 u4-3).
+ */
 export interface EnvFileView {
   envFile: string;
   exists: boolean;
@@ -396,7 +408,10 @@ export interface ScheduleRecord {
   enabled: boolean;
   lastRunAt?: number;
   lastSessionId?: string;
-  lastOutcome?: "ok" | "failed";
+  /** Run-15 (u4-2): the registry's full outcome union — a run parked between
+   *  start and settle reports "started" (and "interrupted"/"timeout" after a
+   *  crash/timeout); UIs treat the field as opaque text. */
+  lastOutcome?: "ok" | "failed" | "started" | "timeout" | "interrupted";
   lastError?: string;
   /** R10: keep the last N runs' sessions live, archive older ones. Absent = never. */
   keepRuns?: number;

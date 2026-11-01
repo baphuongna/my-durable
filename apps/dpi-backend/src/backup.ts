@@ -36,7 +36,7 @@ import { crc32 } from "./zip.js";
 import { humanBytes } from "./gc.js";
 import { PACKAGE_VERSION } from "./store.js";
 
-export type BackupErrorCode = "invalid" | "device_running" | "not_found";
+export type BackupErrorCode = "invalid" | "device_running" | "not_found" | "gate_timeout" | "too_many_entries";
 
 /** Typed failure, same shape as `ProjectRegistryError`: a CLI picks its exit code from `code`, not from message matching. */
 export class BackupError extends Error {
@@ -61,6 +61,12 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 /** A deeper tree is a symlink loop, not a device home. */
 const MAX_WALK_DEPTH = 64;
+/** Run-15 (u2-3): a runaway home (a symlink explosion, a pathological
+ *  sessions tree) can enumerate far past what any real device holds — cap
+ *  the entries the walk will even LOOK at, so createBackup fails fast with
+ *  a clear fault instead of grinding through millions of stat calls (and
+ *  racing the 256 MiB byte cap, which only fires per-file). */
+export const MAX_WALK_ENTRIES = 200_000;
 
 export interface BackupStat {
   isFile(): boolean;
@@ -123,13 +129,53 @@ export const defaultBackupIo = (): BackupIo => ({
 // job; this gate only serializes what one process can actually race.
 let backupGate: Promise<unknown> = Promise.resolve();
 
+/** Run-15 (u2-2): how long a create/restore CALLER waits (gate queue + op)
+ *  before withBackupGate answers gate_timeout. A hung op (an fs call that
+ *  never settles) used to leave every later caller's promise pending
+ *  forever with nothing to surface — 10 minutes is far past any healthy
+ *  walk/zip/write while still finite. */
+export const BACKUP_GATE_TIMEOUT_MS = 10 * 60 * 1000;
+/** Test seam: the fake io cannot fast-forward a real timer, so the deadline
+ *  itself is swappable (git.ts's setGitClockForTests pattern). Call with no
+ *  argument to restore the production default. */
+let backupGateTimeoutMs = BACKUP_GATE_TIMEOUT_MS;
+export function setBackupGateTimeoutForTests(ms?: number): void {
+  backupGateTimeoutMs = ms ?? BACKUP_GATE_TIMEOUT_MS;
+}
+
 /** Run `op` holding the backup gate — every create/restore passes through
  *  here. FIFO by call order, advisory, failure-safe: a rejected predecessor
- *  still releases (the gate chains on a swallowed catch, never on `run`). */
+ *  still releases (the gate chains on a swallowed catch, never on `run`).
+ *  Run-15 (u2-2): the CALLER races the deadline above, but the gate does
+ *  NOT — backupGate keeps chaining on the raw `run`, so a gate_timeout
+ *  rejects only the caller while the underlying op still owns the gate
+ *  until it settles. The hung op is deliberately not aborted: no io seam
+ *  can cancel a half-written zip, so the honest move is to let it settle
+ *  (or hang) and keep later callers FIFO behind it, each with their own
+ *  timeout instead of an eternal promise. */
 function withBackupGate<T>(op: () => Promise<T>): Promise<T> {
   const run = backupGate.then(op, op);
   backupGate = run.catch(() => {});
-  return run;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new BackupError("gate_timeout", `the backup gate is still busy after ${backupGateTimeoutMs} ms — a create/restore ahead of this one has not settled; retry once it finishes`)),
+      backupGateTimeoutMs,
+    );
+    // NOT unref'd on purpose: the timer IS the caller's surface — a CLI whose
+    // op hung stays alive until the deadline, then exits with the fault
+    // instead of draining silently. clearTimeout below keeps the daemon free
+    // of stray timers once ops settle.
+    run.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 // ---------------------------------------------------------------- create
@@ -177,9 +223,17 @@ async function walkHome(io: BackupIo, home: string, out: string, maxBytes: numbe
   const outAbs = resolve(out);
   const files: WalkedFile[] = [];
   let bytes = 0;
+  let walkedEntries = 0;
   const visit = async (dir: string, depth: number): Promise<void> => {
     if (depth > MAX_WALK_DEPTH) throw invalid(`${dir} nests deeper than ${MAX_WALK_DEPTH} levels — refusing to walk it`);
     for (const name of (await io.readdir(dir)).sort()) {
+      // run-15 (u2-3): count EVERY visited entry (dirs, skips and all) — the
+      // walk refuses runaway enumeration before the next stat, not after.
+      if (++walkedEntries > MAX_WALK_ENTRIES)
+        throw new BackupError(
+          "too_many_entries",
+          `walked more than ${MAX_WALK_ENTRIES} entries under ${home} — this looks like a runaway home (symlink explosion?); refusing to walk further`,
+        );
       if (name === "node_modules") continue;
       const abs = join(dir, name);
       let entry: BackupStat;

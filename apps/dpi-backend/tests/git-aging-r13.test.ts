@@ -182,7 +182,7 @@ test("f4: a promoted batch keeps arrival FIFO and outranks fresh high traffic", 
       await settle();
       assert.match(started.at(-1)!, new RegExp(`${w.replace(/ /g, "\\s+")}$`), `admit order: ${w} next`);
     }
-    assert.equal(gitSpawnStats().queuedAged, aged0 + 3, "one promotion event moved all three aged waiters");
+    assert.equal(gitSpawnStats().queuedAged, aged0 + 3, "cumulative promotions reached three — run-15 (u2-1) bounds each event to GIT_SPAWN_AGE_BATCH, so the third arrived on a later release");
     assert.equal(gitSpawnStats().queued, 0, "every waiter was admitted");
 
     await drain(held);

@@ -156,12 +156,16 @@ export interface GitOpResult {
 
 
 /** r10 h3-1: the SDK client is the trust-boundary reader — every hub leg is
- * capped (transport.ts readBodyCapped 16MiB textual / 12MB binary), but this
+ *  capped (transport.ts readBodyCapped 16 MiB textual / 12 MiB binary), but this
  * client buffered `response.text()` / `arrayBuffer()` whole. A compromised
  * device answering a multi-GB body OOMs the operator's TUI / net scripts /
  * browser export. Cap with hub parity: content-length precheck, then a
  * byte-counting stream read that aborts at the ceiling. Isomorphic: no Buffer. */
 const TEXT_BODY_MAX = 16 * 1024 * 1024;
+/** Run-15 (u4-1): this 12 MiB (12*1024*1024) is THE parity target — the hub's
+ *  LanTransport and dpi-backend's tunnel reader were unified to the same
+ *  number (they were 12_000_000 before, 582_912 bytes apart).
+ *  binary-caps-parity-r15.test.ts pins all three legs equal. */
 const BINARY_BODY_MAX = 12 * 1024 * 1024;
 
 async function readBodyCapped(response: Response, cap: number, what: string): Promise<Uint8Array> {
@@ -486,7 +490,8 @@ export class DpiClient {
         response.status,
       );
     }
-    // r10 h3-1: binary leg — 12MB parity with the hub's readBodyCapped.
+    // r10 h3-1: binary leg — 12 MiB parity with the hub's readBodyCapped
+    // (run-15 u4-1: one cap across all three legs, pinned by the parity test).
     const bytes = await readBodyCapped(response, BINARY_BODY_MAX, "export body");
     // `filename="quoted"` (the device's form) or a bare token, per RFC 6266.
     const disposition = response.headers.get("content-disposition") ?? "";

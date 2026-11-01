@@ -42,20 +42,35 @@ const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 const HUB_ID = "8b9c0d1e-2f3a-4b4c-9d8e-7f6a5b4c3d2e";
 const FINGERPRINT = `sha256:${"3".repeat(64)}`;
 const UID = randomUUID();
-const DEVICE_ID = "churn-dev";
+// run-15: shared with relay-stale-r15.test.ts (raw-text fixtures must match
+// the registry row this harness inserts).
+export const DEVICE_ID = "churn-dev";
 
-interface Ctx {
+/** run-15 u1-*: this harness is shared with tests/relay-stale-r15.test.ts —
+ *  importing this module also registers the r11 tests below (they stay green
+ *  as pinned r11 behavior; run-15 u1-1 re-timed the burst window, see the
+ *  comment inside the h4-5 burst test). */
+export interface Ctx {
   base: string;
   mux: StreamMux;
+  monitor: DeviceMonitor;
   device: { subs: Map<string, string>; subscribes: { subscriptionId: string; sub: string }[] };
   sendToDevice: (frame: unknown) => void;
   broadcastChunked: (frame: unknown) => void;
+  /** run-15: raw wire access — send an arbitrary pre-built message on the
+   *  device WS (the only way to put NON-canonical JSON on the wire:
+   *  sendChunked/broadcastChunked serialize an object, we need raw text). */
+  sendWire: (msg: unknown) => void;
+  /** run-15 u1-2: drop the device WS and bring it back with the SAME
+   *  credentials — the mux follow() loop reconnects (a later while-iteration)
+   *  while the tab's SSE stream stays open. */
+  reconnectDevice: () => Promise<void>;
   waitOnline: () => Promise<void>;
   waitForMuxSubscribe: () => Promise<void>;
   cleanup: () => Promise<void>;
 }
 
-async function setup(): Promise<Ctx> {
+export async function setup(): Promise<Ctx> {
   const dir = await mkdtemp(join(tmpdir(), "dpi-r11-churn-"));
   const registry = new NetworkRegistry(join(dir, "net.sqlite"));
   registry.clearTunnelState();
@@ -94,47 +109,54 @@ async function setup(): Promise<Ctx> {
   const hubPort = (server.address() as { port: number }).port;
 
   const device: Ctx["device"] = { subs: new Map(), subscribes: [] };
-  const ws = new WsClient(`ws://127.0.0.1:${hubPort}/api/tunnel`, {
+  // run-15 u1-2: `ws` is reassignable — reconnectDevice() swaps the socket so
+  // a later while-iteration of mux.follow() exercises the RECONNECT path.
+  let ws = new WsClient(`ws://127.0.0.1:${hubPort}/api/tunnel`, {
     headers: { authorization: `Bearer ${token}` },
   });
-  ws.on("message", (d) => {
-    const msg = JSON.parse(d.toString());
-    if (msg.type === "rest-request" && msg.path === "/v1/device") {
-      ws.send(
-        JSON.stringify({
-          type: "rest-response",
-          reqId: msg.reqId,
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ apiVersion: 1, uid: UID, name: "Churn Dev" }),
-        }),
-      );
-      return;
-    }
-    if (msg.type === "control" && msg.action === "subscribe") {
-      device.subs.set(msg.subscriptionId, msg.sub);
-      device.subscribes.push({ subscriptionId: msg.subscriptionId, sub: msg.sub });
-    }
-  });
+  const bindDevice = (sock: WsClient) => {
+    sock.on("message", (d) => {
+      const msg = JSON.parse(d.toString());
+      if (msg.type === "rest-request" && msg.path === "/v1/device") {
+        sock.send(
+          JSON.stringify({
+            type: "rest-response",
+            reqId: msg.reqId,
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ apiVersion: 1, uid: UID, name: "Churn Dev" }),
+          }),
+        );
+        return;
+      }
+      if (msg.type === "control" && msg.action === "subscribe") {
+        device.subs.set(msg.subscriptionId, msg.sub);
+        device.subscribes.push({ subscriptionId: msg.subscriptionId, sub: msg.sub });
+      }
+    });
+  };
+  const handshake = (sock: WsClient) =>
+    sock.send(
+      JSON.stringify({
+        type: "pair-handshake",
+        v: 1,
+        deviceUid: UID,
+        deviceId: DEVICE_ID,
+        pairingEpoch: epoch,
+        credentialId: (
+          registry.db
+            .prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?")
+            .get(DEVICE_ID) as { credential_id: string }
+        ).credential_id,
+        generation: 1,
+        apiVersion: 1,
+        tunnelProto: 1,
+        keyFingerprint: FINGERPRINT,
+      }),
+    );
+  bindDevice(ws);
   await new Promise<void>((d) => ws.once("open", d));
-  ws.send(
-    JSON.stringify({
-      type: "pair-handshake",
-      v: 1,
-      deviceUid: UID,
-      deviceId: DEVICE_ID,
-      pairingEpoch: epoch,
-      credentialId: (
-        registry.db
-          .prepare("SELECT credential_id FROM tunnel_credentials WHERE device_id=?")
-          .get(DEVICE_ID) as { credential_id: string }
-      ).credential_id,
-      generation: 1,
-      apiVersion: 1,
-      tunnelProto: 1,
-      keyFingerprint: FINGERPRINT,
-    }),
-  );
+  handshake(ws);
   await new Promise<void>((d) => ws.once("message", () => d())); // hello
 
   const monitor = new DeviceMonitor(registry);
@@ -179,13 +201,31 @@ async function setup(): Promise<Ctx> {
         ws.send(JSON.stringify(chunk)),
       );
   };
+  const sendWire = (msg: unknown) => ws.send(JSON.stringify(msg));
+  const reconnectDevice = async () => {
+    ws.terminate();
+    // The old subscriptionIds died with the old socket (a real device forgets
+    // them too); resending their frames on the new connection would trip the
+    // hub's foreign-subscription guard and cut the fresh connection.
+    device.subs.clear();
+    ws = new WsClient(`ws://127.0.0.1:${hubPort}/api/tunnel`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    bindDevice(ws);
+    await new Promise<void>((d) => ws.once("open", d));
+    handshake(ws);
+    await new Promise<void>((d) => ws.once("message", () => d())); // hello
+  };
 
   return {
     base,
     mux,
+    monitor,
     device,
     sendToDevice,
     broadcastChunked,
+    sendWire,
+    reconnectDevice,
     waitOnline: async () => {
       await until(
         () => monitor.state(DEVICE_ID)?.status === "online",
@@ -212,8 +252,9 @@ async function setup(): Promise<Ctx> {
   };
 }
 
-/** Open a browser SSE tab; frames() yields non-hello/non-network mux frames. */
-async function openTab(
+/** Open a browser SSE tab; frames() yields non-hello/non-network mux frames.
+ *  run-15: exported for relay-stale-r15.test.ts (same harness, same tab). */
+export async function openTab(
   base: string,
   keys: string[],
 ): Promise<{ streamId: string; frames: () => AsyncGenerator<any, any, unknown> }> {
@@ -275,8 +316,11 @@ async function openTab(
   return { streamId, frames };
 }
 
-/** Next frame matching pred, or undefined after ms. */
-async function next<T>(
+/** Next frame matching pred, or undefined after ms.
+ *  run-15 caveat: on TIMEOUT the underlying generator keeps ONE armed
+ *  next() that will consume the next arriving frame — only use this when the
+ *  expected outcome is a MATCH, or nothing follows on the same generator. */
+export async function next<T>(
   iter: AsyncGenerator<T, any, unknown>,
   pred: (v: T) => boolean,
   ms: number,
@@ -294,7 +338,7 @@ async function next<T>(
   }
 }
 
-const tree = (id: string, title = "ok") => ({
+export const tree = (id: string, title = "ok") => ({
   uid: UID,
   name: "fixture",
   sessions: [{ id, title }],
@@ -388,19 +432,26 @@ test(
 
       for (let i = 0; i < 10; i++) f.sendToDevice({ type: "tree", tree: tree(`t${i}`) });
 
-      // Drain the tab until 1.2s of silence: the burst is delivered in ms,
-      // so idle time means every tree was relayed or coalesced.
+      // Drain the burst window. run-15 u1-1 re-timing (NOT deletion): the
+      // old "drain until 1.2 s of silence" window waited straight through the
+      // new deferred flush (armed at ≥600 ms after the LAST refused tree) and
+      // would count the flushed NEWEST tree as a burst relay, breaking the
+      // relays+coalesced accounting below. The window now closes as soon as
+      // all 10 trees are accounted for (relayed + coalesced) — that happens
+      // within ms of the burst, long before any timer can fire — and the
+      // deferred-flush convergence itself is pinned in relay-stale-r15.test.ts.
       const seen = new Set<string>();
       const iter = tab.frames();
       const by = Date.now() + 15_000;
       while (Date.now() < by) {
         const r = await Promise.race([
           iter.next(),
-          new Promise<"idle">((res) => setTimeout(() => res("idle"), 1_200)),
+          new Promise<"idle">((res) => setTimeout(() => res("idle"), 150)),
         ]);
-        if (r === "idle" || r.done) break;
-        if (r.value.frame.type === "tree")
+        if (r !== "idle" && !r.done && r.value.frame.type === "tree")
           for (const s of r.value.frame.tree.sessions) seen.add(s.id);
+        if (r !== "idle" && r.done) break;
+        if (seen.size + f.mux.relayStats().coalescedTreeFrames >= 10) break;
       }
       const relayed = seen.size;
       assert.ok(relayed >= 1, "the first tree after connect always relays");
@@ -416,7 +467,7 @@ test(
       assert.equal(
         stats.coalescedTreeFrames + relayed,
         10,
-        "every burst tree either relays or is coalesced — nothing else drops small legal trees",
+        "every burst tree either relays or is coalesced inside the burst window — nothing else drops small legal trees (the deferred flush lands ≥600 ms later, OUTSIDE this re-timed window)",
       );
     } finally {
       await f.cleanup();

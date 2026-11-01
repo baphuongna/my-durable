@@ -224,10 +224,17 @@ function safeAgents(value: unknown): AgentSummary[] {
  * R20 cold-1 M3: both tasks-bearing frame shapes (session + tasks) pass here
  * — non-array input ({} / null) crashed the old inline filter itself, and
  * null/state-less rows crashed the statusbar's every-frame deref.
+ * run-15 u3-4 (MED): the filter kept EVERY well-formed row, so a hostile
+ * device's 5000-row tasks frame was retained whole and walked on every
+ * statusbar pass (per-frame DoS). Keep the NEWEST TASKS_MAX rows — the same
+ * bounded-retention discipline as safeInbox's INBOX_MAX_ITEMS (models.ts:105).
  */
+const TASKS_MAX = 256;
 function safeTasks(value: unknown): TaskNode[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((t): t is TaskNode => !!t && typeof t === "object" && !!(t as { state?: unknown }).state);
+  return value
+    .filter((t): t is TaskNode => !!t && typeof t === "object" && !!(t as { state?: unknown }).state)
+    .slice(-TASKS_MAX);
 }
 
 export class AgentModel extends Emitter {

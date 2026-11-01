@@ -134,7 +134,7 @@ export class LanTransport implements DeviceTransport {
     const textual = ct === undefined || TEXTUAL_CT_RE.test(ct);
     const capped = await readBodyCapped(response, textual ? LOGICAL_MESSAGE_MAX_BYTES : BINARY_RESPONSE_MAX_BYTES);
     if (!capped.ok)
-      throw new DpiError("invalid", `device answer exceeds ${textual ? "16 MiB" : "12 MB"}`, 413);
+      throw new DpiError("invalid", `device answer exceeds ${textual ? "16 MiB" : "12 MiB"}`, 413);
     const raw = capped.bytes;
     // Textual responses keep the legacy plain-string shape; binaries are base64-flagged
     // so the proxy can serve bytes byte-exact (R8 binary passthrough).
@@ -174,10 +174,14 @@ export function transportFor(
 
 /**
  * R17 (run-3 h8): the binary cap mirrors the device connector's own reader
- * (tunnel.ts uses 12_000_000 — aligned exactly so a binary that passes one
- * leg never surprises the other).
+ * so a binary that passes one leg never surprises the other. Run-15 (u4-1):
+ * the three binary legs are now ONE cap — 12 MiB (12_582_912 = 12*1024*1024)
+ * here, in dpi-backend's tunnel.ts, and in the SDK client's BINARY_BODY_MAX.
+ * This leg's old 12_000_000 sat 582_912 bytes under the SDK's 12*1024*1024,
+ * so a body could clear one reader and be refused by the next.
+ * binary-caps-parity-r15.test.ts pins the trio equal.
  */
-const BINARY_RESPONSE_MAX_BYTES = 12_000_000;
+const BINARY_RESPONSE_MAX_BYTES = 12_582_912;
 
 async function readBodyCapped(
   res: Response,

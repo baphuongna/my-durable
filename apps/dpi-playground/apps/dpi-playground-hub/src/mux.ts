@@ -9,7 +9,7 @@ import type { Request, Response } from "express";
 import { DpiError } from "../../../../dpi-sdk/src/errors.js";
 import { transportFor } from "./transport.js";
 import { reassembledFrameBytes } from "./tunnel-transport.js";
-import type { MuxFrame } from "../../../../dpi-sdk/src/api.js";
+import type { Frame, MuxFrame } from "../../../../dpi-sdk/src/api.js";
 import type { NetworkRegistry } from "../../../../dpi-sdk/src/node/registry.js";
 import type { DeviceMonitor, TunnelTransportSource } from "./monitor.js";
 import { ByteBudget } from "../../../../dpi-sdk/src/node/chunk.js";
@@ -79,6 +79,17 @@ function relayWrapperOverhead(key: string): number {
  *  other frame type stays unlimited (scope = h4-5 trees). */
 const TREE_BUCKET_CAPACITY = 4;
 const TREE_BUCKET_REFILL_PER_SEC = 2;
+/** Run-15 u1-1 (MED stale-forever): when the h4-5 bucket refuses a tree,
+ *  the NEWEST refused tree is stashed (ONE slot per follow(), latest-wins)
+ *  and flushed on an unref'd timer as soon as a token refills — coalescing
+ *  alone waited for a "next push" that a quiet device never sends, pinning
+ *  the tab to a stale tree forever (the newest snapshot was exactly the one
+ *  the bucket refused). Initial arm 600 ms (just past the ~500 ms re-push
+ *  window a healthy device uses, so it never fires redundantly); retries
+ *  every 500 ms while the bucket is still exhausted. A delivered tree
+ *  clears the slot (strictly fresher); a newer refused tree replaces it. */
+const TREE_DEFERRED_FLUSH_MS = 600;
+const TREE_DEFERRED_RETRY_MS = 500;
 
 const sseBudget = new ByteBudget("hub-sse", HUB_BUFFER_BUDGET_BYTES);
 
@@ -343,14 +354,14 @@ export class StreamMux {
     // Map keyed by sub.key shared across follow() loops let a second tab on
     // the same key drain this loop's budget, and the entry's deletion on the
     // OTHER tab's exit lazily re-armed a FULL bucket here — bypassable
-    // shaping. Local state has neither seam. Reset to full at every
-    // (re)connect: the device's initial tree (a tab's first full view after a
-    // flap) always relays.
+    // shaping. Local state has neither seam. Full only on the FIRST connect
+    // of this follow() (run-15 u1-2 below): the device's initial tree (a
+    // tab's first full view) always relays.
     let treeTokens = TREE_BUCKET_CAPACITY;
     let treeTokensAt = Date.now();
     /** Consume one tree token (refill TREE_BUCKET_REFILL_PER_SEC, clamped at
      *  capacity; fractional idle credit kept on refuse). False = exhausted —
-     *  the caller coalesces (snapshots supersede each other; the next tree
+ *  the caller coalesces (snapshots supersede each other; the next tree
      *  delivers a strictly fresher view). */
     const admitTree = (): boolean => {
       const now = Date.now();
@@ -366,144 +377,304 @@ export class StreamMux {
       treeTokens = tokens - 1;
       return true;
     };
-    while (!signal.aborted) {
-      await this.monitor.whenOnline(sub.deviceId, signal);
-      if (signal.aborted) return;
-      treeTokens = TREE_BUCKET_CAPACITY;
-      treeTokensAt = Date.now();
-      const device = this.registry.get(sub.deviceId);
-      const transport = device ? transportFor(device, this.tunnel) : undefined;
-      if (!transport?.available) return;
-      try {
-        for await (const frame of transport.watch(
-          { path: sub.path, consumerId: `mux:${sub.key}` },
-          signal,
-        )) {
-          if (!checkDeviceFrame(frame))
-            throw new DpiError("invalid", "Invalid device stream frame");
-          // snapshot/agents/network carry whole-document payloads by design
-          // (a session snapshot includes entries + inbox) and legitimately
-          // exceed the per-event cap — capping them turned a large session's
-          // live view into a fault with no reconnect path.
-          const cap =
-            frame.type === "tree" || frame.type === "snapshot" || frame.type === "agents"
-              ? RELAY_TREE_CAP_BYTES
-              : RELAY_FRAME_CAP_BYTES;
-          const relayCapFault = () =>
+    // run-15 u1-1 (MED stale-forever): coalescing leaned on "the device
+    // re-pushes the next tree within ~500 ms" — a device that goes QUIET
+    // right after a burst left the tab pinned to a stale tree forever.
+    // Keep the refusal convergent: the newest refused tree occupies ONE
+    // per-follow() slot and an unref'd timer delivers it as soon as a token
+    // refills (retrying while exhausted). Cap checks, the session-count
+    // mirror and fault semantics are untouched — only convergence is added.
+    let pendingLatest: { frame: Frame; text?: string } | undefined;
+    let pendingTimer: NodeJS.Timeout | undefined;
+    const stopPending = () => {
+      if (pendingTimer !== undefined) clearTimeout(pendingTimer);
+      pendingTimer = undefined;
+      pendingLatest = undefined;
+    };
+    const stashPending = (frame: Frame, text?: string) => {
+      pendingLatest = { frame, text };
+      if (pendingTimer !== undefined) clearTimeout(pendingTimer);
+      pendingTimer = setTimeout(flushPending, TREE_DEFERRED_FLUSH_MS);
+      pendingTimer.unref();
+    };
+    // The stash is trees-only, so its belt-and-braces fault always cites the
+    // tree cap (same code/message shape as relayCapFault below).
+    const pendingCapFault = () =>
+      stream.send({
+        sub: sub.key,
+        frame: {
+          type: "fault",
+          error: {
+            code: "invalid",
+            message: `Device stream frame exceeds the relay cap (${RELAY_TREE_CAP_BYTES} bytes)`,
+          },
+        },
+      });
+    const flushPending = () => {
+      pendingTimer = undefined;
+      if (pendingLatest === undefined || signal.aborted) {
+        pendingLatest = undefined;
+        return;
+      }
+      if (!admitTree()) {
+        // Bucket still exhausted: keep the newest tree stashed and retry —
+        // the timer keeps trying until a token refills (run-15 u1-1).
+        pendingTimer = setTimeout(flushPending, TREE_DEFERRED_RETRY_MS);
+        pendingTimer.unref();
+        return;
+      }
+      const pending = pendingLatest;
+      pendingLatest = undefined;
+      let text = pending.text;
+      if (text === undefined) {
+        // Raw-path stash (admitted but never serialized yet): the ONE
+        // stringify of this frame happens now, at flush time.
+        try {
+          text = JSON.stringify({ sub: sub.key, frame: pending.frame });
+        } catch (e) {
+          if (e instanceof RangeError) {
+            treeTokens += 1; // run-15 u1-3/u1-4: a violation never burns a token
+            // r15 review m2: the honest message for a stack-overflow frame —
+            // it is NOT over-cap, it is unserializable.
             stream.send({
               sub: sub.key,
               frame: {
                 type: "fault",
                 error: {
                   code: "invalid",
-                  message: `Device stream frame exceeds the relay cap (${cap} bytes)`,
+                  message: "Device stream frame is unserializable (too deeply nested)",
                 },
               },
             });
-          // Run-9 U5/U8: the monitor seam (state owner) degrades oversized
-          // trees — but the RELAY is a pipe, and the tunnel chunk path exists
-          // precisely to deliver legitimately large trees (tunnel-pacing
-          // contract: a 1.5MB chunked tree arrives intact). The pipe's byte
-          // cap is RELAY_TREE_CAP_BYTES; here we mirror only the session-COUNT
-          // policy. Byte parity with the monitor was tried and reverted: it
-          // dropped the chunked-tree contract. A count violation faults —
-          // never silently drops (r9 relay contract), never consumes a token,
-          // and the subscription survives (skip, not cut). Checked FIRST so
-          // both paths below share it (cold-review r11 f3 ordering).
-          if (frame.type === "tree") {
-            const sessions = Array.isArray(frame.tree?.sessions) ? frame.tree.sessions : [];
-            if (sessions.length > TREE_RELAY_MAX_SESSIONS) {
-              this.droppedTreeFrames++;
+            return;
+          }
+          // r15 review m1: this callback runs in a BARE timer context — an
+          // uncaught throw here would tear down the hub process. Unreachable
+          // for wire-parsed frames (JSON.parse yields no cycles/bigints), but
+          // defense in depth: fault instead of crash.
+          stream.send({
+            sub: sub.key,
+            frame: {
+              type: "fault",
+              error: {
+                code: "invalid",
+                message: `Device stream frame could not be serialized (${String((e as Error)?.message ?? e).slice(0, 120)})`,
+              },
+            },
+          });
+          return;
+        }
+      }
+      if (Buffer.byteLength(text) > RELAY_TREE_CAP_BYTES) {
+        // Same belt-and-braces as the live path: non-canonical raw bytes can
+        // re-stringify LONGER than raw (run-15 u1-3 expansion encoding).
+        treeTokens += 1; // run-15 u1-3: a violation never burns a token
+        pendingCapFault();
+        return;
+      }
+      stream.send({ sub: sub.key, frame: pending.frame }, text);
+    };
+    try {
+      while (!signal.aborted) {
+        await this.monitor.whenOnline(sub.deviceId, signal);
+        if (signal.aborted) return;
+        // run-15 u1-2 (LOW): reconnects must NOT mint a fresh bucket — the
+        // old reset-to-full on EVERY (re)connect let a device flap its
+        // stream after a burst and re-arm 4 full tokens per flap, bypassing
+        // the h4-5 coalescing entirely. Only the FIRST connect of this
+        // follow() starts full (the declaration above); every later
+        // iteration carries the remaining fractional tokens. The refill
+        // CLOCK still restarts here, so offline time accrues no credit.
+        treeTokensAt = Date.now();
+        const device = this.registry.get(sub.deviceId);
+        const transport = device ? transportFor(device, this.tunnel) : undefined;
+        if (!transport?.available) return;
+        try {
+          for await (const frame of transport.watch(
+            { path: sub.path, consumerId: `mux:${sub.key}` },
+            signal,
+          )) {
+            if (!checkDeviceFrame(frame))
+              throw new DpiError("invalid", "Invalid device stream frame");
+            // snapshot/agents/network carry whole-document payloads by design
+            // (a session snapshot includes entries + inbox) and legitimately
+            // exceed the per-event cap — capping them turned a large session's
+            // live view into a fault with no reconnect path.
+            const cap =
+              frame.type === "tree" || frame.type === "snapshot" || frame.type === "agents"
+                ? RELAY_TREE_CAP_BYTES
+                : RELAY_FRAME_CAP_BYTES;
+            const relayCapFault = () =>
               stream.send({
                 sub: sub.key,
                 frame: {
                   type: "fault",
                   error: {
                     code: "invalid",
-                    message: `Device tree frame exceeds the relay tree cap (${TREE_RELAY_MAX_SESSIONS} sessions)`,
+                    message: `Device stream frame exceeds the relay cap (${cap} bytes)`,
                   },
                 },
               });
+            // Run-9 U5/U8: the monitor seam (state owner) degrades oversized
+            // trees — but the RELAY is a pipe, and the tunnel chunk path exists
+            // precisely to deliver legitimately large trees (tunnel-pacing
+            // contract: a 1.5MB chunked tree arrives intact). The pipe's byte
+            // cap is RELAY_TREE_CAP_BYTES; here we mirror only the session-COUNT
+            // policy. Byte parity with the monitor was tried and reverted: it
+            // dropped the chunked-tree contract. A count violation faults —
+            // never silently drops (r9 relay contract), never consumes a token,
+            // and the subscription survives (skip, not cut). Checked FIRST so
+            // both paths below share it (cold-review r11 f3 ordering).
+            if (frame.type === "tree") {
+              const sessions = Array.isArray(frame.tree?.sessions) ? frame.tree.sessions : [];
+              if (sessions.length > TREE_RELAY_MAX_SESSIONS) {
+                this.droppedTreeFrames++;
+                stream.send({
+                  sub: sub.key,
+                  frame: {
+                    type: "fault",
+                    error: {
+                      code: "invalid",
+                      message: `Device tree frame exceeds the relay tree cap (${TREE_RELAY_MAX_SESSIONS} sessions)`,
+                    },
+                  },
+                });
+                continue;
+              }
+            }
+            // run-11 h1-1 (Unit A; cold-review r11 f1/f3 rework): chunked
+            // (tunnel) frames already know their exact serialized size
+            // (reassembledFrameBytes, recorded at the reassembly push seam in
+            // tunnel-transport). For them EVERY admission decision precedes the
+            // one serialization: an oversized multi-MiB frame faults on
+            // raw + EXACT wrapper overhead (relayWrapperOverhead — a constant
+            // allowance ≥ the real overhead faulted LEGAL near-cap frames), and
+            // a burst tree the token bucket coalesces away costs ZERO
+            // stringify. For canonical device JSON (the device's own
+            // JSON.stringify — the normal case) the pre-check faults exactly
+            // what the authoritative check would; hand-crafted non-canonical
+            // raw bytes can only diverge into an early fault (self-harm) or a
+            // late catch — the belt-and-braces byteLength(text) check below
+            // still gates every admission, so nothing over-cap ever relays.
+            const rawBytes = reassembledFrameBytes.get(frame);
+            if (rawBytes !== undefined) {
+              if (rawBytes + relayWrapperOverhead(sub.key) > cap) {
+                relayCapFault();
+                continue;
+              }
+              if (frame.type === "tree" && !admitTree()) {
+                // run-11 h4-5 (Unit A): bucket exhausted — coalesce (drop) this
+                // legal snapshot silently and count it: unlike the faults above
+                // (protocol violations worth surfacing), this is rate shaping of
+                // frames that supersede each other; the next tree (a healthy
+                // device re-pushes on state change within ~500 ms) delivers a
+                // strictly fresher view. Runs AFTER every admission check, so
+                // violations still fault and never consume a token.
+                this.coalescedTreeFrames++;
+                // run-15 u1-1 (MED): that "next push" never comes from a
+                // quiet device — stash the NEWEST refused tree (latest-wins
+                // slot) so the deferred timer can converge the tab once a
+                // token refills.
+                stashPending(frame);
+                continue;
+              }
+              // run-8 U5 + h1-1: serialize ONCE — the only stringify on this
+              // path — admit on its byte size, hand the same string to the
+              // writer. Belt-and-braces after the pre-check: non-canonical raw
+              // bytes can re-stringify LONGER than raw (exponent-form numbers,
+              // e.g. 1e-9 → 0.000000001), so this check is still load-bearing.
+              let text: string;
+              try {
+                text = JSON.stringify({ sub: sub.key, frame });
+              } catch (e) {
+                // run-15 u1-4 (LOW): a wire-legal but deeply-nested tree
+                // (<cap bytes) drives JSON.stringify past the stack — the
+                // RangeError used to escape the loop as an "offline"
+                // disconnect + reconnect churn per hostile frame. A
+                // serialization failure is a cap-class violation: fault,
+                // refund the token this path already consumed (run-15 u1-3:
+                // violations never burn a token), keep the subscription.
+                if (e instanceof RangeError) {
+                  if (frame.type === "tree") treeTokens += 1;
+                  relayCapFault();
+                  continue;
+                }
+                throw e;
+              }
+              if (Buffer.byteLength(text) > cap) {
+                relayCapFault();
+                // run-15 u1-3 (LOW): refund the token admitTree consumed just
+                // above — this fault is a violation, and violations never burn
+                // a token (h4-5 invariant). Without the refund, a hostile
+                // expansion-encoded tree (raw ≤ cap, canonical > cap — e.g.
+                // repeated `1e21` number tokens) drained the bucket once per
+                // fault and turned the coalescer into a dropper.
+                if (frame.type === "tree") treeTokens += 1;
+                continue;
+              }
+              stream.send({ sub: sub.key, frame }, text);
+              // run-15 u1-1: a delivered tree supersedes any stash — a flush
+              // now could only deliver a staler view.
+              if (frame.type === "tree") stopPending();
+              if (frame.type === "hello") backoff.reset();
               continue;
             }
-          }
-          // run-11 h1-1 (Unit A; cold-review r11 f1/f3 rework): chunked
-          // (tunnel) frames already know their exact serialized size
-          // (reassembledFrameBytes, recorded at the reassembly push seam in
-          // tunnel-transport). For them EVERY admission decision precedes the
-          // one serialization: an oversized multi-MiB frame faults on
-          // raw + EXACT wrapper overhead (relayWrapperOverhead — a constant
-          // allowance ≥ the real overhead faulted LEGAL near-cap frames), and
-          // a burst tree the token bucket coalesces away costs ZERO
-          // stringify. For canonical device JSON (the device's own
-          // JSON.stringify — the normal case) the pre-check faults exactly
-          // what the authoritative check would; hand-crafted non-canonical
-          // raw bytes can only diverge into an early fault (self-harm) or a
-          // late catch — the belt-and-braces byteLength(text) check below
-          // still gates every admission, so nothing over-cap ever relays.
-          const rawBytes = reassembledFrameBytes.get(frame);
-          if (rawBytes !== undefined) {
-            if (rawBytes + relayWrapperOverhead(sub.key) > cap) {
-              relayCapFault();
-              continue;
+            // run-8 U5: inline/LAN frames have no raw-bytes side-channel — this
+            // stays the authoritative path: serialize ONCE here, admit on its
+            // byte size, and hand the same string to every tab.
+            let text: string;
+            try {
+              text = JSON.stringify({ sub: sub.key, frame });
+            } catch (e) {
+              // run-15 u1-4 (LOW): same RangeError guard as the raw path —
+              // fault instead of an "offline" disconnect + reconnect churn.
+              // (No refund needed here: the inline path checks the bucket
+              // AFTER serialization, so no token was consumed yet.)
+              if (e instanceof RangeError) {
+                relayCapFault();
+                continue;
+              }
+              throw e;
             }
-            if (frame.type === "tree" && !admitTree()) {
-              // run-11 h4-5 (Unit A): bucket exhausted — coalesce (drop) this
-              // legal snapshot silently and count it: unlike the faults above
-              // (protocol violations worth surfacing), this is rate shaping of
-              // frames that supersede each other; the next tree (a healthy
-              // device re-pushes on state change within ~500 ms) delivers a
-              // strictly fresher view. Runs AFTER every admission check, so
-              // violations still fault and never consume a token.
-              this.coalescedTreeFrames++;
-              continue;
-            }
-            // run-8 U5 + h1-1: serialize ONCE — the only stringify on this
-            // path — admit on its byte size, hand the same string to the
-            // writer. Belt-and-braces after the pre-check: non-canonical raw
-            // bytes can re-stringify LONGER than raw (exponent-form numbers,
-            // e.g. 1e-9 → 0.000000001), so this check is still load-bearing.
-            const text = JSON.stringify({ sub: sub.key, frame });
             if (Buffer.byteLength(text) > cap) {
               relayCapFault();
               continue;
             }
+            if (frame.type === "tree" && !admitTree()) {
+              this.coalescedTreeFrames++;
+              // run-15 u1-1 (MED): latest-wins stash — reuse the text this
+              // path already serialized, so the deferred flush delivers it
+              // without a second stringify.
+              stashPending(frame, text);
+              continue;
+            }
             stream.send({ sub: sub.key, frame }, text);
+            // run-15 u1-1: a delivered tree supersedes any stash.
+            if (frame.type === "tree") stopPending();
             if (frame.type === "hello") backoff.reset();
-            continue;
           }
-          // run-8 U5: inline/LAN frames have no raw-bytes side-channel — this
-          // stays the authoritative path: serialize ONCE here, admit on its
-          // byte size, and hand the same string to every tab.
-          const text = JSON.stringify({ sub: sub.key, frame });
-          if (Buffer.byteLength(text) > cap) {
-            relayCapFault();
-            continue;
+          if (signal.aborted) return;
+          stream.send({ sub: sub.key, frame: { type: "disconnected", reason: "Stream ended" } });
+        } catch (e) {
+          if (signal.aborted) return;
+          const err =
+            e instanceof DpiError ? e : new DpiError("offline", String((e as Error)?.message ?? e));
+          if (err.code === "not_found" || err.code === "invalid" || err.code === "ambiguous") {
+            stream.send({
+              sub: sub.key,
+              frame: { type: "fault", error: { code: err.code, message: err.message } },
+            });
+            return;
           }
-          if (frame.type === "tree" && !admitTree()) {
-            this.coalescedTreeFrames++;
-            continue;
-          }
-          stream.send({ sub: sub.key, frame }, text);
-          if (frame.type === "hello") backoff.reset();
+          stream.send({ sub: sub.key, frame: { type: "disconnected", reason: err.message } });
         }
-        if (signal.aborted) return;
-        stream.send({ sub: sub.key, frame: { type: "disconnected", reason: "Stream ended" } });
-      } catch (e) {
-        if (signal.aborted) return;
-        const err =
-          e instanceof DpiError ? e : new DpiError("offline", String((e as Error)?.message ?? e));
-        if (err.code === "not_found" || err.code === "invalid" || err.code === "ambiguous") {
-          stream.send({
-            sub: sub.key,
-            frame: { type: "fault", error: { code: err.code, message: err.message } },
-          });
-          return;
-        }
-        stream.send({ sub: sub.key, frame: { type: "disconnected", reason: err.message } });
+        await sleep(backoff.ms, signal);
+        backoff.advance();
       }
-      await sleep(backoff.ms, signal);
-      backoff.advance();
+    } finally {
+      // run-15 u1-1: the deferred timer must never outlive this follow() —
+      // every exit (abort, fault-return, loop end) drops the stash + timer.
+      stopPending();
     }
   }
 }
