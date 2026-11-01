@@ -41,7 +41,7 @@ const vitals: DeviceVitals = {
   },
   disk: { path: "/home/bom/.local/share/durable-pi", totalBytes: 512 * 1024 ** 3, freeBytes: 210 * 1024 ** 3, known: true },
   eventLoop: { lagMsLast: 4, lagMsMax1m: 38, samples: 60 },
-  gitSpawns: { live: 2, queued: 1, queuedHigh: 3 },
+  gitSpawns: { live: 2, queued: 1, queuedHigh: 3, queuedAged: 0 }, // run-13 f4 gauge
   pid: 4242,
   at: 0,
   counts: { sessions: 7, archived: 3 },
@@ -145,7 +145,7 @@ test("renderOps: vitals carry uptime, mem/disk, event-loop lag and gitSpawns liv
   // the high lane is only shown when waiters sit in it
   const calm = renderOps(
     120,
-    { vitals: { ...vitals, gitSpawns: { live: 0, queued: 0, queuedHigh: 0 } } },
+    { vitals: { ...vitals, gitSpawns: { live: 0, queued: 0, queuedHigh: 0, queuedAged: 0 } } },
     { now: NOW },
   )
     .map(stripAnsi)

@@ -4,7 +4,7 @@ import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import type { App } from "./app.ts";
 import { sanitizeTerminal, oneLine } from "./sanitize.ts";
 export { oneLine };
-import { Panel, pickAgent, pickArchived, pickDevice, pickEnv, pickModel, pickNotify, pickSession, pickSchedules, pickThinking } from "./pickers.ts";
+import { Panel, pickAgent, pickArchived, pickDevice, pickEnv, pickGraphs, pickModel, pickNotify, pickSession, pickSchedules, pickThinking } from "./pickers.ts";
 import { parsePairArgs, runPairing } from "./pairing.ts";
 import { gitStateSuffix } from "./views.ts";
 import { c } from "./theme.ts";
@@ -53,6 +53,10 @@ export const COMMANDS: SlashCommand[] = [
   { name: "notify", description: "notify sinks: list them and fire a test event" },
   { name: "usage", description: "token/cost rollup — toast + log view" },
   { name: "vitals", description: "device health: uptime, memory, disk, lag, git spawns" },
+  // run-14: the last uncovered SDK surface — task-graphs. Read/run/remove
+  // only; DAG authoring is the web FE's job, so there is no create door and
+  // no argument to complete (the row hotkeys live in pickGraphs).
+  { name: "graphs", description: "task-graphs: detail, run, remove (DAG editing lives in the web FE)" },
   { name: "help", description: "keys and commands" },
   { name: "quit", description: "exit (the agent keeps running)" },
 ];
@@ -425,6 +429,11 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
       break;
     case "vitals":
       await vitalsCommand(app);
+      break;
+    // run-14: the graphs door — pickers.ts owns the picker + capped detail
+    // dump; runGraph is fire-and-forget, remove sits behind a y/n gate.
+    case "graphs":
+      await pickGraphs(app);
       break;
     case "pair":
       await runPairing(app, parsePairArgs(arg));

@@ -206,6 +206,13 @@ export class App {
   private muxState?: MuxState;
   /** One-shot disconnect toast: shown once per outage, echoed by the reconnect note. */
   private muxToastShown = false;
+  /**
+   * run-14: a live-transition sessions refresh is in flight. Every hello
+   * already rides refreshHubNetwork + a /device fetch; collapsing concurrent
+   * /tree calls behind this flag keeps a burst of transitions (or a rapid
+   * offline→live flapping hub) from stampeding the device.
+   */
+  private muxSessionsBusy = false;
   /** True while the current device is reached through the hub proxy. */
   private viaHub = false;
   private hubRows: DeviceRow[] = [];
@@ -295,7 +302,13 @@ export class App {
   private refreshOps() {
     if (this.opsLoading) return;
     this.opsLoading = true;
-    if (!Object.keys(this.opsData).length) this.setPending("loading device ops…");
+    // r12 m2 (fixed run-14): remember whether THIS flow took the message line —
+    // settle must clear only the note it set, never an unrelated picker flow's
+    // ("creating schedule…" used to vanish the moment any ops fetch settled,
+    // because settle called setPending(null) unconditionally while the note is
+    // only set on the FIRST load, when opsData is still empty).
+    const didPending = !Object.keys(this.opsData).length;
+    if (didPending) this.setPending("loading device ops…");
     const grab = <K extends keyof OpsData>(key: K, p: Promise<OpsData[K]>) =>
       p
         .then((v) => {
@@ -315,7 +328,8 @@ export class App {
       grab("sinks", this.client.notifySinks().then((r) => r.sinks)),
     ]).then(() => {
       this.opsLoading = false;
-      this.setPending(null);
+      // r12 m2 (run-14): clear the pending note only if this flow set one.
+      if (didPending) this.setPending(null);
       if (!Object.keys(this.opsData).length && Object.keys(this.opsErrors).length)
         this.notify(`ops: ${Object.values(this.opsErrors)[0] ?? "device unreachable"}`, true);
       this.requestRender();
@@ -500,6 +514,14 @@ export class App {
       // Frames flow again: re-fetch the network rows that froze with the old
       // connection (R4 finding 6 — the view stayed empty through every switch).
       this.refreshHubNetwork();
+      // run-14: the session LIST froze with the connection too — the herd kept
+      // stale rows through an outage, and sessions born while the hub was down
+      // only appeared after a manual switch. Refresh once per live transition;
+      // the in-flight guard collapses concurrent hellos into one /tree.
+      if (!this.muxSessionsBusy) {
+        this.muxSessionsBusy = true;
+        void this.refreshSessions().finally(() => (this.muxSessionsBusy = false));
+      }
       // …and re-fetch the device info (R5 finding 5): the model catalog rode
       // the boot-time /device fetch, so after a reconnect the cached catalog
       // could miss the session's model and the ctx bar died ("ctx —").
@@ -1066,37 +1088,56 @@ export class App {
 
   prompt(label: string, initial: string) {
     return new Promise<string | undefined>((done) => {
+      let settled = false;
+      const settle = (v: string | undefined) => {
+        if (settled) return; // first-wins (r14 review m1)
+        settled = true;
+        done(v);
+      };
       this.overlay(
         new Prompt(
           label,
           initial,
           (value) => {
             this.closeOverlay();
-            done(value.trim());
+            settle(value.trim());
           },
           () => {
             this.closeOverlay();
-            done(undefined);
+            settle(undefined);
           },
         ),
+        // r14 review m1: an app-level dismissal (ctrl+c / closeOverlay from
+        // outside) bypasses Prompt's onCancel — the overlay's onClose settles
+        // undefined so the awaiting command can never hang (the pick* wiring
+        // pattern, applied to the prompt pair too).
+        () => settle(undefined),
       );
     });
   }
 
   promptSecret(label: string) {
     return new Promise<string | undefined>((done) => {
+      let settled = false;
+      const settle = (v: string | undefined) => {
+        if (settled) return; // first-wins (r14 review m1)
+        settled = true;
+        done(v);
+      };
       this.overlay(
         new SecretPrompt(
           label,
           (value) => {
             this.closeOverlay();
-            done(value.trim());
+            settle(value.trim());
           },
           () => {
             this.closeOverlay();
-            done(undefined);
+            settle(undefined);
           },
         ),
+        // r14 review m1: same as prompt() — external dismissal settles undefined.
+        () => settle(undefined),
       );
     });
   }
@@ -1230,6 +1271,13 @@ export class App {
         : this.connection === "idle"
           ? "no agent"
           : String(this.connection);
+    // run-14 (hub resilience): while the hub is OFFLINE, count down to the
+    // mux's next reconnect attempt (HubMux.nextRetryInMs — pure observability
+    // over the unchanged 1s→30s backoff). "hub connecting" keeps its exact
+    // old shape: an attempt is in flight, nothing is scheduled to show. The
+    // 120ms tick repaints continuously, so the seconds flip with no new timer.
+    const retryMs =
+      this.viaHub && this.muxState === "offline" ? (this.mux?.nextRetryInMs() ?? null) : null;
     return (
       " " +
       renderHeader(w - 2, {
@@ -1239,6 +1287,7 @@ export class App {
         devicesTotal: devices.length || undefined,
         conn,
         connOk: hubDown ? false : this.connection === "live",
+        retry: retryMs === null ? undefined : `↻${Math.ceil(retryMs / 1000)}s`,
       })
     );
   }

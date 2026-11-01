@@ -12,7 +12,7 @@ import {
   type SelectItem,
 } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
-import type { ArchivedView, DeviceTree, EnvFileView, NotifySinkView, ScheduleView } from "../../dpi-sdk/src/api.ts";
+import type { ArchivedView, DeviceTree, EnvFileView, GraphRecord, GraphRunRecord, NotifySinkView, ScheduleView } from "../../dpi-sdk/src/api.ts";
 import { agentTree, type TreeNode } from "../../dpi-sdk/src/models.ts";
 import { fmtBytes, fmtDur } from "./commands.ts";
 import { oneLine, sanitizeTerminal } from "./sanitize.ts";
@@ -319,28 +319,41 @@ export function pickSession(app: App): Promise<string | undefined> {
           };
         }),
       ];
+      // r13 NIT (fixed run-14): a pick* promise used to hang FOREVER when its
+      // overlay was dismissed outside the picker's esc path — app-level ctrl+c
+      // closes overlays through closeOverlay() (app.ts:1060), which fires the
+      // overlay's onClose and never the picker's onCancel. The onClose below
+      // settles the same promise. Promise resolution is first-wins, so every
+      // pick path must settle BEFORE closeOverlay — otherwise the close's
+      // onClose undefined would win over the picked id. Double-resolve is
+      // harmless; order is everything.
+      const settle = (value: string | undefined) => {
+        done(value);
+        app.closeOverlay();
+      };
       app.overlay(
         new Picker(`Sessions on ${oneLine(app.device.id)}`, items, (item) => {
-          app.closeOverlay();
           // ＋New hands the flow to the new-session chain — resolve undefined so
           // a waiting /export stays quiet instead of flashing "cancelled" over
           // a flow that is telling its own story.
           if (item.value === "+new") {
-            done(undefined);
+            settle(undefined);
             return void newSession(app);
           }
           const s = tree.sessions.find((x) => x.id === item.value)!;
           const root = s.agents.find((a) => a.kind === "root") ?? s.agents[0];
+          settle(s.id);
           void app.attach(s.id, root?.id ?? 1);
-          done(s.id);
         }, () => {
           // Esc must never surprise-quit (0.0.52): with no attached session the
           // cancel used to pass exitIfNothing=true and picker→Esc→Esc killed the
           // whole process (R4 finding 1). Landing in the herd/network view is the
           // honest cancel; quitting stays on q / ctrl+c / /quit.
-          app.closeOverlay();
-          done(undefined);
+          settle(undefined);
         }),
+        // The external-dismissal door (ctrl+c at app level): see the r13 NIT
+        // note above — resolves undefined, never hangs.
+        () => done(undefined),
       );
     })();
   });
@@ -398,27 +411,50 @@ export async function newSession(app: App, presetName?: string) {
  */
 export function walkDirs(app: App, path: string): Promise<string | undefined | null> {
   return new Promise((done) => {
+    // r13 NIT (fixed run-14): the external-dismissal settle — see pickSession.
+    // One wrinkle unique to this flow: stepping DOWN a level legitimately
+    // closes this step's overlay to mount the next, and that close must NOT
+    // settle the walk (the promise stays pending across steps). The per-step
+    // `handoff` mark tells the overlay onClose "a successor owns the keyboard
+    // now"; only a dismissal with no successor resolves undefined.
+    let settled = false;
+    const settle = (v: string | undefined | null) => {
+      if (settled) return;
+      settled = true;
+      done(v);
+    };
     const step = async (at: string) => {
       // A cold tunnel lists in 2-20s — hold the message line so the silence
       // never reads as a dead app (R4 finding 8).
       app.setPending(`listing ${at || "start dirs"} on ${app.device.name}…`);
       const listing = await app.client.dirs(at).catch((e: Error) => (app.flash(e.message, true), undefined));
       app.setPending(null);
-      if (!listing) return done(null);
+      if (!listing) return settle(null);
       const items: SelectItem[] = [
         ...(listing.path ? [{ value: `use:${listing.path}`, label: `✓ Use ${oneLine(String(listing.path ?? ""))}` }] : []),
         ...(listing.path ? [{ value: listing.parent ?? "", label: listing.parent ? ".." : "⌂ start dirs" }] : []),
         ...listing.dirs.map((d) => ({ value: d.path, label: `${oneLine(String(d.name ?? ""))}/` })),
       ];
+      let handoff = false;
       app.overlay(
         new Picker(`Working directory on ${oneLine(String(app.device.name ?? ""))}`, items, (item) => {
-          app.closeOverlay();
-          if (item.value.startsWith("use:")) done(item.value.slice(4));
-          else void step(item.value);
+          if (item.value.startsWith("use:")) {
+            // Settle BEFORE the close: the close fires the overlay onClose,
+            // and first-wins resolution must let the PICKED path win.
+            settle(item.value.slice(4));
+            app.closeOverlay();
+          } else {
+            handoff = true;
+            app.closeOverlay();
+            void step(item.value);
+          }
         }, () => {
           app.closeOverlay();
-          done(undefined);
+          settle(undefined);
         }),
+        () => {
+          if (!handoff) settle(undefined);
+        },
       );
     };
     void step(path);
@@ -428,17 +464,19 @@ export function walkDirs(app: App, path: string): Promise<string | undefined | n
 function chooseModel(app: App, current?: string) {
   return new Promise<(typeof app.info.models)[number] | undefined>((done) => {
     const models = app.info.models;
+    // r13 NIT (fixed run-14): the overlay onClose settles the promise on
+    // external dismissal (app-level ctrl+c bypasses the picker's onCancel —
+    // see pickSession). Pick paths settle BEFORE closeOverlay so the picked
+    // model wins the first-wins resolution.
+    const settle = (m: (typeof app.info.models)[number] | undefined) => {
+      done(m);
+      app.closeOverlay();
+    };
     const picker = new Picker(
       `Model (${oneLine(String(app.device.name ?? ""))})`,
       models.map((m) => ({ value: `${m.provider}/${m.id}`, label: oneLine(String(m.name ?? "")), description: `${oneLine(String(m.tier ?? ""))} │ ${oneLine(String(m.provider ?? ""))}` })),
-      (item) => {
-        app.closeOverlay();
-        done(models.find((m) => `${m.provider}/${m.id}` === item.value));
-      },
-      () => {
-        app.closeOverlay();
-        done(undefined);
-      },
+      (item) => settle(models.find((m) => `${m.provider}/${m.id}` === item.value)),
+      () => settle(undefined),
       undefined,
       // The keyless device still lists the built-in catalog — say why chat
       // will fail, instead of letting the first request be the messenger.
@@ -448,7 +486,7 @@ function chooseModel(app: App, current?: string) {
     );
     const index = models.findIndex((m) => m.id === current);
     if (index >= 0) picker.list.setSelectedIndex(index);
-    app.overlay(picker);
+    app.overlay(picker, () => done(undefined));
   });
 }
 
@@ -459,22 +497,23 @@ function chooseModel(app: App, current?: string) {
  */
 export function pickThinking(app: App, current?: string) {
   return new Promise<ThinkingLevel | undefined>((done) => {
+    // r13 NIT (fixed run-14): same settle-before-close wiring as pickSession —
+    // an externally dismissed overlay (ctrl+c at app level) resolves undefined
+    // instead of hanging the /thinking chain.
+    const settle = (level: ThinkingLevel | undefined) => {
+      done(level);
+      app.closeOverlay();
+    };
     const picker = new Picker(
       "Thinking level",
       THINKING_LEVELS.map((level) => ({ value: level, label: level })),
-      (item) => {
-        app.closeOverlay();
-        done(item.value as ThinkingLevel);
-      },
-      () => {
-        app.closeOverlay();
-        done(undefined);
-      },
+      (item) => settle(item.value as ThinkingLevel),
+      () => settle(undefined),
     );
     const wanted = current && THINKING_LEVELS.includes(current as ThinkingLevel) ? current : "medium";
     const index = THINKING_LEVELS.indexOf(wanted as ThinkingLevel);
     if (index >= 0) picker.list.setSelectedIndex(index);
-    app.overlay(picker);
+    app.overlay(picker, () => done(undefined));
   });
 }
 
@@ -869,21 +908,29 @@ export async function pickNotify(app: App) {
 const TRANSCRIPT_MAX_LINES = 400;
 const TRANSCRIPT_MAX_BYTES = 100 * 1024;
 
-export function capTranscriptLines(text: string): string[] {
+export function capTranscriptLines(
+  text: string,
+  opts?: { maxLines?: number; maxBytes?: number },
+): string[] {
+  // run-14: :graphs detail rides the same helper with a tighter line budget;
+  // the defaults keep the r13 :archive contract byte-for-byte (the r13 tests
+  // pin the marker format AND both caps — do not shift them silently).
+  const maxLines = opts?.maxLines ?? TRANSCRIPT_MAX_LINES;
+  const maxBytes = opts?.maxBytes ?? TRANSCRIPT_MAX_BYTES;
   const raw = String(text ?? "");
   let cut = false;
   let body = raw;
-  if (Buffer.byteLength(body, "utf8") > TRANSCRIPT_MAX_BYTES) {
+  if (Buffer.byteLength(body, "utf8") > maxBytes) {
     // Byte-boundary cut on the UTF-8 encoding (a char-count slice could leave
     // up to 4× the budget for multibyte text); toString drops any dangling
     // multibyte fragment as U+FFFD.
     cut = true;
-    body = Buffer.from(body, "utf8").subarray(0, TRANSCRIPT_MAX_BYTES).toString("utf8");
+    body = Buffer.from(body, "utf8").subarray(0, maxBytes).toString("utf8");
   }
   const total = raw.split("\n").length;
   const all = body.split("\n");
-  const lines = all.slice(0, TRANSCRIPT_MAX_LINES);
-  if (all.length > TRANSCRIPT_MAX_LINES) cut = true;
+  const lines = all.slice(0, maxLines);
+  if (all.length > maxLines) cut = true;
   const out = lines.map((l) => sanitizeTerminal(l));
   if (cut) {
     // The count names the lines the operator will not see (a byte cut can hide
@@ -965,6 +1012,173 @@ export async function pickArchived(app: App) {
       "enter transcript · r restore · esc close",
       { r: restore },
       "◈ manifest · ◇ bundle only",
+    ),
+  );
+}
+
+// ---------------------------------------------- run-14: :graphs
+// The last uncovered SDK surface (client.graphs/graph/runGraph/removeGraph).
+// The palette is a keyboard, not a DAG editor: NO create/update door — the
+// web FE owns graph authoring (run-14 Unit A scope). The TUI lists, dumps
+// detail, fires a run and removes behind the same y/n gate the other
+// destructive doors use. Every device-authored field (graph name, cwd, task
+// names/ids/deps, run ids/status) goes through oneLine INCLUDING the label
+// path — pi-tui never LF-normalizes labels (the r12 m1 lesson, pinned by
+// test in tui-graphs-r14.test.ts).
+
+/** Detail cap (run-14): the :archive convention — the dump adds at most this
+ * many body lines to the 500-entry log ring, plus the LEADING truncation
+ * marker when it cut (same counting :archive's 400 uses). */
+const GRAPH_DETAIL_MAX_LINES = 200;
+
+/** Runs the detail view shows — the newest 10; older ones stay on the device
+ * (a 100-run graph would flood the log ring for no reading value). */
+const GRAPH_DETAIL_MAX_RUNS = 10;
+
+/** lastRun glyph for the row label — the status IS the vocabulary:
+ * ✓ ok · ✗ failed · ● running · ⏸ interrupted · ◇ never ran. */
+const graphRunGlyph = (status: string) =>
+  status === "ok" ? "✓" : status === "failed" ? "✗" : status === "running" ? "●" : status === "interrupted" ? "⏸" : "◇";
+
+/** The lastRun half of a row: "ok 1m ago" / "never run". Age is measured
+ * from finishedAt when the run closed, else startedAt (a running graph has
+ * no finish yet); a garbage timestamp degrades to no age, never a NaN row. */
+const graphRunState = (run: GraphRunRecord | undefined, now: number): string => {
+  if (!run) return "never run";
+  const t = Date.parse(String(run.finishedAt ?? run.startedAt ?? ""));
+  const age = Number.isFinite(t) && t > 0 ? ` ${fmtDur(Math.max(0, (now - t) / 1000))} ago` : "";
+  return `${oneLine(String(run.status ?? "?"))}${age}`;
+};
+
+/**
+ * The :graphs detail dump — pure for tests (now is injectable). Graph meta,
+ * one line per task (id · name · deps · model), then the last ≤10 runs with
+ * per-run ok/total counts. Every field is device-authored: logEvent writes
+ * verbatim, so a task name must never split its own log line (r12 m1). The
+ * caller caps the joined text through capTranscriptLines.
+ */
+export function graphDetailLines(graph: GraphRecord, runs: GraphRunRecord[], now = Date.now()): string[] {
+  const tasks = Array.isArray(graph.tasks) ? graph.tasks : [];
+  const age = (iso: unknown) => {
+    const t = Date.parse(String(iso ?? ""));
+    return Number.isFinite(t) && t > 0 ? fmtDur(Math.max(0, (now - t) / 1000)) : "?";
+  };
+  const lines: string[] = [
+    `${oneLine(String(graph.name ?? "?"))} — ${tasks.length} task${tasks.length === 1 ? "" : "s"} · ${oneLine(String(graph.cwd ?? ""))}`,
+    `created ${age(graph.createdAt)} ago · updated ${age(graph.updatedAt)} ago${graph.archivedAt ? " · archived" : ""}`,
+  ];
+  for (const t of tasks)
+    lines.push(
+      `  ${oneLine(String(t?.id ?? "?"))} ${oneLine(String(t?.name ?? "?"))} · deps [${(Array.isArray(t?.dependsOn) ? t.dependsOn : [])
+        .map((d) => oneLine(String(d)))
+        .join(", ")}]${t?.model ? ` · ${oneLine(String(t.model?.provider ?? "?"))}/${oneLine(String(t.model?.modelId ?? "?"))}` : ""}`,
+    );
+  lines.push("");
+  const recent = (Array.isArray(runs) ? runs : []).slice(-GRAPH_DETAIL_MAX_RUNS);
+  if (!recent.length) {
+    lines.push("no runs yet");
+    return lines;
+  }
+  lines.push(`last ${recent.length} run${recent.length === 1 ? "" : "s"}:`);
+  for (const run of recent) {
+    const states = Object.values(run?.tasks ?? {});
+    const total = states.length;
+    const ok = states.filter((s) => s?.status === "ok").length;
+    const failed = states.filter((s) => s?.status === "failed").length;
+    lines.push(
+      `  run ${oneLine(String(run?.id ?? "?"))} · ${oneLine(String(run?.status ?? "?"))} · ${ok}/${total} ok${failed ? ` · ${failed} failed` : ""} · started ${age(run?.startedAt)} ago${run?.finishedAt ? ` · finished ${age(run?.finishedAt)} ago` : ""}`,
+    );
+  }
+  return lines;
+}
+
+/** /graphs (run-14): list · enter detail · r run · d delete. No create door —
+ * DAG editing belongs to the web FE. Enter keeps the list up (reading is
+ * read-only, the pickArchived pattern) and dumps the capped detail into the
+ * log view; r/d close + refetch on fresh device state. */
+export async function pickGraphs(app: App) {
+  let list: Array<GraphRecord & { lastRun?: GraphRunRecord }>;
+  try {
+    list = (await app.client.graphs()).graphs;
+  } catch (e) {
+    return app.notify(`graphs: ${(e as Error).message.slice(0, 80)}`, true);
+  }
+  if (!list.length)
+    return app.notify("no task-graphs on this device — create one in the web FE");
+  // Sort by name — the oneLine'd name, so hostile whitespace cannot reorder
+  // the rows either (the rows are composed from the same fold).
+  const graphs = [...list].sort((a, b) =>
+    oneLine(String(a.name ?? "")).localeCompare(oneLine(String(b.name ?? ""))),
+  );
+  const now = Date.now();
+  const items: SelectItem[] = graphs.map((g) => {
+    const n = Array.isArray(g.tasks) ? g.tasks.length : 0;
+    return {
+      // value is never rendered — keep the RAW id so detail/run/remove hit the
+      // device's true graph (same rule as pickArchived's session ids).
+      value: String(g.id ?? ""),
+      label: `${graphRunGlyph(String(g.lastRun?.status ?? ""))} ${oneLine(String(g.name ?? ""))}`,
+      description: `${n} task${n === 1 ? "" : "s"} · ${oneLine(String(g.cwd ?? ""))} · last ${graphRunState(g.lastRun, now)}`,
+    };
+  });
+  // r14 review n7: a graph whose name is "" falls through to the id — the
+  // ?? only catches nullish, and an empty toast ("removed ") reads as a bug.
+  const labelOf = (id: string) => {
+    const name = oneLine(String(graphs.find((x) => x.id === id)?.name ?? ""));
+    return name || oneLine(id);
+  };
+  const showDetail = async (item: SelectItem) => {
+    const label = labelOf(item.value);
+    try {
+      const { graph, runs } = await app.client.graph(item.value);
+      const lines = capTranscriptLines(graphDetailLines(graph, runs).join("\n"), {
+        maxLines: GRAPH_DETAIL_MAX_LINES,
+      });
+      for (const line of lines) app.logEvent("graph", line);
+      app.notify(`${label} — detail, ${lines.length} line${lines.length === 1 ? "" : "s"} (log view: L)`);
+    } catch (e) {
+      app.notify(`graph: ${(e as Error).message.slice(0, 80)}`, true);
+    }
+  };
+  app.overlay(
+    new ActionPicker(
+      `Graphs on ${oneLine(app.device.id)}`,
+      items,
+      (item) => void showDetail(item),
+      () => app.closeOverlay(),
+      "enter detail · r run · d delete · esc close",
+      {
+        // Fire-and-forget by design (run-14): the device owns the run; the TUI
+        // toasts "started" and does NOT poll or attach — results land in this
+        // same detail view on the next visit (or the tasks tab).
+        r: async (item) => {
+          const label = labelOf(item.value);
+          app.closeOverlay();
+          await app.run(async () => {
+            await app.client.runGraph(item.value);
+            app.notify(`graph ${label} started`);
+            app.logEvent("graph", `${label} run fired by hand`);
+          });
+          void pickGraphs(app);
+        },
+        d: async (item) => {
+          const label = labelOf(item.value);
+          // The same y/n gate /reset and /schedules d ask (R4 finding 4): a
+          // destructive door confirms; esc or anything not starting with y
+          // keeps the graph.
+          const ok = await app.prompt(`Remove graph ${label}? y/n`, "");
+          if (ok === undefined || !ok.trim().toLowerCase().startsWith("y"))
+            return app.flash("remove cancelled"), undefined;
+          app.closeOverlay();
+          await app.run(async () => {
+            await app.client.removeGraph(item.value);
+            app.notify(`removed ${label}`);
+            app.logEvent("graph", `removed ${label}`);
+          });
+          void pickGraphs(app);
+        },
+      },
+      "run/remove only — DAG editing lives in the web FE",
     ),
   );
 }

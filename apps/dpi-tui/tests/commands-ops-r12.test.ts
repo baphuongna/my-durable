@@ -283,7 +283,10 @@ test("COMMANDS registers the five run-12 ops doors", () => {
   const names = COMMANDS.map((c) => c.name);
   for (const n of ["schedules", "env", "notify", "usage", "vitals"])
     assert.ok(names.includes(n), `${n} missing from COMMANDS`);
-  assert.equal(names.length, 23, "16 existing + 5 run-12 doors + 2 run-13 doors (:export :archive)");
+  // run-14: +1 :graphs door — the same count-pin maintenance run-13 did
+  // (21→23); a new palette command must keep this census honest.
+  assert.equal(names.length, 24, "16 existing + 5 run-12 doors + 2 run-13 doors + 1 run-14 door (:graphs)");
+  assert.ok(names.includes("graphs"), "run-14: :graphs is registered");
 });
 
 test("fmtBytes/fmtDur short forms keep vitals chrome to one line", () => {

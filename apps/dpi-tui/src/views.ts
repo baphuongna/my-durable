@@ -311,13 +311,21 @@ export function renderHeader(
     devicesTotal?: number;
     conn: string;
     connOk: boolean;
+    /**
+     * run-14 (hub resilience): a countdown to the next reconnect attempt
+     * (`↻12s`), appended to the conn chip while the hub is OFFLINE so the
+     * operator sees WHEN the retry fires instead of a dead `hub offline`.
+     * Absent (live, connecting, direct devices) → byte-identical to the
+     * pre-run-14 render — the r12/r13 header tests pin those bytes.
+     */
+    retry?: string;
   },
 ): string {
   const left = [
     `${c.accent("▲")} ${c.bold("dpi")}`,
     c.muted("tui"),
     c.muted("│"),
-    `${opts.connOk ? c.ok("●") : c.err("○")} ${c.text(opts.conn)}`,
+    `${opts.connOk ? c.ok("●") : c.err("○")} ${c.text(opts.conn)}${opts.retry ? c.muted(` · ${opts.retry}`) : ""}`,
     c.muted(`${opts.sessions} session${opts.sessions === 1 ? "" : "s"}`),
     opts.devicesTotal !== undefined
       ? c.muted(`${opts.devicesOnline ?? 0}/${opts.devicesTotal} devices`)

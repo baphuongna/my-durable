@@ -25,6 +25,14 @@ export class HubMux {
   private listeners = new Map<string, Set<Subscriber>>();
   private source?: AbortController;
   private state: MuxState = "connecting";
+  /**
+   * When the CURRENT offline wait ends (run-14): the absolute deadline of the
+   * backoff sleep, recorded the moment the wait begins and cleared as soon as
+   * the hub proves alive again (the hello that runs backoff.reset()) or stop()
+   * tears the loop down. Pure observability for nextRetryInMs — the reconnect
+   * cadence itself still reads backoff.ms directly and is untouched.
+   */
+  private retryAt?: number;
 
   constructor(
     private readonly hub: { url: string; token: string },
@@ -68,6 +76,7 @@ export class HubMux {
             this.streamId = mux.frame.streamId;
             this.setState("live");
             backoff.reset();
+            this.retryAt = undefined; // run-14: live again — no retry is scheduled
             // Reconnects reopen fresh upstreams: resubscribe everything.
             await this.put([...this.wanted]);
             continue;
@@ -82,6 +91,9 @@ export class HubMux {
         if (ctl.signal.aborted) return;
         this.setState("offline");
       }
+      // run-14: the offline wait begins — record when the next attempt fires
+      // so nextRetryInMs can count down to it. The sleep below is unchanged.
+      this.retryAt = Date.now() + backoff.ms;
       await new Promise((resolve) => setTimeout(resolve, backoff.ms));
       backoff.advance();
     }
@@ -157,10 +169,22 @@ export class HubMux {
     }
   }
 
+  /**
+   * ms until the next reconnect attempt (run-14) — feeds the header's ↻
+   * countdown. null while live or before any failure (nothing is scheduled).
+   * The value is derived, never cached: any `now` may be passed, and a just-
+   * missed deadline clamps to 0 ("now"), never a negative number. Reconnect
+   * cadence, subscription and frame semantics are all untouched.
+   */
+  nextRetryInMs(now: number = Date.now()): number | null {
+    return this.retryAt === undefined ? null : Math.max(0, this.retryAt - now);
+  }
+
   stop() {
     this.source?.abort();
     this.source = undefined;
     this.streamId = "";
+    this.retryAt = undefined; // run-14: a stopped mux never retries
     this.listeners.clear();
     this.wanted.clear();
     this.setState("offline");
