@@ -10,6 +10,7 @@
 import { statfsSync } from "node:fs";
 import { cpus, loadavg, uptime as osUptime, freemem, totalmem } from "node:os";
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import { gitSpawnStats } from "./git.js";
 
 // --- Event-loop lag (R7 perf lane) -----------------------------------------
 //
@@ -99,6 +100,10 @@ export interface DeviceVitals {
   disk: DiskVitals;
   /** Event-loop lag — the number `loadavg` cannot express: how long ready JS waited to run. */
   eventLoop: EventLoopLagVitals;
+  /** Git spawn semaphore (run-11 h2-2): children live now, callers waiting
+   *  for a slot, and how many waiters sit in the interactive "high" lane —
+   *  the number that says "a status-batch fan-out is stalling the panel". */
+  gitSpawns: { live: number; queued: number; queuedHigh: number };
   pid: number;
   at: number;
 }
@@ -137,6 +142,7 @@ export function deviceVitals(diskPath: string, startedAt: number, now = Date.now
     },
     disk: diskVitals(diskPath),
     eventLoop: eventLoopLag(),
+    gitSpawns: gitSpawnStats(),
     pid: process.pid,
     at: now,
   };

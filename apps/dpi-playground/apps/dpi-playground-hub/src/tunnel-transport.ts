@@ -42,7 +42,10 @@ import type { DeviceTransport, TransportRequest, TransportResponse } from "./tra
  *  (defense in depth — the device already sanitizes before putting it on the wire). */
 const safeHeaderValue = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined;
-  const clean = value.replace(/[^\x20-\x7E]/g, "").slice(0, 200).trim();
+  const clean = value
+    .replace(/[^\x20-\x7E]/g, "")
+    .slice(0, 200)
+    .trim();
   return clean.length > 0 ? clean : undefined;
 };
 import type { TunnelConnection, TunnelServer } from "./tunnel.js";
@@ -72,9 +75,23 @@ interface Subscription {
   onAbort: () => void;
 }
 
+/** run-11 h1-1 (Unit A): exact serialized size of REASSEMBLED chunked
+ *  tunnel-data frames, recorded once at the reassembled push seam in
+ *  `route()`. Downstream consumers (mux relay admission, `relayBytes` budget
+ *  charging) read the real byte size instead of re-serializing multi-MiB
+ *  frames to learn it — one serialization per frame on the whole hot path.
+ *  WeakMap on purpose: the size lives and dies with the frame object, so
+ *  there is no manual lifetime to manage. Inline/LAN frames get no entry:
+ *  their size is only knowable by serializing, which the fallback paths do. */
+export const reassembledFrameBytes = new WeakMap<Frame, number>();
+
 /** run-8 U8: the byte size a relayed frame holds in a viewer queue. One extra
  *  serialization per device frame, bounded by the mux relay caps. */
 function relayBytes(frame: Frame): number {
+  // run-11 h1-1 (Unit A): reassembled (chunked) frames already know their
+  // exact size — charge it without a second multi-MiB serialization.
+  const raw = reassembledFrameBytes.get(frame);
+  if (raw !== undefined) return raw;
   try {
     return Buffer.byteLength(JSON.stringify(frame));
   } catch {
@@ -409,15 +426,22 @@ export class TunnelDispatcher {
           } as unknown as Frame);
           return;
         }
-        if (out.done)
-          sub.push(
-            checkDeviceFrame(out.value)
-              ? out.value
-              : {
-                  type: "fault",
-                  error: { code: "invalid", message: "Invalid device stream frame" },
-                },
-          );
+        if (out.done) {
+          if (checkDeviceFrame(out.value)) {
+            // run-11 h1-1 (Unit A): record the reassembler's exact byte count
+            // at the push seam — chunked tunnel-data frames only (this is the
+            // sole reassembly path for them). Everything downstream of this
+            // subscription queue (mux relay admission, relayBytes charging)
+            // reads the WeakMap instead of re-serializing the frame.
+            if (out.rawBytes !== undefined) reassembledFrameBytes.set(out.value, out.rawBytes);
+            sub.push(out.value);
+          } else {
+            sub.push({
+              type: "fault",
+              error: { code: "invalid", message: "Invalid device stream frame" },
+            });
+          }
+        }
         return;
       }
       return;
@@ -670,7 +694,10 @@ export class TunnelDispatcher {
             queue.push({
               frame: {
                 type: "fault",
-                error: { code: "invalid", message: "device stream exceeded this device's relay budget" },
+                error: {
+                  code: "invalid",
+                  message: "device stream exceeded this device's relay budget",
+                },
               } as unknown as Frame,
               reservation: null,
             });

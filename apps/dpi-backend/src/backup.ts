@@ -113,6 +113,25 @@ export const defaultBackupIo = (): BackupIo => ({
   now: () => Date.now(),
 });
 
+// ---------------------------------------------------------------- mutex
+
+// run-11 h2-3: create and restore share ONE advisory, per-process gate.
+// Two backup flows racing inside one process (concurrent CLI invocations,
+// tests, a create begun while a restore still walks) used to interleave their
+// fs phases — a restore's renameAside could swallow files a half-finished
+// create was still reading. Cross-process races remain the healthz probe's
+// job; this gate only serializes what one process can actually race.
+let backupGate: Promise<unknown> = Promise.resolve();
+
+/** Run `op` holding the backup gate — every create/restore passes through
+ *  here. FIFO by call order, advisory, failure-safe: a rejected predecessor
+ *  still releases (the gate chains on a swallowed catch, never on `run`). */
+function withBackupGate<T>(op: () => Promise<T>): Promise<T> {
+  const run = backupGate.then(op, op);
+  backupGate = run.catch(() => {});
+  return run;
+}
+
 // ---------------------------------------------------------------- create
 
 /** Entry 0 of every backup zip: what was backed up, by which build. */
@@ -196,6 +215,11 @@ async function walkHome(io: BackupIo, home: string, out: string, maxBytes: numbe
  * module's.
  */
 export async function createBackup(io: BackupIo, opts: CreateBackupOptions): Promise<CreateBackupResult> {
+  // run-11 h2-3: serialized against restore (and other creates) per process.
+  return withBackupGate(() => createBackupLocked(io, opts));
+}
+
+async function createBackupLocked(io: BackupIo, opts: CreateBackupOptions): Promise<CreateBackupResult> {
   // R9 (run-8 u7): the probe restore already runs, mirrored verbatim — a
   // backup taken while the daemon answers captures catalog.sqlite,
   // agent.sqlite and -wal/-shm at different instants, i.e. a live "backup"
@@ -214,6 +238,18 @@ export async function createBackup(io: BackupIo, opts: CreateBackupOptions): Pro
   if (!homeStat.isDirectory()) throw invalid(`home is not a directory: ${home}`);
 
   const files = await walkHome(io, home, out, opts.maxBytes ?? MAX_BACKUP_BYTES);
+  // run-11 h2-3: the walk can take minutes on a real home, and a daemon
+  // started during it writes catalog.sqlite/agent.sqlite while we are about
+  // to read them — the archive would be torn exactly like the pre-probe case.
+  // Re-probe AFTER the walk and BEFORE the first entry byte is read: any
+  // answer aborts on the same surface as the refusal above, with nothing
+  // written (the zip build and io.writeFile have not run yet).
+  if (opts.healthzUrl && (await deviceIsRunning(io, opts.healthzUrl))) {
+    throw new BackupError(
+      "device_running",
+      "the device came online during the backup — a live sqlite handle would tear the archive; stop it (`dpi device stop`) and retry",
+    );
+  }
   const bytes = files.reduce((n, f) => n + f.size, 0);
   const manifest: BackupManifest = {
     createdAt: new Date(io.now()).toISOString(),
@@ -510,6 +546,11 @@ export async function deviceIsRunning(io: BackupIo, healthzUrl: string): Promise
  * manifest always comes first.
  */
 export async function restoreBackup(io: BackupIo, opts: RestoreBackupOptions): Promise<RestoreBackupResult> {
+  // run-11 h2-3: serialized against create (and other restores) per process.
+  return withBackupGate(() => restoreBackupLocked(io, opts));
+}
+
+async function restoreBackupLocked(io: BackupIo, opts: RestoreBackupOptions): Promise<RestoreBackupResult> {
   const home = resolve(opts.home);
   if (opts.healthzUrl && (await deviceIsRunning(io, opts.healthzUrl))) {
     throw new BackupError("device_running", "the device is running — stop it first (`dpi device stop`)");

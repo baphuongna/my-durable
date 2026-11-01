@@ -90,6 +90,24 @@ and hashes of uncommitted source, not just a commit name.
 - Soak/capacity, real-model/provider acceptance and untested platforms remain
   separate work. Historical records do not become current acceptance results.
 
+## Effective SSE bounds (run-11 h1-2)
+
+The hub's streaming memory is bounded by one layered admission chain — every
+layer must pass before bytes reach the socket. The canon numbers live in
+`apps/dpi-sdk/src/protocol/limits.ts`:
+
+| Layer | Constant | Bound |
+|---|---|---|
+| Per event (transport gate) | `LOGICAL_MESSAGE_MAX_BYTES` | 16 MiB — an SSE frame over it is faulted, never queued |
+| Queued, per writer | `CONNECTION_BUFFER_BUDGET_BYTES` | 32 MiB local ByteBudget per paced SSE writer; each device connection additionally gets 32 MiB for reassembly + outbound queue |
+| Per socket | `SSE_HUB_VIEWER_BYTES` | 4 MB output cap before a slow viewer is ended (not an event-size limit) |
+| Hub-wide shared | `HUB_BUFFER_BUDGET_BYTES` | 64 MiB covering ALL tab writers plus the device reassembly/relay queues |
+
+The per-writer local budget and the per-socket cap fire first (one slow tab is
+isolated); the shared 64 MiB budget bounds the aggregate across tabs and
+devices. This section documents existing behavior (run-11 h1-2); it changed
+no constant and no code path.
+
 ## Memory units
 
 The M1 contract is **150 MB = 150,000,000 bytes**, not 150 MiB.

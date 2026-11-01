@@ -9,6 +9,13 @@ import type { NetworkDevice, SessionSummary } from "@sdk/api";
 import type { SessionExport } from "@sdk/client";
 import { deviceClient, message } from "./hub";
 
+/** Run-11 h4-6: the download-side ceiling. The SDK already refuses to READ a
+ *  binary body past 12 MiB (client.ts BINARY_BODY_MAX, r10 h3-1), so a bundle
+ *  larger than this reaching the FE can only be a framing bug or a tampered
+ *  peer — and honoring it would materialize the bytes as a Blob + object URL
+ *  anyway, moving the same OOM to the tab one call later. Exported for tests. */
+export const EXPORT_BUNDLE_MAX_BYTES = 12 * 1024 * 1024;
+
 /** The device's zipped session bundle: raw zip bytes plus the download name. */
 export type BundleFile = SessionExport;
 export type BundleTarget = Ref<{
@@ -20,6 +27,13 @@ export type BundleTarget = Ref<{
  *  the retry logic without the DOM. The Blob wraps the zip bytes directly —
  *  no base64 decode since the R8 binary contract. */
 export function downloadBundle(r: BundleFile) {
+  // Run-11 h4-6: refuse BEFORE any DOM work (createElement/Blob/createObjectURL)
+  // — over-cap bytes are never materialized. run()'s existing catch turns this
+  // into the inline retryable error + toast; the retry surface is unchanged.
+  if (r.bytes.byteLength > EXPORT_BUNDLE_MAX_BYTES)
+    throw Error(
+      `bundle is ${r.bytes.byteLength} bytes, over the ${EXPORT_BUNDLE_MAX_BYTES} byte download cap`,
+    );
   const a = document.createElement("a");
   // slice() normalizes the buffer to a plain ArrayBuffer (BlobPart typing, TS 5.7).
   // R16 (run-2 h13): the device is untrusted at the operator origin — the FE

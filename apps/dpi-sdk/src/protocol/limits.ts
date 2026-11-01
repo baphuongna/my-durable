@@ -15,6 +15,10 @@ export const CHUNK_RAW_BYTES = 65_536;
 export const MAX_CHUNKS_PER_MESSAGE = 256;
 /** Maximum logical message size including envelope. 16 MiB. */
 export const LOGICAL_MESSAGE_MAX_BYTES = 16_777_216;
+// Run-11 h1-2 layer 1 — per-event transport gate: a serialized SSE frame over
+// this is FAULTED by the hub's stream send(), never queued (mux.ts "Stream
+// event exceeds ..."), and the hub's REST legs read-cap bodies at the same
+// number (transport.ts readBodyCapped).
 /** Handshake/control/fault frames must fit without chunking. 4 KiB. */
 export const CONTROL_FRAME_MAX_BYTES = 4_096;
 /** Per-message reassembly timeout. 30 s. */
@@ -23,11 +27,28 @@ export const REASSEMBLY_TIMEOUT_MS = 30_000;
 export const REASSEMBLY_CONCURRENT_PER_CONNECTION = 4;
 /** Total reassembly + outbound queue budget per device connection. 32 MiB. */
 export const CONNECTION_BUFFER_BUDGET_BYTES = 33_554_432;
+// Run-11 h1-2 layer 2 — per-writer/per-connection queue bound: every paced SSE
+// writer also holds a LOCAL "sse-viewer" ByteBudget at this same size bounding
+// its active+queued events (node/sse-writer.ts), so one slow tab cannot pin
+// more than 32 MiB before its per-socket cut (layer 3) fires.
 /** Total hub-wide budget (reassembly + outbound queues + pending REST). 64 MiB. */
 export const HUB_BUFFER_BUDGET_BYTES = 67_108_864;
+// Run-11 h1-2 layer 4 — hub-wide shared budget: ONE ByteBudget("hub") per hub
+// process (main.ts) is threaded through the stream mux (every browser tab
+// writer) AND the tunnel dispatcher (device reassembly + relay/REST queues),
+// so aggregate fan-out across tabs and devices stays bounded by 64 MiB total.
 
 /** Hub → browser SSE buffered-output cap before the viewer is ended. 4 MB. */
 export const SSE_HUB_VIEWER_BYTES = 4_000_000;
+// Run-11 h1-2 layer 3 — per-socket: this is the socket output cap
+// (writableLength/buffered amount), NOT a logical event size — a viewer that
+// keeps it full is ended (pacedSseWriter maxBufferedBytes) instead of letting
+// the kernel queue grow without bound. Effective SSE chain, in order:
+// per-event 16 MiB (LOGICAL_MESSAGE_MAX_BYTES) → queued ≤32 MiB per writer
+// local ByteBudget (CONNECTION_BUFFER_BUDGET_BYTES; each device connection
+// additionally 32 MiB) → 4 MB per socket (SSE_HUB_VIEWER_BYTES) → 64 MiB
+// hub-wide shared (HUB_BUFFER_BUDGET_BYTES, all tab writers + device
+// reassembly/relay queues). Docs: docs/verification.md "Effective SSE bounds".
 /** Hub ↔ device WS buffered-output cap per direction before close(1011). 4 MB. */
 export const WS_BACKPRESSURE_BYTES = 4_000_000;
 /**

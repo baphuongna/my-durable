@@ -212,6 +212,22 @@ const TRANSCRIPT_HITS_PER_AGENT = 3;
  * total cardinality (leader-probe: 2 conversations → 5 hits, linear in forks). */
 const TRANSCRIPT_HITS_PER_SESSION = 12;
 
+/** run-11 h2-4: the missing-dir memo's TTL. An operator who manually copies a
+ *  zombie row's sessions/<id> dir back has NO API touch to clear the memo, so
+ *  a Set<string> hid the session from scope=all search for the process
+ *  lifetime. Memoize-at timestamp + lazy expiry on read: the row re-enters
+ *  search ≤5 min later; a re-probe that still ENOENTs re-memoizes with a fresh
+ *  stamp, so nothing polls more often than one open attempt per 5 min. */
+const MISSING_DIR_TTL_MS = 5 * 60_000;
+
+/** run-11 h2-4 test seam: the missing-dir memo's clock, injectable like
+ *  git.ts's setGitExecForTests so the 5-min TTL is testable without sleeping
+ *  (only this memo reads this clock — the store's own Date.now stays real). */
+let missingDirNow: () => number = Date.now;
+export function setMissingDirClockForTests(fn?: () => number) {
+  missingDirNow = fn ?? Date.now;
+}
+
 /** Scheduler granularity. Schedules are minute-granular, so 30 s is enough and
  *  the timer is unref'd: it never holds the process open. */
 const SCHEDULE_TICK_MS = 30_000;
@@ -838,8 +854,11 @@ export class Store {
       });
       // Seed the registry from history: a device that predates projects still
       // shows every root its sessions already live in (idempotent by rootPath).
+      // run-11 h2-2: this boot loop is a status FAN-OUT over every row — it
+      // rides the low spawn lane so one interactive status never queues
+      // behind the whole boot walk.
       for (const row of store.list()) {
-        const status = await gitStatus(row.cwd).catch(() => undefined);
+        const status = await gitStatus(row.cwd, Date.now(), "low").catch(() => undefined);
         await store.projects
           .ensure({ rootPath: status?.repo ? (status.root ?? row.cwd) : row.cwd, kind: status?.repo ? "git" : "plain" })
           .catch(() => undefined);
@@ -2003,8 +2022,10 @@ export class Store {
       // run-9 G (run-8 u1): the pre-open stat failed ENOENT — the session dir
       // is gone (zombie row). Memo it so scope=all search stops paying for it;
       // any later SUCCESSFUL open un-memos (the dir may come back: restore,
-      // manual copy-back — crash-window variant B).
-      if (!create && (e as NodeJS.ErrnoException)?.code === "ENOENT") this.missingDirSessions.add(row.id);
+      // manual copy-back — crash-window variant B). run-11 h2-4: the memo now
+      // carries Date.now() so isMissingDirMemoized can expire it (5 min) —
+      // the manual copy-back case has no open to clear it with.
+      if (!create && (e as NodeJS.ErrnoException)?.code === "ENOENT") this.missingDirSessions.set(row.id, missingDirNow());
       throw e;
     }
     try {
@@ -3001,7 +3022,9 @@ export class Store {
       // or on the first failed open) never burns a TRANSCRIPT_SESSION_LIMIT
       // slot — skipped BEFORE the budget check, so the slots go to sessions
       // whose data is actually present. Un-memoed when the dir comes back.
-      if (this.missingDirSessions.has(row.id)) continue;
+      // run-11 h2-4: TTL-bounded — the skip lasts at most 5 min per memo,
+      // so a manually restored dir re-enters search on its own.
+      if (this.isMissingDirMemoized(row.id)) continue;
       if (sessionsScanned >= TRANSCRIPT_SESSION_LIMIT || entriesScanned >= TRANSCRIPT_ENTRY_BUDGET) {
         truncated = true;
         break;
@@ -3262,8 +3285,25 @@ export class Store {
    *  them WITHOUT burning one of the 100 TRANSCRIPT_SESSION_LIMIT slots per
    *  query (they used to cost a harness-throw + reopen stat attempt AND a
    *  slot, newest-first). Mirrors the salvage memo's lifecycle: cleared when
-   *  the dir is back — any successful open, a completed archive, a restore. */
-  private missingDirSessions = new Set<string>();
+   *  the dir is back — any successful open, a completed archive, a restore.
+   *  run-11 h2-4: Set → Map<id, memoized-at> and TTL-bounded (5 min, lazy
+   *  expiry in isMissingDirMemoized) — a manual dir restore re-enters search
+   *  without needing an API touch to clear the memo. */
+  private missingDirSessions = new Map<string, number>();
+
+  /** run-11 h2-4: TTL-bounded read of the missing-dir memo. An entry older
+   *  than MISSING_DIR_TTL_MS is dropped on read — the next search re-probes
+   *  the row (a still-missing dir ENOENTs and re-memoizes with a fresh
+   *  stamp; a restored dir opens and the :2136 delete clears it for good). */
+  private isMissingDirMemoized(id: string): boolean {
+    const at = this.missingDirSessions.get(id);
+    if (at === undefined) return false;
+    if (missingDirNow() - at > MISSING_DIR_TTL_MS) {
+      this.missingDirSessions.delete(id);
+      return false;
+    }
+    return true;
+  }
 
   /**
    * R19 (run-5 h1): the salvage memo is per-process so a corrupt session is not

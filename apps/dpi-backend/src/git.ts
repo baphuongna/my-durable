@@ -216,33 +216,61 @@ export function isNotARepoError(e: unknown): boolean {
  *  actually starts, so queueing never eats the timeout. */
 export const GIT_SPAWN_BUDGET = 12;
 let gitSpawnLive = 0;
-const gitSpawnQueue: (() => void)[] = [];
+// run-11 h2-2: the single FIFO queue starved interactive ops — one
+// 50-path status-batch parks ~650 low spawns, and the status panel the user
+// is LOOKING at queued behind all of them. Two wake lanes now: high holds
+// interactive single ops (a bare /git/status, the /git mutation route);
+// low holds every fan-out (status-batch, the boot project-seed walk,
+// git-files turns). FIFO within each lane; a freed slot wakes high first;
+// nobody is ever refused and no spawn changes shape — only the wake order.
+const gitSpawnQueueHigh: (() => void)[] = [];
+const gitSpawnQueueLow: (() => void)[] = [];
 
-/** Take a slot (or queue FIFO for one) — the caller owns the slot until
- *  releaseGitSpawn(). No nesting: a slot is held across exactly ONE child,
- *  so a queued git child can never be waiting on a spawn that needs this
- *  queue to drain — no deadlock. */
-function acquireGitSpawn(): Promise<void> {
+/** Take a slot (or queue FIFO in your lane for one) — the caller owns the slot
+ *  until releaseGitSpawn(). No nesting: a slot is held across exactly ONE
+ *  child, so a queued git child can never be waiting on a spawn that needs
+ *  this queue to drain — no deadlock. */
+function acquireGitSpawn(priority?: "high" | "low"): Promise<void> {
   if (gitSpawnLive < GIT_SPAWN_BUDGET) {
     gitSpawnLive++;
     return Promise.resolve();
   }
-  return new Promise<void>((wake) => gitSpawnQueue.push(wake));
+  return new Promise<void>((wake) => (priority === "high" ? gitSpawnQueueHigh : gitSpawnQueueLow).push(wake));
 }
 
-/** Free a slot — handed straight to the longest-waiting caller when one
- *  exists (the live count already covers the handover), else returned. */
+/** Free a slot — handed straight to the longest-waiting HIGH caller first
+ *  (run-11 h2-2), then the longest-waiting low one, when either exists (the
+ *  live count already covers the handover), else returned. */
 function releaseGitSpawn() {
-  const next = gitSpawnQueue.shift();
+  const next = gitSpawnQueueHigh.shift() ?? gitSpawnQueueLow.shift();
   if (next) next();
   else gitSpawnLive--;
 }
 
+/** run-11 h2-2: the semaphore's state for deviceVitals — live children,
+ *  waiting callers, and how many of those waiters are interactive ("high")
+ *  ops parked behind a fan-out. Pure read, no side effects. */
+export function gitSpawnStats(): { live: number; queued: number; queuedHigh: number } {
+  return {
+    live: gitSpawnLive,
+    queued: gitSpawnQueueHigh.length + gitSpawnQueueLow.length,
+    queuedHigh: gitSpawnQueueHigh.length,
+  };
+}
+
 /** One git call; rejects on non-zero exit with stderr in the message. Every
  *  spawn runs under the budget above — see GIT_SPAWN_BUDGET. (gh() stays
- *  outside: forge calls are single, user-initiated, and never fan out.) */
-export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT, pin?: RepoPin): Promise<string> {
-  return acquireGitSpawn()
+ *  outside: forge calls are single, user-initiated, and never fan out.)
+ *  `priority: "high"` (run-11 h2-2) only changes the WAKE order while the
+ *  budget is saturated — the per-op timeout still starts at child start. */
+export function git(
+  cwd: string,
+  args: string[],
+  timeout = GIT_TIMEOUT,
+  pin?: RepoPin,
+  priority?: "high" | "low",
+): Promise<string> {
+  return acquireGitSpawn(priority)
     .then(
       () =>
         new Promise<string>((ok, fail) => {
@@ -320,7 +348,7 @@ export async function gitStatusBatch(paths: string[]): Promise<Record<string, Gi
   const entries = await Promise.all(
     unique.map(async (p): Promise<[string, GitStatus | { error: string }]> => {
       try {
-        return [p, await gitStatus(p)];
+        return [p, await gitStatus(p, Date.now(), "low")];
       } catch (e) {
         return [p, { error: String((e as Error)?.message ?? e).slice(0, 120) }];
       }
@@ -415,11 +443,11 @@ function ensureWatcher(root: string) {
  *  never served). The absolute git dir is NOT confined: redirects and linked
  *  worktrees whose gitdir lives elsewhere are operator territory and are
  *  followed via the returned pin (the agent itself is unsandboxed by design). */
-export async function resolveRepoPin(path: string): Promise<RepoPin | undefined> {
+export async function resolveRepoPin(path: string, priority?: "high" | "low"): Promise<RepoPin | undefined> {
   if (!repoRootAllowed) return undefined;
   const [topLevel, gitDir] = await Promise.all([
-    git(path, ["rev-parse", "--show-toplevel"]),
-    git(path, ["rev-parse", "--absolute-git-dir"]),
+    git(path, ["rev-parse", "--show-toplevel"], GIT_TIMEOUT, undefined, priority),
+    git(path, ["rev-parse", "--absolute-git-dir"], GIT_TIMEOUT, undefined, priority),
   ]);
   const pin: RepoPin = { gitDir: gitDir.trim(), workTree: topLevel.trim() };
   // R23 (operator decision): durable-pi WRAPS pi/pi-durable — the agent is
@@ -451,8 +479,11 @@ export function clearGitStatusCache() {
 }
 
 /** Structured status for a folder: everything the UIs show, one call.
- *  `now` is injectable so a test can age the caches without sleeping. */
-export async function gitStatus(path: string, now = Date.now()): Promise<GitStatus> {
+ *  `now` is injectable so a test can age the caches without sleeping.
+ *  run-11 h2-2: a bare call (the /git/status route, session create) is an
+ *  INTERACTIVE single op and rides the high spawn lane; fan-out callers
+ *  (gitStatusBatch, the store's boot seed) pass "low" explicitly. */
+export async function gitStatus(path: string, now = Date.now(), priority: "high" | "low" = "high"): Promise<GitStatus> {
   // One key per repo, not per spelling: `D:\\x`, `d:/x/` and `D:/x` land on
   // the SAME entry (cacheKey), so single-flight dedupes every spelling.
   const key = cacheKey(path);
@@ -463,14 +494,14 @@ export async function gitStatus(path: string, now = Date.now()): Promise<GitStat
   if (failed && now - failed.at < STATUS_FAIL_TTL) throw new Error(failed.msg);
   const running = statusInFlight.get(key);
   if (running) return running;
-  const p = statusOnce(path, key).finally(() => {
+  const p = statusOnce(path, key, priority).finally(() => {
     if (statusInFlight.get(key) === p) statusInFlight.delete(key);
   });
   statusInFlight.set(key, p);
   return p;
 }
 
-async function statusOnce(path: string, key: string): Promise<GitStatus> {
+async function statusOnce(path: string, key: string, priority: "high" | "low"): Promise<GitStatus> {
   const out: GitStatus = { repo: false };
   try {
     // Reach git at all before trusting any "empty" answer: git missing from
@@ -484,7 +515,7 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     // The pin rides GIT_DIR/GIT_WORK_TREE into every later spawn regardless.
     let pin: RepoPin | undefined;
     try {
-      pin = await resolveRepoPin(path);
+      pin = await resolveRepoPin(path, priority);
     } catch (e) {
       if (!String((e as Error).message).includes("start dirs")) throw e;
       out.repo = true; // repo presence only — no root, files, branches,
@@ -493,8 +524,8 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
       statusFailCache.delete(key);
       return out;
     }
-    const g = (args: string[], t?: number) => git(path, args, t, pin);
-    const root = pin?.workTree ?? (await git(path, ["rev-parse", "--show-toplevel"])).trim();
+    const g = (args: string[], t?: number) => git(path, args, t, pin, priority);
+    const root = pin?.workTree ?? (await git(path, ["rev-parse", "--show-toplevel"], GIT_TIMEOUT, pin, priority)).trim();
     out.repo = true;
     out.root = root;
     // Everything after toplevel runs in PARALLEL — status is the long pole
@@ -768,8 +799,10 @@ export async function gitOp(
   // operator territory — see resolveRepoPin); the resolved pin rides
   // GIT_DIR/GIT_WORK_TREE into EVERY spawn below, so per-spawn .git discovery
   // never re-runs and the check cannot be raced.
-  const pin = await resolveRepoPin(path);
-  const g = (args: string[], t?: number) => git(path, args, t, pin);
+  const pin = await resolveRepoPin(path, "high");
+  // run-11 h2-2: gitOp IS the mutation route — every op here is one click a
+  // user is waiting on, so all of its spawns (guard + data) ride the high lane.
+  const g = (args: string[], t?: number) => git(path, args, t, pin, "high");
   const ghP = (args: string[], t?: number) => gh(path, args, t, pin);
   switch (op) {
     case "diff":
