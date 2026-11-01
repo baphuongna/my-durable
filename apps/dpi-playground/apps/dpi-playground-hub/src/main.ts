@@ -92,6 +92,14 @@ const requireTlsEnabled = tlsRequired();
 
 const registry = new NetworkRegistry();
 registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect from DB
+// R9 cold review: the win32 owner-only DACL pass runs as a fire-and-forget
+// promise inside the registry — await it (non-fatal, logged) so network.sqlite
+// is locked down before the listener starts serving.
+try {
+  await registry.restrictOwner;
+} catch (error) {
+  console.warn("[hub] registry owner restriction failed:", error);
+}
 // The operator's own credential: minted at first boot into DPI_HOME/admin.token (0600),
 // overridable via DPI_ADMIN_TOKEN. A set-but-short token refuses to boot (admin-auth.ts).
 const adminToken = await bootstrapAdminToken();

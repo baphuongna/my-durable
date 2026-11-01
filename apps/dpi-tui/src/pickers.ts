@@ -347,12 +347,12 @@ export function walkDirs(app: App, path: string): Promise<string | undefined | n
       app.setPending(null);
       if (!listing) return done(null);
       const items: SelectItem[] = [
-        ...(listing.path ? [{ value: `use:${listing.path}`, label: `✓ Use ${sanitizeTerminal(listing.path)}` }] : []),
+        ...(listing.path ? [{ value: `use:${listing.path}`, label: `✓ Use ${oneLine(String(listing.path ?? ""))}` }] : []),
         ...(listing.path ? [{ value: listing.parent ?? "", label: listing.parent ? ".." : "⌂ start dirs" }] : []),
-        ...listing.dirs.map((d) => ({ value: d.path, label: `${sanitizeTerminal(d.name)}/` })),
+        ...listing.dirs.map((d) => ({ value: d.path, label: `${oneLine(String(d.name ?? ""))}/` })),
       ];
       app.overlay(
-        new Picker(`Working directory on ${sanitizeTerminal(app.device.name)}`, items, (item) => {
+        new Picker(`Working directory on ${oneLine(String(app.device.name ?? ""))}`, items, (item) => {
           app.closeOverlay();
           if (item.value.startsWith("use:")) done(item.value.slice(4));
           else void step(item.value);
@@ -370,7 +370,7 @@ function chooseModel(app: App, current?: string) {
   return new Promise<(typeof app.info.models)[number] | undefined>((done) => {
     const models = app.info.models;
     const picker = new Picker(
-      `Model (${sanitizeTerminal(app.device.name)})`,
+      `Model (${oneLine(String(app.device.name ?? ""))})`,
       models.map((m) => ({ value: `${m.provider}/${m.id}`, label: oneLine(String(m.name ?? "")), description: `${oneLine(String(m.tier ?? ""))} │ ${oneLine(String(m.provider ?? ""))}` })),
       (item) => {
         app.closeOverlay();
@@ -440,7 +440,7 @@ export function pickAgent(app: App) {
       const icon = a.kind === "fork" ? "⑂" : a.kind === "subagent" ? "↳" : "◆";
       rows.push({
         value: String(a.id),
-        label: `${"  ".repeat(depth)}${icon} ${sanitizeTerminal(a.name)}${a.busy ? " ●" : ""}`,
+        label: `${"  ".repeat(depth)}${icon} ${oneLine(String(a.name ?? ""))}${a.busy ? " ●" : ""}`,
         description: [a.kind === "fork" ? `fork @ #${oneLine(String(a.forkedAt ?? ""))}` : oneLine(String(a.kind ?? "")), a.background ? `${oneLine(String(a.background))} bg` : ""]
           .filter(Boolean)
           .join(" │ "),
@@ -449,7 +449,7 @@ export function pickAgent(app: App) {
     }
   };
   walk(agentTree(app.device.id, summary, false), 0);
-  const picker = new Picker(`Agents in ${sanitizeTerminal(summary.name)}`, rows, (item) => {
+  const picker = new Picker(`Agents in ${oneLine(String(summary.name ?? ""))}`, rows, (item) => {
     app.closeOverlay();
     void app.attach(summary.id, Number(item.value));
   }, () => app.closeOverlay());

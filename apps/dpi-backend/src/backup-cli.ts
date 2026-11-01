@@ -4,9 +4,10 @@
  *
  * Piggery's rule, borrowed from `dpi gc`: a destructive op asks once. `restore`
  * prints the plan (file count, target home, where the old home goes) and exits
- * 0 without touching anything unless `--yes` is passed — and it refuses to run
- * at all, plan included, while the device daemon answers on its port (the same
- * DPI_HOST/DPI_PORT rule `dpi doctor` uses; healthz needs no auth).
+ * 0 without touching anything unless `--yes` is passed — and create and
+ * restore both refuse to run at all, plan included, while the device daemon
+ * answers on its port (the same DPI_HOST/DPI_PORT rule `dpi doctor` uses;
+ * healthz needs no auth).
  *
  * The CLI io extends the module's `BackupIo` with print/printErr/env/homedir,
  * so one object is faked in tests. Exit codes: 0 ok, 1 backup error, 2 usage
@@ -66,8 +67,9 @@ const HELP = `dpi backup — device home backup/restore (checklist Wave 2)
   --dir DIR    where list looks (default: the create dir for that home)
   --yes        actually restore — without it, restore only prints the plan
 
-Restore refuses to run while the device daemon answers on its port (DPI_HOST /
-DPI_PORT, default 127.0.0.1:4780) — stop it first with \`dpi device stop\`.
+Restore and create refuse to run while the device daemon answers on its
+port (DPI_HOST / DPI_PORT, default 127.0.0.1:4780) — a backup taken under a
+live daemon is torn — stop it first with \`dpi device stop\`.
 Exit codes: 0 ok, 1 backup error, 2 usage error.`;
 
 const flagValue = (argv: readonly string[], name: string): string | undefined => {
@@ -158,7 +160,9 @@ async function createCmd(rest: readonly string[], io: BackupCliIo): Promise<numb
   const out = outArg
     ? resolve(expand(outArg, io.homedir()))
     : join(defaultBackupDir(home), `dpi-backup-${stamp(io.now())}.zip`);
-  const result = await createBackup(io, { home, out });
+  // R9 (run-8 u7): same probe, same URL rule as restoreCmd — a live daemon
+  // means a torn backup, so create refuses before touching anything.
+  const result = await createBackup(io, { home, out, healthzUrl: await healthzUrl(io) });
   io.print(result.path);
   io.print(`backed up ${result.files} file(s), ${humanBytes(result.bytes)} from ${home}`);
   return 0;

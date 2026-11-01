@@ -9,8 +9,9 @@
  *   - `restoreBackup` deletes nothing either — an existing home is renamed to
  *     `<home>.bak-<timestamp>` and kept, so the one rollback a restore has is
  *     also the only copy it needs;
- *   - restore refuses to run while the device daemon answers on its port: a
- *     copy taken under a live sqlite handle is not a backup, it is a lie.
+ *   - create and restore both refuse to run while the device daemon answers
+ *     on its port: a copy taken under a live sqlite handle is not a backup, it
+ *     is a lie.
  *
  * The zip is built in memory, so the walk is capped (256 MiB by default,
  * `maxBytes`). The writer here emits the same three records as `zip.ts` (local
@@ -81,7 +82,7 @@ export interface BackupIo {
   readdir(path: string): Promise<string[]>;
   chmod(path: string, mode: number): Promise<void>;
   exists(path: string): Promise<boolean>;
-  /** Daemon probe for restore. A fetch that THROWS is a refused connection, i.e. "not running". */
+  /** Daemon probe for create and restore. A fetch that THROWS is a refused connection, i.e. "not running". */
   fetch?(url: string, init?: { signal?: AbortSignal }): Promise<{ ok: boolean; status: number }>;
   now(): number;
 }
@@ -129,6 +130,8 @@ export interface CreateBackupOptions {
   deviceName?: string;
   /** Total-bytes guard for the in-memory zip build. Defaults to `MAX_BACKUP_BYTES` (256 MiB). */
   maxBytes?: number;
+  /** When set, create first refuses if the daemon answers here — the same probe restore runs (healthz needs no auth). */
+  healthzUrl?: string;
 }
 
 export interface CreateBackupResult {
@@ -193,6 +196,13 @@ async function walkHome(io: BackupIo, home: string, out: string, maxBytes: numbe
  * module's.
  */
 export async function createBackup(io: BackupIo, opts: CreateBackupOptions): Promise<CreateBackupResult> {
+  // R9 (run-8 u7): the probe restore already runs, mirrored verbatim — a
+  // backup taken while the daemon answers captures catalog.sqlite,
+  // agent.sqlite and -wal/-shm at different instants, i.e. a live "backup"
+  // is torn. First thing, like restore: fail before any fs work starts.
+  if (opts.healthzUrl && (await deviceIsRunning(io, opts.healthzUrl))) {
+    throw new BackupError("device_running", "the device is running — stop it first (`dpi device stop`)");
+  }
   const home = resolve(opts.home);
   const out = resolve(opts.out);
   let homeStat: BackupStat;

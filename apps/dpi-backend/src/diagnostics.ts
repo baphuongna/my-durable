@@ -21,9 +21,17 @@
  * synchronous (`existsSync`/`readFileSync`/`accessSync`), so the io carries
  * that surface too and `diagnosticsDoctorIo` bridges the two worlds — one
  * object to fake in tests, never the real fs or network.
+ *
+ * R9 caps (run-8 u7): every collected byte has a ceiling — device.log is read
+ * tail-bounded (`readFileTail`, at most DEVICE_LOG_TAIL_BYTES off disk), API
+ * bodies over API_BODY_MAX_BYTES are refused unparsed, every section's final
+ * text is capped at SECTION_MAX_BYTES with an explicit truncation marker, and
+ * the whole bundle answers to BUNDLE_MAX_BYTES export-refusal style. The
+ * `shareable` mode goes further: no device.log at all and env VALUES hard-
+ * redacted — the operator-shareable bundle never carries env/log payloads.
  */
 import { accessSync, existsSync, readFileSync } from "node:fs";
-import { access, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -36,7 +44,7 @@ import {
   type DoctorIo,
 } from "./doctor.js";
 import { PACKAGE_VERSION } from "./store.js";
-import { zipSync, type ZipEntry } from "./zip.js";
+import { zipRawBytes, zipSync, type ZipEntry } from "./zip.js";
 
 export type DiagnosticsErrorCode = "invalid";
 
@@ -61,6 +69,48 @@ const SECTION_TIMEOUT_MS = 10_000;
 /** The device.log tail: the last 400 lines, never the whole file. */
 export const DEVICE_LOG_LINES = 400;
 
+// ------------------------------------------------------------------ R9 caps
+// The run-8 u7 finding: a hostile device (or a huge log) could blow up RAM and
+// the bundle — whole device.log into RAM, uncapped apiSection bodies, zipSync
+// with no total ceiling. Every collected byte now has a ceiling:
+
+/** Max UTF-8 bytes of any ONE section's final text (post-redaction, pre-zip). */
+export const SECTION_MAX_BYTES = 256 * 1024;
+/** Max raw bytes of an API response body BEFORE it is parsed — bounds the
+ * JSON.parse amplification a hostile device could otherwise force. */
+export const API_BODY_MAX_BYTES = 512 * 1024;
+/** Max raw bytes ever read from device.log — the tail read's ceiling. */
+export const DEVICE_LOG_TAIL_BYTES = 512 * 1024;
+/** Aggregate ceiling: total raw section bytes (and, as a backstop, the zipped
+ * bytes) a bundle may hold. With per-section caps this cannot trip in practice
+ * — it is the named backstop the same style zip.ts's export guards use. */
+export const BUNDLE_MAX_BYTES = 8 * 1024 * 1024;
+
+/** Byte-safe truncation with an explicit marker — a section never silently
+ * exceeds its ceiling. The marker's bytes come out of the budget, so the
+ * truncated text is still ≤ maxBytes. */
+function capSectionText(name: string, text: string): { text: string; truncated: boolean } {
+  if (Buffer.byteLength(text, "utf8") <= SECTION_MAX_BYTES) return { text, truncated: false };
+  const marker = `\n[${name}: truncated at ${SECTION_MAX_BYTES} bytes]\n`;
+  const budget = Math.max(0, SECTION_MAX_BYTES - Buffer.byteLength(marker, "utf8"));
+  // subarray + toString drops an invalid trailing multibyte fragment
+  const cut = Buffer.from(text, "utf8").subarray(0, budget).toString("utf8");
+  return { text: `${cut}${marker}`, truncated: true };
+}
+
+/** Shareable bundles never carry env VALUES: every string becomes a fixed
+ * marker (key names stay — they are schema, and what a bug report needs). */
+function hardRedactValues(value: unknown): unknown {
+  if (typeof value === "string") return "«redacted»";
+  if (Array.isArray(value)) return value.map(hardRedactValues);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) out[key] = hardRedactValues(entry);
+    return out;
+  }
+  return value;
+}
+
 /** Narrow fetch surface, `doctor.ts`'s init shape so its checks pass through unchanged. */
 export interface DiagnosticsFetchInit {
   method?: string;
@@ -77,6 +127,11 @@ export interface DiagnosticsResponse {
 
 export interface DiagnosticsIo {
   readFile(path: string): Promise<string>;
+  /** R9 tail-bounded read: at most `maxBytes` from the END of the file,
+   * line-aligned (a partial first line is dropped — tail semantics). Optional
+   * for io compatibility; production's default io implements it, and callers
+   * without it fall back to `readFile` (still line- and byte-capped after). */
+  readFileTail?(path: string, maxBytes: number): Promise<string>;
   /** `mode` applies when the file is created; an explicit `chmod` follows, like backup.ts's persist. */
   writeFile(path: string, data: Uint8Array, mode?: number): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
@@ -108,6 +163,22 @@ export const defaultDiagnosticsIo = (): DiagnosticsIo => ({
       return true;
     } catch {
       return false;
+    }
+  },
+  // R9: never read a whole file to keep its tail — stat, then read only the
+  // last maxBytes (a file at or under the ceiling still comes back whole).
+  readFileTail: async (path, maxBytes) => {
+    const handle = await open(path, "r");
+    try {
+      const { size } = await handle.stat();
+      if (size <= maxBytes) return await handle.readFile("utf8");
+      const buf = Buffer.alloc(maxBytes);
+      await handle.read(buf, 0, maxBytes, size - maxBytes);
+      const text = buf.toString("utf8");
+      const nl = text.indexOf("\n");
+      return nl >= 0 ? text.slice(nl + 1) : text; // drop the partial first line
+    } finally {
+      await handle.close();
     }
   },
   fetch: (url, init) => fetch(url, init as RequestInit | undefined),
@@ -157,13 +228,16 @@ export interface DiagnosticsSection {
   bytes: number;
   /** Present when the section failed: what the CLI prints after the colon. */
   error?: string;
+  /** Present when the section's text was capped at SECTION_MAX_BYTES. */
+  truncated?: boolean;
 }
 
-/** The `GET /v1/...` routes that become json sections, in bundle order. */
-const API_SECTIONS: ReadonlyArray<{ name: string; route: string }> = [
+/** The `GET /v1/...` routes that become json sections, in bundle order. `shareable`
+ * marks sections whose VALUES never enter a shareable bundle (env). */
+const API_SECTIONS: ReadonlyArray<{ name: string; route: string; shareable?: boolean }> = [
   { name: "device.json", route: "/v1/device" },
   { name: "vitals.json", route: "/v1/device/vitals" },
-  { name: "env.json", route: "/v1/device/env" },
+  { name: "env.json", route: "/v1/device/env", shareable: true },
   { name: "sessions.json", route: "/v1/sessions" },
   { name: "projects.json", route: "/v1/projects" },
   { name: "schedules.json", route: "/v1/schedules" },
@@ -190,12 +264,15 @@ function diagnosticsDoctorIo(io: DiagnosticsIo): DoctorIo {
   };
 }
 
-/** One JSON section from the device API: ok → redacted body; failure → `{"error": ...}` and the bundle carries on. */
+/** One JSON section from the device API: ok → redacted body; failure → `{"error": ...}` and the bundle carries on.
+ * R9: a body over API_BODY_MAX_BYTES is refused with the size named — it is
+ * never parsed — and a `shareable` section's string VALUES never survive. */
 async function apiSection(
   io: DiagnosticsIo,
   url: string,
   route: string,
   headers: Record<string, string>,
+  opts: { hardRedact?: boolean } = {},
 ): Promise<{ text: string; ok: boolean; error?: string }> {
   let ok: boolean;
   let status: number;
@@ -204,7 +281,15 @@ async function apiSection(
     const res = await io.fetch(url, { headers, signal: AbortSignal.timeout(SECTION_TIMEOUT_MS) });
     ok = res.ok;
     status = res.status;
-    raw = await res.text();
+    // R9 cold review: never buffer the whole body before the cap — a hostile
+    // device can stream gigabytes inside the 10s section timeout (duration is
+    // not a byte budget). Precheck content-length, then read at most the cap.
+    const declared = Number(res.headers?.get?.("content-length") ?? "");
+    if (Number.isFinite(declared) && declared > API_BODY_MAX_BYTES) {
+      const detail = `body over ${API_BODY_MAX_BYTES} bytes (content-length ${declared})`;
+      return { text: jsonText({ error: `GET ${route} → ${detail}` }), ok: false, error: detail };
+    }
+    raw = await readCappedBody(res, API_BODY_MAX_BYTES);
   } catch (error) {
     const detail = describeError(error, SECTION_TIMEOUT_MS);
     return { text: jsonText({ error: `GET ${route} unreachable — ${detail}` }), ok: false, error: detail };
@@ -212,22 +297,66 @@ async function apiSection(
   if (!ok) {
     return { text: jsonText({ error: `GET ${route} → ${status}` }), ok: false, error: String(status) };
   }
+  if (Buffer.byteLength(raw, "utf8") > API_BODY_MAX_BYTES) {
+    const detail = `body over ${API_BODY_MAX_BYTES} bytes`;
+    return { text: jsonText({ error: `GET ${route} → ${detail}` }), ok: false, error: detail };
+  }
   let body: unknown;
   try {
     body = JSON.parse(raw);
   } catch {
     return { text: jsonText({ error: `GET ${route} → non-JSON body` }), ok: false, error: "non-JSON body" };
   }
-  return { text: jsonText(redactJson(body)), ok: true };
+  return { text: jsonText(redactJson(opts.hardRedact ? hardRedactValues(body) : body)), ok: true };
 }
 
-/** The device.log tail: last 400 lines, redacted. Missing → skipped (undefined); unreadable → a failed section. */
+/** Read at most `cap` bytes off the wire, cancelling the stream past that (R9
+ * cold-review finding 1: the old `res.text()` buffered the entire body first).
+ * Non-stream bodies (test mocks) fall back to `text()` — the post-read byte
+ * check still refuses those. Over-cap returns a `cap+1`-byte marker string so
+ * the existing refusal names the cap without having buffered the payload. */
+async function readCappedBody(
+  res: { body?: unknown; text(): Promise<string> },
+  cap: number,
+): Promise<string> {
+  const body = res.body as ReadableStream<Uint8Array> | undefined;
+  if (!body || typeof body.getReader !== "function") return res.text();
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    chunks.push(value);
+    if (total > cap) {
+      try {
+        await reader.cancel();
+      } catch {
+        /* already closed */
+      }
+      return "\u0000".repeat(cap + 1); // marker: byteLength === cap+1 → the refusal fires
+    }
+  }
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    merged.set(c, off);
+    off += c.byteLength;
+  }
+  return new TextDecoder("utf-8").decode(merged);
+}
+
+/** The device.log tail: last 400 lines, redacted. Missing → skipped (undefined); unreadable → a failed section.
+ * R9: the READ is tail-bounded — at most DEVICE_LOG_TAIL_BYTES raw bytes come
+ * off disk (io.readFileTail); ios without the tail surface fall back to
+ * readFile, and the per-section cap still bounds what enters the bundle. */
 async function logSection(io: DiagnosticsIo, home: string): Promise<{ text: string; ok: boolean; error?: string } | undefined> {
   const logPath = join(home, "device.log");
   if (!(await io.exists(logPath))) return undefined;
   let raw: string;
   try {
-    raw = await io.readFile(logPath);
+    raw = io.readFileTail ? await io.readFileTail(logPath, DEVICE_LOG_TAIL_BYTES) : await io.readFile(logPath);
   } catch (error) {
     const detail = describeError(error, 0);
     return { text: `# cannot read ${logPath}: ${detail}\n`, ok: false, error: detail };
@@ -243,6 +372,14 @@ async function logSection(io: DiagnosticsIo, home: string): Promise<{ text: stri
 export interface CollectDiagnosticsOptions {
   home: string;
   out: string;
+  /** R9 shareable mode: the bundle operators paste into bug reports. Strips
+   * device.log entirely (not even read) and hard-redacts env section values —
+   * the run-8 "redaction boundary no unit owns" now has an owner. Default
+   * false: the local bundle keeps the (masked) log and env sections. */
+  shareable?: boolean;
+  /** R9 aggregate-ceiling override (raw section bytes); tests use tiny values
+   * to prove enforcement. Default BUNDLE_MAX_BYTES. */
+  maxBundleBytes?: number;
 }
 
 export interface CollectDiagnosticsResult {
@@ -273,8 +410,16 @@ export async function collectDiagnostics(
   const sections: DiagnosticsSection[] = [];
   const entries: ZipEntry[] = [];
   const push = (name: string, text: string, ok: boolean, error?: string): void => {
-    entries.push({ path: name, text });
-    sections.push({ name, ok, bytes: Buffer.byteLength(text, "utf8"), ...(error ? { error } : {}) });
+    // R9: every section is byte-capped on its way in — the marker is explicit.
+    const capped = capSectionText(name, text);
+    entries.push({ path: name, text: capped.text });
+    sections.push({
+      name,
+      ok,
+      bytes: Buffer.byteLength(capped.text, "utf8"),
+      ...(error ? { error } : {}),
+      ...(capped.truncated ? { truncated: true } : {}),
+    });
   };
 
   // doctor.json — doctor's own runner, through this module's io.
@@ -292,20 +437,24 @@ export async function collectDiagnostics(
     push("doctor.json", jsonText(report), ok, error);
   }
 
-  // the seven registry/summary routes — summaries by design (no transcripts)
+  // the seven registry/summary routes — summaries by design (no transcripts);
+  // env values are hard-redacted in shareable mode
   for (const section of API_SECTIONS) {
-    const r = await apiSection(io, `${cfg.baseUrl}${section.route}`, section.route, headers);
+    const r = await apiSection(io, `${cfg.baseUrl}${section.route}`, section.route, headers, {
+      hardRedact: Boolean(section.shareable && opts.shareable),
+    });
     push(section.name, r.text, r.ok, r.error);
   }
 
-  // device.log — on-disk facts, tail only, redacted
-  {
+  // device.log — on-disk facts, tail only, redacted; NEVER in a shareable bundle
+  if (!opts.shareable) {
     const r = await logSection(io, home);
     if (r) push("device.log", r.text, r.ok, r.error);
   }
 
   // The manifest is entry 0 (backup.ts's rule), so it lists the sections that
   // actually made it in — including device.log only when the log was there.
+  // R9: it is a section like any other, so it passes the same byte cap.
   const manifest = redactJson({
     createdAt: new Date(io.now()).toISOString(),
     packageVersion: PACKAGE_VERSION,
@@ -315,10 +464,26 @@ export async function collectDiagnostics(
     home,
     sections: sections.map((s) => s.name),
   });
-  entries.unshift({ path: "manifest.json", text: jsonText(manifest) });
-  sections.unshift({ name: "manifest.json", ok: true, bytes: Buffer.byteLength(jsonText(manifest), "utf8") });
+  const manifestCapped = capSectionText("manifest.json", jsonText(manifest));
+  entries.unshift({ path: "manifest.json", text: manifestCapped.text });
+  sections.unshift({
+    name: "manifest.json",
+    ok: true,
+    bytes: Buffer.byteLength(manifestCapped.text, "utf8"),
+    ...(manifestCapped.truncated ? { truncated: true } : {}),
+  });
+
+  // R9 aggregate ceiling — the refusal style zip.ts's export guards use: the
+  // size is named and nothing is written. With per-section caps this cannot
+  // trip at defaults; it is the backstop that makes that true by construction.
+  const ceiling = opts.maxBundleBytes ?? BUNDLE_MAX_BYTES;
+  const rawBytes = zipRawBytes(entries);
+  if (rawBytes > ceiling)
+    throw invalid(`diagnostic bundle refused: sections are ${rawBytes} bytes, over the ${ceiling} byte ceiling`);
 
   const zip = zipSync(entries, new Date(io.now()));
+  if (zip.length > ceiling)
+    throw invalid(`diagnostic bundle refused: zip is ${zip.length} bytes, over the ${ceiling} byte ceiling`);
   await io.mkdir(dirname(out), DIR_MODE);
   await io.writeFile(out, zip, FILE_MODE);
   await io.chmod(out, FILE_MODE);

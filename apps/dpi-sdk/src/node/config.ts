@@ -99,6 +99,12 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
     if (!DEVICE_KINDS.includes(kind)) throw Error(`${where}.kind must be one of ${DEVICE_KINDS.join(", ")}`);
     const port = Number(d.port ?? 4780);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error(`${where}.port is invalid`);
+    // run-9 u9: Number() alone accepts NaN, 1e21 and 22.5 — and the value
+    // reaches generated provision scripts (`nvm exec ${node} …`). Pin it to an
+    // integer Node major, mirroring the port check above.
+    const nodeMajor = Number(d.node ?? 24);
+    if (!Number.isInteger(nodeMajor) || nodeMajor < 1 || nodeMajor > 99)
+      throw Error(`${where}.node must be an integer Node major version (1-99)`);
     // R17 (run-3 h12): these scalars reach generated shell scripts, backend.env
     // lines and unit/plist content — a newline injected env lines (duplicate
     // DPI_TOKEN/DPI_START_DIRS, last-wins at daemon boot) and quote/$/backtick
@@ -115,7 +121,7 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
       kind,
       url: "",
       port,
-      node: Number(d.node ?? 24),
+      node: nodeMajor,
       codeDir: pathish(typeof d.code_dir === "string" ? d.code_dir : "~/dpi", "code_dir"),
       homeDir: pathish(typeof d.home_dir === "string" ? d.home_dir : "~/.dpi", "home_dir"),
       // R18 (run-4 h7): ':' is the DPI_START_DIRS list separator on the device
@@ -129,7 +135,19 @@ export function parseNetworkConfig(text: string, file = NETWORK_FILE): NetworkCo
               return pathish(r, "start_dirs");
             }),
       host: d.host === undefined ? (kind === "local" ? "127.0.0.1" : "0.0.0.0") : pathish(str(d.host, `${where}.host`), "host"),
-      envKeys: d.env_keys === undefined ? [] : strList(d.env_keys, `${where}.env_keys`),
+      // run-9 u9: env_keys entries were the only unvalidated env surface. A
+      // dpi-managed name here (e.g. DPI_TOKEN) would write a second managed
+      // line into backend.env — the daemon env parser is last-wins, so the
+      // device's copy would silently override dpi's own value.
+      envKeys:
+        d.env_keys === undefined
+          ? []
+          : strList(d.env_keys, `${where}.env_keys`).map((k: string) => {
+              if (!/^[A-Z_][A-Z0-9_]*$/.test(k)) throw Error(`${where}.env_keys: names are UPPER_SNAKE_CASE`);
+              if ((MANAGED_ENV as readonly string[]).includes(k))
+                throw Error(`${where}.env_keys: ${k} is written from its own setting; keep dpi-managed names out of env_keys`);
+              return k;
+            }),
       env: {},
       ...(typeof d.token_env === "string" ? { tokenEnv: d.token_env } : {}),
     };

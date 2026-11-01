@@ -29,7 +29,7 @@ import {
 
 interface BrowserStream {
   /** run-8 U5: `preSerialized` lets the relay seam (follow) admit on and send
- *  the SAME serialization — one stringify per inbound frame, not one per tab. */
+   *  the SAME serialization — one stringify per inbound frame, not one per tab. */
   send(frame: MuxFrame, preSerialized?: string): void;
   upstreams: Map<string, AbortController>;
 }
@@ -39,10 +39,19 @@ interface BrowserStream {
  *  mux forwards, so a hostile device cannot push ~16MiB agent-event frames
  *  into per-tab stringify/copy work below the transport ceiling. */
 const RELAY_FRAME_CAP_BYTES = 1024 * 1024;
-/** Trees are legitimately larger (the device-scope tree path is bounded by its
- *  own monitor-seam caps) — still far below the 16MiB transport ceiling so a
- *  hostile device cannot drive ~16MiB parse/copy work per frame. */
+/** Trees are legitimately larger than per-event frames — still far below the
+ *  16MiB transport ceiling so a hostile device cannot drive ~16MiB parse/copy
+ *  work per frame. This is the WRAPPER backstop only: device-authored `tree`
+ *  frames must ALSO clear the monitor seam's own bounds below. */
 const RELAY_TREE_CAP_BYTES = 4 * 1024 * 1024;
+/** Run-9 U5/U8: `follow()` opens its OWN /v1/events subscription, so the
+ *  monitor's B4 admission bound (TREE_MAX_BYTES/TREE_MAX_SESSIONS in
+ *  monitor.ts) never sees the tree frames the relay forwards — a device tree
+ *  the hub's own view degrades used to ride this 4MiB wrapper cap verbatim
+ *  into every tab. Mirror the monitor seam's constants (monitor.ts owns the
+ *  canonical ones) and measure the tree payload exactly as it does, so every
+ *  tree the monitor admits also passes here and nothing it rejects does. */
+const TREE_RELAY_MAX_SESSIONS = 2000;
 
 const sseBudget = new ByteBudget("hub-sse", HUB_BUFFER_BUDGET_BYTES);
 
@@ -110,6 +119,9 @@ export class StreamMux {
   private tunnel?: TunnelTransportSource;
   /** Live reader count per deviceId across all tabs (monitor adds its own). */
   private readersByDevice = new Map<string, number>();
+  /** Run-9 U5/U8: device-authored tree frames dropped at the relay seam for
+   *  exceeding the monitor-mirror bounds — surfaced via relayStats(). */
+  private droppedTreeFrames = 0;
 
   constructor(
     private readonly registry: NetworkRegistry,
@@ -132,6 +144,11 @@ export class StreamMux {
 
   get size() {
     return this.streams.size;
+  }
+
+  /** Read-only relay admission counters for tests and diagnostics. */
+  relayStats(): { droppedTreeFrames: number } {
+    return { droppedTreeFrames: this.droppedTreeFrames };
   }
 
   /** Wire the tunnel dispatcher source (main.ts, after construction). */
@@ -306,6 +323,30 @@ export class StreamMux {
               },
             });
             continue;
+          }
+          // Run-9 U5/U8: the monitor seam (state owner) degrades oversized
+          // trees — but the RELAY is a pipe, and the tunnel chunk path exists
+          // precisely to deliver legitimately large trees (tunnel-pacing
+          // contract: a 1.5MB chunked tree arrives intact). The pipe's byte
+          // cap is RELAY_TREE_CAP_BYTES above; here we mirror only the
+          // session-COUNT policy. Byte parity with the monitor was tried and
+          // reverted: it dropped the chunked-tree contract.
+          if (frame.type === "tree") {
+            const sessions = Array.isArray(frame.tree?.sessions) ? frame.tree.sessions : [];
+            if (sessions.length > TREE_RELAY_MAX_SESSIONS) {
+              this.droppedTreeFrames++;
+              stream.send({
+                sub: sub.key,
+                frame: {
+                  type: "fault",
+                  error: {
+                    code: "invalid",
+                    message: `Device tree frame exceeds the relay tree cap (${TREE_RELAY_MAX_SESSIONS} sessions)`,
+                  },
+                },
+              });
+              continue;
+            }
           }
           stream.send({ sub: sub.key, frame }, text);
           if (frame.type === "hello") backoff.reset();

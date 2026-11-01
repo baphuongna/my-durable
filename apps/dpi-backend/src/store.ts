@@ -1839,6 +1839,7 @@ export class Store {
       this.catalog.prepare("DELETE FROM sessions WHERE id=?").run(row.id);
       this.opened.delete(row.id);
       this.salvageFailedSessions.delete(row.id);
+      this.missingDirSessions.delete(row.id); // run-9 G: the row is gone — drop the memo with it
       this.errors.delete(row.id);
       this.notify();
       return { archived: existing };
@@ -1859,6 +1860,7 @@ export class Store {
     this.catalog.prepare("DELETE FROM conversation_names WHERE sessionId=?").run(row.id);
     this.catalog.prepare("DELETE FROM sessions WHERE id=?").run(row.id);
     this.salvageFailedSessions.delete(row.id); // R20 h6: clear AFTER the move commits — a failed rename must not re-arm salvage
+    this.missingDirSessions.delete(row.id); // run-9 G: same lifecycle — the row left the catalog
     this.errors.delete(row.id);
     this.notify();
     return { archived: target };
@@ -1958,6 +1960,7 @@ export class Store {
     }
     this.notify();
     this.salvageFailedSessions.delete(sessionId); // R20 h6: clear AFTER the bundle actually came back — a REFUSED restore must not re-arm salvage
+    this.missingDirSessions.delete(sessionId); // run-9 G: same lifecycle — the dir is back under sessions/
     this.errors.delete(sessionId); // R20 cold-1 minor: the fast-fault note may predate the archive — do not surface a stale reason
     // sessionSummary handles a not-yet-opened session (the closed-bundle path).
     return await this.sessionSummary(row);
@@ -1997,6 +2000,11 @@ export class Store {
           rmSync(dir, { recursive: true, force: true });
         throw new ApiFault("unavailable", "session was archived while opening");
       }
+      // run-9 G (run-8 u1): the pre-open stat failed ENOENT — the session dir
+      // is gone (zombie row). Memo it so scope=all search stops paying for it;
+      // any later SUCCESSFUL open un-memos (the dir may come back: restore,
+      // manual copy-back — crash-window variant B).
+      if (!create && (e as NodeJS.ErrnoException)?.code === "ENOENT") this.missingDirSessions.add(row.id);
       throw e;
     }
     try {
@@ -2125,6 +2133,7 @@ export class Store {
       }
       this.opened.set(row.id, { harness, unlock, unsubscribe, jobs, addons });
       this.errors.delete(row.id);
+      this.missingDirSessions.delete(row.id); // run-9 G: the dir is back — searchable again
       // pi-durable 1.2+: any failed Storage call closes the Session, without waiting for the next event.
       // Surface it as unavailable and clean up the handle/listener/lock; never auto-reopen in a loop —
       // a later request reopens it once from committed storage (see openAgent), and fails cleanly if it still fails.
@@ -2988,6 +2997,11 @@ export class Store {
       // integrity_check on EVERY query (262 MB corrupt db: 5.0 s per query,
       // memoization-free), and the FE fires scope=all per keystroke.
       if (this.salvageFailedSessions.has(row.id)) continue;
+      // run-9 G (run-8 u1): a zombie row (storage missing, probed once at boot
+      // or on the first failed open) never burns a TRANSCRIPT_SESSION_LIMIT
+      // slot — skipped BEFORE the budget check, so the slots go to sessions
+      // whose data is actually present. Un-memoed when the dir comes back.
+      if (this.missingDirSessions.has(row.id)) continue;
       if (sessionsScanned >= TRANSCRIPT_SESSION_LIMIT || entriesScanned >= TRANSCRIPT_ENTRY_BUDGET) {
         truncated = true;
         break;
@@ -3243,6 +3257,13 @@ export class Store {
   private salvageInFlight = new Map<string, Promise<import("./salvage.js").SalvageOutcome>>();
   /** R19 (run-5 h1): sessions whose salvage already failed — searched cheaply skipped, salvage never re-run. */
   private salvageFailedSessions = new Set<string>();
+  /** run-9 G (run-8 u1 hardening): rows whose sessions/<id> storage is missing
+   *  (zombie rows — dir gone, row alive, no bundle). scope=all search skips
+   *  them WITHOUT burning one of the 100 TRANSCRIPT_SESSION_LIMIT slots per
+   *  query (they used to cost a harness-throw + reopen stat attempt AND a
+   *  slot, newest-first). Mirrors the salvage memo's lifecycle: cleared when
+   *  the dir is back — any successful open, a completed archive, a restore. */
+  private missingDirSessions = new Set<string>();
 
   /**
    * R19 (run-5 h1): the salvage memo is per-process so a corrupt session is not

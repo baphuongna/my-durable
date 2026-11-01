@@ -198,16 +198,56 @@ export function isNotARepoError(e: unknown): boolean {
   return /not a git repository/i.test(msg) || /does not have any commits yet/i.test(msg);
 }
 
-/** One git call; rejects on non-zero exit with stderr in the message. */
+/** run-9 B (status-batch spawn fan-out): one 50-path /git/status-batch is
+ *  ~650 git children (2 guard spawns + 11 parallel data spawns per path, every
+ *  path in one Promise.all) — and the UIs POLL, so overlapping batches used
+ *  to stack all of them at once. This is the process-wide ceiling on LIVE git
+ *  children: one backend process = one device, so a process-wide budget IS
+ *  the per-device budget. Every git() spawn takes a slot from ONE semaphore;
+ *  callers beyond the budget QUEUE FIFO (they are never refused) and start
+ *  the moment a slot frees. A spawn's own timeout starts when the child
+ *  actually starts, so queueing never eats the timeout. */
+export const GIT_SPAWN_BUDGET = 12;
+let gitSpawnLive = 0;
+const gitSpawnQueue: (() => void)[] = [];
+
+/** Take a slot (or queue FIFO for one) — the caller owns the slot until
+ *  releaseGitSpawn(). No nesting: a slot is held across exactly ONE child,
+ *  so a queued git child can never be waiting on a spawn that needs this
+ *  queue to drain — no deadlock. */
+function acquireGitSpawn(): Promise<void> {
+  if (gitSpawnLive < GIT_SPAWN_BUDGET) {
+    gitSpawnLive++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((wake) => gitSpawnQueue.push(wake));
+}
+
+/** Free a slot — handed straight to the longest-waiting caller when one
+ *  exists (the live count already covers the handover), else returned. */
+function releaseGitSpawn() {
+  const next = gitSpawnQueue.shift();
+  if (next) next();
+  else gitSpawnLive--;
+}
+
+/** One git call; rejects on non-zero exit with stderr in the message. Every
+ *  spawn runs under the budget above — see GIT_SPAWN_BUDGET. (gh() stays
+ *  outside: forge calls are single, user-initiated, and never fan out.) */
 export function git(cwd: string, args: string[], timeout = GIT_TIMEOUT, pin?: RepoPin): Promise<string> {
-  return new Promise((ok, fail) => {
-    // `-C` is ARGV, so the path goes out forward-slashed (see gitPath).
-    execFileImpl("git", ["-C", gitPath(cwd), ...args], GIT_EXEC_OPTS(timeout, pin), (error, stdout, stderr) => {
-      if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
-      // git chats on stderr for worktree add/switch/fetch — keep both.
-      else ok(`${String(stdout)}${String(stdout) && String(stderr) ? "\n" : ""}${String(stderr)}`);
-    });
-  });
+  return acquireGitSpawn()
+    .then(
+      () =>
+        new Promise<string>((ok, fail) => {
+          // `-C` is ARGV, so the path goes out forward-slashed (see gitPath).
+          execFileImpl("git", ["-C", gitPath(cwd), ...args], GIT_EXEC_OPTS(timeout, pin), (error, stdout, stderr) => {
+            if (error) fail(Error(String(stderr || stdout || error.message).trim().slice(0, 400)));
+            // git chats on stderr for worktree add/switch/fetch — keep both.
+            else ok(`${String(stdout)}${String(stdout) && String(stderr) ? "\n" : ""}${String(stderr)}`);
+          });
+        }),
+    )
+    .finally(releaseGitSpawn);
 }
 
 /** One GitHub CLI call — PRs, checks and comments are forge territory and gh

@@ -88,6 +88,13 @@ if (values.help) {
 }
 
 const registry = new NetworkRegistry();
+// R9 cold review: await the win32 owner-only DACL pass (non-fatal, logged)
+// before the TUI starts talking to devices — the registry holds device tokens.
+try {
+  await registry.restrictOwner;
+} catch (error) {
+  console.error("tui: registry owner restriction failed:", error);
+}
 const config = tryLoadNetworkConfig(process.env.INIT_CWD ?? process.cwd());
 if (config) syncConfigToRegistry(config, registry);
 

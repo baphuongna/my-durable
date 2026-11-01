@@ -7,8 +7,8 @@ import { createInterface } from "node:readline/promises";
 import type { DeviceKind } from "../api.js";
 import { DpiClient } from "../client.js";
 import { syncConfigToRegistry, type NetDevice, type NetworkConfig } from "./config.js";
-import { NetworkRegistry } from "./registry.js";
-import { exeDev, q, remote, rsync, run, shPath, sleep } from "./ops.js";
+import { NetworkRegistry, validateToken } from "./registry.js";
+import { argvInt, clampInt, exeDev, exeVmArg, q, remote, rsync, run, shPath, sleep, sshTarget } from "./ops.js";
 
 export interface DriverContext {
   config: NetworkConfig;
@@ -63,8 +63,11 @@ function localEnv(config: NetworkConfig): Record<string, string> {
 // ------------------------------------------------------------------ shared steps
 
 async function facts(device: NetDevice) {
+  // run-9 u9/E: node is interpolated into the generated script — pin it at
+  // the sink (config.ts gates it at parse; Number() alone takes NaN/1e21).
+  const node = argvInt(device.node, 1, 99, `device ${device.id} node`);
   const out = (
-    await exec(device, `echo "HOME=$HOME"; echo "USER=$(id -un)"; echo "NODE=$(nvm which ${device.node} 2>/dev/null || command -v node || true)"`)
+    await exec(device, `echo "HOME=$HOME"; echo "USER=$(id -un)"; echo "NODE=$(nvm which ${node} 2>/dev/null || command -v node || true)"`)
   ).stdout;
   const get = (k: string) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() ?? "";
   return { home: get("HOME"), user: get("USER"), node: get("NODE") };
@@ -73,7 +76,8 @@ async function facts(device: NetDevice) {
 const abs = (p: string, home: string) => (p === "~" ? home : p.startsWith("~/") ? `${home}/${p.slice(2)}` : p);
 
 async function provision(device: NetDevice, ctx: DriverContext) {
-  ctx.log(`provision ${device.id}: nvm + node ${device.node}`);
+  const node = argvInt(device.node, 1, 99, `device ${device.id} node`);
+  ctx.log(`provision ${device.id}: nvm + node ${node}`);
   const apt =
     device.kind === "exe-dev"
       ? `if command -v apt-get >/dev/null; then sudo -n apt-get update -qq >/dev/null && sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git rsync curl build-essential ripgrep >/dev/null; fi\n`
@@ -82,8 +86,8 @@ async function provision(device: NetDevice, ctx: DriverContext) {
     device,
     `${apt}if [ ! -s "$NVM_DIR/nvm.sh" ]; then curl -fsSL ${NVM_INSTALL} | PROFILE=/dev/null bash >/dev/null; fi
 . "$NVM_DIR/nvm.sh"
-nvm install ${device.node} >/dev/null 2>&1
-echo "node: $(nvm which ${device.node})"`,
+nvm install ${node} >/dev/null 2>&1
+echo "node: $(nvm which ${node})"`,
     { timeoutMs: 900_000 },
   );
   ctx.log(result.stdout.trim());
@@ -100,7 +104,7 @@ async function deploy(device: NetDevice, ctx: DriverContext) {
   ctx.log(`deploy ${device.id}: npm ci`);
   await exec(
     device,
-    `cd "${shPath(device.codeDir)}/apps/dpi-backend" && nvm exec ${device.node} npm ci --no-audit --no-fund --loglevel=error >/dev/null && echo installed`,
+    `cd "${shPath(device.codeDir)}/apps/dpi-backend" && nvm exec ${argvInt(device.node, 1, 99, `device ${device.id} node`)} npm ci --no-audit --no-fund --loglevel=error >/dev/null && echo installed`,
     { timeoutMs: 900_000 },
   );
 }
@@ -123,14 +127,20 @@ async function writeEnv(device: NetDevice, ctx: DriverContext, rotate = false) {
     if (/[\n\r]/.test(v))
       throw Error(`device ${device.id}: ${k} value contains a newline — refusing to write backend.env`);
   const home = shPath(device.homeDir);
+  // run-9 u9/E: DPI_PORT is interpolated into backend.env — clamp at the sink.
+  const port = argvInt(device.port, 1, 65535, `device ${device.id} port`);
   const body = [
     `DPI_DEVICE_NAME=${device.id}`,
-    `DPI_PORT=${device.port}`,
+    `DPI_PORT=${port}`,
     `DPI_HOST=${device.host}`,
     `DPI_START_DIRS=${device.startDirs.join(":")}`,
     ...device.envKeys.flatMap((k) => {
       const v = local[k] ?? process.env[k];
-      return v && !/[\n\r]/.test(v) ? [`${k}=${v}`] : [];
+      if (v && /[\n\r]/.test(v))
+        // R9 cold review: dropping the value silently boots the device missing
+        // a secret with no fault naming it — refuse like DPI_HOST above.
+        throw Error(`device ${device.id}: env ${k} value contains a newline — refusing to write backend.env`);
+      return v ? [`${k}=${v}`] : [];
     }),
     // R16 (run-2 h12): env_keys secrets already refuse [\n\r]; plain env:
     // entries get the same guard — a multiline YAML value would inject extra
@@ -249,6 +259,13 @@ async function register(device: NetDevice, ctx: DriverContext) {
 export async function waitOnline(device: NetDevice, ctx: DriverContext, timeoutMs = 90_000) {
   const token = ctx.registry.get(device.id)?.token;
   if (!token) throw Error(`${device.id} has no token; run: just net register ${device.id}`);
+  // run-9 u9/E: the url/token consumer sink. A registry row that predates
+  // validation (or a v0→v1 migrated one) could carry a CRLF token — every
+  // client construction would smuggle a forged header — or a non-http url.
+  // Guard here, at the sink, before any client is built.
+  if (/[\n\r\0]/.test(device.url) || !/^https?:\/\//.test(device.url))
+    throw Error(`${device.id}: device url must be a single-line http(s) URL (got ${JSON.stringify(device.url)})`);
+  validateToken(token);
   const client = new DpiClient(device.url, token);
   const end = Date.now() + timeoutMs;
   let last = "";
@@ -266,7 +283,9 @@ export async function waitOnline(device: NetDevice, ctx: DriverContext, timeoutM
 }
 
 async function logs(device: NetDevice, ctx: DriverContext) {
-  const n = Number(ctx.args[0] ?? 80) || 80;
+  // run-9 u9/E: n is operator input interpolated into `tail -n ${n}` — clamp
+  // to 1-1000 (Number() alone accepted -5 / 1e9; NaN falls back to 80).
+  const n = clampInt(ctx.args[0], 1, 1000, 80);
   const out = await exec(device, `tail -n ${n} "${shPath(device.homeDir)}/backend.log" 2>/dev/null || echo "(no log yet at ${device.homeDir}/backend.log)"`);
   process.stdout.write(out.stdout);
 }
@@ -309,17 +328,21 @@ async function exeVms(): Promise<string[]> {
 }
 
 async function exeCreate(device: NetDevice, ctx: DriverContext) {
-  const vm = device.vm!;
+  const vm = exeVmArg(device.vm);
+  const target = sshTarget(device);
   if ((await exeVms()).includes(vm)) {
     ctx.log(`create ${device.id}: VM ${vm} already exists`);
   } else {
     const c = device.create ?? {};
     ctx.log(`create ${device.id}: ssh exe.dev new --name=${vm}`);
+    // run-9 u9/E: cpu reaches argv as `--cpu=${v}` and config.ts stores it as
+    // a raw Number() — clamp to an integer at the sink like port/node.
+    const cpu = c.cpu !== undefined ? argvInt(c.cpu, 1, 64, `device ${device.id} create.cpu`) : undefined;
     await exeDev(
       [
         "new",
         `--name=${vm}`,
-        ...(c.cpu ? [`--cpu=${c.cpu}`] : []),
+        ...(cpu !== undefined ? [`--cpu=${cpu}`] : []),
         ...(c.memory ? [`--memory=${c.memory}`] : []),
         ...(c.disk ? [`--disk=${c.disk}`] : []),
       ],
@@ -327,24 +350,28 @@ async function exeCreate(device: NetDevice, ctx: DriverContext) {
     );
   }
   for (let i = 0; i < 40; i++) {
-    const ok = await run("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", device.ssh!, "echo READY"], {
+    const ok = await run("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", target, "echo READY"], {
       allowFail: true,
       timeoutMs: 20_000,
     });
-    if (ok.stdout.includes("READY")) return ctx.log(`create ${device.id}: ssh ${device.ssh} ready`);
+    if (ok.stdout.includes("READY")) return ctx.log(`create ${device.id}: ssh ${target} ready`);
     await sleep(3000);
   }
-  throw Error(`${device.id}: ${device.ssh} never accepted ssh`);
+  throw Error(`${device.id}: ${target} never accepted ssh`);
 }
 
 async function exeExpose(device: NetDevice, ctx: DriverContext) {
-  await exeDev(["share", "port", device.vm!, String(device.port)]);
-  await exeDev(["share", "set-public", device.vm!]);
-  ctx.log(`expose ${device.id}: ${device.url} → :${device.port}, public (the bearer token is the gate)`);
+  // run-9 u9/E: the share port and the set-public vm ride `ssh exe.dev share …`
+  // argv — clamp the port, name-check the vm, charset-gate in exeDevArgv.
+  const vm = exeVmArg(device.vm);
+  const port = argvInt(device.port, 1, 65535, `device ${device.id} port`);
+  await exeDev(["share", "port", vm, String(port)]);
+  await exeDev(["share", "set-public", vm]);
+  ctx.log(`expose ${device.id}: ${device.url} → :${port}, public (the bearer token is the gate)`);
 }
 
 async function exeDestroy(device: NetDevice, ctx: DriverContext) {
-  const vm = device.vm!;
+  const vm = exeVmArg(device.vm);
   if (!(await exeVms()).includes(vm)) return ctx.log(`destroy ${device.id}: VM ${vm} does not exist`);
   if (!ctx.args.includes("--yes")) {
     const rl = createInterface({ input: process.stdin, output: process.stdout });

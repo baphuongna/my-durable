@@ -35,3 +35,10 @@ tmp/
 # compile-negative scratch (scripts/check-contract.mjs)
 **/.contract-negative/
 tools/
+
+/.crew/
+/.crew
+!.crew/artifacts/
+!.crew/graphs/
+!.crew/artifacts/.gitkeep
+!.crew/graphs/.gitkeep

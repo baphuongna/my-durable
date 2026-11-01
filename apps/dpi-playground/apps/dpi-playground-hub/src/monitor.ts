@@ -307,7 +307,10 @@ export class DeviceMonitor {
             // writer cap were REPLACED by faults, blinding every viewer's
             // network view. Degrade oversized/hostile-shaped trees at the seam.
             const sessions = Array.isArray(frame.tree?.sessions) ? frame.tree.sessions : [];
-            const size = JSON.stringify(frame.tree)?.length ?? 0;
+            // R9 cold review: bytes, not UTF-16 units — mirrored with the mux
+            // relay seam so a multibyte payload cannot pass one and fail the other.
+            const treeText = JSON.stringify(frame.tree);
+            const size = treeText ? Buffer.byteLength(treeText) : 0;
             if (size > TREE_MAX_BYTES || sessions.length > TREE_MAX_SESSIONS) {
               this.update(id, {
                 status: "faulted",

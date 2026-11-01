@@ -93,6 +93,10 @@ export function validateToken(token: string) {
 export class NetworkRegistry {
   readonly db: DatabaseSync;
   readonly path: string;
+  /** run-9 u9: the owner-only restriction pass, exposed so callers can await
+   * it instead of the DACL landing invisibly after the secret. Still
+   * non-fatal (resolves false on failure) — the hub/TUI must boot either way. */
+  readonly restrictOwner: Promise<boolean>;
 
   constructor(path = join(dpiHome(), "network.sqlite")) {
     this.path = path;
@@ -104,8 +108,9 @@ export class NetworkRegistry {
     // The registry carries device tokens: sqlite owns the file's creation mode,
     // so tighten it here — 0600 on POSIX is ensurePrivateDir's job for the
     // directory; on Windows this installs the owner-only DACL (registry.ts is
-    // shared by the hub, so keep it fire-and-forget and non-fatal).
-    void restrictToOwner(path);
+    // shared by the hub, so it stays non-fatal; the promise is exposed as
+    // this.restrictOwner for callers that want to await the pass).
+    this.restrictOwner = restrictToOwner(path);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000; PRAGMA foreign_keys=ON;");
   }
 
