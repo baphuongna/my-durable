@@ -195,8 +195,12 @@ export function rsync(device: NetDevice, sources: string[], dest: string, cwd: s
 /** The full exe.dev argv, built explicitly from guarded args (pure, testable). */
 export function exeDevArgv(args: string[]): string[] {
   for (const a of args)
-    if (!a || !EXE_ARG_RE.test(a))
-      throw Error(`exe.dev argument rejected (allowed charset [A-Za-z0-9._=-], no whitespace/metacharacters): ${JSON.stringify(a)}`);
+    if (!a || !EXE_ARG_RE.test(a) || /^-[^-]/.test(a) || a === "-" || a === "--")
+      // r10 h3-4: ssh re-parses single-dash words as ITS options (-o, -L…) —
+      // those die at the sink. Double-dash `--name=x` flags are exe.dev's own
+      // grammar (call sites pass them as constants) and stay legal; the
+      // charset gate already blocks everything else.
+      throw Error(`exe.dev argument rejected (allowed charset [A-Za-z0-9._=-], no whitespace/metacharacters, no single-dash options): ${JSON.stringify(a)}`);
   return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "exe.dev", ...args, "--json"];
 }
 

@@ -48,13 +48,18 @@ const SANITIZE = {
 };
 
 // Transcripts re-render on every stream frame; cache rendered blocks by their source text.
+// r10 h4-4: count-only eviction retained ~200MiB worst case (400 × ≤256KiB raw key +
+// sanitized HTML); oversized blocks render every time but are never RETAINED.
 const cache = new Map<string, string>();
+const CACHE_SOURCE_MAX = 4096;
 export function markdown(text: string) {
   let html = cache.get(text);
   if (html === undefined) {
     html = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, SANITIZE);
-    if (cache.size > 400) cache.delete(cache.keys().next().value!);
-    cache.set(text, html);
+    if (text.length <= CACHE_SOURCE_MAX) {
+      if (cache.size > 400) cache.delete(cache.keys().next().value!);
+      cache.set(text, html);
+    }
   }
   return html;
 }

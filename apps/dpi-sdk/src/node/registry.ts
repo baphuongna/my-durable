@@ -297,7 +297,11 @@ export class NetworkRegistry {
     },
   ) {
     const sets = ["last_status=?", "last_error=?"];
-    const values: (string | number | null)[] = [patch.status, patch.error ?? null];
+    // r10 h3-3: last_error is device-authored too (error.message from the LAN
+    // leg is bounded only by the 16MiB transport cap) — the info/tree caps
+    // above must not leave this column as the one uncapped rewrite target.
+    const errCap = (e: string | null | undefined) => (e == null ? null : e.slice(0, 2048));
+    const values: (string | number | null)[] = [patch.status, errCap(patch.error)];
     if (patch.seenAt !== undefined) sets.push("last_seen_at=?"), values.push(patch.seenAt);
     // run-7 B4: device-authored JSON is untrusted — cap what a hostile device
     // can rewrite into the registry row every 10s (the uiSet sibling caps UI

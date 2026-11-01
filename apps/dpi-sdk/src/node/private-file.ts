@@ -10,7 +10,7 @@
  * crashes the caller: it reports and returns false so the boot can continue and
  * a later pass can retry.
  */
-import { chmodSync, closeSync, fsyncSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, fsyncSync, openSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -114,6 +114,38 @@ export async function restrictDirToOwner(path: string, deps: RestrictDeps = {}):
 const tempSiblingName = (path: string) =>
   join(dirname(path), `.${basename(path)}.${randomBytes(6).toString("hex")}.tmp`);
 
+/** r10 h3-2: a SIGKILL between writeSync and renameSync strands a
+ * secret-bearing temp sibling that nothing ever cleaned — random names never
+ * collide, so one stale copy of EVERY rotated-away credential could
+ * accumulate. Prune the target's stale temps (grace window keeps a concurrent
+ * writer's live temp safe) at the top of every atomic write. */
+const TEMP_GRACE_MS = 60 * 60 * 1000;
+function pruneStaleTemps(path: string, deps: RestrictDeps = {}): void {
+  if ((deps.platform ?? process.platform) === "win32") {
+    // win32 rename-refusal races make pruning riskier than the residue; the
+    // 0700 dir already bounds exposure there.
+    return;
+  }
+  const dir = dirname(path);
+  const prefix = `.${basename(path)}.`;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+    try {
+      const full = join(dir, name);
+      if (now - statSync(full).mtimeMs > TEMP_GRACE_MS) rmSync(full, { force: true });
+    } catch {
+      /* someone else's temp racing us — leave it */
+  }
+  }
+}
+
 /**
  * Atomic write for credential files (orca STA-3941 / paseo writePrivateFileAtomicSync):
  * temp file 0600 + fsync + rename, so readers only ever see the old bytes or the
@@ -131,6 +163,7 @@ export async function writePrivateFileAtomic(
   deps: RestrictDeps = {},
 ): Promise<boolean> {
   ensurePrivateDir(dirname(path));
+  pruneStaleTemps(path, deps);
   const temp = (deps.tempName ?? tempSiblingName)(path);
   let fd: number | undefined;
   try {

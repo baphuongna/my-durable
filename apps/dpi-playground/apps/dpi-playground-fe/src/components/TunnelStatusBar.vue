@@ -12,7 +12,11 @@
 import { computed } from "vue";
 import { Cable, Wifi, WifiOff } from "lucide-vue-next";
 import type { NetworkDevice } from "@sdk/api";
+import { externalHref } from "../client/link-policy"; // r10 h4-1: device.url is device-authored
 import { ago } from "../client/store";
+
+/** Template helper: device-authored URL → http(s)-only, non-hub href (r10 h4-1). */
+const safeUrl = (u: string) => externalHref(u, globalThis.location?.origin ?? "") || undefined;
 
 const props = defineProps<{ device: NetworkDevice }>();
 
@@ -51,7 +55,7 @@ const tunnelLive = computed(() => props.device.tunnel?.state === "connected");
     >
       {{ device.tunnel.readerCount }} reader{{ device.tunnel.readerCount === 1 ? "" : "s" }}
     </span>
-    <a v-if="device.url" class="axis url" :href="device.url" target="_blank" rel="noreferrer">{{
+    <a v-if="device.url" class="axis url" :href="safeUrl(device.url)" target="_blank" rel="noreferrer">{{
       device.url
     }}</a>
     <span

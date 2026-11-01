@@ -68,19 +68,46 @@ export function useNetwork(stream: HubStream) {
   return { model, devices, tree };
 }
 
+/** r10 h4-2: the device slot is the LAST cap point for doc frames — the agent
+ * slot caps at 64Ki (AgentModel.capDocValue); the device slot never did. Oversized
+ * values keep only a flattened preview (Buffer round-trip per the flatSlice rule,
+ * so a sliced V8 string cannot pin the whole 1MiB frame in memory). */
+const DEVICE_DOC_MAX = 64 * 1024;
+const capDocFrame = (value: unknown): unknown => {
+  let text: string;
+  try {
+    text = JSON.stringify(value) ?? "";
+  } catch {
+    return { truncated: true, preview: "[unserializable app state]" };
+  }
+  if (text.length > DEVICE_DOC_MAX)
+    return { truncated: true, preview: Buffer.from(text, "utf8").subarray(0, 4096).toString("utf8") };
+  return value;
+};
+
+/** r10 h4-3: activity previews ride the 1MiB relay cap uncapped — 50 × 1MiB sticky per
+ * tab, surviving device switches. Flatten-cap every retained preview (4Ki). */
+const ACTIVITY_PREVIEW_MAX = 4096;
+const capPreview = (s: string): string =>
+  s.length > ACTIVITY_PREVIEW_MAX ? Buffer.from(s, "utf8").subarray(0, ACTIVITY_PREVIEW_MAX).toString("utf8") : s;
+
 export function useDevice(stream: HubStream, deviceId: Ref<string | undefined>) {
   const sharedState = shallowRef<{ value: AppState; revision: number }>();
   const activity = shallowRef<Activity[]>([]);
   const { status, select } = feed(stream, "device", (frame) => {
     if (frame.type === "doc" && frame.kind === "app.shared-state")
-      sharedState.value = { value: frame.value as AppState, revision: frame.revision ?? 0 };
+      sharedState.value = { value: capDocFrame(frame.value) as AppState, revision: frame.revision ?? 0 };
     else if (frame.type === "activity")
-      activity.value = [...activity.value, ...frame.items].slice(-50);
+      activity.value = [
+        ...activity.value,
+        ...frame.items.map((it) => ({ ...it, preview: capPreview(String(it.preview ?? "")) })),
+      ].slice(-50);
   });
   watch(
     deviceId,
     (id) => {
       sharedState.value = undefined;
+      activity.value = []; // r10 h4-3: previews are device-scoped — never survive a switch
       select(id ? deviceSub(id) : undefined);
     },
     { immediate: true },

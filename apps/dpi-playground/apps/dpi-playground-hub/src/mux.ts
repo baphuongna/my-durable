@@ -127,7 +127,19 @@ export class StreamMux {
     private readonly registry: NetworkRegistry,
     private readonly monitor: DeviceMonitor,
     private readonly options: { budget?: ByteBudget } = {},
-  ) {}
+  ) {
+    // r10 h1-5: ONE network snapshot + ONE serialization per monitor change,
+    // shared by every open tab — the old per-tab listener rebuilt and
+    // re-stringified the whole network view (≤32×256KiB trees) once per tab
+    // per change. The invalidator fires once; the first tab's send lazily
+    // rebuilds the cached text.
+    this.monitor.onChange(() => {
+      this.networkText = undefined;
+    });
+  }
+
+  /** Cached `data:` payload for the network fan-out (r10 h1-5). */
+  private networkText?: string;
 
   private readerCount(deviceId: string): number {
     const mux = this.readersByDevice.get(deviceId) ?? 0;
@@ -203,8 +215,13 @@ export class StreamMux {
     this.streams.set(streamId, stream);
     stream.send({ sub: "hello", frame: { type: "stream", streamId } });
     if (closed) return;
-    const pushNetwork = () =>
-      stream.send({ sub: "network", frame: { type: "network", devices: this.monitor.network() } });
+    const pushNetwork = () => {
+      const text = (this.networkText ??= JSON.stringify({
+        sub: "network",
+        frame: { type: "network", devices: this.monitor.network() },
+      }));
+      stream.send({ sub: "network", frame: { type: "network", devices: [] } }, text);
+    };
     pushNetwork();
     if (closed) return;
     off = this.monitor.onChange(pushNetwork);

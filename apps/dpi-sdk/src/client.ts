@@ -154,6 +154,55 @@ export interface GitOpResult {
   prs?: { n: number; title: string; state: string; draft: boolean; branch: string; url: string }[];
 }
 
+
+/** r10 h3-1: the SDK client is the trust-boundary reader — every hub leg is
+ * capped (transport.ts readBodyCapped 16MiB textual / 12MB binary), but this
+ * client buffered `response.text()` / `arrayBuffer()` whole. A compromised
+ * device answering a multi-GB body OOMs the operator's TUI / net scripts /
+ * browser export. Cap with hub parity: content-length precheck, then a
+ * byte-counting stream read that aborts at the ceiling. Isomorphic: no Buffer. */
+const TEXT_BODY_MAX = 16 * 1024 * 1024;
+const BINARY_BODY_MAX = 12 * 1024 * 1024;
+
+async function readBodyCapped(response: Response, cap: number, what: string): Promise<Uint8Array> {
+  const declared = Number(response.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > cap)
+    throw new DpiError("invalid", `${what} over ${cap} bytes (content-length ${declared})`, 413);
+  const body = (response as { body?: ReadableStream<Uint8Array> | null }).body;
+  if (body && typeof body.getReader === "function") {
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > cap) {
+        try {
+          await reader.cancel();
+        } catch {
+          /* already closed */
+        }
+        throw new DpiError("invalid", `${what} over ${cap} bytes`, 413);
+      }
+      chunks.push(value);
+    }
+    const merged = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) {
+      merged.set(c, off);
+      off += c.byteLength;
+    }
+    return merged;
+  }
+  // No stream (mocks / very old runtimes): read once, then enforce the cap.
+  const fallback = what === "response body"
+    ? new TextEncoder().encode(await response.text())
+    : new Uint8Array(await response.arrayBuffer());
+  if (fallback.byteLength > cap) throw new DpiError("invalid", `${what} over ${cap} bytes`, 413);
+  return fallback;
+}
+
 export class DpiClient {
   readonly baseUrl: string;
   constructor(
@@ -199,7 +248,8 @@ export class DpiClient {
       if (options.signal?.aborted) throw cause;
       throw new DpiError("offline", `Cannot reach ${this.baseUrl}`, 0, { cause });
     }
-    const text = await response.text();
+    // r10 h3-1: capped read — the hub legs cap at 16MiB textual; mirror here.
+    const text = new TextDecoder().decode(await readBodyCapped(response, TEXT_BODY_MAX, "response body"));
     let data: unknown;
     try {
       data = text ? JSON.parse(text) : undefined;
@@ -436,7 +486,8 @@ export class DpiClient {
         response.status,
       );
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    // r10 h3-1: binary leg — 12MB parity with the hub's readBodyCapped.
+    const bytes = await readBodyCapped(response, BINARY_BODY_MAX, "export body");
     // `filename="quoted"` (the device's form) or a bare token, per RFC 6266.
     const disposition = response.headers.get("content-disposition") ?? "";
     const quoted = /filename="((?:[^"\\]|\\.)*)"/i.exec(disposition)?.[1];

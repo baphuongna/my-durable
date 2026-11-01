@@ -96,7 +96,15 @@ registry.clearTunnelState(); // live tunnel state is RAM-only; never resurrect f
 // promise inside the registry — await it (non-fatal, logged) so network.sqlite
 // is locked down before the listener starts serving.
 try {
-  await registry.restrictOwner;
+  // r10 h1-3: the DACL pass runs execFile (whoami+icacls) whose callback can
+  // outlive its timeout if a grandchild inherits the stdout pipe — boot never
+  // depends on the outcome, so race it with a deadline and log lateness.
+  const late = Symbol("late");
+  const raced = await Promise.race([
+    registry.restrictOwner.then(() => true, () => false),
+    new Promise<typeof late>((resolve) => setTimeout(() => resolve(late), 10_000)),
+  ]);
+  if (raced === late) console.warn("[hub] registry owner restriction still running after 10s — continuing boot");
 } catch (error) {
   console.warn("[hub] registry owner restriction failed:", error);
 }
@@ -505,7 +513,9 @@ app.post(
   },
 );
 
-app.get("/api/network", (_req, res) => res.json({ configFile, devices: monitor.network() }));
+app.get("/api/network", (_req, res) =>
+  res.json({ configFile, devices: monitor.network(), relay: mux.relayStats() }), // r10 h1-4: relay drop counters surfaced to the operator
+);
 // Devices are configured in dpi-network.yaml and `just net register`; the hub only reads them.
 app.post(
   "/api/devices/:id/check",

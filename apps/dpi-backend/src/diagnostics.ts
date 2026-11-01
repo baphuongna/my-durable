@@ -253,9 +253,20 @@ function diagnosticsDoctorIo(io: DiagnosticsIo): DoctorIo {
     env: io.env,
     nodeVersion: io.nodeVersion,
     // doctor's FetchLike wants json(); this io speaks text() — adapt, never reimplement.
+    // r10 h2-1: the adapter used to res.text() the WHOLE body — the doctor
+    // section was the one diagnostics read that bypassed the R9 byte caps
+    // ("duration is not a byte budget"). Route through the capped reader.
     fetchImpl: async (url, init) => {
       const res = await io.fetch(url, init);
-      return { ok: res.ok, status: res.status, json: async () => JSON.parse(await res.text()) };
+      return {
+        ok: res.ok,
+        status: res.status,
+        json: async () => {
+          const raw = await readCappedBody(res, API_BODY_MAX_BYTES);
+          if (raw.length > API_BODY_MAX_BYTES) throw Error(`doctor body over ${API_BODY_MAX_BYTES} bytes`);
+          return JSON.parse(raw);
+        },
+      };
     },
     access: io.accessSync,
     exists: io.existsSync,

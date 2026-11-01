@@ -34,6 +34,7 @@ import {
 } from "lucide-vue-next";
 import { deviceId, network, sessionSummary, notify, select } from "../client/store";
 import { deviceClient } from "../client/hub";
+import { externalHref } from "../client/link-policy"; // r10 h4-1: device-authored URLs never bind raw
 import { ensureGit, gitAllowedFor, gitEntry, wireGitAutoRefresh } from "../client/git-store";
 import { addWorktree as gitAddWorktree, createSessionOn } from "../client/worktree";
 import type { GitStatus } from "@sdk/client";
@@ -136,7 +137,7 @@ const prBusy = ref(false);
  *  actions built from the origin URL — no CLI, no login, no assumption. */
 const forge = computed<"github" | "gitlab" | "bitbucket" | "other" | undefined>(() => status.value?.forge);
 const isGitHub = computed(() => forge.value === "github");
-const webUrl = computed(() => status.value?.webUrl ?? "");
+const webUrl = computed(() => externalHref(status.value?.webUrl ?? "", globalThis.location?.origin ?? "") ?? "");
 const changeLabel = computed(() =>
   forge.value === "gitlab" ? "merge request" : forge.value === "bitbucket" ? "pull request" : forge.value === "github" ? "pull request" : "change request",
 );
@@ -153,9 +154,11 @@ const newChangeHref = computed(() => {
   if (forge.value === "github") return `${webUrl.value}/compare/${b || "main"}...${e}?expand=1`;
   return "";
 });
-const changesHref = computed(() =>
-  forge.value === "gitlab" ? `${webUrl.value}/-/merge_requests` : forge.value === "bitbucket" ? `${webUrl.value}/pull-requests` : `${webUrl.value}/pulls`,
-);
+const changesHref = computed(() => {
+  if (!webUrl.value) return "";
+  return forge.value === "gitlab" ? `${webUrl.value}/-/merge_requests` : forge.value === "bitbucket" ? `${webUrl.value}/pull-requests` : `${webUrl.value}/pulls`;
+});
+const prSafeUrl = (u: string) => externalHref(u, globalThis.location?.origin ?? "");
 const loadPRs = async () => {
   if (!devId.value || !cwd.value) return;
   const allowed = gitAllowedFor(devId.value, cwd.value);
@@ -346,7 +349,7 @@ const dirty = computed(() => (status.value?.staged ?? 0) + (status.value?.unstag
 const noIdentity = computed(() => status.value?.repo === true && status.value?.identityComplete === false);
 /** The device parses the origin once (ssh/https/self-hosted/nested GitLab
  *  namespaces) and reports the browser URL; a second FE parser drifted from it. */
-const remoteWeb = computed(() => status.value?.webUrl ?? "");
+const remoteWeb = computed(() => externalHref(status.value?.webUrl ?? "", globalThis.location?.origin ?? "") ?? "");
 const toggle = (p: string) => {
   const next = new Set(checked.value);
   if (next.has(p)) next.delete(p);
@@ -1237,8 +1240,8 @@ const laneX = (lane: number) => lane * 12 + 7;
               <h4><GitMerge :size="16" /> {{ isGitHub ? "Pull requests" : changeLabel + "s" }}</h4>
               <span class="grow" />
               <a v-if="!isGitHub && newChangeHref" class="small btn-like" :href="newChangeHref" target="_blank" rel="noopener">new {{ changeLabel }}</a>
-              <a v-if="!isGitHub" class="small btn-like" :href="changesHref" target="_blank" rel="noopener">open {{ changeLabel }}s</a>
-              <a v-if="!isGitHub" class="small btn-like" :href="webUrl" target="_blank" rel="noopener">repo</a>
+              <a v-if="!isGitHub && changesHref" class="small btn-like" :href="changesHref" target="_blank" rel="noopener">open {{ changeLabel }}s</a>
+              <a v-if="!isGitHub && webUrl" class="small btn-like" :href="webUrl" target="_blank" rel="noopener">repo</a>
             </div>
             <template v-if="!isGitHub">
               <p class="hint">
@@ -1263,7 +1266,7 @@ const laneX = (lane: number) => lane * 12 + 7;
                 <button class="icon-button" title="run checks" :disabled="prBusy" @click="prChecksOf(pr.n)"><RefreshCw :size="13" /></button>
                 <button class="icon-button" title="comment" :disabled="prBusy" @click="prCommentAsk(pr.n)"><Copy :size="13" /></button>
                 <button v-if="pr.state === 'OPEN'" class="small" :disabled="prBusy || !!busy" @click="prMergeAsk(pr.n)">squash &amp; merge</button>
-                <a class="icon-button" :href="pr.url" target="_blank" rel="noopener" title="open on the forge"><ArrowUpFromLine :size="13" style="transform: rotate(45deg)" /></a>
+                <a v-if="prSafeUrl(pr.url)" class="icon-button" :href="prSafeUrl(pr.url)!" target="_blank" rel="noopener" title="open on the forge"><ArrowUpFromLine :size="13" style="transform: rotate(45deg)" /></a>
               </div>
               <pre v-for="[n, text] in prChecks" :key="n" class="pr-checks">#{{ n }} checks:{{ "\n" }}{{ text }}</pre>
             </div>

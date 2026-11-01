@@ -165,13 +165,20 @@ export function parseRemote(url?: string): ParsedRemote | undefined {
   path = path.replace(/\/+$/, "").replace(/\.git$/, "");
   if (!host || !path) return undefined;
   const h = host.toLowerCase();
-  const forge: Forge = h === "github.com" || h.endsWith(".github.com") || /(^|\.)github\./.test(h)
-    ? "github"
-    : /gitlab/.test(h) || /(^|\.)gitlab\./.test(h)
-      ? "gitlab"
-      : /bitbucket/.test(h)
-        ? "bitbucket"
-        : "other";
+  // r10 h2-6: forge classification is EXACT (host or subdomain of the known
+  // forge, or a dedicated DNS label for self-hosted gitlab/bitbucket). The old
+  // substring regexes matched github.com.evil.com → GitHub-styled PR buttons
+  // on lookalike hosts. A host carrying '@' (scp-form with two @) is never real.
+  if (h.includes("@")) return undefined;
+  const labels = h.split(".").filter(Boolean);
+  const forge: Forge =
+    h === "github.com" || h.endsWith(".github.com")
+      ? "github"
+      : h === "gitlab.com" || h.endsWith(".gitlab.com") || labels.includes("gitlab")
+        ? "gitlab"
+        : h === "bitbucket.org" || h.endsWith(".bitbucket.org") || labels.includes("bitbucket")
+          ? "bitbucket"
+          : "other";
   const scheme = /^http:\/\//.test(raw) ? "http" : "https";
   return { host, path, forge, webUrl: `${scheme}://${host}/${path}` };
 }
@@ -569,7 +576,24 @@ async function statusOnce(path: string, key: string): Promise<GitStatus> {
     // resolve an identity at all. That is the only case worth warning about.
     out.identityComplete = Boolean(identMatch?.[1]?.trim() && identMatch?.[2]?.trim());
     if (!out.identityComplete) delete out.identity;
-    if (remoteP.status === "fulfilled") out.remoteUrl = remoteP.value.trim() || undefined;
+    if (remoteP.status === "fulfilled") {
+      out.remoteUrl = remoteP.value.trim() || undefined;
+      // r10 h2-5: `git remote get-url origin` echoes credential-bearing URLs
+      // verbatim (https://user:PAT@forge/…) to every token-holding viewer.
+      // Strip userinfo before the value enters status responses and caches.
+      if (out.remoteUrl) {
+        try {
+          const u = new URL(out.remoteUrl);
+          if (u.username || u.password) {
+            u.username = "";
+            u.password = "";
+            out.remoteUrl = u.toString();
+          }
+        } catch {
+          /* ssh/scp form: no password syntax */
+        }
+      }
+    }
     const parsed = parseRemote(out.remoteUrl);
     if (parsed) {
       out.forge = parsed.forge;
