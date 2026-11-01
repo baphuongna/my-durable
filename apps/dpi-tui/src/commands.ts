@@ -4,11 +4,12 @@ import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
 import type { App } from "./app.ts";
 import { sanitizeTerminal, oneLine } from "./sanitize.ts";
 export { oneLine };
-import { Panel, pickAgent, pickDevice, pickEnv, pickModel, pickNotify, pickSession, pickSchedules, pickThinking } from "./pickers.ts";
+import { Panel, pickAgent, pickArchived, pickDevice, pickEnv, pickModel, pickNotify, pickSession, pickSchedules, pickThinking } from "./pickers.ts";
 import { parsePairArgs, runPairing } from "./pairing.ts";
 import { gitStateSuffix } from "./views.ts";
 import { c } from "./theme.ts";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { access, writeFile } from "node:fs/promises";
 
 export const COMMANDS: SlashCommand[] = [
   { name: "sessions", description: "switch or create a session on this device" },
@@ -29,6 +30,11 @@ export const COMMANDS: SlashCommand[] = [
   { name: "name", description: "rename this agent", argumentHint: "<name>" },
   { name: "tasks", description: "live tasks in this session" },
   { name: "find", description: "search every session's transcript on this device", argumentHint: "<text>" },
+  // run-13 wave 2 — session take-out. :export writes the device's zip bundle
+  // to a local path; :archive walks the archived sessions (transcript /
+  // restore). No delete door: the SDK exposes no endpoint for it.
+  { name: "export", description: "save a session bundle (zip) to a local path", argumentHint: "[sessionId]" },
+  { name: "archive", description: "archived sessions: read a transcript, restore" },
   { name: "pair", description: "pair THIS device with a hub", argumentHint: "<CODE|PAIR_URL> [--hub ORIGIN] [--force]" },
   {
     name: "git",
@@ -204,6 +210,56 @@ async function usageCommand(app: App) {
   }
 }
 
+// ---------------------------------------------- run-13: :export
+
+/** run-13 A1: the export download name is DEVICE-AUTHORED (Content-Disposition
+ * — SessionExport.filename), so before it seeds the save-path prompt it gets
+ * the FE r16 fold: oneLine first (it is chrome AND a path segment — CR/LF
+ * must go before the charset fold), then [^A-Za-z0-9._-] → "_", capped at 80.
+ * The operator's TYPED path is trusted; only the seeded default passes here. */
+export function sanitizeExportName(filename: string): string {
+  return oneLine(String(filename ?? ""))
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .slice(0, 80);
+}
+
+/** /export (run-13 A1) — pull a session's zip bundle and write it to a local
+ * path. Every failure mode (device refusal, bad path, disk full) lands in one
+ * error toast: the command is operator-driven (prompts between awaits), so it
+ * must never throw out of runCommand. */
+async function exportCommand(app: App, sessionId: string) {
+  let filename = "session.bundle.zip";
+  let bytes: Uint8Array = new Uint8Array();
+  try {
+    const ex = await app.client.exportSession(sessionId);
+    filename = sanitizeExportName(ex.filename) || filename;
+    bytes = ex.bytes;
+  } catch (e) {
+    return app.notify(`export: ${(e as Error).message.slice(0, 80)}`, true);
+  }
+  const typed = await app.prompt("Save export as", `./${filename}`);
+  if (typed === undefined || !typed.trim()) return app.flash("export cancelled"), true;
+  const target = typed.trim();
+  try {
+    // The overwrite gate — the same y/n /reset asks (R4 finding 4): only the
+    // operator's explicit y may clobber an existing file.
+    const exists = await access(target).then(
+      () => true,
+      () => false,
+    );
+    if (exists) {
+      const ok = await app.prompt(`Overwrite ${target}? y/n`, "");
+      if (ok === undefined || !ok.trim().toLowerCase().startsWith("y"))
+        return app.flash("export cancelled — kept the existing file"), true;
+    }
+    await writeFile(target, bytes);
+    app.notify(`saved ${target} (${fmtBytes(bytes.length)})`);
+    app.logEvent("export", `saved ${oneLine(target)} · ${fmtBytes(bytes.length)} · ${oneLine(filename)}`);
+  } catch (e) {
+    app.notify(`export: ${(e as Error).message.slice(0, 80)}`, true);
+  }
+}
+
 const KEYS: [string, string][] = [
   ["enter", "send; steers the agent while it works"],
   ["alt+enter", "queue as a follow-up"],
@@ -334,6 +390,25 @@ export async function runCommand(app: App, text: string): Promise<boolean> {
     }
     case "git":
       await gitCommand(app, arg);
+      break;
+    // run-13 wave 2: session take-out — :export writes a bundle to disk,
+    // :archive opens the archived-session picker (pickers.ts owns its rows).
+    case "export": {
+      // No argument → the session picker (attach-on-pick is that door's
+      // documented behavior), then export the picked id. Esc and ＋New resolve
+      // undefined — /export stays quiet rather than flashing "cancelled" over
+      // a flow that tells its own story.
+      let id = arg;
+      if (!id) {
+        const picked = await pickSession(app);
+        if (picked === undefined) break;
+        id = picked;
+      }
+      await exportCommand(app, id);
+      break;
+    }
+    case "archive":
+      await pickArchived(app);
       break;
     // run-12: the five device-ops doors — the pickers own their row hotkeys.
     case "schedules":

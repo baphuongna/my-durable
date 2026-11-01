@@ -64,7 +64,9 @@ test("h2-2: a high-priority spawn is admitted before earlier-queued low ones; gi
     const lows = Array.from({ length: GIT_SPAWN_BUDGET }, (_, i) => git("/repo", ["lo", String(i)]).catch(() => {}));
     await settle();
     assert.equal(started.length, GIT_SPAWN_BUDGET, "the budget is saturated with live spawns");
-    assert.deepEqual(gitSpawnStats(), { live: GIT_SPAWN_BUDGET, queued: 0, queuedHigh: 0 });
+    // run-13 f4: queuedAged (cumulative aging promotions) joined the stats
+    // shape — it stays 0 here; these cases never age the clock.
+    assert.deepEqual(gitSpawnStats(), { live: GIT_SPAWN_BUDGET, queued: 0, queuedHigh: 0, queuedAged: 0 });
 
     // Three more lows, then ONE high — the high arrived LAST, so a plain FIFO
     // would admit it after all three lows.
@@ -73,7 +75,7 @@ test("h2-2: a high-priority spawn is admitted before earlier-queued low ones; gi
     await settle();
     assert.deepEqual(
       gitSpawnStats(),
-      { live: GIT_SPAWN_BUDGET, queued: 4, queuedHigh: 1 },
+      { live: GIT_SPAWN_BUDGET, queued: 4, queuedHigh: 1, queuedAged: 0 },
       "3 low + 1 high wait behind the saturated budget",
     );
     assert.equal(started.length, GIT_SPAWN_BUDGET, "no queued caller has started yet");
@@ -83,7 +85,7 @@ test("h2-2: a high-priority spawn is admitted before earlier-queued low ones; gi
     await settle();
     assert.equal(started.length, GIT_SPAWN_BUDGET + 1, "exactly one queued caller was admitted");
     assert.match(started.at(-1)!, /hi click$/, "the admitted caller is the HIGH one, not the older queued lows");
-    assert.deepEqual(gitSpawnStats(), { live: GIT_SPAWN_BUDGET, queued: 3, queuedHigh: 0 });
+    assert.deepEqual(gitSpawnStats(), { live: GIT_SPAWN_BUDGET, queued: 3, queuedHigh: 0, queuedAged: 0 });
 
     // Drain: every release wakes the next low in FIFO order until all settle,
     // and the semaphore returns to rest.
@@ -92,7 +94,7 @@ test("h2-2: a high-priority spawn is admitted before earlier-queued low ones; gi
       await settle();
     }
     await Promise.all([...lows, ...queuedLows, high]);
-    assert.deepEqual(gitSpawnStats(), { live: 0, queued: 0, queuedHigh: 0 }, "the semaphore fully drains");
+    assert.deepEqual(gitSpawnStats(), { live: 0, queued: 0, queuedHigh: 0, queuedAged: 0 }, "the semaphore fully drains");
   } finally {
     await teardownHeld(held);
     setGitExecForTests(); // real execFile before anything else in this process
@@ -167,7 +169,7 @@ test("h2-2: a bare gitStatus (the /git/status route shape) outruns a queued stat
     assert.equal(status!.branch, "main", "the interactive status parsed a full answer");
     const bx = batchMap?.["/fan/x"];
     assert.ok(bx && "repo" in bx && bx.repo === true, "the batch path still resolves a full status");
-    assert.deepEqual(gitSpawnStats(), { live: 0, queued: 0, queuedHigh: 0 });
+    assert.deepEqual(gitSpawnStats(), { live: 0, queued: 0, queuedHigh: 0, queuedAged: 0 });
   } finally {
     await teardownHeld(held);
     setGitExecForTests();
@@ -210,7 +212,7 @@ test("h2-2: a gitOp mutation (the POST /git shape) rides the high lane", async (
     assert.equal(typeof out?.text, "string", "the mutation completed with a text answer");
     await Promise.all(queuedLows);
     await Promise.all(saturators);
-    assert.deepEqual(gitSpawnStats(), { live: 0, queued: 0, queuedHigh: 0 });
+    assert.deepEqual(gitSpawnStats(), { live: 0, queued: 0, queuedHigh: 0, queuedAged: 0 });
   } finally {
     await teardownHeld(held);
     setGitExecForTests();
@@ -219,7 +221,8 @@ test("h2-2: a gitOp mutation (the POST /git shape) rides the high lane", async (
 
 test("h2-2: deviceVitals carries the git spawn semaphore counts", () => {
   const v = deviceVitals(process.cwd(), Date.now());
-  assert.deepEqual(Object.keys(v.gitSpawns).sort(), ["live", "queued", "queuedHigh"], "the three counters surface");
+  // run-13 f4: queuedAged (cumulative low→high aging promotions) surfaced too.
+  assert.deepEqual(Object.keys(v.gitSpawns).sort(), ["live", "queued", "queuedAged", "queuedHigh"], "the counters surface");
   for (const n of [v.gitSpawns.live, v.gitSpawns.queued, v.gitSpawns.queuedHigh]) {
     assert.ok(Number.isInteger(n) && n >= 0, `counter ${n} is a non-negative integer`);
   }

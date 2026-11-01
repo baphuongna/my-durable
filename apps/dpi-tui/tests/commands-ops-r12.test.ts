@@ -283,7 +283,7 @@ test("COMMANDS registers the five run-12 ops doors", () => {
   const names = COMMANDS.map((c) => c.name);
   for (const n of ["schedules", "env", "notify", "usage", "vitals"])
     assert.ok(names.includes(n), `${n} missing from COMMANDS`);
-  assert.equal(names.length, 21, "16 existing + 5 run-12 doors");
+  assert.equal(names.length, 23, "16 existing + 5 run-12 doors + 2 run-13 doors (:export :archive)");
 });
 
 test("fmtBytes/fmtDur short forms keep vitals chrome to one line", () => {

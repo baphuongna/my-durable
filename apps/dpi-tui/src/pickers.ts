@@ -12,8 +12,9 @@ import {
   type SelectItem,
 } from "@earendil-works/pi-tui";
 import { THINKING_LEVELS, type ThinkingLevel } from "../../dpi-sdk/src/api.ts";
-import type { EnvFileView, NotifySinkView, ScheduleView } from "../../dpi-sdk/src/api.ts";
+import type { ArchivedView, DeviceTree, EnvFileView, NotifySinkView, ScheduleView } from "../../dpi-sdk/src/api.ts";
 import { agentTree, type TreeNode } from "../../dpi-sdk/src/models.ts";
+import { fmtBytes, fmtDur } from "./commands.ts";
 import { oneLine, sanitizeTerminal } from "./sanitize.ts";
 import type { App } from "./app.ts";
 import { c, selectTheme } from "./theme.ts";
@@ -290,34 +291,59 @@ export class Panel extends Box {
 
 // ------------------------------------------------------------------ flows
 
-export async function pickSession(app: App) {
-  const tree = await app.client.tree();
-  const items: SelectItem[] = [
-    { value: "+new", label: "＋ New session", description: `choose a directory on ${oneLine(app.device.id)}` },
-    ...tree.sessions.map((s) => {
-      const agents = Array.isArray(s.agents) ? s.agents : [];
-      return {
-        value: s.id,
-        label: oneLine(String(s.name ?? "")),
-        description: `${oneLine(String(s.cwd ?? "").split("/").slice(-2).join("/"))} │ ${agents.length} agent${agents.length === 1 ? "" : "s"}${s.busy ? " │ working" : ""}`,
-      };
-    }),
-  ];
-  app.overlay(
-    new Picker(`Sessions on ${oneLine(app.device.id)}`, items, (item) => {
-      app.closeOverlay();
-      if (item.value === "+new") return void newSession(app);
-      const s = tree.sessions.find((x) => x.id === item.value)!;
-      const root = s.agents.find((a) => a.kind === "root") ?? s.agents[0];
-      void app.attach(s.id, root?.id ?? 1);
-    }, () => {
-      // Esc must never surprise-quit (0.0.52): with no attached session the
-      // cancel used to pass exitIfNothing=true and picker→Esc→Esc killed the
-      // whole process (R4 finding 1). Landing in the herd/network view is the
-      // honest cancel; quitting stays on q / ctrl+c / /quit.
-      app.closeOverlay();
-    }),
-  );
+/**
+ * The session picker. run-13: resolves with the picked session's id
+ * (undefined on esc or ＋New) so /export can reuse this same door — every
+ * existing caller ignores the value, and attach-on-pick is unchanged. A
+ * failed tree() now lands in an error toast like the other ops pickers
+ * (through /sessions it used to surface as an unhandled rejection).
+ */
+export function pickSession(app: App): Promise<string | undefined> {
+  return new Promise((done) => {
+    void (async () => {
+      let tree: DeviceTree;
+      try {
+        tree = await app.client.tree();
+      } catch (e) {
+        app.notify(`sessions: ${(e as Error).message.slice(0, 80)}`, true);
+        return done(undefined);
+      }
+      const items: SelectItem[] = [
+        { value: "+new", label: "＋ New session", description: `choose a directory on ${oneLine(app.device.id)}` },
+        ...tree.sessions.map((s) => {
+          const agents = Array.isArray(s.agents) ? s.agents : [];
+          return {
+            value: s.id,
+            label: oneLine(String(s.name ?? "")),
+            description: `${oneLine(String(s.cwd ?? "").split("/").slice(-2).join("/"))} │ ${agents.length} agent${agents.length === 1 ? "" : "s"}${s.busy ? " │ working" : ""}`,
+          };
+        }),
+      ];
+      app.overlay(
+        new Picker(`Sessions on ${oneLine(app.device.id)}`, items, (item) => {
+          app.closeOverlay();
+          // ＋New hands the flow to the new-session chain — resolve undefined so
+          // a waiting /export stays quiet instead of flashing "cancelled" over
+          // a flow that is telling its own story.
+          if (item.value === "+new") {
+            done(undefined);
+            return void newSession(app);
+          }
+          const s = tree.sessions.find((x) => x.id === item.value)!;
+          const root = s.agents.find((a) => a.kind === "root") ?? s.agents[0];
+          void app.attach(s.id, root?.id ?? 1);
+          done(s.id);
+        }, () => {
+          // Esc must never surprise-quit (0.0.52): with no attached session the
+          // cancel used to pass exitIfNothing=true and picker→Esc→Esc killed the
+          // whole process (R4 finding 1). Landing in the herd/network view is the
+          // honest cancel; quitting stays on q / ctrl+c / /quit.
+          app.closeOverlay();
+          done(undefined);
+        }),
+      );
+    })();
+  });
 }
 
 export async function newSession(app: App, presetName?: string) {
@@ -824,6 +850,121 @@ export async function pickNotify(app: App) {
       () => app.closeOverlay(),
       "enter/t test every enabled sink · esc close",
       { t: () => void test() },
+    ),
+  );
+}
+
+// ---------------------------------------------- run-13: :archive
+// The SDK's archive surface (policy #3): list bundles, read a transcript,
+// restore. NO delete door — the SDK exposes no endpoint, and the palette does
+// not invent one (run-13 scope). fmtBytes/fmtDur come from commands.ts (their
+// home since run-12); the import is function-referenced only, so the benign
+// pickers↔commands cycle is safe under ESM live bindings.
+
+/** Transcript dump caps (run-13 A2, the r9 diagnostics-caps pattern): the log
+ * view is a 500-entry ring, so one :archive enter may add at most 400 lines /
+ * 100 KiB, with a LEADING marker naming what was cut — never a silent crop.
+ * Each surviving line is sanitizeTerminal'd HERE: logEvent writes its text
+ * verbatim (no normalizer downstream), so this helper is the chokepoint. */
+const TRANSCRIPT_MAX_LINES = 400;
+const TRANSCRIPT_MAX_BYTES = 100 * 1024;
+
+export function capTranscriptLines(text: string): string[] {
+  const raw = String(text ?? "");
+  let cut = false;
+  let body = raw;
+  if (Buffer.byteLength(body, "utf8") > TRANSCRIPT_MAX_BYTES) {
+    // Byte-boundary cut on the UTF-8 encoding (a char-count slice could leave
+    // up to 4× the budget for multibyte text); toString drops any dangling
+    // multibyte fragment as U+FFFD.
+    cut = true;
+    body = Buffer.from(body, "utf8").subarray(0, TRANSCRIPT_MAX_BYTES).toString("utf8");
+  }
+  const total = raw.split("\n").length;
+  const all = body.split("\n");
+  const lines = all.slice(0, TRANSCRIPT_MAX_LINES);
+  if (all.length > TRANSCRIPT_MAX_LINES) cut = true;
+  const out = lines.map((l) => sanitizeTerminal(l));
+  if (cut) {
+    // The count names the lines the operator will not see (a byte cut can hide
+    // more than the count shows — it is a lower bound, still honest).
+    const dropped = Math.max(1, total - lines.length);
+    out.unshift(`... truncated (${dropped} line${dropped === 1 ? "" : "s"})`);
+  }
+  return out;
+}
+
+/** /archive (run-13 A2): archived sessions, newest first. Every device-
+ * authored field goes through oneLine INCLUDING the label path — pi-tui
+ * LF-normalizes descriptions only, so label strings must be collapsed at
+ * compose time (the r12 m1 lesson, pinned by test). Enter keeps the list up
+ * (reading is read-only, the pickNotify pattern) and dumps the markdown
+ * transcript into the log view through the caps above; r restores behind the
+ * same y/n gate /reset uses, then the list refetches without the row. */
+export async function pickArchived(app: App) {
+  let list: ArchivedView[];
+  try {
+    list = (await app.client.archived()).sessions;
+  } catch (e) {
+    return app.notify(`archive: ${(e as Error).message.slice(0, 80)}`, true);
+  }
+  if (!list.length) return app.notify("no archived sessions on this device");
+  // archivedAt is relay-borne — coerce (a string/garbage field must not break
+  // the sort, R19 discipline) and sort newest-first.
+  const sessions = [...list].sort((a, b) => (Number(b.archivedAt) || 0) - (Number(a.archivedAt) || 0));
+  const items: SelectItem[] = sessions.map((s) => ({
+    // value is never rendered (filter matches label+description only) — keep
+    // the RAW id so transcript/restore hit the device's true session.
+    value: String(s.sessionId ?? ""),
+    label: `${s.hasManifest === true ? "◈" : "◇"} ${oneLine(String(s.name ?? ""))}`,
+    description: `${oneLine(String(s.cwd ?? ""))} · ${oneLine(String(Number(s.turns) || 0))} turns · ${fmtBytes(Number(s.bytes) || 0)} · archived ${fmtDur(Math.max(0, (Date.now() - (Number(s.archivedAt) || 0)) / 1000))} ago`,
+  }));
+  const showTranscript = async (item: SelectItem) => {
+    const s = sessions.find((x) => x.sessionId === item.value);
+    const label = oneLine(String(s?.name ?? item.value));
+    try {
+      const view = await app.client.archivedTranscript(item.value, "markdown");
+      const raw = String(view.text ?? "");
+      if (!raw.trim()) return app.notify(`transcript: ${label} is empty`);
+      const lines = capTranscriptLines(raw);
+      // Raw markdown is fine — the TUI does not render md, it prints lines.
+      for (const line of lines) app.logEvent("arch", line);
+      app.notify(`${label} — transcript, ${lines.length} line${lines.length === 1 ? "" : "s"} (log view: L)`);
+    } catch (e) {
+      app.notify(`transcript: ${(e as Error).message.slice(0, 80)}`, true);
+    }
+  };
+  const restore = async (item: SelectItem) => {
+    const s = sessions.find((x) => x.sessionId === item.value);
+    const label = oneLine(String(s?.name ?? item.value));
+    // The same y/n gate /reset and /schedules d ask (R4 finding 4): a
+    // state-changing door confirms; esc or anything not starting with y keeps
+    // the bundle archived.
+    const ok = await app.prompt(`Restore ${label}? y/n`, "");
+    if (ok === undefined || !ok.trim().toLowerCase().startsWith("y"))
+      return app.flash("restore cancelled"), undefined;
+    app.closeOverlay();
+    await app.run(async () => {
+      const restored = await app.client.restoreArchived(item.value);
+      const name = oneLine(String((restored as { name?: string })?.name ?? label));
+      // The app's session list refetches on its next view entry — no hook
+      // needed; the toast points the operator at g.
+      app.notify(`restored ${name} — press g to open it`);
+      app.logEvent("arch", `restored ${name}`);
+    });
+    // The row is gone on the device — refetch instead of showing a stale list
+    // (the pickSchedules d pattern).
+    void pickArchived(app);
+  };
+  app.overlay(
+    new ActionPicker(
+      `Archived on ${oneLine(app.device.id)}`,
+      items,
+      (item) => void showTranscript(item),
+      () => app.closeOverlay(),
+      "enter transcript · r restore · esc close",
+      { r: restore },
+      "◈ manifest · ◇ bundle only",
     ),
   );
 }

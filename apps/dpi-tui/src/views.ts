@@ -492,7 +492,7 @@ export function renderOps(
       // loadavg cannot express, and gitSpawns' queued(+high) is the number
       // that says "a status fan-out is stalling the panel" (run-11 h2-2).
       `  ${c.muted("evlag")} ${c.text(`${Math.round(Number(v.eventLoop?.lagMsLast) || 0)}ms`)} ${c.muted("last")} ${c.text(`${Math.round(Number(v.eventLoop?.lagMsMax1m) || 0)}ms`)} ${c.muted("max 1m")} ${c.muted(`${Number(v.eventLoop?.samples) || 0} samples`)}`,
-      `  ${c.muted("git")} ${c.text(`${Number(v.gitSpawns?.live) || 0} live`)} ${c.muted("·")} ${c.text(`${Number(v.gitSpawns?.queued) || 0} queued`)}${Number(v.gitSpawns?.queuedHigh) > 0 ? c.warn(` · ${Number(v.gitSpawns.queuedHigh)} high`) : ""}`,
+      `  ${c.muted("git")} ${c.text(`${Number(v.gitSpawns?.live) || 0} live`)} ${c.muted("·")} ${c.text(`${Number(v.gitSpawns?.queued) || 0} queued`)}${Number(v.gitSpawns?.queuedHigh) > 0 ? c.warn(` · ${Number(v.gitSpawns.queuedHigh)} high`) : ""}${Number(v.gitSpawns?.queuedAged) > 0 ? c.warn(` · ${Number(v.gitSpawns.queuedAged)} aged`) : ""}`,
     ];
     if (v.counts)
       out.push(

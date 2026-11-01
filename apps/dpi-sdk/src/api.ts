@@ -503,7 +503,12 @@ export interface DeviceVitals {
    * is stalling the panel". Required: the backend always returns it (0.0.117+,
    * pinned by dpi-backend/tests/git-priority-r11.test.ts).
    */
-  gitSpawns: { live: number; queued: number; queuedHigh: number };
+  /**
+   *   Git spawn semaphore (run-11 h2-2; queuedAged in run-13): live children,
+   *   waiting callers, interactive "high"-lane waiters, and cumulative low→high
+   *   aging rescues (>10s — the f4 starvation gauge, backend 0.0.120+).
+   */
+  gitSpawns: { live: number; queued: number; queuedHigh: number; queuedAged: number };
   pid: number;
   at: number;
   /** Sessions this device knows about; `archived` counts the archive directories. */

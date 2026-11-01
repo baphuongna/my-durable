@@ -223,8 +223,43 @@ let gitSpawnLive = 0;
 // low holds every fan-out (status-batch, the boot project-seed walk,
 // git-files turns). FIFO within each lane; a freed slot wakes high first;
 // nobody is ever refused and no spawn changes shape — only the wake order.
-const gitSpawnQueueHigh: (() => void)[] = [];
-const gitSpawnQueueLow: (() => void)[] = [];
+//
+// run-13 (run-11 cold-review f4): the lanes fixed singles-vs-fan-out but
+// left the inverse starvation — releaseGitSpawn wakes the HIGH lane first,
+// always, so sustained interactive traffic keeps the high lane non-empty
+// and a low waiter (a status-batch fan-out, the boot seed walk) queues
+// FOREVER. AGING closes it: a low waiter queued longer than
+// GIT_SPAWN_AGE_MS is promoted into the high lane, ahead of the fresh high
+// traffic that would otherwise starve it. No timers — ages are checked at
+// the only two moments the queue state is decided anyway: when a new low
+// waiter is about to park (acquireGitSpawn) and before each lane choice
+// (releaseGitSpawn). Promotion is pure queue surgery: it moves a callback
+// between arrays, holds no slot, wakes nobody, refuses nobody, and changes
+// nothing for waiters that are not aged.
+const GIT_SPAWN_AGE_MS = 10_000;
+/** Queued waiters — run-13 (f4) gave the low lane an aging clock: a bare
+ *  `() => void` could not say HOW LONG it had waited. The high lane shares
+ *  the shape so both queues stay one type; its timestamp is unused. */
+interface GitSpawnWaiter {
+  wake: () => void;
+  /** When this waiter entered its lane (gitSpawnNow) — the aging clock. */
+  enqueuedAt: number;
+}
+const gitSpawnQueueHigh: GitSpawnWaiter[] = [];
+const gitSpawnQueueLow: GitSpawnWaiter[] = [];
+/** How many PROMOTED waiters sit at the HEAD of the high queue: new
+ *  promotions splice in after them (still ahead of fresh high traffic), so
+ *  promoted waiters keep arrival FIFO among themselves — run-13 (f4). */
+let gitSpawnPromotedHead = 0;
+/** Cumulative low→high promotions — gitSpawnStats() surfaces this as
+ *  queuedAged (run-13 f4: the f4 starvation gauge). */
+let gitSpawnQueuedAged = 0;
+/** The aging clock, injectable like setGitExecForTests so tests cross the
+ *  10s boundary instantly instead of sleeping the suite (run-13). */
+let gitSpawnNow: () => number = Date.now;
+export function setGitClockForTests(fn?: () => number) {
+  gitSpawnNow = fn ?? Date.now;
+}
 
 /** Take a slot (or queue FIFO in your lane for one) — the caller owns the slot
  *  until releaseGitSpawn(). No nesting: a slot is held across exactly ONE
@@ -235,26 +270,66 @@ function acquireGitSpawn(priority?: "high" | "low"): Promise<void> {
     gitSpawnLive++;
     return Promise.resolve();
   }
-  return new Promise<void>((wake) => (priority === "high" ? gitSpawnQueueHigh : gitSpawnQueueLow).push(wake));
+  // run-13 (f4): before parking a NEW low waiter, promote every low waiter
+  // already past the age — the aged ones escape to the high lane and the
+  // newcomer queues behind whatever low traffic remains. A high arrival
+  // does NOT trigger this: releases re-check ages on every freed slot,
+  // which is what actually drains promotions under load.
+  if (priority !== "high") promoteAgedLowWaiters();
+  return new Promise<void>((wake) =>
+    (priority === "high" ? gitSpawnQueueHigh : gitSpawnQueueLow).push({ wake, enqueuedAt: gitSpawnNow() }),
+  );
+}
+
+/** run-13 (run-11 cold-review f4): move every low waiter older than
+ *  GIT_SPAWN_AGE_MS into the high lane. enqueuedAt is monotone along the
+ *  low queue (FIFO tail push), so the aged waiters are always a PREFIX —
+ *  spliced off whole, arrival order intact, and inserted behind the
+ *  already-promoted head so promotions stay globally FIFO among themselves
+ *  while still waking ahead of fresh high traffic. */
+function promoteAgedLowWaiters(): void {
+  const now = gitSpawnNow();
+  let aged = 0;
+  while (aged < gitSpawnQueueLow.length && now - gitSpawnQueueLow[aged]!.enqueuedAt > GIT_SPAWN_AGE_MS) aged++;
+  if (!aged) return;
+  const moving = gitSpawnQueueLow.splice(0, aged);
+  gitSpawnQueueHigh.splice(gitSpawnPromotedHead, 0, ...moving);
+  gitSpawnPromotedHead += moving.length;
+  gitSpawnQueuedAged += moving.length;
 }
 
 /** Free a slot — handed straight to the longest-waiting HIGH caller first
  *  (run-11 h2-2), then the longest-waiting low one, when either exists (the
- *  live count already covers the handover), else returned. */
+ *  live count already covers the handover), else returned. run-13 (f4):
+ *  the age check runs BEFORE the lane choice, so a waiter promoted this
+ *  instant sits at the high head and wakes on THIS release — exactly the
+ *  sustained-high-traffic starvation f4 describes.
+ */
 function releaseGitSpawn() {
-  const next = gitSpawnQueueHigh.shift() ?? gitSpawnQueueLow.shift();
-  if (next) next();
+  promoteAgedLowWaiters();
+  let next: GitSpawnWaiter | undefined;
+  if (gitSpawnQueueHigh.length) {
+    next = gitSpawnQueueHigh.shift();
+    // The head waiter was a promoted one — one fewer in the promoted prefix.
+    if (gitSpawnPromotedHead > 0) gitSpawnPromotedHead--;
+  } else {
+    next = gitSpawnQueueLow.shift();
+  }
+  if (next) next.wake();
   else gitSpawnLive--;
 }
 
 /** run-11 h2-2: the semaphore's state for deviceVitals — live children,
  *  waiting callers, and how many of those waiters are interactive ("high")
- *  ops parked behind a fan-out. Pure read, no side effects. */
-export function gitSpawnStats(): { live: number; queued: number; queuedHigh: number } {
+ *  ops parked behind a fan-out. Pure read, no side effects. run-13 (f4):
+ *  queuedAged counts how many low waiters aging has had to rescue —
+ *  deviceVitals carries this object through untouched, field and all. */
+export function gitSpawnStats(): { live: number; queued: number; queuedHigh: number; queuedAged: number } {
   return {
     live: gitSpawnLive,
     queued: gitSpawnQueueHigh.length + gitSpawnQueueLow.length,
     queuedHigh: gitSpawnQueueHigh.length,
+    queuedAged: gitSpawnQueuedAged,
   };
 }
 

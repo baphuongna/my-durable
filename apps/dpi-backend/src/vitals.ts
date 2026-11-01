@@ -100,10 +100,11 @@ export interface DeviceVitals {
   disk: DiskVitals;
   /** Event-loop lag — the number `loadavg` cannot express: how long ready JS waited to run. */
   eventLoop: EventLoopLagVitals;
-  /** Git spawn semaphore (run-11 h2-2): children live now, callers waiting
-   *  for a slot, and how many waiters sit in the interactive "high" lane —
-   *  the number that says "a status-batch fan-out is stalling the panel". */
-  gitSpawns: { live: number; queued: number; queuedHigh: number };
+  /** Git spawn semaphore (run-11 h2-2 + run-13 f4): children live now,
+   *  callers waiting for a slot, how many waiters sit in the interactive
+   *  "high" lane, and how many low waiters aging (>10s) has had to rescue
+   *  from high-lane starvation — the f4 gauge. */
+  gitSpawns: { live: number; queued: number; queuedHigh: number; queuedAged: number };
   pid: number;
   at: number;
 }
