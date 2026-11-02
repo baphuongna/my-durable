@@ -25,7 +25,7 @@ const entryClass = (item: TranscriptItem) =>
 </script>
 
 <template>
-  <article class="entry" :class="entryClass(item)">
+  <article class="entry" :class="entryClass(item)" :data-entry-id="item.id">
     <template v-if="item.kind === 'user'"
       ><div class="message-label">
         YOU <span>#{{ item.id }}</span>
@@ -150,3 +150,20 @@ const entryClass = (item: TranscriptItem) =>
     >
   </article>
 </template>
+
+<style scoped>
+/* R16 find-in-session jump (Unit B): AgentView adds .flash to the entry a
+   search result jumps to and removes it after 1.5s — a class/data-attr hook
+   only, so this component never learns about the find overlay. */
+.entry.flash {
+  animation: r16-entry-flash 1.5s var(--ease);
+}
+@keyframes r16-entry-flash {
+  0% {
+    background: color-mix(in oklab, var(--accent) 26%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+</style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   Activity,
   ArrowUpRight,
@@ -12,6 +12,8 @@ import {
   GitFork,
   MessageSquare,
   Pencil,
+  Reply,
+  Search,
 } from "lucide-vue-next";
 import type { AgentSummary } from "@sdk/api";
 import { lineage } from "@sdk/models";
@@ -19,12 +21,15 @@ import TranscriptItem from "./TranscriptItem.vue";
 import DeviceIcon from "./DeviceIcon.vue";
 import GitChip from "./GitChip.vue";
 import Composer from "./Composer.vue";
+import FindOverlay from "./FindOverlay.vue";
 import {
   activeLineage,
   agent,
   agentHandle,
   agentState,
+  busy,
   device,
+  interrupt,
   notify,
   preset,
   select,
@@ -35,6 +40,9 @@ import {
   layout,
   ui,
 } from "../client/store";
+import { useReplyQuote } from "../client/quote";
+import { pickAssistantReply } from "../client/find";
+import { decideEscStop } from "../client/esc-stop";
 
 const chat = ref<HTMLElement>();
 const lineageNav = ref<HTMLElement>();
@@ -147,6 +155,149 @@ watch(
       () => lineageNav.value && (lineageNav.value.scrollLeft = lineageNav.value.scrollWidth),
     ),
 );
+
+// --------------------------------------------- R16 view features (Unit B)
+// Find-in-session, reply-to-passage and Esc-Esc stop. The pure pieces live in
+// client/find.ts and client/esc-stop.ts; only the DOM wiring is here.
+
+const findOpen = ref(false);
+const replyQuote = useReplyQuote();
+const replyTarget = ref<{
+  x: number;
+  y: number;
+  below: boolean;
+  excerpt: string;
+  label: string;
+} | null>(null);
+let lastEscAt: number | null = null;
+
+const cssEscape = (value: string): string =>
+  typeof CSS !== "undefined" && CSS.escape
+    ? CSS.escape(value)
+    : value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+
+/** The data-entry-id of the transcript entry a DOM node sits in, if any. */
+const entryIdOf = (node: Node | null): string | null =>
+  (node instanceof Element ? node : (node?.parentElement ?? null))
+    ?.closest("[data-entry-id]")
+    ?.getAttribute("data-entry-id") ?? null;
+
+/** Selection → Reply: float a Reply chip when the selection lies inside
+ * exactly one assistant reply. The decision itself is pure (client/find.ts). */
+function refreshSelection() {
+  replyTarget.value = null;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount || !chat.value) return;
+  const target = pickAssistantReply(
+    items.value.map((i) => ({ id: i.id, role: i.kind })),
+    {
+      anchorId: entryIdOf(sel.anchorNode),
+      focusId: entryIdOf(sel.focusNode),
+      text: sel.toString(),
+    },
+  );
+  if (!target) return;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  const below = window.matchMedia?.("(pointer: coarse)")?.matches ?? false; // touch: chip under the selection
+  replyTarget.value = {
+    x: Math.min(Math.max(rect.left, 8), Math.max(8, window.innerWidth - 176)),
+    y: below ? rect.bottom + 8 : rect.top - 52,
+    below,
+    excerpt: target.excerpt,
+    label: target.label,
+  };
+}
+function quoteSelection() {
+  const target = replyTarget.value;
+  if (!target) return;
+  replyQuote.setQuote(target.excerpt, target.label); // Unit A's pinned contract
+  replyTarget.value = null;
+  window.getSelection()?.removeAllRanges();
+}
+
+/** Find result → center the entry and flash it for 1.5s (TranscriptItem's
+ * .flash hook owns the animation; this only toggles the class). */
+const flashTimers = new WeakMap<Element, number>();
+function jumpToEntry(entryId: string | number) {
+  findOpen.value = false;
+  void nextTick(() => {
+    const el = chat.value?.querySelector(`[data-entry-id="${cssEscape(String(entryId))}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove("flash");
+    void (el as HTMLElement).offsetWidth; // restart the animation on repeat jumps
+    el.classList.add("flash");
+    window.clearTimeout(flashTimers.get(el));
+    flashTimers.set(el, window.setTimeout(() => el.classList.remove("flash"), 1500));
+  });
+}
+
+/** Keep an owned Escape away from every other listener (App.vue's keydown
+ * still single-Esc-interrupts a busy turn — the policy must run first). */
+const consume = (e: KeyboardEvent) => {
+  e.preventDefault();
+  e.stopImmediatePropagation();
+};
+
+/** Ctrl/⌘+F opens Find even while the composer is focused; Escape runs the
+ * esc-stop policy. Registered in the CAPTURE phase on purpose: capture on
+ * document fires before App.vue's bubble listener, which is the only way a
+ * lone Escape can be kept from stopping a turn without touching App.vue.
+ * Dialogs stay App.vue's — we defer the moment ui.dialog is set. */
+function onKeydown(e: KeyboardEvent) {
+  if (
+    (e.ctrlKey || e.metaKey) &&
+    !e.altKey &&
+    !e.shiftKey &&
+    (e.code === "KeyF" || e.key === "f" || e.key === "F")
+  ) {
+    e.preventDefault(); // keep the browser's find bar out of the way
+    findOpen.value = true;
+    return;
+  }
+  if (e.key !== "Escape" || e.isComposing || ui.dialog) return;
+  const action = decideEscStop({
+    dialogOpen: false,
+    overlayOpen: findOpen.value,
+    quoteOpen: !!replyQuote.quoted,
+    busy: busy.value,
+    now: Date.now(),
+    lastEscAt,
+  });
+  if (action === "close-overlay") {
+    consume(e);
+    findOpen.value = false;
+    return;
+  }
+  if (action === "clear-strip") {
+    consume(e);
+    replyQuote.clear();
+    return;
+  }
+  if (action === "stop") {
+    consume(e);
+    lastEscAt = null;
+    void interrupt(); // the store's own stop path — no new stop function
+    return;
+  }
+  if (busy.value) {
+    // First Escape of a possible double: remember it, and keep it away from
+    // App.vue's legacy single-Esc interrupt — one press never stops a turn.
+    consume(e);
+    if (!e.repeat) lastEscAt = Date.now();
+    return;
+  }
+  lastEscAt = null; // no turn running: this Escape belongs to the chrome
+}
+
+onMounted(() => {
+  document.addEventListener("keydown", onKeydown, true);
+  document.addEventListener("selectionchange", refreshSelection);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onKeydown, true);
+  document.removeEventListener("selectionchange", refreshSelection);
+});
 </script>
 
 <template>
@@ -212,6 +363,14 @@ watch(
             @click="renameAgent"
           >
             <Pencil :size="18" />
+          </button>
+          <button
+            class="icon-button find-button"
+            aria-label="Find in session"
+            title="Find in session (Ctrl/⌘+F)"
+            @click="findOpen = true"
+          >
+            <Search :size="18" />
           </button>
           <button
             class="icon-button conversation-menu-toggle"
@@ -290,7 +449,13 @@ watch(
         Retry stream
       </button>
     </div>
-    <div ref="chat" class="chat-scroll" data-testid="chat">
+    <div
+      ref="chat"
+      class="chat-scroll"
+      data-testid="chat"
+      @mouseup="refreshSelection"
+      @scroll.passive="replyTarget = null"
+    >
       <div v-if="!agentState.ready" class="chat-empty">
         <Activity :size="30" />
         <h2 v-if="agent.status.value === 'fault'">This agent is unavailable.</h2>
@@ -339,6 +504,52 @@ watch(
         <p v-for="(n, i) in agentState.notices" :key="i" class="message-error">{{ n }}</p>
       </template>
     </div>
+    <button
+      v-if="replyTarget"
+      class="reply-quote-chip"
+      :class="{ below: replyTarget.below }"
+      :style="{ left: `${replyTarget.x}px`, top: `${replyTarget.y}px` }"
+      :aria-label="`Reply quoting ${replyTarget.label}`"
+      :title="replyTarget.label"
+      @mousedown.prevent
+      @click="quoteSelection"
+    >
+      <Reply :size="16" aria-hidden="true" />Reply
+    </button>
     <Composer />
+    <FindOverlay v-if="findOpen" :items="items" @close="findOpen = false" @jump="jumpToEntry" />
   </section>
 </template>
+
+<style scoped>
+/* R16 (Unit B): the Find affordance keeps the toolbar's icon size but grows
+ * its touch target to ≥44px — mobile-safe, no hover dependency. */
+.find-button {
+  position: relative;
+}
+.find-button::after {
+  content: "";
+  position: absolute;
+  inset: -0.5rem;
+}
+.reply-quote-chip {
+  position: fixed;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 2.75rem; /* ≥44px target */
+  padding: 0 0.875rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.875rem;
+  box-shadow: 0 0.375rem 1rem color-mix(in oklab, var(--bg) 70%, transparent);
+  cursor: pointer;
+}
+.reply-quote-chip:hover {
+  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
+}
+</style>

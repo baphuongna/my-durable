@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { ArrowUp, ChevronDown, Clock3, LibraryBig, Octagon, Trash2, X } from "lucide-vue-next";
+import { computed, nextTick, ref, watch } from "vue";
+import { ArrowUp, ChevronDown, Clock3, LibraryBig, Octagon, Quote, Trash2, X } from "lucide-vue-next";
 import type { WhenBusy } from "@sdk/api";
 import { newId } from "../client/ids";
 import { commands, parseCommand, type SlashCommand } from "../client/commands";
+import { buildQuotedMessage, useReplyQuote } from "../client/quote";
+import {
+  addPaste,
+  createPasteStore,
+  expandPastes,
+  insertPlaceholder,
+  oneLineExcerpt,
+  shouldFoldPaste,
+} from "../client/paste";
 import {
   agent,
   agentHandle,
@@ -47,6 +56,14 @@ const dropSnippet = (name: string) => {
   snippets.value = snippets.value.filter((p) => p.name !== name);
   saveSnippets();
 };
+// R16 reply-to-passage: Unit B's transcript selection sets the quote through
+// the same composable; the strip here shows it and send() folds it in.
+const replyQuote = useReplyQuote();
+const quoteSrc = computed(() => oneLineExcerpt(replyQuote.quoted?.srcLabel ?? "", 80));
+const quoteExcerpt = computed(() => oneLineExcerpt(replyQuote.quoted?.text ?? "", 120));
+// R16 long pastes: >20 lines become a placeholder token; full text waits here.
+const pastes = createPasteStore();
+
 const pending = ref(false);
 const canSend = computed(
   () =>
@@ -84,6 +101,14 @@ async function pick(command: SlashCommand, enter = false) {
 }
 function keydown(e: KeyboardEvent) {
   if (!matches.value.length) {
+    // R16: with the reply strip up, Escape clears only the strip — and must
+    // not reach the document Esc listeners (interrupt et al).
+    if (e.key === "Escape" && replyQuote.quoted) {
+      e.preventDefault();
+      e.stopPropagation();
+      replyQuote.clear();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       void send();
@@ -113,9 +138,36 @@ async function runCommand(text: string) {
   return true;
 }
 
+// A paste longer than 20 lines never floods the composer: prevent the
+// default insertion, drop the placeholder token at the caret instead.
+function onPaste(e: ClipboardEvent) {
+  const text = e.clipboardData?.getData("text/plain") ?? "";
+  if (!shouldFoldPaste(text)) return;
+  e.preventDefault();
+  const ta = e.currentTarget as HTMLTextAreaElement;
+  const { text: next, caret } = insertPlaceholder(
+    ui.composer,
+    addPaste(pastes, text),
+    ta.selectionStart ?? ui.composer.length,
+    ta.selectionEnd ?? ui.composer.length,
+  );
+  ui.composer = next;
+  void nextTick(() => {
+    ta.focus();
+    ta.setSelectionRange(caret, caret);
+  });
+}
+
 // A retried send (same agent, text and mode) reuses its requestId, so the device admits it once.
 async function send() {
-  const content = ui.composer.trim();
+  // R16: long-paste placeholders unfold (full text back in place) before the
+  // trim; a quoted reply folds in as a leading blockquote — but a slash
+  // command stays verbatim (expansion only, never quoted).
+  const expanded = expandPastes(ui.composer, pastes);
+  const userText = expanded.trim();
+  const quoted = replyQuote.quoted;
+  const content =
+    userText.startsWith("/") || !quoted ? userText : buildQuotedMessage(quoted, expanded).trim();
   const handle = agentHandle.value;
   if (!content || pending.value || !handle || !canSend.value) return;
   if (content.startsWith("/") && (await runCommand(content))) return;
@@ -130,14 +182,20 @@ async function send() {
     saved?.key === key && saved.content === content && saved.mode === mode.value
       ? saved.requestId
       : newId();
-  sessionStorage.setItem(
-    "dpi.pending-send",
-    JSON.stringify({ key, content, mode: mode.value, requestId }),
-  );
+  try {
+    sessionStorage.setItem(
+      "dpi.pending-send",
+      JSON.stringify({ key, content, mode: mode.value, requestId }),
+    );
+  } catch {
+    // R16: an expanded long paste can exceed the storage quota — losing the
+    // retry-id reuse is fine, the send itself proceeds.
+  }
   await attempt(async () => {
     await handle.send(content, mode.value, requestId);
     sessionStorage.removeItem("dpi.pending-send");
     ui.composer = "";
+    replyQuote.clear(); // the quote went out with this message
   });
   pending.value = false;
 }
@@ -165,6 +223,21 @@ function withdraw(id: number) {
       </div>
     </div>
     <div class="composer">
+      <!-- R16: quoted passage awaiting the reply. Esc (below) or × clears it. -->
+      <div v-if="replyQuote.quoted" class="reply-strip">
+        <Quote :size="14" aria-hidden="true" />
+        <span class="src">{{ quoteSrc }}</span>
+        <span class="excerpt">“{{ quoteExcerpt }}”</span>
+        <button
+          type="button"
+          class="clear"
+          aria-label="Clear quoted reply"
+          title="Clear quoted reply"
+          @click="replyQuote.clear()"
+        >
+          <X :size="16" />
+        </button>
+      </div>
       <ul v-if="matches.length" class="slash-menu" role="listbox" aria-label="Slash commands">
         <li
           v-for="(c, i) in matches"
@@ -185,6 +258,7 @@ function withdraw(id: number) {
         placeholder="Give your agent something to do, or type / for commands…"
         aria-label="Message your agent"
         @keydown="keydown"
+        @paste="onPaste"
       />
       <div class="composer-toolbar">
         <div class="composer-left">
@@ -255,6 +329,50 @@ function withdraw(id: number) {
 </template>
 
 <style scoped>
+/* R16 reply strip: same var palette as the rest of the composer; the clear
+   button keeps a 44px touch target (min 2.75rem) and is always visible. */
+.reply-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0.75rem 0;
+  padding: 0.25rem 0.125rem 0.25rem 0.75rem;
+  border: 1px solid var(--line);
+  border-left: 0.1875rem solid var(--accent);
+  border-radius: 0.5rem;
+  background: color-mix(in oklab, var(--accent) 7%, var(--card));
+}
+.reply-strip .src {
+  font-weight: 600;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.reply-strip .excerpt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.8125rem;
+  color: var(--secondary);
+}
+.reply-strip .clear {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  background: none;
+  border: none;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  color: inherit;
+}
+.reply-strip .clear:hover,
+.reply-strip .clear:focus-visible {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+}
 .lib-wrap { position: relative; }
 .lib {
   position: absolute; bottom: calc(100% + 0.5rem); left: 0; z-index: 70; width: 18.75rem; max-height: 16.25rem;
